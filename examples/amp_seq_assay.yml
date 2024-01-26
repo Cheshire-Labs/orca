@@ -1,0 +1,90 @@
+labwares:
+  - gdna-plate:
+      labware-type: "Corning 96 Well"
+  - pcr1-plate:
+      labware-type: "Corning 96 Well"
+  - pcr1-product-plate:
+      labware-type: "Corning 96 Well"
+  - pcr2-plate:
+      labware-type: "Corning 96 Well"
+  - pcr2-product-plate:
+      labware-type: "Corning 96 Well"
+  - quant-plate:
+      labware-type: "Corning 96 Well"
+
+resources:
+  - hamilton-vantage:
+      type: vantage
+      plate-pad: vantage
+      ip: 192.168.1.2
+  - mantis:
+      type: mantis
+      ip: 192.168.1.3
+  - cwash:
+      type: cwash
+      ip: 192.168.1.4
+  - thermocycler:
+      type: analytic-jena
+      ip: 192.168.1.5
+  - tapestation:
+      type: tapestation-4200
+      ip: 192.168.1.6
+  - acell:
+      type: acell
+      ip: 192.168.1.7
+      teachpoints: teachpoints-1.xml
+
+methods:
+  - gdna-normalization:
+      actions:
+        - mantis:
+            input: pcr1-plate
+            protocol: gdna-normalization.pro
+  - pcr1:
+      actions:
+        - hamilton-vantage:
+             input: pcr1-plate
+             protocol: pcr1-prep.hsl
+        - thermocycler:
+            input: pcr1-plate
+            protocol: pcr1.pro
+  - pcr1-cleanup:
+      actions:
+        - hamilton-vantage:
+             input: pcr1-plate
+             protocol: add-beads.hsl
+        - cwash:
+            input: pcr1-plate
+            protocol: pcr1-wash.pro
+        - hamilton-vantage:
+            input: [pcr1-plate, pcr1-product-plate]
+            protocol: dna-transfer.pro
+  - pcr1-quantification:
+
+  - pcr2:
+      actions:
+        - hamilton-vantage:
+            input: [pcr1-product-plate, pcr2-plate]
+            protocol: pcr1-product-to-pcr2.hsl
+        - thermocycler:
+            input: pcr2-plate
+            protocol: pcr2.pro
+  - pcr2-cleanup:
+      actions:
+        - hamilton-vantage:
+            input: pcr2-plate
+            protocol: add-beads.hsl
+        - cwash:
+            input: pcr2-plate
+            protocol: pcr2-wash.pro
+        - hamilton-vantage:
+            input: [pcr2-plate, pcr2-product-plate]
+            protocol: dna-transfer.pro
+  - quantization:
+      actions:
+        - hamilton-vantage:
+            input: [pcr2-product-plate, quant-plate]
+            protocol: pcr2-product-pool.hsl
+        - tapestation:
+            input: quant-plate
+            protocol: quantization.pro

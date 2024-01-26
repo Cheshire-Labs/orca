@@ -1,0 +1,64 @@
+function OnAbort(  ) void ;
+function SendTextMessageToServer( variable str ) void ;
+private function waitForGUItoContinue(  ) variable ;
+function OnAbort(  ) void {
+    HSLHttp::Release(objHttp);
+}
+
+private function waitForGUItoContinue(  ) variable {
+    private variable loopCounter1;
+    private variable serverResponse;
+    private timer timer1;
+    serverResponse = Translate("");
+    SendTextMessageToServer(Translate("Waiting for server instructions..."));
+    TrcTrace(Translate("Waiting for server instructions...."), Translate(""));
+    {
+        loopCounter1 = 0;
+        while (1 == 1)
+        {
+            loopCounter1 = loopCounter1 + 1;
+            if( 0 == timer1.SetTimer(0.1) )
+            {
+                MECC::RaiseRuntimeErrorEx(-1355939584, MECC::IDS::stepNameTimerStart, MECC::IDS::errorStepFailed, "", "HxMetEdCompCmd");
+            }
+            if( 0 == timer1.WaitTimer(hslFalse, hslFalse) )
+            {
+                MECC::RaiseRuntimeErrorEx(-1339162368, MECC::IDS::stepNameTimerWait, MECC::IDS::errorStepFailed, "", "HxMetEdCompCmd");
+            }
+            serverResponse = HSLHttp::HttpGET(objHttp, Translate("http://localhost:3221"), Translate(""));
+            if (serverResponse != "")
+            {
+                break;
+            }
+            if (loopCounter1 == 300)
+            {
+
+                break;
+            }
+            if( 0 == timer1.SetTimer(0.9) )
+            {
+                MECC::RaiseRuntimeErrorEx(-1355939584, MECC::IDS::stepNameTimerStart, MECC::IDS::errorStepFailed, "", "HxMetEdCompCmd");
+            }
+            if( 0 == timer1.WaitTimer(hslFalse, hslFalse) )
+            {
+                MECC::RaiseRuntimeErrorEx(-1339162368, MECC::IDS::stepNameTimerWait, MECC::IDS::errorStepFailed, "", "HxMetEdCompCmd");
+            }
+        }
+    }
+    return (serverResponse);
+}
+
+private function SendStepReturnToServer( variable stepName, variable stepReturn1, variable stepReturn2, variable stepReturn3, variable stepReturn4, variable stepId ) void {
+    private variable strJSON;
+    HSLJsonLib::Create(objJSONToServer);
+    HSLJsonLib::SetStringProperty(objJSONToServer, Translate("command"), Translate("STAR-return"));
+    HSLJsonLib::SetStringProperty(objJSONToServer, Translate("step-name"), stepName);
+    HSLJsonLib::SetStringProperty(objJSONToServer, Translate("step-return1"), stepReturn1);
+    HSLJsonLib::SetStringProperty(objJSONToServer, Translate("step-return2"), stepReturn2);
+    HSLJsonLib::SetStringProperty(objJSONToServer, Translate("step-return3"), stepReturn3);
+    HSLJsonLib::SetStringProperty(objJSONToServer, Translate("step-return4"), stepReturn4);
+    HSLJsonLib::SetStringProperty(objJSONToServer, Translate("id"), stepId);
+    HSLJsonLib::GetJson(objJSONToServer, strJSON);
+    HSLJsonLib::Release(objJSONToServer);
+    HSLHttp::HttpPOST(objHttp, Translate("http://localhost:3221"), strJSON, HSLHttp::ContentType_JSON, Translate(""));
+}
