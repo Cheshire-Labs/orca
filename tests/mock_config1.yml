@@ -1,0 +1,29 @@
+labwares:
+  - test-plate1:
+      type: "Test 96 Plate"
+
+resources:
+  - mock-hamilton:
+      type: mock-hamilton
+      ip: localhost
+
+methods:
+  - test-method1:
+      actions:
+        - mock-hamilton:
+            input: test-plate1
+            protocol: test-method1.hsl
+  - test-method2:
+      actions:
+        - mock-hamilton:
+            input: test-plate1
+            protocol: test-method2.hsl
+
+workflows:
+  - test-workflow1:
+      steps:
+        - test-method1
+  - test-workflow2:
+      steps:
+        - test-method1
+        - test-method2
