@@ -5,6 +5,13 @@ from method import Method, MethodStatus
 
 
 class LabwareThread:
+
+    def __init__(self, labware: Labware, start: Location, end: Location) -> None:
+        self._labware: Labware = labware
+        self._start: Location = start
+        self._end: Location = end
+        self._methods: List[Method] = []
+
     @property
     def labware(self) -> Labware:
         return self._labware
@@ -21,13 +28,6 @@ class LabwareThread:
     def methods(self) -> List[Method]:
         return self._methods
     
-    
-    def __init__(self, labware: Labware, start: Location, end: Location) -> None:
-        self._labware: Labware = labware
-        self._start: Location = start
-        self._end: Location = end
-        self._methods: List[Method] = []
-
     def add_method(self, method: Method, method_step_options: Optional[Dict[str, Any]] = None) -> None:
         # TODO: may add option to update method options at the Workflow level
         self._methods.append(method)
@@ -40,13 +40,14 @@ class LabwareThread:
     
 
 class Workflow:
-    @property
-    def labware_threads(self) -> Dict[str, LabwareThread]:
-        return self._labware_thread
-
+    
     def __init__(self, name: str) -> None:
         self._name = name
         self._labware_thread: Dict[str, LabwareThread] = {}
+
+    @property
+    def labware_threads(self) -> Dict[str, LabwareThread]:
+        return self._labware_thread
 
     def set_status_queued(self) -> None:
         for thread in self._labware_thread.values():

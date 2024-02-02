@@ -2,13 +2,28 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 from drivers.base_resource import IResource
 from drivers.drivers import ILabwareTransporter
-from drivers.resource_factory import ResourceFactory
 from labware import Labware
 from location import Location
-from method import Action, Method
-from workflow import LabwareThread, Workflow
+from method import Method
+from workflow import Workflow
 
 class System:
+    def __init__(self, 
+                name: Optional[str] = None, 
+                description: Optional[str] = None, 
+                version: Optional[str] = None, 
+                options: Optional[Dict[str, Any]] = None
+                ) -> None:
+        self._name = name
+        self._description = description
+        self._version = version 
+        self._options = options if options is not None else {}
+        self._labwares: Dict[str, Labware] = {}
+        self._resources: Dict[str, IResource] = {}
+        self._locations: Dict[str, Location] = {}
+        self._methods: Dict[str, Method] = {}
+        self._workflows: Dict[str, Workflow] = {}
+
     @property
     def options(self) -> Dict[str, Any]:
         return self._options
@@ -57,13 +72,4 @@ class System:
     def labware_transporters(self) -> Dict[str, ILabwareTransporter]:
         return {name: r for name, r in self._resources.items() if isinstance(r, ILabwareTransporter)}
 
-    def __init__(self, 
-                 name: Optional[str] = None, 
-                 description: Optional[str] = None, 
-                 version: Optional[str] = None, 
-                 options: Optional[Dict[str, Any]] = None
-                 ) -> None:
-        self._name = name
-        self._description = description
-        self._version = version 
-        self._options = options if options is not None else {}
+

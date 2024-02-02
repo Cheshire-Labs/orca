@@ -16,10 +16,6 @@ class MethodStatus(Enum):
     CANCELED = auto()
 
 class Action:
-    @property
-    def status(self) -> MethodStatus:
-        return self._status
-    
     def __init__(self, resource: IResource, command: str, options: Optional[Dict[str, Any]] =None, inputs: Optional[List[Labware]] = None, outputs: Optional[List[Labware]] = None):
         self._resource = resource
         self._command = command
@@ -27,7 +23,11 @@ class Action:
         self._inputs: List[Labware] = inputs if inputs is not None else []
         self._output: List[Labware] = outputs if outputs is not None else []
         self._status: MethodStatus = MethodStatus.CREATED
-
+    
+    @property
+    def status(self) -> MethodStatus:
+        return self._status
+    
     def set_status(self, status: MethodStatus) -> None:
         self._status = status
 
@@ -40,6 +40,12 @@ class Action:
 
 
 class Method:
+
+    def __init__(self, name: str):
+        self._name = name
+        self._actions: List[Action] = []
+        self._status = MethodStatus.CREATED
+
     @property
     def name(self) -> str:
         return self._name
@@ -68,11 +74,6 @@ class Method:
     @property
     def actions(self) -> List[Action]:
         return self._actions
-
-    def __init__(self, name: str):
-        self._name = name
-        self._actions: List[Action] = []
-        self._status = MethodStatus.CREATED
 
     def append_action(self, action: Action):
         self._actions.append(action)
