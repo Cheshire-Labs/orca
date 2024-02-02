@@ -184,7 +184,6 @@ config:
 
 
 
-
 methods:
   - sample-to-bead-plate:
       actions:
@@ -230,33 +229,26 @@ methods:
   - read:
 
 
-
-
-
-
 workflows:
-  - prod:
-      config: prod-config
-      plates:
-        - sample-plate:
-            labware: "Matrix 96 Well"
-            start: stacker-sample-start
-            end: [waste-1, waste-2]
-            steps:
-              - sample-to-bead-plate
-              - incubate-2hrs
-              - post-capture-wash
-              - add-detection-antibody
-              - incubate-1-hr
-              - pre-transfer-wash
-              - discard-supernatant
-              - add-elution-buffer-b
-              - incubate-10-min
-              - add-buffer-d
-              - transfer-eluate
-              - centrifuge
-              - read
+    plates:
+    - sample-plate:
+        start: stacker-sample-start
+        end: [waste-1, waste-2]
+        steps:
+            - sample-to-bead-plate
+            - incubate-2hrs
+            - post-capture-wash
+            - add-detection-antibody
+            - incubate-1-hr
+            - pre-transfer-wash
+            - discard-supernatant
+            - add-elution-buffer-b
+            - incubate-10-min
+            - add-buffer-d
+            - transfer-eluate
+            - centrifuge
+            - read
 
-        - plate-1:
-        - final-plate:
+    - plate-1:
+    - final-plate:
 
