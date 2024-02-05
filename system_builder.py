@@ -1,6 +1,6 @@
 import os
 from drivers.base_resource import IResource
-from drivers.drivers import ILabwareTransporter
+from drivers.ilabware_transporter import ILabwareTransporter
 from drivers.resource_factory import ResourceFactory
 from labware import Labware
 from location import Location

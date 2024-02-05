@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 from drivers.base_resource import IResource
-from drivers.drivers import ILabwareTransporter
+from drivers.ilabware_transporter import ILabwareTransporter
 from labware import Labware
 from location import Location
 from method import Method

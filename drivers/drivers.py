@@ -1,30 +1,11 @@
-from abc import abstractmethod
 from dataclasses import dataclass
 import xml.etree.ElementTree as ET
 import subprocess
 
 from typing import Any, Dict, List, Optional
+from drivers.ilabware_transporter import ILabwareTransporter
 
-from drivers.base_resource import BaseResource, IResource
-
-class ILabwareTransporter(IResource):
-
-    @abstractmethod
-    def pick(self) -> None:
-        raise NotImplementedError
-    
-    @abstractmethod
-    def place(self) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def set_plate_type(self, plate_type: str) -> None:
-        raise NotImplementedError
-    
-    @abstractmethod
-    def get_accessible_locations(self) -> List[str]:
-        raise NotImplementedError
-
+from drivers.base_resource import BaseResource
 
 class MockResource(BaseResource):
     def __init__(self, name: str, mocking_type: Optional[str] = None):
