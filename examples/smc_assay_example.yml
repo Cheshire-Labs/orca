@@ -4,37 +4,37 @@ system:
   description: "SMC Assay Example"
 
 labwares:
-  - sample-plate:
-      labware-type: "Matrix 96 Well"
-  - plate-1:
-      labware-type: "Corning 96 Well"
-  - final-plate:
-      labware-type: "SMC 384 plate"
-  - bead-reservoir:
-      labware-type: "reservoir"
-      static: true
-  - buffer-b-reservoir:
-      labware-type: "reservoir"
-  - buffer-d-reservoir:
-      labware-type: "reservoir"
-  - detection-reservoir:
-      labware-type: "reservoir"
-      static: true
-  - tips-96:
-      labware-type: "96 Tips"
-  - tips-384:
-      labware-type: "384 Tips"
+  sample-plate:
+    type: "Matrix 96 Well"
+  plate-1:
+    type: "Corning 96 Well"
+  final-plate:
+    type: "SMC 384 plate"
+  bead-reservoir:
+    type: "reservoir"
+    static: true
+  buffer-b-reservoir:
+    type: "reservoir"
+  buffer-d-reservoir:
+    type: "reservoir"
+  detection-reservoir:
+    type: "reservoir"
+    static: true
+  tips-96:
+    type: "96 Tips"
+  tips-384:
+    type: "384 Tips"
 
 resources:
-  - biotek-1:
-      type: plate-washer
+    biotek-1:
+      type: biotek
       com: "COM3"
       plate-pad: "biotek_1"
-  - biotek-2:
-      type: plate-washer
+    biotek-2:
+      type: biotek
       com: "COM4"
       plate-pad: "biotek_2"
-  - bravo-96-head:
+    bravo-96-head:
       type: bravo
       ip: 192.168.1.123
       head: 96
@@ -43,7 +43,7 @@ resources:
         1: bead-reservoir
         2: detection-reservoir
         6: waste
-  - bravo-384-head:
+    bravo-384-head:
       type: bravo
       ip: 192.168.1.124
       head: 384
@@ -52,39 +52,39 @@ resources:
         1: buffer-b-reservoir
         2: buffer-d-reservoir
         6: waste
-  - sealer:
-      type: sealer
+    sealer:
+      type: plateloc
       com: "COM7"
-  - centrifuge:
-      type: centrifuge
+    centrifuge:
+      type: vspin
       com: "COM8"
-  - plate-hotel:
-      type: plate-hotel
+    plate-hotel:
+      type: agilent-hotel
 
 ## ROBOTICS
-  - ddr-1:
+    ddr-1:
       type: ddr
       ip: 192.168.1.125
       teachpoints: teachpoints-1.xml
-  - ddr-2:
+    ddr-2:
       type: ddr
       ip: 192.168.1.126
       teachpoints: teachpoints-2.xml
-  - ddr-3:
+    ddr-3:
       type: ddr
       ip: 192.168.1.127
       teachpoints: teachpoints-3.xml
-  - translator-1:
+    translator-1:
       type: translator
       com: "COM5"
       start-pad: "translator_1_start"
       end-pad: "translator_1_end"
-  - translater-2:
+    translater-2:
       type: translator
       com: "COM6"
       start-pad: "translater_2_start"
       end-pad: "translater_2_end"
-  - smc_pro:
+    smc_pro:
       type: plate-reader
       ip: 192.168.1.122
       plate-pad: "smc_pro"
@@ -92,105 +92,105 @@ resources:
 
 
 ## STACKERS
-  - stacker-sample-start:
+    stacker-sample-start:
       type: stacker
       ip: 192.168.1.121
       init:
-        labware: ${sample-plate.labware-type}
-  - stacker-sample-end:
+        labware: ${sample-plate.type}
+    stacker-sample-end:
       type: stacker
       ip: 192.168.1.122
       init:
-        labware: ${sample-plate.labware-type}
-  - stacker-plate-1-start:
+        labware: ${sample-plate.type}
+    stacker-plate-1-start:
       type: stacker
       ip: 192.168.1.123
       init:
         labware: "Corning 96 Well"
-  - stacker-final-plate-start:
+    stacker-final-plate-start:
       type: stacker
       ip: 192.168.1.124
       init:
-        labware: ${final-plate.labware-type}
-  - stacker-96-tips:
+        labware: ${final-plate.type}
+    stacker-96-tips:
       type: stacker
       ip: 192.168.1.125
       init:
-        labware: ${tips-96.labware-type}
-  - stacker-384-tips-start:
+        labware: ${tips-96.type}
+    stacker-384-tips-start:
       type: stacker
       ip: 192.168.1.126
       init:
-        labware: ${tips-384.labware-type}
-  - stacker-384-tips-end:
+        labware: ${tips-384.type}
+    stacker-384-tips-end:
       type: stacker
       ip: 192.168.1.127
       init:
-        labware: ${tips-384.labware-type}
+        labware: ${tips-384.type}
 
 ## SHAKERS
-  - shaker-1:
+    shaker-1:
       type: shaker
       com: "COM9"
-  - shaker-2:
+    shaker-2:
       type: shaker
       com: "COM10"
-  - shaker-3:
+    shaker-3:
       type: shaker
       com: "COM11"
-  - shaker-4:
+    shaker-4:
       type: shaker
       com: "COM12"
-  - shaker-5:
+    shaker-5:
       type: shaker
       com: "COM13"
-  - shaker-6:
+    shaker-6:
       type: shaker
       com: "COM14"
-  - shaker-7:
+    shaker-7:
       type: shaker
       com: "COM15"
-  - shaker-8:
+    shaker-8:
       type: shaker
       com: "COM16"
-  - shaker-9:
+    shaker-9:
       type: shaker
       com: "COM17"
-  - shaker-10:
+    shaker-10:
       type: shaker
       com: "COM18"
-  - shaker-collection: [shaker-1, shaker-2, shaker-3, shaker-4, shaker-5, shaker-6, shaker-7, shaker-8, shaker-9, shaker-10]
+    shaker-collection: [shaker-1, shaker-2, shaker-3, shaker-4, shaker-5, shaker-6, shaker-7, shaker-8, shaker-9, shaker-10]
 
 ## WASTE
-  - waste-1:
+    waste-1:
       type: waste
-  - waste-2:
+    waste-2:
       type: waste
-  - waste-collection: [waste-1, waste-2]
+    waste-collection: [waste-1, waste-2]
 
 ## NETWORKING
-  - serial-switch:
+    serial-switch:
       type: serial-switch
       ip: 192.168.0.1
-  - splitter:
+    splitter:
       type: switch
       ip: 192.168.0.2
 
 config:
-  - prod:
+    prod:
       settle-time: 120
       bead-incubation-time: 7200
       post-detection-incubate-time: 3600
-  - test:
+    test:
       settle-time: 0
       bead-incubation-time: 0
       post-detection-incubate-time: 0
-  - wash-test:
+    wash-test:
 
 
 
 methods:
-  - sample-to-bead-plate:
+    sample-to-bead-plate:
       actions:
         bravo-96-head:
           deck-setup:
@@ -200,60 +200,60 @@ methods:
 
 
       ### HERE HERE HERE
-  - incubate-2hrs:
+    incubate-2hrs:
       actions:
         - shaker-collection:
             shake:
               time: ${config.{param}.bead-incubation-time}
-  - post-capture-wash:
+    post-capture-wash:
       actions:
         - biotek-1:
             protocol: post-capture-wash.pro
-  - add-detection-antibody:
+    add-detection-antibody:
       actions:
         - bravo-96-head:
             deck-setup:
               4: 96-tips
               5: sample-plate
             protocol: add-detection-antibody.pro
-  - incubate-1-hr:
+    incubate-1-hr:
       actions:
         - shaker-collection:
             shake:
               time: ${config.{param}.post-detection-incubate-time}
-  - pre-transfer-wash:
+    pre-transfer-wash:
       actions:
         - biotek-2:
             protocol: pre-transfer-wash.pro
-  - discard-supernatant:
-  - add-elution-buffer-b:
-  - incubate-10-min:
-  - add-buffer-d:
-  - transfer-eluate:
-  - centrifuge:
-  - read:
+    discard-supernatant:
+    add-elution-buffer-b:
+    incubate-10-min:
+    add-buffer-d:
+    transfer-eluate:
+    centrifuge:
+    read:
 
 
 workflows:
     plates:
-    - sample-plate:
-        start: stacker-sample-start
-        end: [waste-1, waste-2]
-        steps:
-            - sample-to-bead-plate
-            - incubate-2hrs
-            - post-capture-wash
-            - add-detection-antibody
-            - incubate-1-hr
-            - pre-transfer-wash
-            - discard-supernatant
-            - add-elution-buffer-b
-            - incubate-10-min
-            - add-buffer-d
-            - transfer-eluate
-            - centrifuge
-            - read
+        sample-plate:
+          start: stacker-sample-start
+          end: [waste-1, waste-2]
+          steps:
+              - sample-to-bead-plate
+              - incubate-2hrs
+              - post-capture-wash
+              - add-detection-antibody
+              - incubate-1-hr
+              - pre-transfer-wash
+              - discard-supernatant
+              - add-elution-buffer-b
+              - incubate-10-min
+              - add-buffer-d
+              - transfer-eluate
+              - centrifuge
+              - read
 
-    - plate-1:
-    - final-plate:
+        plate-1:
+        final-plate:
 
