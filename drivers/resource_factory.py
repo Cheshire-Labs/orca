@@ -12,7 +12,14 @@ class ResourceFactory:
         res_type = resource_config['type']
         if res_type == 'venus-method':
             resource = VenusProtocol(resource_name)
-            
+        elif res_type == 'acell':
+            resource = MockRoboticArm(resource_name, "ACell")
+        elif res_type == 'mock-robot':
+            resource = MockRoboticArm(resource_name, "ACell")
+        elif res_type == 'ddr':
+            resource = MockRoboticArm(resource_name, "DDR")
+        elif res_type == 'translator':
+            resource = MockRoboticArm(resource_name, "Translator")
         elif res_type == 'cwash':
             resource = MockResource(resource_name, "CWash")
         elif res_type == 'mantis':
@@ -21,10 +28,6 @@ class ResourceFactory:
             resource = MockResource(resource_name, "Analytic Jena")
         elif res_type == 'tapestation-4200':
             resource = MockResource(resource_name,"Tapestation 4200")
-        elif res_type == 'acell':
-            resource = MockRoboticArm(resource_name, "ACell")
-        elif res_type == 'mock-robot':
-            resource = MockRoboticArm(resource_name, "ACell")
         elif res_type == 'biotek':
             resource = MockResource(resource_name, "Biotek")
         elif res_type == 'bravo':
@@ -35,6 +38,18 @@ class ResourceFactory:
             resource = MockResource(resource_name, "VSpin")
         elif res_type == 'agilent-hotel':
             resource = MockResource(resource_name, "Agilent Hotel")
+        elif res_type == 'smc-pro':
+            resource = MockResource(resource_name, "SMC Pro")
+        elif res_type == 'vstack':
+            resource = MockResource(resource_name, "VStack")
+        elif res_type == 'shaker':
+            resource = MockResource(resource_name, "Shaker")
+        elif res_type == 'waste':
+            resource = MockResource(resource_name, "Waste")
+        elif res_type == 'serial-switch':
+            resource = MockResource(resource_name, "Serial Switch")
+        elif res_type == 'switch':
+            resource = MockResource(resource_name, "Switch")
         else:
             raise ValueError(f"Unknown resource type: {res_type}")
         resource.set_init_options(resource_config)
