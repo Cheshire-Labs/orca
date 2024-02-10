@@ -57,6 +57,44 @@ class Router:
         return curated_actions[0]
 
 
+class RouteSingleStep:
+    def __init__(self, source: Location, target: Location, weight: float, action: Action) -> None:
+        self._source = source
+        self._target = target
+        self._weight = weight
+        self._action = action
+
+    @property
+    def source(self) -> Location:
+        return self._source
+
+    @property
+    def target(self) -> Location:
+        return self._target
+
+    @property
+    def action(self) -> Action:
+        return self._action
+    
+class Route:
+    def __init__(self, steps: List[RouteSingleStep]) -> None:
+        self._steps = steps
+        self._source = steps[0].source
+        self._target = steps[-1].target
+
+    @property
+    def steps(self) -> List[RouteSingleStep]:
+        return self._steps
+    
+    @property
+    def source(self) -> Location:
+        return self._source
+    
+    @property
+    def target(self) -> Location:
+        return self._target
+    
+
 class SystemGraph:
     @property
     def nodes(self) -> Dict[str, Location]:
@@ -88,19 +126,39 @@ class SystemGraph:
     def has_any_path(self, source: str, target: str) -> bool:
         return nx.has_path(self._graph, source, target)
     
-    def get_shortest_available_path(self, source: str, target: str) -> List[Location]:
+    def get_shortest_any_route(self, source: str, target: str) -> Route:
+        path: List[str] = self._get_shortest_any_path(source, target)
+        return self._get_route_from_path(path)
+    
+    def get_shortest_available_route(self, source: str, target: str) -> Route:
+        path: List[str] = self._get_shortest_available_path(source, target)
+        return self._get_route_from_path(path)
+    
+    def _get_shortest_available_path(self, source: str, target: str) -> List[str]:
         available_graph = nx.subgraph(self._graph, self._get_available_locations())# type: ignore
         path: List[str] = nx.shortest_path(available_graph, source, target) # type: ignore
-        return [self.nodes[name] for name in path]
+        return path
     
-    def get_shortest_any_path(self, source: str, target: str) -> List[Location]:
-        path: List[str] = nx.shortest_path(self._graph, source, target) # type: ignore
-        return [self.nodes[name] for name in path]
+    def _get_shortest_any_path(self, source: str, target: str) -> List[str]:
+        return nx.shortest_path(self._graph, source, target) # type: ignore
+
     
+    def _get_route_from_path(self, path: List[str]) -> Route:
+        path_graph = nx.path_graph(self._graph, path)
+        steps: List[RouteSingleStep] = []
+        for edge in path_graph.edges():
+            start = self._graph.nodes[edge[0]]["location"]
+            end = self._graph.nodes[edge[1]]["location"]
+            weight = self._graph.edges(edge[0], edge[1])["weight"]
+            action = self._graph.edges(edge[0], edge[1])["action"]
+            steps.append(RouteSingleStep(start, end, weight, action))
+        return Route(steps)
+
     def get_blocking_locations(self, source: str, target: str) -> List[Location]:
         # TODO: add input validations of source and target entered
         locaitons: List[Location] = []
-        for location in self.get_shortest_any_path(source, target):
+        for location_name in self._get_shortest_any_path(source, target):
+            location: Location = self._graph.nodes[location_name]["location"]
             if location.in_use or location.reserved:
                 locaitons.append(location)
         return locaitons

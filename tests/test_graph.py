@@ -2,7 +2,7 @@
 from drivers.drivers import MockRoboticArm, MockResource
 from location import Location
 from method import Action
-from router import SystemGraph
+from router import RouteSingleStep, SystemGraph
 import networkx as nx
 
 import pytest
@@ -83,14 +83,14 @@ def system_graph() -> SystemGraph:
 
 def test_get_shortest_path(system_graph: SystemGraph):
     expected_path = ["loc_stacker1", "loc_robot1", "loc3", "loc_robot2", "loc_ham1"]
-    path = system_graph.get_shortest_any_path("loc_stacker1", "loc_ham1")
-    assert [p.name for p in path] == expected_path
+    path = system_graph._get_shortest_any_path("loc_stacker1", "loc_ham1")
+    assert path == expected_path
 
 def test_no_path_through_in_use_plate(system_graph: SystemGraph):
     loc3 = system_graph.nodes["loc3"]
     loc3.in_use = True
     try:
-        path = system_graph.get_shortest_available_path("loc_stacker1", "loc_ham1")
+        path = system_graph._get_shortest_available_path("loc_stacker1", "loc_ham1")
         assert False
     except nx.NetworkXNoPath:
         assert True
