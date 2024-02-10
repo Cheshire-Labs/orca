@@ -60,6 +60,10 @@ resources:
       com: "COM8"
     plate-hotel:
       type: agilent-hotel
+    smc_pro:
+      type: smc-pro
+      ip: 192.168.1.122
+      plate-pad: "smc_pro"
 
 ## ROBOTICS
     ddr-1:
@@ -84,46 +88,43 @@ resources:
       com: "COM6"
       start-pad: "translater_2_start"
       end-pad: "translater_2_end"
-    smc_pro:
-      type: plate-reader
-      ip: 192.168.1.122
-      plate-pad: "smc_pro"
+
 
 
 
 ## STACKERS
     stacker-sample-start:
-      type: stacker
+      type: vstack
       ip: 192.168.1.121
       init:
         labware: ${sample-plate.type}
     stacker-sample-end:
-      type: stacker
+      type: vstack
       ip: 192.168.1.122
       init:
         labware: ${sample-plate.type}
     stacker-plate-1-start:
-      type: stacker
+      type: vstack
       ip: 192.168.1.123
       init:
         labware: "Corning 96 Well"
     stacker-final-plate-start:
-      type: stacker
+      type: vstack
       ip: 192.168.1.124
       init:
         labware: ${final-plate.type}
     stacker-96-tips:
-      type: stacker
+      type: vstack
       ip: 192.168.1.125
       init:
         labware: ${tips-96.type}
     stacker-384-tips-start:
-      type: stacker
+      type: vstack
       ip: 192.168.1.126
       init:
         labware: ${tips-384.type}
     stacker-384-tips-end:
-      type: stacker
+      type: vstack
       ip: 192.168.1.127
       init:
         labware: ${tips-384.type}
@@ -159,14 +160,13 @@ resources:
     shaker-10:
       type: shaker
       com: "COM18"
-    shaker-collection: [shaker-1, shaker-2, shaker-3, shaker-4, shaker-5, shaker-6, shaker-7, shaker-8, shaker-9, shaker-10]
 
 ## WASTE
     waste-1:
       type: waste
     waste-2:
       type: waste
-    waste-collection: [waste-1, waste-2]
+    
 
 ## NETWORKING
     serial-switch:
@@ -175,6 +175,10 @@ resources:
     splitter:
       type: switch
       ip: 192.168.0.2
+
+pools:
+    shaker-collection: [shaker-1, shaker-2, shaker-3, shaker-4, shaker-5, shaker-6, shaker-7, shaker-8, shaker-9, shaker-10]
+    waste-collection: [waste-1, waste-2]
 
 config:
     prod:
