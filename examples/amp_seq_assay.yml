@@ -40,6 +40,7 @@ methods:
         - mantis:
             input: pcr1-plate
             protocol: gdna-normalization.pro
+            
   - pcr1:
       actions:
         - hamilton-vantage:
@@ -48,6 +49,7 @@ methods:
         - thermocycler:
             input: pcr1-plate
             protocol: pcr1.pro
+
   - pcr1-cleanup:
       actions:
         - hamilton-vantage:
@@ -69,6 +71,7 @@ methods:
         - thermocycler:
             input: pcr2-plate
             protocol: pcr2.pro
+
   - pcr2-cleanup:
       actions:
         - hamilton-vantage:
@@ -80,6 +83,7 @@ methods:
         - hamilton-vantage:
             input: [pcr2-plate, pcr2-product-plate]
             protocol: dna-transfer.pro
+
   - quantization:
       actions:
         - hamilton-vantage:
