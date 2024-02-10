@@ -1,3 +1,8 @@
+system:
+  name: "smc-assay"
+  version: "0.0.1"
+  description: "SMC Assay Example"
+
 labwares:
   - sample-plate:
       labware-type: "Matrix 96 Well"
