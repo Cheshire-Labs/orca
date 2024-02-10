@@ -25,6 +25,16 @@ class ResourceFactory:
             resource = MockRoboticArm(resource_name, "ACell")
         elif res_type == 'mock-robot':
             resource = MockRoboticArm(resource_name, "ACell")
+        elif res_type == 'biotek':
+            resource = MockResource(resource_name, "Biotek")
+        elif res_type == 'bravo':
+            resource = MockResource(resource_name, "Bravo")
+        elif res_type == 'plateloc':
+            resource = MockResource(resource_name, "Plateloc")
+        elif res_type == 'vspin':
+            resource = MockResource(resource_name, "VSpin")
+        elif res_type == 'agilent-hotel':
+            resource = MockResource(resource_name, "Agilent Hotel")
         else:
             raise ValueError(f"Unknown resource type: {res_type}")
         resource.set_init_options(resource_config)
