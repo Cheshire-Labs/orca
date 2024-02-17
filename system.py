@@ -5,6 +5,7 @@ from drivers.ilabware_transporter import ILabwareTransporter
 from labware import Labware
 from location import Location
 from method import Method
+from resource_pool import ResourcePool
 from workflow import Workflow
 
 class System:
@@ -20,6 +21,7 @@ class System:
         self._options = options if options is not None else {}
         self._labwares: Dict[str, Labware] = {}
         self._resources: Dict[str, IResource] = {}
+        self._resource_pools: Dict[str, ResourcePool] = {}
         self._locations: Dict[str, Location] = {}
         self._methods: Dict[str, Method] = {}
         self._workflows: Dict[str, Workflow] = {}
@@ -43,6 +45,14 @@ class System:
     @resources.setter
     def resources(self, value: Dict[str, IResource]) -> None:
         self._resources = value
+
+    @property
+    def resource_pools(self) -> Dict[str, ResourcePool]:
+        return self._resource_pools
+    
+    @resource_pools.setter
+    def resource_pools(self, value: Dict[str, ResourcePool]) -> None:
+        self._resource_pools = value
 
     @property
     def locations(self) -> Dict[str, Location]:

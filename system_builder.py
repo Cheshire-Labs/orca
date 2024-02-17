@@ -5,6 +5,7 @@ from drivers.resource_factory import ResourceFactory
 from labware import Labware
 from location import Location
 from method import Action, Method
+from resource_pool import ResourcePool
 from system import System
 from workflow import LabwareThread, Workflow
 
@@ -23,6 +24,7 @@ class SystemBuilder:
         self._options: Dict[str, Any] = {}
         self._labware_defs: Dict[str, Dict[str, Any]] = {}
         self._resource_defs: Dict[str, Dict[str, Any]] = {}
+        self._resource_pool_defs: Dict[str, Dict[str, Any]] = {}
         self._location_defs: Dict[str, Dict[str, Any]] = {}
         self._method_defs: Dict[str, Dict[str, Any]] = {}
         self._workflow_defs: Dict[str, Dict[str, Any]] = {}
@@ -48,6 +50,9 @@ class SystemBuilder:
 
     def add_resource(self, resource_name: str, resource_def: Dict[str, Any]) -> None:
         self._resource_defs[resource_name] = resource_def
+
+    def add_resource_pool(self, pool_name: str, pool_def: Dict[str, Any]) -> None:
+        self._resource_pool_defs[pool_name] = pool_def
 
     def add_location(self, location_name: str, location_def: Dict[str, Any]) -> None:
         self._location_defs[location_name] = location_def
@@ -75,6 +80,19 @@ class SystemBuilder:
             resources[name] = ResourceFactory.create(name, resource_def)
         system.resources = resources
 
+    def _build_resource_pools(self, system: System) -> None:
+        pools = {}
+        for name, pool_def in self._resource_pool_defs.items():
+            if "resources" not in pool_def.keys():
+                raise KeyError(f"Resource pool {name} does not contain a 'resources' definition.  Resource must have a resources")
+            resources: List[IResource] = []
+            for res_name in pool_def["resources"]:
+                if res_name not in system.resources.keys():
+                    raise LookupError(f"The resource name '{res_name}' in pool {name} is not recognized as a defined resource")
+                resources.append(system.resources[res_name])
+            pools[name] = ResourcePool(name, resources, pool_def)
+        system.resource_pools = pools
+
     def _build_locations(self, system: System) -> None:
         location_names: List[str] = []
         for _, res in system.resources.items():
@@ -92,13 +110,12 @@ class SystemBuilder:
                 raise KeyError(f"Method {method_name} does not contain a 'actions' definition.  Method must have actions")
             actions: List[Action] = []
             for action_index, action_def in enumerate(method_def['actions']):
-                if "resource" not in action_def.keys():
-                    raise KeyError(f"Resource not defined in {method_name} action index {action_index}")
-                resource_name = action_def["resource"]
-
-                if resource_name not in system.resources.keys():
-                    raise LookupError(f"The resource name '{resource_name}' in method actions is not recognized as a defined resource")
-                resource = system.resources[resource_name]
+                for resource_name, action_options in action_def.items():
+                    if resource_name not in system.resources.keys():
+                        raise LookupError(f"The resource name '{resource_name}' in method actions is not recognized as a defined resource")
+                    resource = system.resources[resource_name]
+                    action = Action(resource=resource, options=action_options)
+                    actions.append(action)
 
 
                 # get command
@@ -184,6 +201,7 @@ class SystemBuilder:
         system = System(self._name, self._description, self._version, self._options)
         self._build_labwares(system)
         self._build_resources(system)
+        self._build_resource_pools(system)
         self._build_locations(system)
         self._build_methods(system)
         self._build_workflows(system)
@@ -207,7 +225,7 @@ class ConfigSystemBuilder:
         self.methods_config_file = config_file
         self.workflows_config_file = config_file
 
-    def _build_system(self, builder: SystemBuilder) -> None:
+    def _add_system_def(self, builder: SystemBuilder) -> None:
         if self.system_config_file is None:
             raise ValueError("System config file is not set")
         with open(self.system_config_file) as f:
@@ -224,7 +242,7 @@ class ConfigSystemBuilder:
         if "options" in system_config.keys():
             builder.set_system_options(system_config["options"])
         
-    def _build_labwares(self, builder: SystemBuilder) -> None:
+    def _add_labware_defs(self, builder: SystemBuilder) -> None:
         if self.labwares_config_file is None:
             raise ValueError("Labwares config file is not set")
         with open(self.labwares_config_file) as f:
@@ -235,7 +253,7 @@ class ConfigSystemBuilder:
 
             builder.add_labware(labware_name, labware_def)
     
-    def _build_resources(self, builder: SystemBuilder) -> None:
+    def _add_resource_defs(self, builder: SystemBuilder) -> None:
         if self.resources_config_file is None:
             raise ValueError("Resources config file is not set")
         with open(self.resources_config_file) as f:
@@ -243,10 +261,18 @@ class ConfigSystemBuilder:
         if "resources" not in resources_config.keys():
             raise KeyError("No 'resources' defined in config")
         for resource_name, resource_def in resources_config["resources"].items():
-
             builder.add_resource(resource_name, resource_def)
+        
+        # add resource pools if they exist
+        self._add_resource_pool_defs(resources_config, builder)
 
-    def _build_methods(self, builder: SystemBuilder) -> None:
+    def _add_resource_pool_defs(self, resources_config: Dict[str, Any], builder: SystemBuilder) -> None:
+        if "pools" not in resources_config.keys():
+            return
+        for pool_name, pool_def in resources_config["pools"].items():
+            builder.add_resource_pool(pool_name, pool_def)
+
+    def _add_method_defs(self, builder: SystemBuilder) -> None:
         if self.methods_config_file is None:
             raise ValueError("Methods config file is not set")
         with open(self.methods_config_file) as f:
@@ -256,7 +282,7 @@ class ConfigSystemBuilder:
         for method_name, method_def in methods_config["methods"].items():
             builder.add_method(method_name, method_def)
     
-    def _build_workflows(self, builder: SystemBuilder) -> None:
+    def _add_workflow_defs(self, builder: SystemBuilder) -> None:
         if self.workflows_config_file is None:
             raise ValueError("Workflows config file is not set")
         with open(self.workflows_config_file) as f:
@@ -268,9 +294,9 @@ class ConfigSystemBuilder:
 
     def build(self) -> System:
         builder = SystemBuilder()
-        self._build_system(builder)
-        self._build_labwares(builder)
-        self._build_resources(builder)
-        self._build_methods(builder)
-        self._build_workflows(builder)
+        self._add_system_def(builder)
+        self._add_labware_defs(builder)
+        self._add_resource_defs(builder)
+        self._add_method_defs(builder)
+        self._add_workflow_defs(builder)
         return builder.build()
