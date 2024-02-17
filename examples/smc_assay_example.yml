@@ -192,37 +192,37 @@ config:
 
 methods:
     sample-to-bead-plate:
-      actions:
-        - resource: bravo-96-head
-            deck-setup:
-                4: 96-tips
-                5: sample-plate
-            protocol: sample-to-bead-plate.pro
+        actions:
+            - bravo-96-head:
+                deck-setup:
+                    4: 96-tips
+                    5: sample-plate
+                protocol: sample-to-bead-plate.pro
 
 
       ### HERE HERE HERE
     incubate-2hrs:
       actions:
-        - resource: shaker-collection
+        - shaker-collection:
             shake-time: ${config.{param}.bead-incubation-time}
     post-capture-wash:
       actions:
-        - resource: biotek-1
+        - biotek-1:
             protocol: post-capture-wash.pro
     add-detection-antibody:
       actions:
-        - resource: bravo-96-head
+        - bravo-96-head:
             deck-setup:
                 4: 96-tips
                 5: sample-plate
             protocol: add-detection-antibody.pro
     incubate-1-hr:
       actions:
-        - resource: shaker-collection
+        - shaker-collection:
             shake-time: ${config.{param}.post-detection-incubate-time}
     pre-transfer-wash:
       actions:
-        - resource: biotek-2
+        - biotek-2:
             protocol: pre-transfer-wash.pro
     discard-supernatant:
     add-elution-buffer-b:
@@ -259,5 +259,4 @@ workflows:
               - centrifuge
               - read
               
-        final-plate:
 
