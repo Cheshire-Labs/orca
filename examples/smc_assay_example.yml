@@ -2,6 +2,7 @@ system:
     name: "smc-assay"
     version: "0.0.1"
     description: "SMC Assay Example"
+    options: []
 
 labwares:
     sample-plate:
@@ -15,8 +16,10 @@ labwares:
         static: true
     buffer-b-reservoir:
         type: "reservoir"
+        static: true
     buffer-d-reservoir:
         type: "reservoir"
+        static: true
     detection-reservoir:
         type: "reservoir"
         static: true
@@ -183,10 +186,12 @@ config:
         settle-time: 120
         bead-incubation-time: 7200
         post-detection-incubate-time: 3600
+        post-detection-settle-time: 600
     test:
         settle-time: 0
         bead-incubation-time: 0
         post-detection-incubate-time: 0
+        post-detection-settle-time: 0
 
 
 
@@ -194,43 +199,104 @@ methods:
     sample-to-bead-plate:
         actions:
             - bravo-96-head:
+                inputs: [sample-plate, tips-96, plate-1]
                 deck-setup:
                     4: 96-tips
                     5: sample-plate
+                    9: plate-1
                 protocol: sample-to-bead-plate.pro
 
-
-      ### HERE HERE HERE
     incubate-2hrs:
       actions:
         - shaker-collection:
+            inputs: *
             shake-time: ${config.{param}.bead-incubation-time}
+
     post-capture-wash:
       actions:
         - biotek-1:
+            inputs: [plate-1]
             protocol: post-capture-wash.pro
+
     add-detection-antibody:
       actions:
         - bravo-96-head:
+            inputs: [plate-1, tips-96]
             deck-setup:
-                4: 96-tips
-                5: sample-plate
+                4: tips-96
+                5: plate-1
             protocol: add-detection-antibody.pro
+
     incubate-1-hr:
       actions:
         - shaker-collection:
+            inputs: *
             shake-time: ${config.{param}.post-detection-incubate-time}
+
     pre-transfer-wash:
       actions:
         - biotek-2:
+            inputs: [plate-1]
             protocol: pre-transfer-wash.pro
+
     discard-supernatant:
+        actions:
+            - resource: biotek-2
+                inputs: [plate-1]
+                protocol: discard-supernatant.pro
+
     add-elution-buffer-b:
+        actions:
+            - resource: bravo-384-head
+                inputs: [plate-1, buffer-b-reservoir]
+                deck-setup:
+                    1: buffer-b-reservoir
+                    9: plate-1
+                protocol: add-elution-buffer-b.pro
+
     incubate-10-min:
+        actions:
+            - resource: shaker-1
+                inputs: [plate-1]
+                shake-time: ${config.{param}.post-detection-settle-time}
+
     add-buffer-d:
+        actions:
+            - resource: bravo-384-head
+                inputs: [plate-1]
+                deck-setup:
+                    9: plate-1
+                protocol: add-buffer-d.pro
+
+    combine-plates:
+        actions:
+            - resource: bravo-384-head
+            inputs: [final-plate, plate-1, tips-384]
+            ratio: 
+                final-plate: 1
+                plate-1: 4
+            protocol: combine-plates.pro
+        
     transfer-eluate:
+        scripts:
+            pre-execution: "transfer-eluate.py"
+        actions:
+            - resource: bravo-384-head
+            inputs: [final-plate, tips-384]
+            protocol: transfer-eluate.pro
+
     centrifuge:
+        actions:
+            - resource: centrifuge
+            inputs: [final-plate]
+            speed: 2000
+            time: 120
     read:
+        actions:
+            - resource: smc_pro
+            inputs: [final-plate]
+            protocol: read.pro
+            filepath: "results.csv"
 
 
 workflows:
@@ -243,7 +309,7 @@ workflows:
 
         plate-1:
             start: stacker-plate-1-start
-            end: plate-hotel
+            end: waste-1
             steps:
              - sample-to-bead-plate
               - incubate-2hrs
@@ -255,8 +321,48 @@ workflows:
               - add-elution-buffer-b
               - incubate-10-min
               - add-buffer-d
-              - transfer-eluate
+              - combine-plates
               - centrifuge
               - read
               
+        final-plate:
 
+            start: stacker-final-plate-start
+            end: plate-hotel
+            steps:
+              - combine-plates
+              - transfer-eluate
+              - centrifuge
+              - read
+        
+
+## SCRIPT EXAMPLES
+custom:
+    worklist-iter: 
+        source: file-row-iterator("worklist.csv") 
+        mapping:
+            src: "source"
+            dest: "destination"
+            vol: "volume"
+            liq-class: "liquid_class_name"
+
+    api-worklist-iter: 
+        source: http-get("http://api.com/worklist") 
+        mapping:
+            src: "source"
+            dest: "destination"
+            vol: "volume"
+
+
+
+    id-iter: 
+        source: file-row-iterator("ids.txt") 
+        mapping:
+            id: "id"
+
+    fed-api-worklist-iter: 
+        worklist-source: http-get("http://api.com/get-volume/{id-iter.id}") 
+        mapping:
+            src: "source"
+            dest: "destination"
+            vol: "volume"
