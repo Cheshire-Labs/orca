@@ -2,7 +2,6 @@ system:
     name: "smc-assay"
     version: "0.0.1"
     description: "SMC Assay Example"
-    options: []
 
 labwares:
     sample-plate:
