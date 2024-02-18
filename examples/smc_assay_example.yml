@@ -319,40 +319,39 @@ methods:
 
 
 workflows:
-    plates:
+    smc-assay:
         sample-plate:
-          start: stacker-sample-start
-          end: stacker-sample-end
-          steps:
-              - sample-to-bead-plate
+            start: stacker-sample-start
+            end: stacker-sample-end
+            steps:
+                - sample-to-bead-plate
 
         plate-1:
             start: stacker-plate-1-start
             end: waste-1
             steps:
-             - sample-to-bead-plate
-              - incubate-2hrs
-              - post-capture-wash
-              - add-detection-antibody
-              - incubate-1-hr
-              - pre-transfer-wash
-              - discard-supernatant
-              - add-elution-buffer-b
-              - incubate-10-min
-              - add-buffer-d
-              - combine-plates
-              - centrifuge
-              - read
+                - sample-to-bead-plate
+                - incubate-2hrs
+                - post-capture-wash
+                - add-detection-antibody
+                - incubate-1-hr
+                - pre-transfer-wash
+                - discard-supernatant
+                - add-elution-buffer-b
+                - incubate-10-min
+                - add-buffer-d
+                - combine-plates
+                - centrifuge
+                - read
               
         final-plate:
-
             start: stacker-final-plate-start
             end: plate-hotel
             steps:
-              - combine-plates
-              - transfer-eluate
-              - centrifuge
-              - read
+                - combine-plates
+                - transfer-eluate
+                - centrifuge
+                - read
         
 
 ## SCRIPT EXAMPLES
