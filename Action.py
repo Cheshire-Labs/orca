@@ -1,12 +1,10 @@
 from abc import ABC
 from drivers.base_resource import IResource
 from labware import Labware
-from method import MethodStatus
+from method_status import MethodStatus
 
 
 from typing import Any, Dict, List, Optional
-
-from resource_pool import ResourcePool
 
 
 class IAction(ABC):

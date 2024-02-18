@@ -3,16 +3,7 @@ from enum import Enum, auto
 from typing import List, Optional
 from Action import IAction
 
-class MethodStatus(Enum):
-    CREATED = auto()
-    QUEUED = auto()
-    AWAITING_RESOURCES = auto()
-    READY = auto()
-    RUNNING = auto()
-    PAUSED = auto()
-    ERRORED = auto()
-    COMPLETED = auto()
-    CANCELED = auto()
+from method_status import MethodStatus
 
 class Method:
 
