@@ -361,7 +361,7 @@ methods:
                 time: 120
     read:
         actions:
-            - smc_pro:
+            - smc-pro:
                 command: read
                 inputs: [final-plate]
                 protocol: read.pro
