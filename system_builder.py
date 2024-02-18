@@ -6,7 +6,6 @@ from drivers.resource_factory import ResourceFactory
 from labware import Labware
 from location import Location
 from method import Method
-from resource_pool import ResourcePool
 from system import System
 from workflow import LabwareThread, Workflow
 
@@ -91,30 +90,30 @@ class SystemBuilder:
             if "actions" not in method_def.keys():
                 raise KeyError(f"Method {method_name} does not contain a 'actions' definition.  Method must have actions")
             actions: List[IAction] = []
-            for action_index, action_def in enumerate(method_def['actions']):
-                for resource_name, action_options in action_def.items():
+            for action_index, action_config in enumerate(method_def['actions']):
+                for resource_name, action_options in action_config.items():
                     if resource_name not in system.resources.keys():
                         raise LookupError(f"The resource name '{resource_name}' in method actions is not recognized as a defined resource")
                     resource = system.resources[resource_name]
 
                 # get command
-                if "command" not in action_def.keys():
+                if "command" not in action_options.keys():
                     raise KeyError(f"No 'command' defined in the action (index={action_index}) for {resource_name} in method {method_name}")
-                command = action_def["command"]
+                command = action_options["command"]
 
                 # get input labwares
                 inputs = None
-                if "inputs" in action_def.keys():
-                    input_labware_names: List[str] = action_def["inputs"] if isinstance(action_def["inputs"], List) else [action_def["inputs"]]
+                if "inputs" in action_options.keys():
+                    input_labware_names: List[str] = action_options["inputs"] if isinstance(action_options["inputs"], List) else [action_options["inputs"]]
                     inputs = [system.labwares[labware_name] for labware_name in input_labware_names]
 
                 # get output labwares
                 outputs = None
-                if "outputs" in action_def.keys():
-                    output_labware_names: List[str] = action_def["outputs"] if isinstance(action_def["outputs"], List) else [action_def["outputs"]]
+                if "outputs" in action_options.keys():
+                    output_labware_names: List[str] = action_options["outputs"] if isinstance(action_options["outputs"], List) else [action_options["outputs"]]
                     outputs = [system.labwares[labware_name] for labware_name in output_labware_names]
 
-                action = Action(resource=resource, command=command, options=action_def, inputs=inputs, outputs=outputs)
+                action = Action(resource=resource, command=command, options=action_options, inputs=inputs, outputs=outputs)
                 actions.append(action)
 
             [method.append_action(a) for a in actions]
