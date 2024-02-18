@@ -10,6 +10,10 @@ class ResourcePool(BaseEquipmentResource):
     @property
     def _resource(self) -> BaseEquipmentResource:
         return self.get_available_resource()
+    
+    @property
+    def plate_pad(self) -> str:
+        return self._resource.plate_pad
 
     def __init__(self, name: str, options: Dict[str, Any] = {}):
         self._name = name
