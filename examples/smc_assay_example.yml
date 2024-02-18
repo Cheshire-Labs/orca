@@ -214,7 +214,7 @@ methods:
     incubate-2hrs:
       actions:
         - shaker-collection:
-            inputs: *
+            inputs: [plate-1]
             shake-time: ${config.{param}.bead-incubation-time}
 
     post-capture-wash:
@@ -235,7 +235,7 @@ methods:
     incubate-1-hr:
       actions:
         - shaker-collection:
-            inputs: *
+            inputs: [plate-1]
             shake-time: ${config.{param}.post-detection-incubate-time}
 
     pre-transfer-wash:
