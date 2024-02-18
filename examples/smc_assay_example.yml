@@ -246,13 +246,13 @@ methods:
 
     discard-supernatant:
         actions:
-            - resource: biotek-2
+            - biotek-2:
                 inputs: [plate-1]
                 protocol: discard-supernatant.pro
 
     add-elution-buffer-b:
         actions:
-            - resource: bravo-384-head
+            - bravo-384-head:
                 inputs: [plate-1, buffer-b-reservoir]
                 deck-setup:
                     1: buffer-b-reservoir
@@ -261,13 +261,13 @@ methods:
 
     incubate-10-min:
         actions:
-            - resource: shaker-1
+            - shaker-1:
                 inputs: [plate-1]
                 shake-time: ${config.{param}.post-detection-settle-time}
 
     add-buffer-d:
         actions:
-            - resource: bravo-384-head
+            - bravo-384-head:
                 inputs: [plate-1]
                 deck-setup:
                     9: plate-1
@@ -275,33 +275,33 @@ methods:
 
     combine-plates:
         actions:
-            - resource: bravo-384-head
-            inputs: [final-plate, plate-1, tips-384]
-            ratio: 
-                final-plate: 1
-                plate-1: 4
-            protocol: combine-plates.pro
+            - bravo-384-head:
+                inputs: [final-plate, plate-1, tips-384]
+                ratio: 
+                    final-plate: 1
+                    plate-1: 4
+                protocol: combine-plates.pro
         
     transfer-eluate:
         scripts:
             pre-execution: "transfer-eluate.py"
         actions:
-            - resource: bravo-384-head
-            inputs: [final-plate, tips-384]
-            protocol: transfer-eluate.pro
+            - bravo-384-head:
+                inputs: [final-plate, tips-384]
+                protocol: transfer-eluate.pro
 
     centrifuge:
         actions:
-            - resource: centrifuge
-            inputs: [final-plate]
-            speed: 2000
-            time: 120
+            - centrifuge:
+                inputs: [final-plate]
+                speed: 2000
+                time: 120
     read:
         actions:
-            - resource: smc_pro
-            inputs: [final-plate]
-            protocol: read.pro
-            filepath: "results.csv"
+            - smc_pro:
+                inputs: [final-plate]
+                protocol: read.pro
+                filepath: "results.csv"
 
 
 workflows:
