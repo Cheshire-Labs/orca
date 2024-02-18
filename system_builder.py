@@ -122,16 +122,10 @@ class SystemBuilder:
     
     def _build_workflows(self, system: System) -> None:
         workflows: Dict[str, Workflow] = {}
-        for workflow_name, workflow_def in self._workflow_defs.items():
+        for workflow_name, labware_thread_defs in self._workflow_defs.items():
             workflow = Workflow(workflow_name)
-            if "labwares" not in workflow_def.keys():
-                raise KeyError(f"Workflow {workflow_name} does not contain a 'labwares' key, 'labwares' must be defined")
-            labwares_list = workflow_def["labwares"]
-            for labware_name, labware_thread_def in labwares_list.items():
-
+            for labware_name, labware_thread_def in labware_thread_defs.items():
                 # get labware
-                if labware_name not in system.labwares.keys():
-                    raise LookupError(f"Labware {labware_name} defined in Workflow {workflow_name} not defined.  Labware must be defined.")
                 labware = system.labwares[labware_name]
 
                 # get labware start location
