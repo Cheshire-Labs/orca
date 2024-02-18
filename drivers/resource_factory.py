@@ -2,6 +2,7 @@ from typing import Any, Dict
 
 from drivers.base_resource import IResource
 from drivers.drivers import VenusProtocol, MockResource, MockRoboticArm
+from resource_pool import ResourcePool
 
 
 class ResourceFactory:
@@ -12,6 +13,8 @@ class ResourceFactory:
         res_type = resource_config['type']
         if res_type == 'venus-method':
             resource = VenusProtocol(resource_name)
+        if res_type == 'pool':
+            resource = ResourcePool(resource_name)
         elif res_type == 'acell':
             resource = MockRoboticArm(resource_name, "ACell")
         elif res_type == 'mock-robot':
