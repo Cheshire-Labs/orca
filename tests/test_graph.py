@@ -1,7 +1,7 @@
 
 from drivers.drivers import MockRoboticArm, MockResource
 from location import Location
-from method import Action
+from Action import IAction
 from router import RouteSingleStep, SystemGraph
 import networkx as nx
 
@@ -33,15 +33,15 @@ def system_graph() -> SystemGraph:
     loc_ham1.set_resource(ham1)
 
     # create Actions
-    robot1_pick_action = Action(robot1, "pick")
-    robot1_place_action = Action(robot1, "place")
-    robot2_pick_action = Action(robot2, "pick")
-    robot2_place_action = Action(robot2, "place")
+    robot1_pick_action = IAction(robot1, "pick")
+    robot1_place_action = IAction(robot1, "place")
+    robot2_pick_action = IAction(robot2, "pick")
+    robot2_place_action = IAction(robot2, "place")
 
-    stacker_upstack_action = Action(stacker1, "upstack")
-    stacker_load_action = Action(stacker1, "load")
+    stacker_upstack_action = IAction(stacker1, "upstack")
+    stacker_load_action = IAction(stacker1, "load")
     # stacker_load_action.set_next_action(stacker_upstack_action)
-    stacker_downstack_action = Action(stacker1, "downstack")
+    stacker_downstack_action = IAction(stacker1, "downstack")
     # stacker_unload_action.set_previous_action(stacker_downstack_action)
     
     # add locations to graph

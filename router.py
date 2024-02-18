@@ -1,8 +1,9 @@
 from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
+from Action import IAction
 from drivers.ilabware_transporter import ILabwareTransporter
 from location import Location
-from method import Action, Method
+from method import Method
 from system import System
 from workflow import Workflow
 import networkx as nx
@@ -12,15 +13,15 @@ class CandidateActionCurator:
     def __init__(self, system: System) -> None:
         self._system = system
 
-    def _sort(self, actions: List[Action]) -> List[Action]:
+    def _sort(self, actions: List[IAction]) -> List[IAction]:
         # TODO: implement sorting algorithms
         return actions
     
-    def _replace(self, actions: List[Action]) -> List[Action]:
+    def _replace(self, actions: List[IAction]) -> List[IAction]:
         # TODO: set algorithms to replace actions with move actions when the plate isn't at the location yet
         return actions
 
-    def get_curated_actions(self, actions: List[Action]) -> List[Action]:
+    def get_curated_actions(self, actions: List[IAction]) -> List[IAction]:
         actions = self._replace(actions)
         actions = self._sort(actions)
         return actions
@@ -39,10 +40,10 @@ class Router:
     def set_workflow(self, workflow: Workflow) -> None:
         self._workflow = workflow
 
-    def _get_candidate_actions(self) -> List[Action]:
+    def _get_candidate_actions(self) -> List[IAction]:
         if self._workflow is None:
             raise ValueError("A workflow has not been set.  A workflow must be set before Router can determine the next action")
-        candidate_actions: List[Action] = []
+        candidate_actions: List[IAction] = []
         for _, labware_thread in self._workflow.labware_threads.items():
             candidate_next_method = labware_thread.get_next_method()
             if candidate_next_method is not None:
@@ -51,7 +52,7 @@ class Router:
                     candidate_actions.append(method_action)
         return candidate_actions
 
-    def get_next_action(self) -> Action | None:
+    def get_next_action(self) -> IAction | None:
         curated_actions = self._curator.get_curated_actions(self._get_candidate_actions())
         if len(curated_actions) == 0:
             return None
@@ -59,7 +60,7 @@ class Router:
 
 
 class RouteSingleStep:
-    def __init__(self, source: Location, target: Location, weight: float, action: Action) -> None:
+    def __init__(self, source: Location, target: Location, weight: float, action: IAction) -> None:
         self._source = source
         self._target = target
         self._weight = weight
@@ -74,7 +75,7 @@ class RouteSingleStep:
         return self._target
 
     @property
-    def action(self) -> Action:
+    def action(self) -> IAction:
         return self._action
     
 class Route:
@@ -106,7 +107,7 @@ class _NetworkXHandler:
     def add_node(self, name: str, location: Location) -> None:
         self._graph.add_node(name, location=location) # type: ignore
     
-    def add_edge(self, start: str, end: str, action: Action, weight: float = 5.0) -> None:
+    def add_edge(self, start: str, end: str, action: IAction, weight: float = 5.0) -> None:
         self._graph.add_edge(start, end, action=action, weight=weight) # type: ignore
 
     def has_path(self, source: str, target: str) -> bool:
@@ -152,7 +153,7 @@ class SystemGraph:
     def add_location(self, location: Location) -> None:
         self._graph.add_node(location.name, location)
 
-    def add_edge(self, start: str, end: str, action: Action, weight: float = 5.0) -> None:
+    def add_edge(self, start: str, end: str, action: IAction, weight: float = 5.0) -> None:
         if start not in self._graph.get_nodes():
             raise ValueError(f"Node {start} does not exist")
         if end not in self._graph.get_nodes():

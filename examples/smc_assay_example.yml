@@ -177,10 +177,13 @@ resources:
         type: switch
         ip: 192.168.0.2
 
-pools:
-    shaker-collection: 
+## RESOURCE POOLS
+    shaker-collection:
+        type: pool 
         resources: [shaker-1, shaker-2, shaker-3, shaker-4, shaker-5, shaker-6, shaker-7, shaker-8, shaker-9, shaker-10]
-    waste-collection: 
+    
+    waste-collection:
+        type: pool 
         resources: [waste-1, waste-2]
 
 config:
