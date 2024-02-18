@@ -62,70 +62,112 @@ resources:
         com: "COM8"
     plate-hotel:
         type: agilent-hotel
-    smc_pro:
+    smc-pro:
         type: smc-pro
         ip: 192.168.1.122
         plate-pad: "smc_pro"
 
 ## ROBOTICS
     ddr-1:
-        type: ddr
+        type: mock-robot
         ip: 192.168.1.125
-        teachpoints: teachpoints-1.xml
+        positions: 
+            - biotek_1
+            - bravo_96
+            - translator_1_start
+            - waste_1
+
     ddr-2:
-        type: ddr
+        type: mock-robot
         ip: 192.168.1.126
-        teachpoints: teachpoints-2.xml
+        positions: 
+            - centrifuge
+            - sealer
+            - translator_1_end
+            - translater_2_start
+            - stacker_1
+            - stacker_2
+            - stacker_3
+            - stacker_4
+            - stacker_5
+            - stacker_6
+            - stacker_7
+            - shaker_1
+            - shaker_2
+            - shaker_3
+            - shaker_4
+            - shaker_5
+            - shaker_6
+            - shaker_7
+            - shaker_8
+            - shaker_9
+            - shaker_10
     ddr-3:
-        type: ddr
+        type: mock-robot
         ip: 192.168.1.127
-        teachpoints: teachpoints-3.xml
+        positions: 
+            - biotek_2
+            - bravo_384
+            - plate_hotel
+            - smc_pro
+            - translater_2_end
+            - waste_2
+
     translator-1:
         type: translator
         com: "COM5"
-        start-pad: "translator_1_start"
-        end-pad: "translator_1_end"
+        positions: 
+            - translator_1_start
+            - translator_1_end
     translater-2:
         type: translator
         com: "COM6"
-        start-pad: "translater_2_start"
-        end-pad: "translater_2_end"
+        positions:
+            - translater_2_start
+            - translater_2_end
 
 
 ## STACKERS
     stacker-sample-start:
         type: vstack
         ip: 192.168.1.121
+        plate-pad: stacker_1
         init:
             labware: ${sample-plate.type}
     stacker-sample-end:
         type: vstack
         ip: 192.168.1.122
+        plate-pad: stacker_2
         init:
             labware: ${sample-plate.type}
     stacker-plate-1-start:
         type: vstack
         ip: 192.168.1.123
+        plate-pad: stacker_3
         init:
             labware: "Corning 96 Well"
     stacker-final-plate-start:
         type: vstack
         ip: 192.168.1.124
+        plate-pad: stacker_4
         init:
             labware: ${final-plate.type}
     stacker-96-tips:
         type: vstack
         ip: 192.168.1.125
+        plate-pad: stacker_5
         init:
             labware: ${tips-96.type}
     stacker-384-tips-start:
         type: vstack
         ip: 192.168.1.126
+        plate-pad: stacker_6
         init:
             labware: ${tips-384.type}
     stacker-384-tips-end:
         type: vstack
         ip: 192.168.1.127
+        plate-pad: stacker_7
         init:
             labware: ${tips-384.type}
 
@@ -354,7 +396,10 @@ workflows:
         
 
 ## SCRIPT EXAMPLES
-custom:
+scripts:
+    get-positions: 
+        script: get-positions.py:get-positions(${0}, ${1})
+
     worklist-iter: 
         source: file-row-iterator("worklist.csv") 
         mapping:
@@ -369,8 +414,6 @@ custom:
             src: "source"
             dest: "destination"
             vol: "volume"
-
-
 
     id-iter: 
         source: file-row-iterator("ids.txt") 

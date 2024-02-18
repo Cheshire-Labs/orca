@@ -80,7 +80,7 @@ class MockRoboticArm(MockResource, ILabwareTransporter):
             teachpoint = TeachPoint(str(name), float(wrist), float(elbow), float(shoulder))
             self._teachpoints.append(teachpoint)
 
-    def get_accessible_locations(self) -> List[str]:
+    def get_taught_positions(self) -> List[str]:
         return [t.name for t in self._teachpoints]
     
     def execute(self) -> None:

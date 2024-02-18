@@ -78,7 +78,7 @@ class SystemBuilder:
         location_names: List[str] = []
         for _, res in system.resources.items():
             if isinstance(res, ILabwareTransporter):
-                accessible_locations = res.get_accessible_locations()
+                accessible_locations = res.get_taught_positions()
                 location_names.extend(accessible_locations)
         self._locations = {name: Location(name) for name in location_names}
 

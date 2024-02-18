@@ -20,5 +20,5 @@ class ILabwareTransporter(IResource):
         raise NotImplementedError
 
     @abstractmethod
-    def get_accessible_locations(self) -> List[str]:
+    def get_taught_positions(self) -> List[str]:
         raise NotImplementedError

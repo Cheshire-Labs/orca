@@ -18,7 +18,7 @@ class ResourceFactory:
         elif res_type == 'acell':
             resource = MockRoboticArm(resource_name, "ACell")
         elif res_type == 'mock-robot':
-            resource = MockRoboticArm(resource_name, "ACell")
+            resource = MockRoboticArm(resource_name, "Precision Flex")
         elif res_type == 'ddr':
             resource = MockRoboticArm(resource_name, "DDR")
         elif res_type == 'translator':
