@@ -5,8 +5,21 @@ import subprocess
 from typing import Any, Dict, List, Optional
 from drivers.ilabware_transporter import ILabwareTransporter
 
-from drivers.base_resource import BaseEquipmentResource
+from drivers.base_resource import BaseEquipmentResource, IResource
 
+class MockNonLabwareableResource(IResource):
+    @property
+    def name(self) -> str:
+        return self._name
+    
+    def __init__(self, name: str, mocking_type: Optional[str] = None) -> None:
+        self._name = name
+        self._mocking_type = mocking_type
+        self._options: Dict[str, Any] = {}
+
+    def set_init_options(self, init_options: Dict[str, Any]) -> None:
+        self._options = init_options
+    
 class MockResource(BaseEquipmentResource):
     def __init__(self, name: str, mocking_type: Optional[str] = None):
         super().__init__(name)
@@ -38,20 +51,12 @@ class MockResource(BaseEquipmentResource):
         print("f{self.resource_name} execute")
         self._is_running = False
 
-@dataclass
-class TeachPoint:
-    name: str
-    wrist: float
-    elbow: float
-    shoulder: float
-
 
 class MockRoboticArm(MockResource, ILabwareTransporter):
     def __init__(self, name: str, mocking_type: Optional[str] = None) -> None:
         super().__init__(name, mocking_type)
         self._plate_type: Optional[str] = None
-        self._teachpoint_file: Optional[str] = None
-        self._teachpoints: List[TeachPoint] = []
+        self._positions: List[str] = []
 
     def pick(self) -> None:
         self._options["plate"]
@@ -63,25 +68,30 @@ class MockRoboticArm(MockResource, ILabwareTransporter):
     def set_plate_type(self, plate_type: str) -> None:
         self._plate_type = plate_type
     
-    def _load_teachpoint_file(self, xml_file: str) -> None:
-        self._teachpoints = []
+    # def _load_teachpoint_file(self, xml_file: str) -> None:
+    #     self._teachpoints = []
 
-        # Parse the XML file
-        tree = ET.parse(xml_file)
-        root = tree.getroot()
+    #     # Parse the XML file
+    #     tree = ET.parse(xml_file)
+    #     root = tree.getroot()
 
-        # Iterate through <teachpoint> elements
-        for teachpoint_elem in root.findall(".//teachpoint"):
-            name = teachpoint_elem.get("name")
-            wrist = teachpoint_elem.get("wrist", 0.0) 
-            elbow = teachpoint_elem.get("elbow", 0.0)
-            shoulder = teachpoint_elem.get("shoulder", 0.0)
+    #     # Iterate through <teachpoint> elements
+    #     for teachpoint_elem in root.findall(".//teachpoint"):
+    #         name = teachpoint_elem.get("name")
+    #         wrist = teachpoint_elem.get("wrist", 0.0) 
+    #         elbow = teachpoint_elem.get("elbow", 0.0)
+    #         shoulder = teachpoint_elem.get("shoulder", 0.0)
 
-            teachpoint = TeachPoint(str(name), float(wrist), float(elbow), float(shoulder))
-            self._teachpoints.append(teachpoint)
+    #         teachpoint = TeachPoint(str(name), float(wrist), float(elbow), float(shoulder))
+    #         self._teachpoints.append(teachpoint)
+
+    def set_init_options(self, init_options: Dict[str, Any]) -> None:
+        super().set_init_options(init_options)
+        if "positions" in init_options.keys():
+            self._positions = init_options["positions"]
 
     def get_taught_positions(self) -> List[str]:
-        return [t.name for t in self._teachpoints]
+        return self._positions
     
     def execute(self) -> None:
         if self._command == 'PICK':

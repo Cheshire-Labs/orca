@@ -1,7 +1,7 @@
 from typing import Any, Dict
 
 from drivers.base_resource import IResource
-from drivers.drivers import VenusProtocol, MockResource, MockRoboticArm
+from drivers.drivers import VenusProtocol, MockResource, MockNonLabwareableResource, MockRoboticArm
 from resource_pool import ResourcePool
 
 
@@ -50,9 +50,9 @@ class ResourceFactory:
         elif res_type == 'waste':
             resource = MockResource(resource_name, "Waste")
         elif res_type == 'serial-switch':
-            resource = MockResource(resource_name, "Serial Switch")
+            resource = MockNonLabwareableResource(resource_name, "Serial Switch")
         elif res_type == 'switch':
-            resource = MockResource(resource_name, "Switch")
+            resource = MockNonLabwareableResource(resource_name, "Switch")
         else:
             raise ValueError(f"Unknown resource type: {res_type}")
         resource.set_init_options(resource_config)

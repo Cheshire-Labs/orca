@@ -81,22 +81,22 @@ class SystemBuilder:
              location = Location(location_name)
              location.set_options(location_options)  
 
+        # build locations from labware transporters
+        for _, transporter in system.labware_transporters.items():
+            reachable_locations = transporter.get_taught_positions()
+            for loc_name in reachable_locations:
+                if loc_name not in system.locations.keys():
+                    system.locations[loc_name] = Location(loc_name)
+
         for _, res in system.resources.items():
             # skip resources like newtowrk switches, etc that don't have plate pad locations
-            if isinstance(res, ILabwareableResource):
-                # build locations from taught positions in labware transporters
-                if isinstance(res, ILabwareTransporter):
-                    reachable_locations = res.get_taught_positions()
-                    for loc_name in reachable_locations:
-                        if loc_name not in system.locations.keys():
-                            system.locations[loc_name] = Location(loc_name)
+            if isinstance(res, ILabwareableResource) and not isinstance(res, ILabwareTransporter):
                 # set resource to each location
-                else:
-                    # if the plate-pad is not set, then use the resource name as the location
-                    plate_pad = res.plate_pad
-                    if plate_pad not in system.locations.keys():
-                        raise LookupError(f"Location {plate_pad} referenced in resource {res.name} is not recognized.  Locations must be defined by the transporting resource.")
-                    system.locations[plate_pad].set_resource(res)
+                # if the plate-pad is not set, then use the resource name as the location
+                plate_pad = res.plate_pad
+                if plate_pad not in system.locations.keys():
+                    raise LookupError(f"Location {plate_pad} referenced in resource {res.name} is not recognized.  Locations must be defined by the transporting resource.")
+                system.locations[plate_pad].set_resource(res)
 
     def _build_methods(self, system: System) -> None:
 

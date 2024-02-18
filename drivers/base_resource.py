@@ -7,6 +7,9 @@ class IResource(ABC):
     def name(self) -> str:
         raise NotImplementedError
     
+    @abstractmethod
+    def set_init_options(self, init_options: Dict[str, Any]) -> None:
+        raise NotImplementedError
 
 class IExecutableResource(IResource, ABC):
     @abstractmethod
@@ -20,7 +23,6 @@ class IExecutableResource(IResource, ABC):
     @abstractmethod
     def is_running(self) -> bool:
         raise NotImplementedError
-    
     
     @abstractmethod
     def set_command(self, command: str) -> None:
@@ -75,6 +77,8 @@ class BaseEquipmentResource(ILabwareableResource, IExecutableResource, ABC):
 
     def set_init_options(self, init_options: Dict[str, Any]) -> None:
         self._init_options = init_options
+        if "plate-pad" in init_options.keys():
+            self._plate_pad = init_options["plate-pad"]
 
     def set_command_options(self, options: Dict[str, Any]) -> None:
         self._options = options

@@ -1,19 +1,19 @@
 from typing import Any, Dict, List, Optional
-from drivers.base_resource import IResource
+from drivers.base_resource import BaseEquipmentResource
 
 class AllResourcesBusyError(Exception):
     def __init__(self, resource_pool_name: str, message: str = "All resources are busy"):
         message = f"Resource pool {resource_pool_name}: {message}"
         super().__init__(message)
     
-class ResourcePool(IResource):
+class ResourcePool(BaseEquipmentResource):
     @property
-    def _resource(self) -> IResource:
+    def _resource(self) -> BaseEquipmentResource:
         return self.get_available_resource()
 
     def __init__(self, name: str, options: Dict[str, Any] = {}):
         self._name = name
-        self._resources: Optional[List[IResource]] = None
+        self._resources: Optional[List[BaseEquipmentResource]] = None
         self._pool_init_options: Dict[str, Any] = {}
         self._res_options: Dict[str, Any] = options
         self._res_command: Optional[str] = None
@@ -22,7 +22,7 @@ class ResourcePool(IResource):
     def is_running(self) -> bool:
         return self._resource.is_running()
     
-    def get_available_resource(self) -> IResource:
+    def get_available_resource(self) -> BaseEquipmentResource:
         if self._resources is None:
             raise ValueError("No resources defined in pool")
         for resource in self._resources:
