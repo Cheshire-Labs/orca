@@ -204,6 +204,7 @@ methods:
     sample-to-bead-plate:
         actions:
             - bravo-96-head:
+                command: run
                 inputs: [sample-plate, tips-96, plate-1]
                 deck-setup:
                     4: 96-tips
@@ -214,18 +215,21 @@ methods:
     incubate-2hrs:
       actions:
         - shaker-collection:
+            command: shake
             inputs: [plate-1]
             shake-time: ${config.{param}.bead-incubation-time}
 
     post-capture-wash:
       actions:
         - biotek-1:
+            command: run
             inputs: [plate-1]
             protocol: post-capture-wash.pro
 
     add-detection-antibody:
       actions:
         - bravo-96-head:
+            command: run
             inputs: [plate-1, tips-96]
             deck-setup:
                 4: tips-96
@@ -235,24 +239,28 @@ methods:
     incubate-1-hr:
       actions:
         - shaker-collection:
+            command: shake
             inputs: [plate-1]
             shake-time: ${config.{param}.post-detection-incubate-time}
 
     pre-transfer-wash:
       actions:
         - biotek-2:
+            command: run
             inputs: [plate-1]
             protocol: pre-transfer-wash.pro
 
     discard-supernatant:
         actions:
             - biotek-2:
+                command: run
                 inputs: [plate-1]
                 protocol: discard-supernatant.pro
 
     add-elution-buffer-b:
         actions:
             - bravo-384-head:
+                command: run
                 inputs: [plate-1, buffer-b-reservoir]
                 deck-setup:
                     1: buffer-b-reservoir
@@ -262,12 +270,14 @@ methods:
     incubate-10-min:
         actions:
             - shaker-1:
+                command: shake
                 inputs: [plate-1]
                 shake-time: ${config.{param}.post-detection-settle-time}
 
     add-buffer-d:
         actions:
             - bravo-384-head:
+                command: run
                 inputs: [plate-1]
                 deck-setup:
                     9: plate-1
@@ -276,6 +286,7 @@ methods:
     combine-plates:
         actions:
             - bravo-384-head:
+                command: run
                 inputs: [final-plate, plate-1, tips-384]
                 ratio: 
                     final-plate: 1
@@ -287,18 +298,21 @@ methods:
             pre-execution: "transfer-eluate.py"
         actions:
             - bravo-384-head:
+                command: run
                 inputs: [final-plate, tips-384]
                 protocol: transfer-eluate.pro
 
     centrifuge:
         actions:
             - centrifuge:
+                command: spin
                 inputs: [final-plate]
                 speed: 2000
                 time: 120
     read:
         actions:
             - smc_pro:
+                command: read
                 inputs: [final-plate]
                 protocol: read.pro
                 filepath: "results.csv"
