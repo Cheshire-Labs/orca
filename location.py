@@ -1,10 +1,11 @@
 from drivers.base_resource import IResource
 
 
-from typing import Optional
+from typing import Any, Dict, Optional
 
 
 class Location:
+
     @property
     def name(self) -> str:
         return self._name
@@ -31,7 +32,11 @@ class Location:
         self._reserved = False
         self._resource: Optional[IResource] = None
         self._can_resolve_deadlock = True
+        self._options:  Dict[str, Any] = {}
 
     def set_resource(self, resource: IResource, can_resolve_deadlock: bool = False) -> None:
         self._can_resolve_deadlock = can_resolve_deadlock
         self._resource = resource
+    
+    def set_options(self, options: Dict[str, Any]) -> None:
+        self._options = options

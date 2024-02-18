@@ -1,6 +1,6 @@
 import os
 from Action import Action, IAction
-from drivers.base_resource import IResource
+from drivers.base_resource import ILabwareableResource, IResource
 from drivers.ilabware_transporter import ILabwareTransporter
 from drivers.resource_factory import ResourceFactory
 from labware import Labware
@@ -75,12 +75,28 @@ class SystemBuilder:
         system.resources = resources
 
     def _build_locations(self, system: System) -> None:
-        location_names: List[str] = []
+        system.locations = {}
+        # build locations form location defs in config
+        for location_name, location_options in self._location_defs.items():
+             location = Location(location_name)
+             location.set_options(location_options)  
+
         for _, res in system.resources.items():
-            if isinstance(res, ILabwareTransporter):
-                accessible_locations = res.get_taught_positions()
-                location_names.extend(accessible_locations)
-        self._locations = {name: Location(name) for name in location_names}
+            # skip resources like newtowrk switches, etc that don't have plate pad locations
+            if isinstance(res, ILabwareableResource):
+                # build locations from taught positions in labware transporters
+                if isinstance(res, ILabwareTransporter):
+                    reachable_locations = res.get_taught_positions()
+                    for loc_name in reachable_locations:
+                        if loc_name not in system.locations.keys():
+                            system.locations[loc_name] = Location(loc_name)
+                # set resource to each location
+                else:
+                    # if the plate-pad is not set, then use the resource name as the location
+                    plate_pad = res.plate_pad
+                    if plate_pad not in system.locations.keys():
+                        raise LookupError(f"Location {plate_pad} referenced in resource {res.name} is not recognized.  Locations must be defined by the transporting resource.")
+                    system.locations[plate_pad].set_resource(res)
 
     def _build_methods(self, system: System) -> None:
 
@@ -224,6 +240,16 @@ class ConfigSystemBuilder:
 
             builder.add_labware(labware_name, labware_def)
     
+    def _add_location_defs(self, builder: SystemBuilder) -> None:
+        if self.locations_config_file is None:
+            raise ValueError("Locations config file is not set")
+        with open(self.locations_config_file) as f:
+            locations_config = yaml.load(f, Loader=yaml.FullLoader)
+        if "locations" in locations_config.keys():
+            for location_name, location_def in locations_config["locations"].items():
+                builder.add_location(location_name, location_def)
+        
+
     def _add_resource_defs(self, builder: SystemBuilder) -> None:
         if self.resources_config_file is None:
             raise ValueError("Resources config file is not set")
@@ -259,6 +285,7 @@ class ConfigSystemBuilder:
         self._add_system_def(builder)
         self._add_labware_defs(builder)
         self._add_resource_defs(builder)
+        self._add_location_defs(builder)
         self._add_method_defs(builder)
         self._add_workflow_defs(builder)
         return builder.build()

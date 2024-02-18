@@ -76,6 +76,9 @@ resources:
             - bravo_96
             - translator_1_start
             - waste_1
+            - pad_1
+            - pad_2
+            - pad_3
 
     ddr-2:
         type: mock-robot
@@ -102,6 +105,9 @@ resources:
             - shaker_8
             - shaker_9
             - shaker_10
+            - pad_4
+            - pad_5
+            - pad_6
     ddr-3:
         type: mock-robot
         ip: 192.168.1.127
@@ -112,6 +118,9 @@ resources:
             - smc_pro
             - translater_2_end
             - waste_2
+            - pad_7
+            - pad_8
+            - pad_9
 
     translator-1:
         type: translator

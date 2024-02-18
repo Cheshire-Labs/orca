@@ -5,9 +5,9 @@ import subprocess
 from typing import Any, Dict, List, Optional
 from drivers.ilabware_transporter import ILabwareTransporter
 
-from drivers.base_resource import BaseResource
+from drivers.base_resource import BaseEquipmentResource
 
-class MockResource(BaseResource):
+class MockResource(BaseEquipmentResource):
     def __init__(self, name: str, mocking_type: Optional[str] = None):
         super().__init__(name)
         self._mocking_type = mocking_type
@@ -92,7 +92,7 @@ class MockRoboticArm(MockResource, ILabwareTransporter):
             raise NotImplementedError(f"The action '{self._command}' is unknown for {self._name} of type {type(self).__name__}")
     
 
-class VenusProtocol(BaseResource):
+class VenusProtocol(BaseEquipmentResource):
     def __init__(self, name: str):
         super().__init__(name)
         self._default_exe_path = r"C:\Program Files (x86)\HAMILTON\Bin\HxRun.exe"

@@ -2,17 +2,25 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional
 
 class IResource(ABC):
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        raise NotImplementedError
+    
+
+class IExecutableResource(IResource, ABC):
+    @abstractmethod
+    def initialize(self) -> bool:
+        raise NotImplementedError
+    
+    @abstractmethod
+    def is_initialized(self) -> bool:
+        raise NotImplementedError
+    
     @abstractmethod
     def is_running(self) -> bool:
         raise NotImplementedError
     
-    @abstractmethod
-    def initialize(self) -> bool:
-        raise NotImplementedError
-
-    @abstractmethod
-    def is_initialized(self) -> bool:
-        raise NotImplementedError
     
     @abstractmethod
     def set_command(self, command: str) -> None:
@@ -26,7 +34,15 @@ class IResource(ABC):
     def execute(self) -> None:
         raise NotImplementedError
 
-class BaseResource(IResource, ABC):
+class ILabwareableResource(IResource, ABC):
+    @property
+    @abstractmethod
+    def plate_pad(self) -> str:
+        raise NotImplementedError
+    
+
+class BaseEquipmentResource(ILabwareableResource, IExecutableResource, ABC):
+
     def __init__(self, name: str):
         self._name = name
         self._is_running = False
@@ -34,11 +50,20 @@ class BaseResource(IResource, ABC):
         self._is_initialized = False
         self._init_options: Dict[str, Any] = {}
         self._options: Dict[str, Any] = {}
+        self._plate_pad: str = name.replace(" ", "_").replace("-", "_")
 
-    @abstractmethod
-    def initialize(self) -> bool:
-        raise NotImplementedError
+    @property
+    def name(self) -> str:
+        return self._name
     
+    @property
+    def plate_pad(self) -> str:
+        return self._plate_pad
+    
+    @plate_pad.setter
+    def plate_pad(self, plate_pad: str) -> None:
+        self._plate_pad = plate_pad
+
     def is_initialized(self) -> bool:
         return self._is_initialized
 
@@ -53,7 +78,11 @@ class BaseResource(IResource, ABC):
 
     def set_command_options(self, options: Dict[str, Any]) -> None:
         self._options = options
-
+    
+    @abstractmethod
+    def initialize(self) -> bool:
+        raise NotImplementedError
+    
     @abstractmethod
     def execute(self) -> None:
         raise NotImplementedError
