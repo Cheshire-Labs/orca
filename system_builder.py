@@ -68,17 +68,19 @@ class SystemBuilder:
         system.labwares = labwares
     
     def _build_resources(self, system: System) -> None:
-        resources = {}
+        resources: Dict[str, IResource] = {}
         resource_pool_defs: Dict[str, Dict[str, Any]] = {}
         for name, resource_def in self._resource_defs.items():
             if "type" not in resource_def.keys():
                 raise KeyError(f"Resource {name} does not contain a 'type' definition.  Resource must have a type")
-            if "type" == "pool":
+            if resource_def["type"] == "pool":
                 resource_pool_defs[name] = resource_def
+                continue
             resources[name] = ResourceFactory().create(name, resource_def)
-        for name, resource_def in resource_pool_defs.items():
-            resources[name] = ResourcePoolFactory(system).create(name, resource_def)
         system.resources = resources
+        for name, resource_def in resource_pool_defs.items():
+            pool = ResourcePoolFactory(system).create(name, resource_def)
+            system.resources[name] = pool   
 
     def _build_locations(self, system: System) -> None:
         system.locations = {}
