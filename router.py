@@ -9,7 +9,7 @@ from workflow import Workflow
 import networkx as nx
 
 class CandidateActionCurator:
-    """Replaces actions and sorts them according to determine what should be completede first"""
+    """Replaces actions and sorts them according to determine what should be completed first"""
     def __init__(self, system: System) -> None:
         self._system = system
 
