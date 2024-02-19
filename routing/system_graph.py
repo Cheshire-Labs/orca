@@ -1,105 +1,13 @@
 from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 from Action import IAction
-from drivers.ilabware_transporter import ILabwareTransporter
 from location import Location
-from method import Method
-from system import System
-from workflow import Workflow
+from location import Location
 import networkx as nx
-
-class CandidateActionCurator:
-    """Replaces actions and sorts them according to determine what should be completed first"""
-    def __init__(self, system: System) -> None:
-        self._system = system
-
-    def _sort(self, actions: List[IAction]) -> List[IAction]:
-        # TODO: implement sorting algorithms
-        return actions
-    
-    def _replace(self, actions: List[IAction]) -> List[IAction]:
-        # TODO: set algorithms to replace actions with move actions when the plate isn't at the location yet
-        return actions
-
-    def get_curated_actions(self, actions: List[IAction]) -> List[IAction]:
-        actions = self._replace(actions)
-        actions = self._sort(actions)
-        return actions
-    
-class Router:
-    def __init__(self, system: System):
-        self._system: System = system
-        self._workflow: Optional[Workflow] = None
-        self._curator = CandidateActionCurator(self._system)
-
-    def set_method(self, method: Method) -> None:
-        self._method = method
-        candidate_next_action = method.get_next_action()
-        self._candidate_actions = [candidate_next_action] if candidate_next_action is not None else []
-
-    def set_workflow(self, workflow: Workflow) -> None:
-        self._workflow = workflow
-
-    def _get_candidate_actions(self) -> List[IAction]:
-        if self._workflow is None:
-            raise ValueError("A workflow has not been set.  A workflow must be set before Router can determine the next action")
-        candidate_actions: List[IAction] = []
-        for _, labware_thread in self._workflow.labware_threads.items():
-            candidate_next_method = labware_thread.get_next_method()
-            if candidate_next_method is not None:
-                method_action = candidate_next_method.get_next_action()
-                if method_action is not None:
-                    candidate_actions.append(method_action)
-        return candidate_actions
-
-    def get_next_action(self) -> IAction | None:
-        curated_actions = self._curator.get_curated_actions(self._get_candidate_actions())
-        if len(curated_actions) == 0:
-            return None
-        return curated_actions[0]
-
-
-class RouteSingleStep:
-    def __init__(self, source: Location, target: Location, weight: float, action: IAction) -> None:
-        self._source = source
-        self._target = target
-        self._weight = weight
-        self._action = action
-
-    @property
-    def source(self) -> Location:
-        return self._source
-
-    @property
-    def target(self) -> Location:
-        return self._target
-
-    @property
-    def action(self) -> IAction:
-        return self._action
-    
-class Route:
-    def __init__(self, steps: List[RouteSingleStep]) -> None:
-        self._steps = steps
-        self._source = steps[0].source
-        self._target = steps[-1].target
-
-    @property
-    def steps(self) -> List[RouteSingleStep]:
-        return self._steps
-    
-    @property
-    def source(self) -> Location:
-        return self._source
-    
-    @property
-    def target(self) -> Location:
-        return self._target
-    
 
 class _NetworkXHandler:
     
-    def __init__(self, graph: Optional[nx.DiGraph] = None) -> None:
+    def __init__(self, graph: Optional[nx.DiGraph] = None) -> None: # type: ignore
         if graph is None:
             graph = nx.DiGraph()
         self._graph: nx.DiGraph = graph
@@ -138,6 +46,45 @@ class _NetworkXHandler:
 
     def __getitem__(self, key: str) -> Dict[str, Any]:
         return self._graph.nodes[key]
+
+class RouteSingleStep:
+    def __init__(self, source: Location, target: Location, weight: float, action: IAction) -> None:
+        self._source = source
+        self._target = target
+        self._weight = weight
+        self._action = action
+
+    @property
+    def source(self) -> Location:
+        return self._source
+
+    @property
+    def target(self) -> Location:
+        return self._target
+
+    @property
+    def action(self) -> IAction:
+        return self._action
+    
+    
+class Route:
+    def __init__(self, steps: List[RouteSingleStep]) -> None:
+        self._steps = steps
+        self._source = steps[0].source
+        self._target = steps[-1].target
+
+    @property
+    def steps(self) -> List[RouteSingleStep]:
+        return self._steps
+    
+    @property
+    def source(self) -> Location:
+        return self._source
+    
+    @property
+    def target(self) -> Location:
+        return self._target
+    
 
 class SystemGraph:
     @property
