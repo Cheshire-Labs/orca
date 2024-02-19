@@ -2,7 +2,7 @@ import os
 from Action import Action, IAction
 from drivers.base_resource import ILabwareableResource, IResource
 from drivers.ilabware_transporter import ILabwareTransporter
-from drivers.resource_factory import ResourceFactory
+from drivers.resource_factory import ResourceFactory, ResourcePoolFactory
 from labware import Labware
 from location import Location
 from method import Method
@@ -69,10 +69,15 @@ class SystemBuilder:
     
     def _build_resources(self, system: System) -> None:
         resources = {}
+        resource_pool_defs: Dict[str, Dict[str, Any]] = {}
         for name, resource_def in self._resource_defs.items():
             if "type" not in resource_def.keys():
                 raise KeyError(f"Resource {name} does not contain a 'type' definition.  Resource must have a type")
-            resources[name] = ResourceFactory(system).create(name, resource_def)
+            if "type" == "pool":
+                resource_pool_defs[name] = resource_def
+            resources[name] = ResourceFactory().create(name, resource_def)
+        for name, resource_def in resource_pool_defs.items():
+            resources[name] = ResourcePoolFactory(system).create(name, resource_def)
         system.resources = resources
 
     def _build_locations(self, system: System) -> None:
