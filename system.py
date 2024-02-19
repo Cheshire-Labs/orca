@@ -5,7 +5,7 @@ from drivers.ilabware_transporter import ILabwareTransporter
 from labware import Labware
 from location import Location
 from method import Method
-from resource_pool import ResourcePool
+from resource_pool import EquipmentResourcePool
 from workflow import Workflow
 
 class System:

@@ -1,20 +1,35 @@
-from typing import Any, Dict
+from importlib.resources import Resource
+from typing import Any, Dict, List
 
-from drivers.base_resource import IResource
+from drivers.base_resource import BaseEquipmentResource, IResource
 from drivers.drivers import VenusProtocol, MockResource, MockNonLabwareableResource, MockRoboticArm
-from resource_pool import ResourcePool
+from resource_pool import EquipmentResourcePool
+from system import System
 
 
 class ResourceFactory:
-    @staticmethod
-    def create(resource_name: str, resource_config: Dict[str, Any]) -> IResource:
+    def __init__(self, system: System) -> None:
+        self._system = system
+
+    def create(self, resource_name: str, resource_config: Dict[str, Any]) -> IResource:
         if 'type' not in resource_config.keys():
                 raise KeyError("No resource type defined in config")
         res_type = resource_config['type']
         if res_type == 'venus-method':
             resource = VenusProtocol(resource_name)
         if res_type == 'pool':
-            resource = ResourcePool(resource_name)
+            resource = EquipmentResourcePool(resource_name)
+            if "resources" not in resource_config.keys():
+                raise KeyError(f"No resources defined in resource pool {resource_name}")
+            resources: List[BaseEquipmentResource] = []
+            for res_name in resource_config['resources']:
+                if res_name not in self._system.resources.keys():
+                    raise KeyError(f"Resource {res_name} from resource pool {resource_name} not found in system")
+                res = self._system.resources[res_name]
+                if not isinstance(res, BaseEquipmentResource):
+                    raise ValueError(f"Resource {res_name} from resource pool {resource_name} is not a valid equipment resource")
+                resources.append(res)
+            resource.set_resources(resources)
         elif res_type == 'acell':
             resource = MockRoboticArm(resource_name, "ACell")
         elif res_type == 'mock-robot':

@@ -6,7 +6,7 @@ from drivers.resource_factory import ResourceFactory
 from labware import Labware
 from location import Location
 from method import Method
-from resource_pool import ResourcePool
+from resource_pool import EquipmentResourcePool
 from system import System
 from workflow import LabwareThread, Workflow
 
@@ -72,7 +72,7 @@ class SystemBuilder:
         for name, resource_def in self._resource_defs.items():
             if "type" not in resource_def.keys():
                 raise KeyError(f"Resource {name} does not contain a 'type' definition.  Resource must have a type")
-            resources[name] = ResourceFactory.create(name, resource_def)
+            resources[name] = ResourceFactory(system).create(name, resource_def)
         system.resources = resources
 
     def _build_locations(self, system: System) -> None:
@@ -92,7 +92,7 @@ class SystemBuilder:
         for _, res in system.resources.items():
             # skip resources like newtowrk switches, etc that don't have plate pad locations
             if isinstance(res, ILabwareableResource) \
-                and not isinstance(res, ResourcePool) \
+                and not isinstance(res, EquipmentResourcePool) \
                 and not isinstance(res, ILabwareTransporter):
                 # set resource to each location
                 # if the plate-pad is not set, then use the resource name as the location

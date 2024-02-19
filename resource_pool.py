@@ -6,7 +6,7 @@ class AllResourcesBusyError(Exception):
         message = f"Resource pool {resource_pool_name}: {message}"
         super().__init__(message)
     
-class ResourcePool(BaseEquipmentResource):
+class EquipmentResourcePool(BaseEquipmentResource):
     @property
     def _resource(self) -> BaseEquipmentResource:
         return self.get_available_resource()
@@ -40,10 +40,10 @@ class ResourcePool(BaseEquipmentResource):
     def is_initialized(self) -> bool:
         return self._resource.is_initialized()
     
+    def set_resources(self, resources: List[BaseEquipmentResource]) -> None:
+        self._resources = resources
+    
     def set_init_options(self, init_options: Dict[str, Any]) -> None:
-        if 'resources' not in init_options.keys():
-            raise KeyError("No resources defined in pool config")
-        self._resources = init_options['resources']
         self._pool_init_options = init_options
 
     def set_command(self, command: str) -> None:
