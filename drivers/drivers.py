@@ -48,7 +48,7 @@ class MockResource(BaseEquipmentResource):
 
     def execute(self) -> None:
         self._is_running = True
-        print("f{self.resource_name} execute")
+        print(f"{self._name} execute")
         self._is_running = False
 
 
