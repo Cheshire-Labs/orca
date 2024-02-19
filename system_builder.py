@@ -191,7 +191,7 @@ class SystemBuilder:
                     else:
                         raise LookupError(f"{res.name} referenced in workflow {workflow_name} is a resource, does not have a plate pad associated with it")
                 else:
-                    raise LookupError(f"Start property value {loc_name} referenced in workflow {workflow_name} labware {labware_name} is not recognized.  Locations must be defined by the transporting resource.")
+                    raise LookupError(f"Start property value {loc_name} referenced in workflow {workflow_name} is not recognized.  Locations must be defined by the transporting resource.")
         return system.locations[start_location_name]
 
     def build(self) -> System:
