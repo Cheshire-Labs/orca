@@ -147,29 +147,11 @@ class SystemBuilder:
                 # get labware
                 labware = system.labwares[labware_name]
 
-                # get labware start location
+                # get labware start resource
                 if "start" not in labware_thread_def.keys():
                     raise KeyError(f"Workflow {workflow_name} labware {labware_name} does not contain a 'start' defintion.  Each labware needs a start location")
-                start_location_name = labware_thread_def["start"]
-                
-                # if auto-transport option is on just add the location
-                if self.is_auto_transport():
-                    system.locations[start_location_name] = Location(start_location_name)
-                else:
-                    if start_location_name not in system.locations.keys():
-                        raise LookupError(f"Location {start_location_name} referenced in workflow {workflow_name} labware {labware_name} is not recognized.  Locations must be defined by the transporting resource.")
-                start_location = system.locations[start_location_name]
-
-                # get labware end location
-                if "end" not in labware_thread_def.keys():
-                    raise KeyError(f"Workflow {workflow_name} labware {labware_name} does not contain an 'end' defintion.  Each labware needs an end location")
-                end_location_name = labware_thread_def["end"]
-                if self.is_auto_transport():
-                    system.locations[start_location_name] = Location(start_location_name)
-                else:
-                    if end_location_name not in system.locations.keys():
-                        raise LookupError(f"Location {end_location_name} referenced in workflow {workflow_name} labware {labware_name} is not recognized.  Locations must be defined by the transporting resource.")
-                end_location = system.locations[end_location_name]
+                start_location = self.__get_plate_thread_location_name(workflow_name, labware_thread_def["start"], system)
+                end_location = self.__get_plate_thread_location_name(workflow_name, labware_thread_def["end"], system)
 
                 # make labware thread
                 labware_thread = LabwareThread(labware=labware, start=start_location, end=end_location)
@@ -187,6 +169,25 @@ class SystemBuilder:
                 workflow.labware_threads[labware_name] = labware_thread
             workflows[workflow_name] = workflow
         system.workflows = workflows
+
+    # TODO: refactor this entire method out to build and validator class
+    def __get_plate_thread_location_name(self, workflow_name: str, loc_or_resource_name: str, system: System) -> Location:
+        loc_name = loc_or_resource_name
+         # if auto-transport option is on just add the location
+        if self.is_auto_transport() and loc_name not in system.locations.keys():
+            system.locations[loc_name] = Location(loc_name)
+        else:
+            if loc_name not in system.locations.keys():
+                # check if its a resource name
+                if loc_name in system.resources.keys():
+                    res = system.resources[loc_name]
+                    if isinstance(res, ILabwareableResource): 
+                        start_location_name = res.plate_pad
+                    else:
+                        raise LookupError(f"{res.name} referenced in workflow {workflow_name} is a resource, does not have a plate pad associated with it")
+                else:
+                    raise LookupError(f"Start property value {loc_name} referenced in workflow {workflow_name} labware {labware_name} is not recognized.  Locations must be defined by the transporting resource.")
+        return system.locations[start_location_name]
 
     def build(self) -> System:
         system = System(self._name, self._description, self._version, self._options)
