@@ -3,24 +3,12 @@ import xml.etree.ElementTree as ET
 import subprocess
 
 from typing import Any, Dict, List, Optional
-from drivers.ilabware_transporter import ILabwareTransporter
 
-from drivers.base_resource import BaseEquipmentResource, IResource
+from resource_models.base_resource import EquipmentResource, TransporterResource
+from resource_models.labware import Labware
 
-class MockNonLabwareableResource(IResource):
-    @property
-    def name(self) -> str:
-        return self._name
-    
-    def __init__(self, name: str, mocking_type: Optional[str] = None) -> None:
-        self._name = name
-        self._mocking_type = mocking_type
-        self._options: Dict[str, Any] = {}
-
-    def set_init_options(self, init_options: Dict[str, Any]) -> None:
-        self._options = init_options
-    
-class MockResource(BaseEquipmentResource):
+# TODO: Just a placehodler for now
+class PlaceHolderResource(EquipmentResource):
     def __init__(self, name: str, mocking_type: Optional[str] = None):
         super().__init__(name)
         self._mocking_type = mocking_type
@@ -33,12 +21,12 @@ class MockResource(BaseEquipmentResource):
         self._is_initialized = True
         return self._is_initialized
 
-    def load_plate(self) -> None:
+    def load_labware(self, labware: Labware) -> None:
         self._is_running = True
         print(f"{self._name} open plate door")
         self._is_running = False
 
-    def unload_plate(self) -> None:
+    def unload_labware(self, labware: Labware) -> None:
         self._is_running = True
         print(f"{self._name} close plate door")
         self._is_running = False
@@ -51,58 +39,41 @@ class MockResource(BaseEquipmentResource):
         print(f"{self._name} execute")
         self._is_running = False
 
-
-class MockRoboticArm(MockResource, ILabwareTransporter):
+# TODO: Just a place holder for now 
+class PlaceHolderRoboticArm(TransporterResource):
     def __init__(self, name: str, mocking_type: Optional[str] = None) -> None:
-        super().__init__(name, mocking_type)
+        super().__init__(name)
+        self._name = name
+        self._mocking_type = mocking_type
         self._plate_type: Optional[str] = None
         self._positions: List[str] = []
+        self._command: Optional[str] = None
 
-    def pick(self) -> None:
-        self._options["plate"]
-        raise NotImplementedError
+    def pick(self, location: str) -> None:
+        self._validate_position(location)
+        print(f"{self._name} pick {self._plate_type} from {location}")
     
-    def place(self) -> None:
-        raise NotImplementedError
+    def place(self, location: str) -> None:
+        self._validate_position(location)
+        print(f"{self._name} place {self._plate_type} to {location}")
     
-    def set_plate_type(self, plate_type: str) -> None:
+    def set_labware_type(self, plate_type: str) -> None:
         self._plate_type = plate_type
-    
-    # def _load_teachpoint_file(self, xml_file: str) -> None:
-    #     self._teachpoints = []
 
-    #     # Parse the XML file
-    #     tree = ET.parse(xml_file)
-    #     root = tree.getroot()
-
-    #     # Iterate through <teachpoint> elements
-    #     for teachpoint_elem in root.findall(".//teachpoint"):
-    #         name = teachpoint_elem.get("name")
-    #         wrist = teachpoint_elem.get("wrist", 0.0) 
-    #         elbow = teachpoint_elem.get("elbow", 0.0)
-    #         shoulder = teachpoint_elem.get("shoulder", 0.0)
-
-    #         teachpoint = TeachPoint(str(name), float(wrist), float(elbow), float(shoulder))
-    #         self._teachpoints.append(teachpoint)
+    def _validate_position(self, position: str) -> None:
+        if position not in self._positions:
+            raise ValueError(f"The position '{position}' is not taught for {self._name}")
 
     def set_init_options(self, init_options: Dict[str, Any]) -> None:
-        super().set_init_options(init_options)
+        self._init_options = init_options
         if "positions" in init_options.keys():
             self._positions = init_options["positions"]
 
     def get_taught_positions(self) -> List[str]:
         return self._positions
     
-    def execute(self) -> None:
-        if self._command == 'PICK':
-            self.load_plate()
-        elif self._command == 'PLACE':
-            self.unload_plate()
-        else:
-            raise NotImplementedError(f"The action '{self._command}' is unknown for {self._name} of type {type(self).__name__}")
-    
 
-class VenusProtocol(BaseEquipmentResource):
+class VenusProtocol(EquipmentResource):
     def __init__(self, name: str):
         super().__init__(name)
         self._default_exe_path = r"C:\Program Files (x86)\HAMILTON\Bin\HxRun.exe"

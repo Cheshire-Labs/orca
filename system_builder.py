@@ -1,14 +1,14 @@
 import os
-from Action import Action, IAction
-from drivers.base_resource import ILabwareableResource, IResource
+from workflow_models.Action import MethodAction, IAction
+from drivers.base_resource import ILabwareable, IResource
 from drivers.ilabware_transporter import ILabwareTransporter
 from drivers.resource_factory import ResourceFactory, ResourcePoolFactory
-from labware import Labware
-from location import Location
-from method import Method
-from resource_pool import EquipmentResourcePool
+from resource_models.labware import LabwareTemplate
+from resource_models.location import Location
+from workflow_models.method import MethodInstance
+from resource_models.resource_pool import EquipmentResourcePool
 from system import System
-from workflow import LabwareThread, Workflow
+from workflow_models.workflow import LabwareThreadTemplate, WorkflowTemplate
 
 
 from pyaml import yaml
@@ -60,11 +60,11 @@ class SystemBuilder:
         self._workflow_defs[workflow_name] = workflow_def
 
     def _build_labwares(self, system: System) -> None:
-        labwares: Dict[str, Labware] = {}
+        labwares: Dict[str, LabwareTemplate] = {}
         for name, labware_def in self._labware_defs.items():
             if "type" not in labware_def.keys():
                 raise KeyError(f"Labware {name} does not contain a 'type' definition.  Labware must have a type")
-            labwares[name] = Labware(name, labware_def["type"])
+            labwares[name] = LabwareTemplate(name, labware_def["type"])
         system.labwares = labwares
     
     def _build_resources(self, system: System) -> None:
@@ -98,7 +98,7 @@ class SystemBuilder:
 
         for _, res in system.resources.items():
             # skip resources like newtowrk switches, etc that don't have plate pad locations
-            if isinstance(res, ILabwareableResource) \
+            if isinstance(res, ILabwareable) \
                 and not isinstance(res, EquipmentResourcePool) \
                 and not isinstance(res, ILabwareTransporter):
                 # set resource to each location
@@ -110,9 +110,9 @@ class SystemBuilder:
 
     def _build_methods(self, system: System) -> None:
 
-        methods: Dict[str, Method] = {}
+        methods: Dict[str, MethodInstance] = {}
         for method_name, method_def in self._method_defs.items():
-            method = Method(name=method_name)
+            method = MethodInstance(name=method_name)
             if "actions" not in method_def.keys():
                 raise KeyError(f"Method {method_name} does not contain a 'actions' definition.  Method must have actions")
             actions: List[IAction] = []
@@ -139,7 +139,7 @@ class SystemBuilder:
                     output_labware_names: List[str] = action_options["outputs"] if isinstance(action_options["outputs"], List) else [action_options["outputs"]]
                     outputs = [system.labwares[labware_name] for labware_name in output_labware_names]
 
-                action = Action(resource=resource, command=command, options=action_options, inputs=inputs, outputs=outputs)
+                action = MethodAction(resource=resource, command=command, options=action_options, inputs=inputs, outputs=outputs)
                 actions.append(action)
 
             [method.append_action(a) for a in actions]
@@ -147,9 +147,9 @@ class SystemBuilder:
         system.methods = methods
     
     def _build_workflows(self, system: System) -> None:
-        workflows: Dict[str, Workflow] = {}
+        workflows: Dict[str, WorkflowTemplate] = {}
         for workflow_name, labware_thread_defs in self._workflow_defs.items():
-            workflow = Workflow(workflow_name)
+            workflow = WorkflowTemplate(workflow_name)
             for labware_name, labware_thread_def in labware_thread_defs.items():
                 # get labware
                 labware = system.labwares[labware_name]
@@ -161,7 +161,7 @@ class SystemBuilder:
                 end_location = self.__get_plate_thread_location_name(workflow_name, labware_thread_def["end"], system)
 
                 # make labware thread
-                labware_thread = LabwareThread(labware=labware, start=start_location, end=end_location)
+                labware_thread = LabwareThreadTemplate(labware=labware, start=start_location, end=end_location)
 
                 # add the methods
                 if "steps" not in labware_thread_def.keys():
@@ -188,7 +188,7 @@ class SystemBuilder:
                 # check if its a resource name
                 if loc_name in system.resources.keys():
                     res = system.resources[loc_name]
-                    if isinstance(res, ILabwareableResource): 
+                    if isinstance(res, ILabwareable): 
                         start_location_name = res.plate_pad
                     else:
                         raise LookupError(f"{res.name} referenced in workflow {workflow_name} is a resource, does not have a plate pad associated with it")

@@ -1,12 +1,11 @@
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
-from drivers.base_resource import IResource
-from drivers.ilabware_transporter import ILabwareTransporter
-from labware import Labware
-from location import Location
-from method import Method
-from resource_pool import EquipmentResourcePool
-from workflow import Workflow
+from resource_models.base_resource import IResource, TransporterResource
+
+from resource_models.labware import LabwareTemplate
+from resource_models.location import Location
+from routing.system_graph import SystemGraph
+from workflow_models.workflow import Method, WorkflowTemplate
 
 class System:
     def __init__(self, 
@@ -19,22 +18,23 @@ class System:
         self._description = description
         self._version = version 
         self._options = options if options is not None else {}
-        self._labwares: Dict[str, Labware] = {}
+        self._labwares: Dict[str, LabwareTemplate] = {}
         self._resources: Dict[str, IResource] = {}
         self._locations: Dict[str, Location] = {}
         self._methods: Dict[str, Method] = {}
-        self._workflows: Dict[str, Workflow] = {}
+        self._workflows: Dict[str, WorkflowTemplate] = {}
+        self._system_graph: SystemGraph = self._build_system_graph()
 
     @property
     def options(self) -> Dict[str, Any]:
         return self._options
     
     @property
-    def labwares(self) -> Dict[str, Labware]:
+    def labwares(self) -> Dict[str, LabwareTemplate]:
         return self._labwares
 
     @labwares.setter
-    def labwares(self, value: Dict[str, Labware]) -> None:
+    def labwares(self, value: Dict[str, LabwareTemplate]) -> None:
         self._labwares = value
 
     @property
@@ -62,15 +62,23 @@ class System:
         self._methods = value
 
     @property
-    def workflows(self) -> Dict[str, Workflow]:
+    def workflows(self) -> Dict[str, WorkflowTemplate]:
         return self._workflows
     
     @workflows.setter
-    def workflows(self, value: Dict[str, Workflow]) -> None:
+    def workflows(self, value: Dict[str, WorkflowTemplate]) -> None:
         self._workflows = value
     
     @property
-    def labware_transporters(self) -> Dict[str, ILabwareTransporter]:
-        return {name: r for name, r in self._resources.items() if isinstance(r, ILabwareTransporter)}
+    def labware_transporters(self) -> Dict[str, TransporterResource]:
+        return {name: r for name, r in self._resources.items() if isinstance(r, TransporterResource)}
 
-
+    @property
+    def system_graph(self) -> SystemGraph:
+        return self._system_graph
+    
+    def _build_system_graph(self) -> SystemGraph:
+        graph = SystemGraph()
+        for location in self._locations.values():
+            graph.add_location(location)
+        return graph

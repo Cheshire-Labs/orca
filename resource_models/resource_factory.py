@@ -3,7 +3,7 @@ from typing import Any, Dict, List
 
 from drivers.base_resource import BaseEquipmentResource, IResource
 from drivers.drivers import VenusProtocol, MockResource, MockNonLabwareableResource, MockRoboticArm
-from resource_pool import EquipmentResourcePool
+from resource_models.resource_pool import EquipmentResourcePool
 from system import System
 
 
