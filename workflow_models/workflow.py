@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Callable, Dict, List, Optional
-from resource_models.base_resource import EquipmentResource, IUseable
+from typing import Any, Dict, List, Optional
+from resource_models.base_resource import EquipmentResource
 from resource_models.labware import Labware
 from resource_models.location import Location
-from routing.system_graph import Route, SystemGraph
+from workflow_models.action import ActionStatus, BaseAction
 from workflow_models.method_status import MethodStatus
-from workflow_models.wrokflow_templates import LabwareThreadTemplate, MethodActionTemplate, MethodTemplate, WorkflowTemplate
+from workflow_models.workflow_templates import LabwareThreadTemplate, MethodActionTemplate, MethodTemplate, WorkflowTemplate
 
-class MethodAction:
+class MethodAction(BaseAction):
     @staticmethod
     def from_template(template: MethodActionTemplate, labware_instance_inputs: List[Labware]) -> MethodAction:
         """
@@ -38,15 +38,11 @@ class MethodAction:
         self._awaiting_labware_inputs: List[Labware] = labware_instance_inputs
         self._loaded_labware_inputs: List[Labware] = []
         self._outputs: List[Labware] = labware_instance_outputs
-        self._status: MethodStatus = MethodStatus.CREATED
+        self._status: ActionStatus = ActionStatus.CREATED
 
     @property
     def resource(self) -> EquipmentResource:
         return self._resource
-    
-    @property
-    def status(self) -> MethodStatus:
-        return self._status
     
     @property
     def awaiting_labware_inputs(self) -> List[Labware]:
@@ -60,21 +56,21 @@ class MethodAction:
         self._awaiting_labware_inputs.remove(labware)
         self._loaded_labware_inputs.append(labware)
         if self._awaiting_labware_inputs == []:
-            self._status = MethodStatus.READY
+            self._status = ActionStatus.READY
         self._resource.load_labware(labware)
 
     def unload_lawbare(self, labware: Labware) -> None:
-        if labware not in self._outputs.values():
+        if labware not in self._outputs:
             raise ValueError(f"Labware is not an output of this method. Labware {labware} is not available to be unloaded")
         self._resource.unload_labware(labware)
-        self._outputs[labware.name] = None
+        self._outputs.remove(labware)
 
-    def execute(self) -> None:
+    def _perform_execute(self) -> None:
         self._resource.set_command(self._command)
         self._resource.set_command_options(self._options)
-        self._status = MethodStatus.RUNNING
+        self._status = ActionStatus.IN_PROGRESS
         self._resource.execute()
-        self._status = MethodStatus.COMPLETED
+        self._status = ActionStatus.COMPLETED
 
 
 
@@ -132,7 +128,7 @@ class LabwareThread:
     @staticmethod
     def from_template(template: LabwareThreadTemplate, labware: Optional[Labware] = None) -> LabwareThread:
         labware = Labware.from_template(template.labware) if labware is None else labware
-        method_seq = [Method.from_method(method) for method in template.methods]
+        method_seq = [Method.from_template(method) for method in template.methods]
         thread = LabwareThread(labware.name, labware, method_sequence=method_seq, start_location=template.start, end_location=template.end)
         thread.set_start_location(template.start)
         thread.set_end_location(template.end)
@@ -194,7 +190,7 @@ class LabwareThread:
         return self._labware
     
     @property
-    def completed_actions(self) -> List[BaseActions]:
+    def completed_actions(self) -> List[BaseAction]:
         raise NotImplementedError
 
     @property
@@ -210,48 +206,14 @@ class LabwareThread:
 
     def is_completed(self) -> bool:
         return all(method.status in [MethodStatus.COMPLETED, MethodStatus.CANCELED] for method in self._method_seq)
-    
-    def get_completed_route(self) -> Route:
-        steps: List[RouteSingleStep] = []
-        for action in self.complete_actions if type(action) == PickAction or type(action) == PlaceAction:
-            step = RouteSingleStep(source=action.source, target=action.target, weight=action.time_to_complete, action=action)
-            steps.append(step)
-        route = Route(steps)
-        return route
-        
-    def build_route(self, system_graph: SystemGraph) -> Route:
-        """Builds a route from the current location through all pending actions to the end location
 
-        Args:
-            system_graph (SystemGraph): Graph of the system
-
-        Returns:
-            Route: Route to be taken
-        """
-        route = Route2()
-        start_location = self.current_location
-        for action in self.queued_actions:
-            route.add_stop(action.resource.location, action)
-
-            location = action.resource.location
-            path = system_graph.get_shortest_available_path(start_location, location)
-            
-            for stop in next_route.steps:
-                stop.set_action(action)
-            next_route[location].set_action(action)
-            route.append(next_route)
-            start_location = location
-        ending_route = system_graph.get_shortest_available_route(location, self.end_location)
-        route.append(ending_route)
-        return route
-
-    def start():
+    def start(self) -> None:
         raise NotImplementedError
 
-    def stop():
+    def stop(self) -> None:
         raise NotImplementedError
 
-    def get_next_action():
+    def get_next_action(self) -> BaseAction:
         raise NotImplementedError
 
     
@@ -268,73 +230,9 @@ class Workflow:
         self._name = name
         self._labware_threads: List[LabwareThread] = threads
 
-
     @property
     def labware_threads(self) -> List[LabwareThread]:
         return self._labware_threads
-    
-    def set_status_queued(self) -> None:
-        for thread in self._labware_threads:
-            for method in thread.methods:
-                for action in method.actions:
-                    action.set_status(MethodStatus.QUEUED)
 
 
-class UnavailableWaitTask:
-    def __init__(self, unavailable_resource: IUseable) -> None:
-        self._resource: IUseable = unavailable_resource
 
-    @property
-    def resource(self) -> IUseable:
-        return self._resource
-    
-    def subscribe_on_ready(self, callback: Callable[[IUseable], None]) -> None:
-        self._resource.subscribe_on_available(callback)
-
-    @property
-    def estimated_time_to_ready(self) -> float:
-        return self._resource.get_estimated_time_to_available()
-                
-
-class RouteBuilder:
-    def __init__(self, graph: SystemGraph) -> None:
-        self._graph: SystemGraph = graph
-    
-    def build_route(self, labware_thread: LabwareThread) -> Route:
-        actions = [action for method in labware_thread.queued_methods for action in method.queued_actions]
-        route = Route()
-        start_location = labware_thread.current_location
-        location_stops.append(start_location)
-        for location in action_locations:
-            next_path: List[str] = self._graph.get_shortest_available_path(start_location.name, location)
-            location_stops.extend(next_path)
-        
-        for location in location_stops:
-            system.locations[location]
-            
-            # TODO:  pretty much zip the actions and locations here... i think?
-            
-            route.append(next_route)
-            start_location = location
-        return route
-
-
-        
-
-class RouteManager:
-    def __init__(self, system_graph: SystemGraph) -> None:
-        self._system_graph: SystemGraph = system_graph
-        self._route_planners: List[RoutePlanner] = []
-    
-    def set_workflow(self, workflow: Workflow) -> None:
-        for thread in workflow.labware_threads:
-            current_method = thread.get_current_method()
-            next_action = current_method.get_next_action()
-            # TODO: Working here
-            self._route_planners.append(RoutePlanner(next_action.labware, next_action.resource, self._system_graph))
-
-    def get_next_action(self) -> IAction:
-        ready_route_planners = [planner for planner in self._route_planners if planner.is_ready()]
-        sorted_route_planners = sorted(ready_route_planners, key=lambda planner: planner.time_pending)
-        route = sorted_route_planners[0].get_route()
-        route.get_next_action()

@@ -4,8 +4,24 @@ import subprocess
 
 from typing import Any, Dict, List, Optional
 
-from resource_models.base_resource import EquipmentResource, TransporterResource
+from resource_models.base_resource import EquipmentResource, IResource, TransporterResource
 from resource_models.labware import Labware
+
+
+class PlaceHolderNonLabwareResource(IResource):
+    def __init__(self, name: str, mocking_type: Optional[str] = None):
+        self._name = name
+        self._mocking_type = mocking_type
+        self._init_options: Dict[str, Any] = {}
+    
+    @property
+    def name(self) -> str:
+        return self._name
+    
+    def set_init_options(self, init_options: Dict[str, Any]) -> None:
+        self._init_options = init_options
+
+
 
 # TODO: Just a placehodler for now
 class PlaceHolderResource(EquipmentResource):
@@ -83,19 +99,19 @@ class VenusProtocol(EquipmentResource):
 
         raise NotImplementedError()
 
-    def load_plate(self) -> None:
+    def load_labware(self, labware: Labware) -> None:
         print("Move carriage to load position")
 
-    def unload_plate(self) -> None:
+    def unload_labware(self, labware: Labware) -> None:
         print("Move carriage to unload position")
+
+
+    def is_running(self) -> bool:
+        return self._is_running
 
     def execute(self) -> None:
         if self._command == 'EXECUTE':
             self._execute_protocol()
-        elif self._command == 'LOAD':
-            self.load_plate()
-        elif self._command == 'UNLOAD':
-            self.unload_plate()
         else:
             raise NotImplementedError(f"The action '{self._command}' is unknown for {self._name} of type {type(self).__name__}")
 

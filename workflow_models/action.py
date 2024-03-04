@@ -6,8 +6,9 @@ from resource_models.labware import Labware, LabwareTemplate
 
 class ActionStatus(Enum):
     CREATED = auto()
+    READY = auto()
     IN_PROGRESS = auto()
-    COMPLETE = auto()
+    COMPLETED = auto()
     FAILED = auto()
     # CANCELLED = auto() # TODO: Implement
 
@@ -35,7 +36,7 @@ class BaseAction(IAction, ABC):
         except Exception as e:
             self._status = ActionStatus.FAILED
             raise e        
-        self._status = ActionStatus.COMPLETE
+        self._status = ActionStatus.COMPLETED
 
     def _perform_action(self) -> None:
         raise NotImplementedError

@@ -1,11 +1,11 @@
 from workflow_models.method import MethodStatus
 
-from system import System
+from system import SystemTemplate
 from workflow_models.workflow import WorkflowTemplate
 
 
 class WorkflowExecuter:
-    def __init__(self, system: System, workflow: WorkflowTemplate) -> None:
+    def __init__(self, system: SystemTemplate, workflow: WorkflowTemplate) -> None:
         self._workflow = workflow
         self._system = system
 

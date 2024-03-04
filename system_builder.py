@@ -1,22 +1,19 @@
-import os
-from workflow_models.Action import MethodAction, IAction
-from drivers.base_resource import ILabwareable, IResource
-from drivers.ilabware_transporter import ILabwareTransporter
-from drivers.resource_factory import ResourceFactory, ResourcePoolFactory
+from resource_models.base_resource import EquipmentResource, IResource, TransporterResource
 from resource_models.labware import LabwareTemplate
 from resource_models.location import Location
-from workflow_models.method import MethodInstance
+from resource_models.resource_factory import ResourceFactory, ResourcePoolFactory
 from resource_models.resource_pool import EquipmentResourcePool
-from system import System
-from workflow_models.workflow import LabwareThreadTemplate, WorkflowTemplate
+from system import SystemTemplate
 
+from workflow_models.workflow_templates import MethodActionTemplate, MethodTemplate, LabwareThreadTemplate, WorkflowTemplate
 
 from pyaml import yaml
 
 
 from typing import Any, Dict, List, Optional
+
     
-class SystemBuilder:
+class SystemTemplateBuilder:
     def __init__(self) -> None:
         self._name: Optional[str] = None
         self._description: Optional[str] = None
@@ -27,7 +24,7 @@ class SystemBuilder:
         self._location_defs: Dict[str, Dict[str, Any]] = {}
         self._method_defs: Dict[str, Dict[str, Any]] = {}
         self._workflow_defs: Dict[str, Dict[str, Any]] = {}
-        self._system: Optional[System] = None
+        self._system: Optional[SystemTemplate] = None
     
     def is_auto_transport(self) -> bool:
         return "auto-transport" in self._options.keys() and self._options["auto-transport"]
@@ -59,7 +56,7 @@ class SystemBuilder:
     def add_workflow(self, workflow_name: str, workflow_def: Dict[str, Any]) -> None:
         self._workflow_defs[workflow_name] = workflow_def
 
-    def _build_labwares(self, system: System) -> None:
+    def _build_labwares(self, system: SystemTemplate) -> None:
         labwares: Dict[str, LabwareTemplate] = {}
         for name, labware_def in self._labware_defs.items():
             if "type" not in labware_def.keys():
@@ -67,7 +64,7 @@ class SystemBuilder:
             labwares[name] = LabwareTemplate(name, labware_def["type"])
         system.labwares = labwares
     
-    def _build_resources(self, system: System) -> None:
+    def _build_resources(self, system: SystemTemplate) -> None:
         resources: Dict[str, IResource] = {}
         resource_pool_defs: Dict[str, Dict[str, Any]] = {}
         for name, resource_def in self._resource_defs.items():
@@ -82,7 +79,7 @@ class SystemBuilder:
             pool = ResourcePoolFactory(system).create(name, resource_def)
             system.resources[name] = pool   
 
-    def _build_locations(self, system: System) -> None:
+    def _build_locations(self, system: SystemTemplate) -> None:
         system.locations = {}
         # build locations form location defs in config
         for location_name, location_options in self._location_defs.items():
@@ -98,29 +95,29 @@ class SystemBuilder:
 
         for _, res in system.resources.items():
             # skip resources like newtowrk switches, etc that don't have plate pad locations
-            if isinstance(res, ILabwareable) \
+            if isinstance(res, EquipmentResource) \
                 and not isinstance(res, EquipmentResourcePool) \
-                and not isinstance(res, ILabwareTransporter):
+                and not isinstance(res, TransporterResource):
                 # set resource to each location
-                # if the plate-pad is not set, then use the resource name as the location
-                plate_pad = res.plate_pad
-                if plate_pad not in system.locations.keys():
-                    raise LookupError(f"Location {plate_pad} referenced in resource {res.name} is not recognized.  Locations must be defined by the transporting resource.")
-                system.locations[plate_pad].set_resource(res)
+                # if the plate-pad is not set in the resource definition, then use the resource name
+                location_name = self._resource_defs[res.name].get("plate_pad", res.name)
+                if location_name not in system.locations.keys():
+                    raise LookupError(f"Location {location_name} referenced in resource {res.name} is not recognized.  Locations must be defined by the transporting resource.")
+                system.locations[location_name].set_resource(res)
 
-    def _build_methods(self, system: System) -> None:
+    def _build_methods(self, system: SystemTemplate) -> None:
 
-        methods: Dict[str, MethodInstance] = {}
+        methods: Dict[str, MethodTemplate] = {}
         for method_name, method_def in self._method_defs.items():
-            method = MethodInstance(name=method_name)
+            method = MethodTemplate(name=method_name)
             if "actions" not in method_def.keys():
                 raise KeyError(f"Method {method_name} does not contain a 'actions' definition.  Method must have actions")
-            actions: List[IAction] = []
+            actions: List[MethodActionTemplate] = []
             for action_index, action_config in enumerate(method_def['actions']):
                 for resource_name, action_options in action_config.items():
-                    if resource_name not in system.resources.keys():
+                    if resource_name not in system.equipment_resources.keys():
                         raise LookupError(f"The resource name '{resource_name}' in method actions is not recognized as a defined resource")
-                    resource = system.resources[resource_name]
+                    resource = system.equipment_resources[resource_name]
 
                 # get command
                 if "command" not in action_options.keys():
@@ -139,14 +136,14 @@ class SystemBuilder:
                     output_labware_names: List[str] = action_options["outputs"] if isinstance(action_options["outputs"], List) else [action_options["outputs"]]
                     outputs = [system.labwares[labware_name] for labware_name in output_labware_names]
 
-                action = MethodAction(resource=resource, command=command, options=action_options, inputs=inputs, outputs=outputs)
+                action = MethodActionTemplate(resource=resource, command=command, options=action_options, inputs=inputs, outputs=outputs)
                 actions.append(action)
 
             [method.append_action(a) for a in actions]
             methods[method_name] = method
         system.methods = methods
     
-    def _build_workflows(self, system: System) -> None:
+    def _build_workflows(self, system: SystemTemplate) -> None:
         workflows: Dict[str, WorkflowTemplate] = {}
         for workflow_name, labware_thread_defs in self._workflow_defs.items():
             workflow = WorkflowTemplate(workflow_name)
@@ -178,26 +175,17 @@ class SystemBuilder:
         system.workflows = workflows
 
     # TODO: refactor this entire method out to build and validator class
-    def __get_plate_thread_location_name(self, workflow_name: str, loc_or_resource_name: str, system: System) -> Location:
-        loc_name = loc_or_resource_name
+    def __get_plate_thread_location_name(self, workflow_name: str, loc_name: str, system: SystemTemplate) -> Location:
          # if auto-transport option is on just add the location
         if self.is_auto_transport() and loc_name not in system.locations.keys():
             system.locations[loc_name] = Location(loc_name)
         else:
             if loc_name not in system.locations.keys():
-                # check if its a resource name
-                if loc_name in system.resources.keys():
-                    res = system.resources[loc_name]
-                    if isinstance(res, ILabwareable): 
-                        start_location_name = res.plate_pad
-                    else:
-                        raise LookupError(f"{res.name} referenced in workflow {workflow_name} is a resource, does not have a plate pad associated with it")
-                else:
-                    raise LookupError(f"Start property value {loc_name} referenced in workflow {workflow_name} is not recognized.  Locations must be defined by the transporting resource.")
-        return system.locations[start_location_name]
+                raise LookupError(f"Start property value {loc_name} referenced in workflow {workflow_name} is not recognized.  Locations must be defined by the transporting resource.")
+        return system.locations[loc_name]
 
-    def build(self) -> System:
-        system = System(self._name, self._description, self._version, self._options)
+    def build(self) -> SystemTemplate:
+        system = SystemTemplate(self._name, self._description, self._version, self._options)
         self._build_labwares(system)
         self._build_resources(system)
         self._build_locations(system)
@@ -223,7 +211,7 @@ class ConfigSystemBuilder:
         self.methods_config_file = config_file
         self.workflows_config_file = config_file
 
-    def _add_system_def(self, builder: SystemBuilder) -> None:
+    def _add_system_def(self, builder: SystemTemplateBuilder) -> None:
         if self.system_config_file is None:
             raise ValueError("System config file is not set")
         with open(self.system_config_file) as f:
@@ -240,7 +228,7 @@ class ConfigSystemBuilder:
         if "options" in system_config.keys():
             builder.set_system_options(system_config["options"])
         
-    def _add_labware_defs(self, builder: SystemBuilder) -> None:
+    def _add_labware_defs(self, builder: SystemTemplateBuilder) -> None:
         if self.labwares_config_file is None:
             raise ValueError("Labwares config file is not set")
         with open(self.labwares_config_file) as f:
@@ -251,7 +239,7 @@ class ConfigSystemBuilder:
 
             builder.add_labware(labware_name, labware_def)
     
-    def _add_location_defs(self, builder: SystemBuilder) -> None:
+    def _add_location_defs(self, builder: SystemTemplateBuilder) -> None:
         if self.locations_config_file is None:
             raise ValueError("Locations config file is not set")
         with open(self.locations_config_file) as f:
@@ -261,7 +249,7 @@ class ConfigSystemBuilder:
                 builder.add_location(location_name, location_def)
         
 
-    def _add_resource_defs(self, builder: SystemBuilder) -> None:
+    def _add_resource_defs(self, builder: SystemTemplateBuilder) -> None:
         if self.resources_config_file is None:
             raise ValueError("Resources config file is not set")
         with open(self.resources_config_file) as f:
@@ -271,7 +259,7 @@ class ConfigSystemBuilder:
         for resource_name, resource_def in resources_config["resources"].items():
             builder.add_resource(resource_name, resource_def)
 
-    def _add_method_defs(self, builder: SystemBuilder) -> None:
+    def _add_method_defs(self, builder: SystemTemplateBuilder) -> None:
         if self.methods_config_file is None:
             raise ValueError("Methods config file is not set")
         with open(self.methods_config_file) as f:
@@ -281,7 +269,7 @@ class ConfigSystemBuilder:
         for method_name, method_def in methods_config["methods"].items():
             builder.add_method(method_name, method_def)
     
-    def _add_workflow_defs(self, builder: SystemBuilder) -> None:
+    def _add_workflow_defs(self, builder: SystemTemplateBuilder) -> None:
         if self.workflows_config_file is None:
             raise ValueError("Workflows config file is not set")
         with open(self.workflows_config_file) as f:
@@ -291,8 +279,8 @@ class ConfigSystemBuilder:
         for workflow_name, workflow_def in workflows_config["workflows"].items():
             builder.add_workflow(workflow_name, workflow_def)
 
-    def build(self) -> System:
-        builder = SystemBuilder()
+    def build(self) -> SystemTemplate:
+        builder = SystemTemplateBuilder()
         self._add_system_def(builder)
         self._add_labware_defs(builder)
         self._add_resource_defs(builder)

@@ -2,6 +2,7 @@
 from typing import Dict, List
 import conftest
 from resource_models.labware import Labware
+from routing.router import RouteBuilder
 from routing.system_graph import SystemGraph
 from tests.mock import MockEquipmentResource, MockRoboticArm
 from workflow_models.workflow import LabwareThread, Method, MethodAction
@@ -9,16 +10,16 @@ from workflow_models.workflow import LabwareThread, Method, MethodAction
 import networkx as nx
 
 class TestSystemGraph:
-    def test_get_shortest_path(self, system_graph):
+    def test_get_shortest_path(self, system_graph: SystemGraph):
         expected_path = ["loc_stacker1", "loc_robot1", "loc3", "loc_robot2", "loc_ham1"]
-        path = system_graph.get_shortest_any_route("loc_stacker1", "loc_ham1")
+        path = system_graph.get_shortest_any_path("loc_stacker1", "loc_ham1")
         assert path == expected_path
 
-    def test_no_path_through_in_use_plate(self, system_graph):
-        loc3 = system_graph.nodes["loc3"]
-        loc3.load_plate(Labware("plate", labware_type="mock_labware"))
+    def test_no_path_through_in_use_plate(self, system_graph: SystemGraph):
+        loc3 = system_graph.locations["loc3"]
+        loc3.load_labware(Labware("plate", labware_type="mock_labware"))
         try:
-            path = system_graph.get_shortest_available_route("loc_stacker1", "loc_ham1")
+            path = system_graph.get_shortest_available_path("loc_stacker1", "loc_ham1")
             assert False
         except nx.NetworkXNoPath:
             assert True
@@ -37,15 +38,15 @@ class TestRouteBuilder:
                                labware=plate,
                                method_sequence=[ham_method, 
                                                 shaker_method],
-                                start_location=system.locations["stacker1"],
-                                end_location=system.locations["loc5"]
+                                start_location=system_graph.locations["stacker1"],
+                                end_location=system_graph.locations["loc5"]
         )
 
-        builder = RouteBuilder(system_graph)
-        route = builder.build_route(method_actions)
+        builder = RouteBuilder(thread, system_graph)
+        route = builder.get_route()
         
         expected_stops = ["stacker1", "robot1", "loc3", "robot2", "ham1", "loc5"]
-        stops = [stop.location for stop in route]
+        stops = [stop.name for stop in route.path]
         assert stops == expected_stops
 
     def test_route_assigns_actions_correctly(self, 
@@ -63,8 +64,8 @@ class TestRouteBuilder:
                                labware=plate,
                                method_sequence=[ham_method, 
                                                 shaker_method],
-                                start_location=system.locations["stacker1"],
-                                end_location=system.locations["loc5"]
+                                start_location=system_graph.locations["stacker1"],
+                                end_location=system_graph.locations["loc5"]
         )
 
         stacker1.set_on_load_labware(lambda x: completed_actions.append({"resource": stacker1.name, "action": "load_labware", "labware": x.name}))
@@ -78,8 +79,8 @@ class TestRouteBuilder:
         robot2.set_on_pick(lambda x, y: completed_actions.append({"resource": robot2.name, "action": "pick", "location": y, "labware": x}))
         robot2.set_on_place(lambda x, y: completed_actions.append({"resource": robot2.name, "action": "place", "location": y, "labware": x}))
 
-        builder = RouteBuilder(system_graph)
-        route = builder.build_route(thread)
+        builder = RouteBuilder(thread, system_graph)
+        route = builder.get_route()
 
 
         expected_actions = [

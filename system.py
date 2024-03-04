@@ -1,13 +1,13 @@
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
-from resource_models.base_resource import IResource, TransporterResource
+from resource_models.base_resource import EquipmentResource, IResource, TransporterResource
 
 from resource_models.labware import LabwareTemplate
 from resource_models.location import Location
 from routing.system_graph import SystemGraph
-from workflow_models.workflow import Method, WorkflowTemplate
+from workflow_models.workflow_templates import MethodTemplate, WorkflowTemplate
 
-class System:
+class SystemTemplate:
     def __init__(self, 
                 name: Optional[str] = None, 
                 description: Optional[str] = None, 
@@ -21,7 +21,7 @@ class System:
         self._labwares: Dict[str, LabwareTemplate] = {}
         self._resources: Dict[str, IResource] = {}
         self._locations: Dict[str, Location] = {}
-        self._methods: Dict[str, Method] = {}
+        self._methods: Dict[str, MethodTemplate] = {}
         self._workflows: Dict[str, WorkflowTemplate] = {}
         self._system_graph: SystemGraph = self._build_system_graph()
 
@@ -46,6 +46,10 @@ class System:
         self._resources = value
 
     @property
+    def equipment_resources(self) -> Dict[str, EquipmentResource]:
+        return {name: r for name, r in self._resources.items() if isinstance(r, EquipmentResource)}
+
+    @property
     def locations(self) -> Dict[str, Location]:
         return self._locations
     
@@ -54,11 +58,11 @@ class System:
         self._locations = value
 
     @property 
-    def methods(self) -> Dict[str, Method]:
+    def methods(self) -> Dict[str, MethodTemplate]:
         return self._methods
     
     @methods.setter
-    def methods(self, value: Dict[str, Method]) -> None:
+    def methods(self, value: Dict[str, MethodTemplate]) -> None:
         self._methods = value
 
     @property

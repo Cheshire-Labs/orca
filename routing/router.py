@@ -1,168 +1,135 @@
-from __future__ import annotations
-from typing import Any, List, Optional
-from workflow_models.action import IAction, MethodAction
+from typing import Dict, List, Optional
+from resource_models.base_resource import TransporterResource
 from resource_models.labware import Labware
+from resource_models.location import Location
+from routing.system_graph import SystemGraph
+from workflow_models.action import BaseAction, LoadLabwareAction, NullAction, PickAction, PlaceAction, UnloadLabwareAction
+from workflow_models.workflow import LabwareThread
 
-from workflow_models.method import MethodInstance
-from system import System
-from workflow_models.workflow import WorkflowTemplate
 
-class CandidateActionCurator:
-    """Replaces actions and sorts them according to determine what should be completed first"""
-    def __init__(self, system: System) -> None:
-        self._system = system
+class RouteAction(BaseAction):
+    def __init__(self, source: Location, target: Location) -> None:
+        super().__init__()
+        self._source = source
+        self._target = target
+        self._post_load_actions: List[BaseAction] = []
+        self._labware: Optional[Labware] = None
 
-    def _sort(self, actions: List[IAction]) -> List[IAction]:
-        # TODO: implement sorting algorithms
-        return actions
+    @property
+    def source(self) -> Location:
+        return self._source
     
-    def _replace(self, actions: List[IAction]) -> List[IAction]:
-        # TODO: set algorithms to replace actions with move actions when the plate isn't at the location yet
-        ## ** Maybe do this TODO else where
-        # if labware is not at location, replace with move action
-        return replaced_actions
+    @source.setter
+    def source(self, source: Location) -> None:
+        self._source = source
 
-    def get_curated_actions(self, actions: List[IAction]) -> List[IAction]:
-        actions = self._replace(actions)
-        actions = self._sort(actions)
-        return actions
-
-
-
-
-class ActionManager:
-    """Responsible for keeping track of actions and their status"""
-    def __init__(self, system: System):
-        self._system: System = system
-        self._workflow: Optional[WorkflowInstance] = None
-        self._curator = CandidateActionCurator(self._system)
-
-    def set_method(self, method: MethodInstance) -> None:
-        self._method = method
-        candidate_next_action = method.get_next_action()
-        self._candidate_actions = [candidate_next_action] if candidate_next_action is not None else []
-
-    def set_workflow(self, workflow: WorkflowInstance) -> None:
-        self._workflow = workflow
-
-    def _get_candidate_actions(self) -> List[IAction]:
-        if self._workflow is None:
-            raise ValueError("A workflow has not been set.  A workflow must be set before Router can determine the next action")
-        candidate_actions: List[IAction] = []
-        for _, labware_thread in self._workflow.labware_threads.items():
-            candidate_next_method = labware_thread.get_next_method()
-            if candidate_next_method is not None:
-                method_action = candidate_next_method.get_next_action()
-                if method_action is not None:
-                    candidate_actions.append(method_action)
-        return candidate_actions
-
-    def get_next_action(self) -> IAction | None:
-        curated_actions = self._curator.get_curated_actions(self._get_candidate_actions())
-
-        if len(curated_actions) == 0:
-            return None
-        return curated_actions[0]
-
-
-class LabwareManager:
-    """Responsible for keeping track of labware locations and their status"""
-    def __init__(self) -> None:
-        self._labwares: List[Labware] = []
+    @property
+    def target(self) -> Location:
+        return self._target
     
+    @target.setter
+    def target(self, target: Location) -> None:
+        self._target = target
 
-class RoutePlanner:
-    """Responsible for planning routes between locations and actions"""
+    def set_actions(self, actions: List[BaseAction]) -> None:
+        self._post_load_actions = actions
 
+    def set_labware(self, labware: Labware) -> None:
+        self._labware = labware
 
-class ActionSet:
-    def __init__(self) -> None:
-        self._actions: List[IAction] = []
-
-    def set_method_action(self, method_action: IAction) -> None:
-        self._actions.append(action)
-
-    def resources_available(self) -> bool:
-        for action in self._actions:
-            if action.resource.in_use:
-                return False
-        return True
-    
-    
-    def execute(self) -> None:
-        for action in self._actions:
-            action.execute()
-        
-    def _release_resources(self) -> None:
-        for action in self._actions:
-            action.resource.release()
-
-class SystemRouter:
-    def __init__(self) -> None:
-        self._labware_manager = LabwareManager()
-        self._action_manager = ActionManager()
-        self._route_planner = RoutePlanner()
-
-    def get_next_action(self) -> IAction | None:
-
-        # get the next action
-        next_method_action = self._action_manager.get_next_action()
-    
-        # if next action resource is not available, get the estimated time until it is available
-        if next_method_action.resource.in_use:
-            wait_time = next_method_action.resource.get_estimated_time_until_available()
-
-        # if the plate is not already there, get a route to the location
-        shortest_route = graph.get_shortest_available_route(next_method_action.location, labware_in_use.location)
-        if shortest_route is None:
-            # get blocking locations
-            blocking_locations = graph.get_blocking_locations(next_method_action.location, labware_in_use.location)
-            # get the estimated time until the blocking locations are available
-            wait_time = blocking_locations[0].get_estimated_time_until_available()
-
-
-        # get one move on the shortest route and move the labware one step closer
-        next_action = shortest_route.get_next_action()
-
-        # if the resource are available, place a reserve on them all
-        next_method_action.resource.reserve()
-
-        # perform the action
-        next_method_action.execute()
-
-        # release the resources
-        next_method_action.resource.release()
-
-
-        # TODO: PREVIOUS CODE... select parts and move up
-
-        labware_in_use = next_method_action.labware
-        next_actions: List[IAction] = []
-        if next_method_action.location != labware_in_use.location:
-            next_actions = [
-                PickAction(labware_in_use.location),
-                PlaceAction(next_action.location),
-                next_method_action
-                ]
+    def get_actions(self) -> List[BaseAction]:
+        actions: List[BaseAction] = []
+        if self._source == self._target:
+            actions.extend(self._post_load_actions)
         else:
-            next_actions = next_method_action
-        # check all the resources are available from the path to the next method action
-        for action in next_actions:
-            # if the resources are not available, then get the estimated time until they are available
-            if action.resource.in_use:
-                wait_time = action.resource.get_estimated_time_until_available()
-
-        # if the resource are available, place a reserve on them all
-        [action.resource.reserve() for action in next_actions]
-
-        # perform the actions
-        [action.execute() for action in next_actions]
-
-        # release the resources
-        [action.resource.release() for action in next_actions]
-            
-        pass
+            self._append_source_actions(actions)
+            self._append_target_actions(actions)
+        return actions
     
+    def _append_source_actions(self, actions: List[BaseAction]) -> None:
+        if self._labware is None:
+            raise ValueError("Labware must be set before getting actions")
+        elif self._source.resource is None:
+            actions.append(NullAction())
+        elif self._source.resource is TransporterResource:
+            # coming from robot
+            actions.append(PlaceAction(self._source.resource, self._labware, self._target.name))
+        else:
+            actions.append(UnloadLabwareAction(self._source.resource, self._labware))
 
+    def _append_target_actions(self, actions: List[BaseAction]) -> None:
+        if self._labware is None:
+            raise ValueError("Labware must be set before getting actions")
+        elif self._target.resource is None:
+            actions.append(NullAction())
+        elif self._target.resource is TransporterResource:
+            # going to robot
+            actions.append(PickAction(self._target.resource, self._labware, self._source.name))
+        else:
+            actions.append(LoadLabwareAction(self._target.resource, self._labware))
+            actions.extend(self._post_load_actions)
 
     
+    def _perform_action(self) -> None:
+        for action in self.get_actions():
+            action.execute() 
+        
+
+
+
+class Route:
+    def __init__(self, start: Location, end: Location) -> None:
+        self._start = start
+        self._end = end
+        self._core_actions: Dict[str, List[BaseAction]] = {}
+        self._edges: List[RouteAction] = []
+
+    @property
+    def path(self) -> List[Location]:
+        path = [self._start]
+        for edge in self._edges:
+            path.append(edge.target) 
+        return path
+
+    def add_stop(self, location: str, action: BaseAction) -> None:
+        if location not in self._core_actions.keys():
+            self._core_actions[location] = []
+        self._core_actions[location].append(action)
+
+    def _build_route(self, system: SystemGraph) -> None:
+        self._edges = []
+        for core_location, core_actions in self._core_actions.items():
+
+            # get the source and target locations
+            core_src_location = self._start if len(self._edges) > 0 else self._edges[-1].target
+            core_tgt_location = system.locations[core_location]
+
+            # get the shortest path between the two locations
+            path: List[str] = system.get_shortest_available_path(core_src_location.name, core_tgt_location.name)
+
+            # build the route actions from the path
+            path_src_loc = path.pop(0)
+            for path_tgt_loc in path:
+                source_location = system.locations[path_src_loc]
+                target_location = system.locations[path_tgt_loc]
+                self._edges.append(RouteAction(source_location, target_location))
+                path_src_loc = path_tgt_loc
+            self._edges[-1].set_actions(core_actions)                
+
+class RouteBuilder:
+    def __init__(self, thread: LabwareThread, system: SystemGraph) -> None:
+        self._system = system
+        self._thread = thread
+        
+    def _get_base_route(self) -> Route:
+        route = Route(self._thread.start_location, self._thread.end_location)
+        for method in self._thread.methods:
+            for action in method.actions:
+                res_location = self._system.get_resource_location(action.resource.name)
+                route.add_stop(res_location, action)
+        return route
+
+    def get_route(self) -> Route:
+        route = self._get_base_route()
+        route._build_route(self._system)
+        return route
