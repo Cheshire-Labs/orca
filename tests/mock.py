@@ -1,8 +1,9 @@
 from typing import Optional, Dict, Any, Callable, List
 
-from resource_models.base_resource import TransporterResource
+from resource_models.transporter_resource import TransporterResource
 from resource_models.labware import Labware
 from resource_models.loadable_resources.ilabware_loadable import LoadableEquipmentResource
+from resource_models.loadable_resources.location import Location
 
 class MockEquipmentResource(LoadableEquipmentResource):
     def __init__(self, name: str, mocking_type: Optional[str] = None):
@@ -67,10 +68,10 @@ class MockRoboticArm(TransporterResource):
     def __init__(self, name: str, mocking_type: Optional[str] = None) -> None:
         super().__init__(name)
         self._mocking_type = mocking_type
-        self._plate_type: Optional[str] = None
+        self._labware: Optional[Labware] = None
         self._positions: List[str] = []
-        self._on_pick: Callable[[str, str], None] = lambda x, y: None
-        self._on_place: Callable[[str, str], None] = lambda x, y: None
+        self._on_pick: Callable[[Labware, Location], None] = lambda x, y: None
+        self._on_place: Callable[[Labware, Location], None] = lambda x, y: None
 
     def initialize(self) -> bool:
         print(f"Initializing MockResource")
@@ -80,21 +81,22 @@ class MockRoboticArm(TransporterResource):
         self._is_initialized = True
         return self._is_initialized
 
-    def pick(self, location: str) -> None:
-        if self._plate_type is None: 
-            raise ValueError("Plate type is not set")
-        self._on_pick(self._plate_type, location)
-        print(f"{self._name} pick {self._plate_type} from {location}")
+    def pick(self, location: Location) -> None:
+        if self._labware is not None:
+            raise ValueError(f"Robot already contains labware: {self._labware}")
+        if location.labware is None:
+            raise ValueError(f"Location {location} does not contain labware")
+        self._labware = location.labware
+        self._on_pick(self._labware, location)
+        print(f"{self._name} pick {self._labware} from {location}")
     
-    def place(self, location: str) -> None:
-        if self._plate_type is None: 
-            raise ValueError("Plate type is not set")
-        self._on_place(self._plate_type, location)
-        print(f"{self._name} place {self._plate_type} to {location}")
-    
-    def set_labware_type(self, plate_type: str) -> None:
-        self._plate_type = plate_type
-        print(f"{self._name} plate type set to {plate_type}")
+    def place(self, location: Location) -> None:
+        if self._labware is None:
+            raise ValueError(f"Robot does not contain labware")
+        if location.labware is not None:
+            raise ValueError(f"Location {location} already contains labware")
+        self._on_place(self._labware, location)
+        print(f"{self._name} place {self._labware} to {location}")
 
     def get_taught_positions(self) -> List[str]:
         return self._positions
@@ -102,8 +104,8 @@ class MockRoboticArm(TransporterResource):
     def set_taught_positions(self, positions: List[str]) -> None:
         self._positions = positions
 
-    def set_on_pick(self, on_pick: Callable[[str, str], None]) -> None:
+    def set_on_pick(self, on_pick: Callable[[Labware, Location], None]) -> None:
         self._on_pick = on_pick
     
-    def set_on_place(self, on_place: Callable[[str, str], None]) -> None:
+    def set_on_place(self, on_place: Callable[[Labware, Location], None]) -> None:
         self._on_place = on_place

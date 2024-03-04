@@ -1,5 +1,5 @@
-from typing import Dict, List, Optional
-from resource_models.base_resource import TransporterResource
+from typing import Any, Dict, List, Optional
+from resource_models.transporter_resource import TransporterResource
 from resource_models.loadable_resources.ilabware_loadable import LoadableEquipmentResource
 from resource_models.labware import Labware
 from resource_models.loadable_resources.location import Location
@@ -53,7 +53,7 @@ class RouteAction(BaseAction):
 
         elif isinstance(self._source.resource, TransporterResource):
             # coming from robot
-            actions.append(PlaceAction(self._source.resource, self._labware, self._target.name))
+            actions.append(PlaceAction(self._source.resource, self._labware, self._target))
         elif isinstance(self._source.resource, LoadableEquipmentResource):
             actions.append(UnloadLabwareAction(self._source.resource, self._labware))
         else:
@@ -65,14 +65,13 @@ class RouteAction(BaseAction):
 
         elif isinstance(self._target.resource, TransporterResource):
             # going to robot
-            actions.append(PickAction(self._target.resource, self._labware, self._source.name))
+            actions.append(PickAction(self._target.resource, self._labware, self._source))
         elif isinstance(self._target.resource, LoadableEquipmentResource):
             actions.append(LoadLabwareAction(self._target.resource, self._labware))
             actions.extend(self._post_load_actions)
         else:
             actions.append(NullAction())
 
-    
     def _perform_action(self) -> None:
         for action in self.get_actions():
             action.execute() 
@@ -86,6 +85,14 @@ class Route:
         self._end = end
         self._core_actions: Dict[str, List[BaseAction]] = {}
         self._edges: List[RouteAction] = []
+
+    @property
+    def start(self) -> Location:
+        return self._start
+    
+    @property
+    def end(self) -> Location:
+        return self._end
 
     @property
     def path(self) -> List[Location]:

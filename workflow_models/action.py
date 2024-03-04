@@ -1,8 +1,9 @@
 from abc import ABC
 from enum import Enum, auto
-from resource_models.base_resource import TransporterResource
+from resource_models.transporter_resource import TransporterResource
 from resource_models.loadable_resources.ilabware_loadable import LoadableEquipmentResource
 from resource_models.labware import Labware
+from resource_models.loadable_resources.location import Location
     
 
 class ActionStatus(Enum):
@@ -75,21 +76,20 @@ class LoadLabwareAction(BaseAction):
 
 
 class PickAction(BaseAction):
-    def __init__(self, transporter: TransporterResource, labware: Labware, src_location: str) -> None:
+    def __init__(self, transporter: TransporterResource, labware: Labware, src_location: Location) -> None:
         super().__init__()
         self._transporter = transporter
         self._labware = labware
-        self.src_location = src_location
+        self._src_location = src_location
 
     def _perform_action(self) -> None:
         self._labware.set_in_use(True)
-        self._transporter.set_labware_type(self._labware.labware_type)
-        self._transporter.pick(self.src_location)
+        self._transporter.pick(self._src_location)
         self._labware.set_in_use(False)
 
 
 class PlaceAction(BaseAction):
-    def __init__(self, transporter: TransporterResource, labware: Labware, target_location: str) -> None:
+    def __init__(self, transporter: TransporterResource, labware: Labware, target_location: Location) -> None:
         super().__init__()
         self._transporter = transporter
         self._labware = labware
@@ -97,6 +97,5 @@ class PlaceAction(BaseAction):
 
     def _perform_action(self) -> None:
         self._labware.set_in_use(True)
-        self._transporter.set_labware_type(self._labware.labware_type)
         self._transporter.place(self._target_location)
         self._labware.set_in_use(False)

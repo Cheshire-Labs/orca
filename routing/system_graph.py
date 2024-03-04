@@ -126,7 +126,7 @@ class SystemGraph:
         locations: List[Location] = []
         for location_name in self.get_shortest_any_path(source, target):
             location: Location = self._graph.get_node_data(location_name)["location"]
-            if location.in_use:
+            if location.is_busy:
                 locations.append(location)
         return locations
     
@@ -135,7 +135,7 @@ class SystemGraph:
         for path in self.get_all_shortest_any_paths(source, target):
             for location_name in path:
                 location: Location = self._graph.get_node_data(location_name)["location"]
-                if location.in_use:
+                if location.is_busy:
                     locations.append(location)
         return locations
     
@@ -157,7 +157,7 @@ class SystemGraph:
         nodes = {}
         for node, nodedata in self._graph.get_nodes().items():
             location: Location = nodedata["location"]
-            if not location.in_use:
+            if not location.is_busy:
                 nodes[node] = nodedata
         return nodes
     

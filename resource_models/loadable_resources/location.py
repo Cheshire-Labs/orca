@@ -4,6 +4,7 @@ from resource_models.base_resource import BaseEquipmentResource
 from resource_models.loadable_resources.ilabware_loadable import ILabwareLoadable
 
 from resource_models.labware import Labware
+
 class Location(IUseable, IResource, ILabwareLoadable):
     
     @property
@@ -11,7 +12,7 @@ class Location(IUseable, IResource, ILabwareLoadable):
         return self._name
     
     @property
-    def in_use(self) -> bool:
+    def is_busy(self) -> bool:
         return self._labware is not None
 
     @property

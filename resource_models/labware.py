@@ -48,7 +48,7 @@ class Labware(IUseable):
         return self._labware_type
     
     @property
-    def in_use(self) -> bool:
+    def is_busy(self) -> bool:
         return self._in_use
     
     def set_in_use(self, in_use: bool) -> None:

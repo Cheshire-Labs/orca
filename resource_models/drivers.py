@@ -3,10 +3,12 @@ import xml.etree.ElementTree as ET
 import subprocess
 
 from typing import Any, Dict, List, Optional
+from resource_models.transporter_resource import TransporterResource
 
-from resource_models.base_resource import IResource, TransporterResource
+from resource_models.base_resource import IResource
 from resource_models.loadable_resources.ilabware_loadable import LoadableEquipmentResource
 from resource_models.labware import Labware
+from resource_models.loadable_resources.location import Location
 
 
 class PlaceHolderNonLabwareResource(IResource):
@@ -80,16 +82,13 @@ class PlaceHolderRoboticArm(TransporterResource):
         self._is_initialized = True
         return self._is_initialized
 
-    def pick(self, location: str) -> None:
-        self._validate_position(location)
+    def pick(self, location: Location) -> None:
+        self._validate_position(location.name)
         print(f"{self._name} pick {self._plate_type} from {location}")
     
-    def place(self, location: str) -> None:
-        self._validate_position(location)
+    def place(self, location: Location) -> None:
+        self._validate_position(location.name)
         print(f"{self._name} place {self._plate_type} to {location}")
-    
-    def set_labware_type(self, plate_type: str) -> None:
-        self._plate_type = plate_type
 
     def _validate_position(self, position: str) -> None:
         if position not in self._positions:

@@ -85,13 +85,14 @@ class TestRouteBuilder:
         ham1.set_on_unload_labware(lambda x: completed_actions.append({"resource": ham1.name, "action": "unload_labware", "labware": x.name}))
         shaker1.set_on_load_labware(lambda x: completed_actions.append({"resource": shaker1.name, "action": "load_labware", "labware": x.name}))
         shaker1.set_on_unload_labware(lambda x: completed_actions.append({"resource": shaker1.name, "action": "unload_labware", "labware": x.name}))
-        robot1.set_on_pick(lambda x, y: completed_actions.append({"resource": robot1.name, "action": "pick", "location": y, "labware": x}))
-        robot1.set_on_place(lambda x, y: completed_actions.append({"resource": robot1.name, "action": "place", "location": y, "labware": x}))
-        robot2.set_on_pick(lambda x, y: completed_actions.append({"resource": robot2.name, "action": "pick", "location": y, "labware": x}))
-        robot2.set_on_place(lambda x, y: completed_actions.append({"resource": robot2.name, "action": "place", "location": y, "labware": x}))
+        robot1.set_on_pick(lambda x, y: completed_actions.append({"resource": robot1.name, "action": "pick", "location": y.name, "labware": x.name}))
+        robot1.set_on_place(lambda x, y: completed_actions.append({"resource": robot1.name, "action": "place", "location": y.name, "labware": x.name}))
+        robot2.set_on_pick(lambda x, y: completed_actions.append({"resource": robot2.name, "action": "pick", "location": y.name, "labware": x.name}))
+        robot2.set_on_place(lambda x, y: completed_actions.append({"resource": robot2.name, "action": "place", "location": y.name, "labware": x.name}))
 
         builder = RouteBuilder(thread, system_graph)
         route = builder.get_route()
+        route.start.load_labware(plate)
         for action in route.actions:
             action.set_labware(plate)
             action.execute() 

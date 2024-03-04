@@ -1,4 +1,5 @@
-from resource_models.base_resource import IResource, TransporterResource
+from resource_models.transporter_resource import TransporterResource
+from resource_models.base_resource import IResource
 from resource_models.base_resource import BaseEquipmentResource
 from resource_models.labware import LabwareTemplate
 from resource_models.loadable_resources.location import Location

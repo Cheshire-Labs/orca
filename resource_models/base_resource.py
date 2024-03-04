@@ -1,5 +1,7 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
+
+
 
 
 class ResourceUnavailableError(Exception):
@@ -16,7 +18,7 @@ class IResource(ABC):
 class IUseable(IResource, ABC):
     @property
     @abstractmethod
-    def in_use(self) -> bool:
+    def is_busy(self) -> bool:
         raise NotImplementedError
 
 class IInitializableResource(IResource, ABC):
@@ -66,7 +68,7 @@ class BaseEquipmentResource(IInitializableResource, IUseable, ABC):
         return self._name
 
     @property
-    def in_use(self) -> bool:
+    def is_busy(self) -> bool:
         return self._is_running
 
     def is_initialized(self) -> bool:
@@ -79,25 +81,6 @@ class BaseEquipmentResource(IInitializableResource, IUseable, ABC):
         self._init_options = init_options
 
 
-class TransporterResource(BaseEquipmentResource, ABC):    
-    def __init__(self, name: str):
-        super().__init__(name)
-
-    @abstractmethod
-    def pick(self, position: str) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def place(self, position: str) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def set_labware_type(self, plate_type: str) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def get_taught_positions(self) -> List[str]:
-        raise NotImplementedError
 
     
 
