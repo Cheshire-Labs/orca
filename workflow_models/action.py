@@ -1,7 +1,8 @@
 from abc import ABC
 from enum import Enum, auto
-from resource_models.base_resource import EquipmentResource, IResource, TransporterResource
-from resource_models.labware import Labware, LabwareTemplate
+from resource_models.base_resource import TransporterResource
+from resource_models.equipment_resource import EquipmentResource
+from resource_models.labware import Labware
     
 
 class ActionStatus(Enum):

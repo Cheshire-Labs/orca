@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from typing import Any, Dict, List, Optional
-from resource_models.base_resource import EquipmentResource
+from resource_models.equipment_resource import EquipmentResource
 from resource_models.labware import Labware
 from resource_models.location import Location
 from workflow_models.action import ActionStatus, BaseAction
@@ -221,17 +221,17 @@ class LabwareThread:
 
 class Workflow:
     @staticmethod
-    def from_template(template: WorkflowTemplate) -> Workflow:
-        threads = [LabwareThread.from_template(thread_template) for thread_name, thread_template in template.labware_threads.items()]
+    def from_template(template: WorkflowTemplate, labwares: Dict[str, Labware]) -> Workflow:
+        threads = {thread_name: LabwareThread.from_template(thread_template) for thread_name, thread_template in template.labware_threads.items()}
         workflow = Workflow(template.name, threads)
         return workflow
 
-    def __init__(self, name:str, threads: List[LabwareThread]) -> None:
+    def __init__(self, name:str, threads: Dict[str, LabwareThread]) -> None:
         self._name = name
-        self._labware_threads: List[LabwareThread] = threads
+        self._labware_threads:  Dict[str, LabwareThread] = threads
 
     @property
-    def labware_threads(self) -> List[LabwareThread]:
+    def labware_threads(self) ->  Dict[str, LabwareThread]:
         return self._labware_threads
 
 

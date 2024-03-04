@@ -1,7 +1,7 @@
 
 from abc import ABC
 from typing import Any, Dict, List, Optional
-from resource_models.base_resource import EquipmentResource
+from resource_models.equipment_resource import EquipmentResource
 from resource_models.labware import LabwareTemplate
 from resource_models.location import Location
 from workflow_models.action import BaseAction

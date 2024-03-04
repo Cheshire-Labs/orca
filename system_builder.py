@@ -1,9 +1,10 @@
-from resource_models.base_resource import EquipmentResource, IResource, TransporterResource
+from resource_models.base_resource import IResource, TransporterResource
+from resource_models.equipment_resource import EquipmentResource
 from resource_models.labware import LabwareTemplate
 from resource_models.location import Location
 from resource_models.resource_factory import ResourceFactory, ResourcePoolFactory
 from resource_models.resource_pool import EquipmentResourcePool
-from system import SystemTemplate
+from system_template import SystemTemplate
 
 from workflow_models.workflow_templates import MethodActionTemplate, MethodTemplate, LabwareThreadTemplate, WorkflowTemplate
 

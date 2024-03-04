@@ -1,6 +1,7 @@
 from typing import Optional, Dict, Any, Callable, List
 
-from resource_models.base_resource import EquipmentResource, TransporterResource
+from resource_models.base_resource import TransporterResource
+from resource_models.equipment_resource import EquipmentResource
 from resource_models.labware import Labware
 
 class MockEquipmentResource(EquipmentResource):

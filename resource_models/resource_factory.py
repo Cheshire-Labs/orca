@@ -4,7 +4,7 @@ from resource_models.base_resource import EquipmentResource, IResource
 from resource_models.drivers import PlaceHolderNonLabwareResource, PlaceHolderResource, PlaceHolderRoboticArm, VenusProtocol
 
 from resource_models.resource_pool import EquipmentResourcePool
-from system import SystemTemplate
+from system_template import SystemTemplate
 
 
 

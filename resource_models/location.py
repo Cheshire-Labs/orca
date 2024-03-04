@@ -1,5 +1,7 @@
-from base_resource import EquipmentResource, ILabwareLoadable, IResource, IUseable, ResourceUnavailableError
-from typing import Any, Dict, List, Optional
+from resource_models.base_resource import IResource, IUseable, ResourceUnavailableError
+from typing import Any, Dict, Optional
+from resource_models.equipment_resource import EquipmentResource
+from resource_models.ilabware_loadable import ILabwareLoadable
 
 from resource_models.labware import Labware
 

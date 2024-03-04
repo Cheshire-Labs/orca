@@ -1,6 +1,4 @@
-from workflow_models.method import MethodStatus
-
-from system import SystemTemplate
+from system_template import SystemTemplate
 from workflow_models.workflow import WorkflowTemplate
 
 
