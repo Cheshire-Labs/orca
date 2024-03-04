@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Optional
-from resource_models.base_resource import IExecutable, ResourceUnavailableError
-from resource_models.base_resource import BaseEquipmentResource
+from resource_models.base_resource import ResourceUnavailableError
+from resource_models.base_resource import BaseResource
 from resource_models.labware import Labware
 
 
@@ -15,7 +15,7 @@ class ILabwareLoadable(ABC):
     def unload_labware(self, labware: Labware) -> None:
         raise NotImplementedError
     
-class LoadableEquipmentResource(BaseEquipmentResource, IExecutable, ILabwareLoadable):
+class LoadableEquipmentResource(BaseResource, IExecutable, ILabwareLoadable):
     def __init__(self, name: str) -> None:
         super().__init__(name)
         self._labware: Optional[Labware] = None

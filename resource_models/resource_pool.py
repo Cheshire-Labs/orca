@@ -1,5 +1,5 @@
 from typing import Any, Dict, List, Optional
-from resource_models.base_resource import BaseEquipmentResource
+from resource_models.base_resource import BaseResource
 
 from resource_models.labware import Labware
 
@@ -8,15 +8,15 @@ class AllResourcesBusyError(Exception):
         message = f"Resource pool {resource_pool_name}: {message}"
         super().__init__(message)
     
-class EquipmentResourcePool(BaseEquipmentResource):
+class EquipmentResourcePool(BaseResource):
     @property
-    def _resource(self) -> BaseEquipmentResource:
+    def _resource(self) -> BaseResource:
         return self.get_available_resource()
     
 
     def __init__(self, name: str, options: Dict[str, Any] = {}):
         self._name = name
-        self._resources: Optional[List[BaseEquipmentResource]] = None
+        self._resources: Optional[List[BaseResource]] = None
         self._pool_init_options: Dict[str, Any] = {}
         self._res_options: Dict[str, Any] = options
         self._res_command: Optional[str] = None
@@ -25,7 +25,7 @@ class EquipmentResourcePool(BaseEquipmentResource):
     def is_running(self) -> bool:
         return self._resource.is_running()
     
-    def get_available_resource(self) -> BaseEquipmentResource:
+    def get_available_resource(self) -> BaseResource:
         if self._resources is None:
             raise ValueError("No resources defined in pool")
         for resource in self._resources:
@@ -39,7 +39,7 @@ class EquipmentResourcePool(BaseEquipmentResource):
     def is_initialized(self) -> bool:
         return self._resource.is_initialized()
     
-    def set_resources(self, resources: List[BaseEquipmentResource]) -> None:
+    def set_resources(self, resources: List[BaseResource]) -> None:
         self._resources = resources
     
     def set_init_options(self, init_options: Dict[str, Any]) -> None:

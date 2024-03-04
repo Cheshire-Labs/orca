@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from typing import Any, Dict, List, Optional
-from resource_models.base_resource import BaseEquipmentResource
+from resource_models.base_resource import BaseResource
 from resource_models.loadable_resources.ilabware_loadable import LoadableEquipmentResource
 from resource_models.labware import Labware
 from resource_models.loadable_resources.location import Location

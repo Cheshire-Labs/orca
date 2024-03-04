@@ -1,7 +1,7 @@
 from typing import Any, Dict, Optional
 from resource_models.transporter_resource import TransporterResource
 from resource_models.base_resource import IResource
-from resource_models.base_resource import BaseEquipmentResource
+from resource_models.base_resource import BaseResource
 from resource_models.loadable_resources.ilabware_loadable import LoadableEquipmentResource
 
 from resource_models.labware import Labware, LabwareTemplate
