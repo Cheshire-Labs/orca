@@ -1,9 +1,10 @@
 from typing import Any, Dict, Optional
 from resource_models.base_resource import IResource, TransporterResource
-from resource_models.equipment_resource import EquipmentResource
+from resource_models.base_resource import BaseEquipmentResource
+from resource_models.loadable_resources.ilabware_loadable import LoadableEquipmentResource
 
 from resource_models.labware import Labware, LabwareTemplate
-from resource_models.location import Location
+from resource_models.loadable_resources.location import Location
 from system import System
 from workflow_models.workflow import Method, Workflow
 
@@ -49,8 +50,8 @@ class SystemTemplate:
         self._resources = value
 
     @property
-    def equipment_resources(self) -> Dict[str, EquipmentResource]:
-        return {name: r for name, r in self._resources.items() if isinstance(r, EquipmentResource)}
+    def equipment(self) -> Dict[str, LoadableEquipmentResource]:
+        return {name: r for name, r in self._resources.items() if isinstance(r, LoadableEquipmentResource)}
    
     @property
     def labware_transporters(self) -> Dict[str, TransporterResource]:
@@ -82,7 +83,7 @@ class SystemTemplate:
     
     def create_system_instance(self) -> System:
 
-        # figure out how to create the labware instances needed
+        # TODO: figure out how to create the labware instances needed
 
         labwares = {name: Labware.from_template(labware) for name, labware in self._labwares.items()}
         workflows = {name: Workflow.from_template(workflow) for name, workflow in self._workflows.items()}

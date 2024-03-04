@@ -30,7 +30,7 @@ class Labware(IUseable):
     
     def __init__(self, name: str, labware_type: str) -> None:
         self._id = str(uuid.uuid4())
-        self._init_options = {}
+        self._init_options: Dict[str, Any] = {}
         self._name = name
         self._labware_type = labware_type
         self._in_use = False

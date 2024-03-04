@@ -1,15 +1,10 @@
 from resource_models.base_resource import IResource, IUseable, ResourceUnavailableError
 from typing import Any, Dict, Optional
-from resource_models.equipment_resource import EquipmentResource
-from resource_models.ilabware_loadable import ILabwareLoadable
+from resource_models.base_resource import BaseEquipmentResource
+from resource_models.loadable_resources.ilabware_loadable import ILabwareLoadable
 
 from resource_models.labware import Labware
-
-
 class Location(IUseable, IResource, ILabwareLoadable):
-    @property
-    def location(self) -> str:
-        return self._name
     
     @property
     def name(self) -> str:
@@ -24,19 +19,19 @@ class Location(IUseable, IResource, ILabwareLoadable):
         return self._labware
     
     @property
-    def resource(self) -> Optional[EquipmentResource]:
+    def resource(self) -> Optional[BaseEquipmentResource]:
         return self._resource
 
     def __init__(self, name: str) -> None:
         self._name = name
         self._reserved = False
-        self._resource: Optional[EquipmentResource] = None
+        self._resource: Optional[BaseEquipmentResource] = None
         self._can_resolve_deadlock = True
         self._options:  Dict[str, Any] = {}
         self._init_options: Dict[str, Any] = {}
         self._labware: Optional[Labware] = None
 
-    def set_resource(self, resource: EquipmentResource, can_resolve_deadlock: bool = False) -> None:
+    def set_resource(self, resource: BaseEquipmentResource, can_resolve_deadlock: bool = False) -> None:
         if self._resource is not None:
             raise ResourceUnavailableError(f"Error assigning resource '{resource.name}' to location '{self._name}'. Location already has a resource set to '{self._resource.name}'")
         self._can_resolve_deadlock = can_resolve_deadlock

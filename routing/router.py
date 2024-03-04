@@ -1,7 +1,8 @@
 from typing import Dict, List, Optional
 from resource_models.base_resource import TransporterResource
+from resource_models.loadable_resources.ilabware_loadable import LoadableEquipmentResource
 from resource_models.labware import Labware
-from resource_models.location import Location
+from resource_models.loadable_resources.location import Location
 from routing.system_graph import SystemGraph
 from workflow_models.action import BaseAction, LoadLabwareAction, NullAction, PickAction, PlaceAction, UnloadLabwareAction
 from workflow_models.workflow import LabwareThread
@@ -49,25 +50,27 @@ class RouteAction(BaseAction):
     def _append_source_actions(self, actions: List[BaseAction]) -> None:
         if self._labware is None:
             raise ValueError("Labware must be set before getting actions")
-        elif self._source.resource is None:
-            actions.append(NullAction())
-        elif self._source.resource is TransporterResource:
+
+        elif isinstance(self._source.resource, TransporterResource):
             # coming from robot
             actions.append(PlaceAction(self._source.resource, self._labware, self._target.name))
-        else:
+        elif isinstance(self._source.resource, LoadableEquipmentResource):
             actions.append(UnloadLabwareAction(self._source.resource, self._labware))
+        else:
+            actions.append(NullAction())
 
     def _append_target_actions(self, actions: List[BaseAction]) -> None:
         if self._labware is None:
             raise ValueError("Labware must be set before getting actions")
-        elif self._target.resource is None:
-            actions.append(NullAction())
-        elif self._target.resource is TransporterResource:
+
+        elif isinstance(self._target.resource, TransporterResource):
             # going to robot
             actions.append(PickAction(self._target.resource, self._labware, self._source.name))
-        else:
+        elif isinstance(self._target.resource, LoadableEquipmentResource):
             actions.append(LoadLabwareAction(self._target.resource, self._labware))
             actions.extend(self._post_load_actions)
+        else:
+            actions.append(NullAction())
 
     
     def _perform_action(self) -> None:
@@ -90,6 +93,10 @@ class Route:
         for edge in self._edges:
             path.append(edge.target) 
         return path
+    
+    @property
+    def actions(self) -> List[RouteAction]:
+        return self._edges
 
     def add_stop(self, location: str, action: BaseAction) -> None:
         if location not in self._core_actions.keys():
@@ -101,7 +108,7 @@ class Route:
         for core_location, core_actions in self._core_actions.items():
 
             # get the source and target locations
-            core_src_location = self._start if len(self._edges) > 0 else self._edges[-1].target
+            core_src_location = self._edges[-1].target if len(self._edges) > 0 else self._start 
             core_tgt_location = system.locations[core_location]
 
             # get the shortest path between the two locations
@@ -114,7 +121,16 @@ class Route:
                 target_location = system.locations[path_tgt_loc]
                 self._edges.append(RouteAction(source_location, target_location))
                 path_src_loc = path_tgt_loc
-            self._edges[-1].set_actions(core_actions)                
+            self._edges[-1].set_actions(core_actions)
+
+        # build to the end of the route
+        end_path: List[str] = system.get_shortest_available_path(self._edges[-1].target.name, self._end.name)
+        end_path_src_loc = end_path.pop(0)
+        for end_path_tgt_loc in end_path:
+            source_location = system.locations[end_path_src_loc]
+            target_location = system.locations[end_path_tgt_loc]
+            self._edges.append(RouteAction(source_location, target_location))
+            end_path_src_loc = end_path_tgt_loc                
 
 class RouteBuilder:
     def __init__(self, thread: LabwareThread, system: SystemGraph) -> None:

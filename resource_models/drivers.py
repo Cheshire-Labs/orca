@@ -4,7 +4,8 @@ import subprocess
 
 from typing import Any, Dict, List, Optional
 
-from resource_models.base_resource import EquipmentResource, IResource, TransporterResource
+from resource_models.base_resource import IResource, TransporterResource
+from resource_models.loadable_resources.ilabware_loadable import LoadableEquipmentResource
 from resource_models.labware import Labware
 
 
@@ -24,7 +25,7 @@ class PlaceHolderNonLabwareResource(IResource):
 
 
 # TODO: Just a placehodler for now
-class PlaceHolderResource(EquipmentResource):
+class PlaceHolderResource(LoadableEquipmentResource):
     def __init__(self, name: str, mocking_type: Optional[str] = None):
         super().__init__(name)
         self._mocking_type = mocking_type
@@ -36,6 +37,12 @@ class PlaceHolderResource(EquipmentResource):
         print(f"Mock Initialized")
         self._is_initialized = True
         return self._is_initialized
+
+    def set_command(self, command: str) -> None:
+        self._command = command
+    
+    def set_command_options(self, options: Dict[str, Any]) -> None:
+        self._command_options = options
 
     def load_labware(self, labware: Labware) -> None:
         self._is_running = True
@@ -65,6 +72,14 @@ class PlaceHolderRoboticArm(TransporterResource):
         self._positions: List[str] = []
         self._command: Optional[str] = None
 
+    def initialize(self) -> bool:
+        print(f"Initializing MockRoboticArm")
+        print(f"Name: {self._name}")
+        print(f"Type: {self._mocking_type}")
+        print(f"Mock Initialized")
+        self._is_initialized = True
+        return self._is_initialized
+
     def pick(self, location: str) -> None:
         self._validate_position(location)
         print(f"{self._name} pick {self._plate_type} from {location}")
@@ -89,7 +104,7 @@ class PlaceHolderRoboticArm(TransporterResource):
         return self._positions
     
 
-class VenusProtocol(EquipmentResource):
+class VenusProtocol(LoadableEquipmentResource):
     def __init__(self, name: str):
         super().__init__(name)
         self._default_exe_path = r"C:\Program Files (x86)\HAMILTON\Bin\HxRun.exe"
@@ -105,6 +120,11 @@ class VenusProtocol(EquipmentResource):
     def unload_labware(self, labware: Labware) -> None:
         print("Move carriage to unload position")
 
+    def set_command(self, command: str) -> None:
+        self._command = command
+    
+    def set_command_options(self, options: Dict[str, Any]) -> None:
+        self._options = options
 
     def is_running(self) -> bool:
         return self._is_running

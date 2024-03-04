@@ -1,10 +1,10 @@
 from typing import Optional, Dict, Any, Callable, List
 
 from resource_models.base_resource import TransporterResource
-from resource_models.equipment_resource import EquipmentResource
 from resource_models.labware import Labware
+from resource_models.loadable_resources.ilabware_loadable import LoadableEquipmentResource
 
-class MockEquipmentResource(EquipmentResource):
+class MockEquipmentResource(LoadableEquipmentResource):
     def __init__(self, name: str, mocking_type: Optional[str] = None):
         super().__init__(name)
         self._mocking_type = mocking_type
@@ -12,6 +12,12 @@ class MockEquipmentResource(EquipmentResource):
         self._on_load_labware: Callable[[Labware], None] = lambda x: None
         self._on_unload_labware: Callable[[Labware], None] = lambda x: None
         self._on_execute: Callable[[], None] = lambda: None
+
+    def set_command_options(self, options: Dict[str, Any]) -> None:
+        self._command_options = options
+    
+    def set_command(self, command: str) -> None:
+        self._command = command
 
     def initialize(self) -> bool:
         print(f"Initializing MockResource")
@@ -31,7 +37,7 @@ class MockEquipmentResource(EquipmentResource):
     def unload_labware(self, labware: Labware) -> None:
         self._is_running = True
         print(f"{self._name} close plate door")
-        self._on_load_labware(labware)
+        self._on_unload_labware(labware)
         self._is_running = False
 
     def is_running(self) -> bool:
@@ -65,6 +71,14 @@ class MockRoboticArm(TransporterResource):
         self._positions: List[str] = []
         self._on_pick: Callable[[str, str], None] = lambda x, y: None
         self._on_place: Callable[[str, str], None] = lambda x, y: None
+
+    def initialize(self) -> bool:
+        print(f"Initializing MockResource")
+        print(f"Name: {self._name}")
+        print(f"Type: {self._mocking_type}")
+        print(f"Mock Initialized")
+        self._is_initialized = True
+        return self._is_initialized
 
     def pick(self, location: str) -> None:
         if self._plate_type is None: 

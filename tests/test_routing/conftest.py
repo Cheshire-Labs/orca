@@ -1,5 +1,5 @@
 
-from resource_models.location import Location
+from resource_models.loadable_resources.location import Location
 
 import pytest
 
@@ -8,27 +8,27 @@ from tests.mock import MockEquipmentResource, MockRoboticArm
 
 
 
-@pytest.fixture(scope='session', autouse=True)
+@pytest.fixture
 def robot1(request) -> MockRoboticArm:
     return MockRoboticArm("robot1", mocking_type="robot") # loc1, loc2, loc3, stacker1, shaker1
 
-@pytest.fixture(scope='session', autouse=True)
+@pytest.fixture
 def robot2(request) -> MockRoboticArm:
     return MockRoboticArm("robot2", mocking_type="robot") # loc3, loc4, loc5, ham1
 
-@pytest.fixture(scope='session', autouse=True)
+@pytest.fixture
 def stacker1(request) -> MockEquipmentResource:
     return MockEquipmentResource("stacker1", mocking_type="stacker")
 
-@pytest.fixture(scope='session', autouse=True)
+@pytest.fixture
 def shaker1(request) -> MockEquipmentResource:
     return MockEquipmentResource("shaker1", mocking_type="shaker")
 
-@pytest.fixture(scope='session', autouse=True)
+@pytest.fixture
 def ham1(request) -> MockEquipmentResource:
     return MockEquipmentResource("ham1", mocking_type="hamilton")
 
-@pytest.fixture(scope='session', autouse=True)
+@pytest.fixture
 def system_graph(robot1, robot2, stacker1, shaker1, ham1) -> SystemGraph:
     graph = SystemGraph()
 

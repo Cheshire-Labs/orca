@@ -1,7 +1,7 @@
 from abc import ABC
 from enum import Enum, auto
 from resource_models.base_resource import TransporterResource
-from resource_models.equipment_resource import EquipmentResource
+from resource_models.loadable_resources.ilabware_loadable import LoadableEquipmentResource
 from resource_models.labware import Labware
     
 
@@ -51,7 +51,7 @@ class NullAction(BaseAction):
         pass  
 
 class UnloadLabwareAction(BaseAction):
-    def __init__(self, resource: EquipmentResource, labware: Labware) -> None:
+    def __init__(self, resource: LoadableEquipmentResource, labware: Labware) -> None:
         super().__init__()
         self._resource = resource
         self._labware = labware
@@ -63,7 +63,7 @@ class UnloadLabwareAction(BaseAction):
 
 
 class LoadLabwareAction(BaseAction):
-    def __init__(self, resource: EquipmentResource, labware: Labware) -> None:
+    def __init__(self, resource: LoadableEquipmentResource, labware: Labware) -> None:
         super().__init__()
         self._resource = resource
         self._labware = labware

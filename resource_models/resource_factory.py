@@ -1,7 +1,8 @@
 from importlib.resources import Resource
 from typing import Any, Dict, List
-from resource_models.base_resource import EquipmentResource, IResource
+from resource_models.base_resource import IResource
 from resource_models.drivers import PlaceHolderNonLabwareResource, PlaceHolderResource, PlaceHolderRoboticArm, VenusProtocol
+from resource_models.base_resource import BaseEquipmentResource
 
 from resource_models.resource_pool import EquipmentResourcePool
 from system_template import SystemTemplate
@@ -73,12 +74,12 @@ class ResourcePoolFactory:
         pool: EquipmentResourcePool = EquipmentResourcePool(pool_name)
         if "resources" not in pool_config.keys():
             raise KeyError(f"No resources defined in resource pool {pool_name}")
-        resources: List[EquipmentResource] = []
+        resources: List[BaseEquipmentResource] = []
         for res_name in pool_config['resources']:
             if res_name not in self._system.resources.keys():
                 raise KeyError(f"Resource {res_name} from resource pool {pool_name} not found in system")
             res = self._system.resources[res_name]
-            if not isinstance(res, EquipmentResource):
+            if not isinstance(res, BaseEquipmentResource):
                 raise ValueError(f"Resource {res_name} from resource pool {pool_name} is not a valid equipment resource")
             resources.append(res)
         pool.set_resources(resources)

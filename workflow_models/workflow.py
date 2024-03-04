@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import time
 from typing import Any, Dict, List, Optional
-from resource_models.equipment_resource import EquipmentResource
+from resource_models.base_resource import BaseEquipmentResource
+from resource_models.loadable_resources.ilabware_loadable import LoadableEquipmentResource
 from resource_models.labware import Labware
-from resource_models.location import Location
+from resource_models.loadable_resources.location import Location
 from workflow_models.action import ActionStatus, BaseAction
 from workflow_models.method_status import MethodStatus
 from workflow_models.workflow_templates import LabwareThreadTemplate, MethodActionTemplate, MethodTemplate, WorkflowTemplate
@@ -27,12 +28,12 @@ class MethodAction(BaseAction):
 
 
     def __init__(self, 
-                 resource: EquipmentResource, 
+                 resource: LoadableEquipmentResource, 
                  command: str, 
                  labware_instance_inputs: List[Labware], 
                  labware_instance_outputs: List[Labware], 
                  options: Dict[str, Any] = {}) -> None:
-        self._resource: EquipmentResource = resource
+        self._resource: LoadableEquipmentResource = resource
         self._command: str = command
         self._options: Dict[str, Any] = options
         self._awaiting_labware_inputs: List[Labware] = labware_instance_inputs
@@ -41,7 +42,7 @@ class MethodAction(BaseAction):
         self._status: ActionStatus = ActionStatus.CREATED
 
     @property
-    def resource(self) -> EquipmentResource:
+    def resource(self) -> LoadableEquipmentResource:
         return self._resource
     
     @property
@@ -65,7 +66,7 @@ class MethodAction(BaseAction):
         self._resource.unload_labware(labware)
         self._outputs.remove(labware)
 
-    def _perform_execute(self) -> None:
+    def _perform_action(self) -> None:
         self._resource.set_command(self._command)
         self._resource.set_command_options(self._options)
         self._status = ActionStatus.IN_PROGRESS

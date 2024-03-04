@@ -1,7 +1,7 @@
 from resource_models.base_resource import IResource, TransporterResource
-from resource_models.equipment_resource import EquipmentResource
+from resource_models.base_resource import BaseEquipmentResource
 from resource_models.labware import LabwareTemplate
-from resource_models.location import Location
+from resource_models.loadable_resources.location import Location
 from resource_models.resource_factory import ResourceFactory, ResourcePoolFactory
 from resource_models.resource_pool import EquipmentResourcePool
 from system_template import SystemTemplate
@@ -96,7 +96,7 @@ class SystemTemplateBuilder:
 
         for _, res in system.resources.items():
             # skip resources like newtowrk switches, etc that don't have plate pad locations
-            if isinstance(res, EquipmentResource) \
+            if isinstance(res, BaseEquipmentResource) \
                 and not isinstance(res, EquipmentResourcePool) \
                 and not isinstance(res, TransporterResource):
                 # set resource to each location
@@ -116,9 +116,9 @@ class SystemTemplateBuilder:
             actions: List[MethodActionTemplate] = []
             for action_index, action_config in enumerate(method_def['actions']):
                 for resource_name, action_options in action_config.items():
-                    if resource_name not in system.equipment_resources.keys():
+                    if resource_name not in system.equipment.keys():
                         raise LookupError(f"The resource name '{resource_name}' in method actions is not recognized as a defined resource")
-                    resource = system.equipment_resources[resource_name]
+                    resource = system.equipment[resource_name]
 
                 # get command
                 if "command" not in action_options.keys():

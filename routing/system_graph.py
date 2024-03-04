@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
-from resource_models.location import Location
-from resource_models.location import Location
+from resource_models.loadable_resources.location import Location
+from resource_models.loadable_resources.location import Location
 import networkx as nx
 
 

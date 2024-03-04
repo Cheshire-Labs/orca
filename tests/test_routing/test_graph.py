@@ -11,15 +11,15 @@ import networkx as nx
 
 class TestSystemGraph:
     def test_get_shortest_path(self, system_graph: SystemGraph):
-        expected_path = ["loc_stacker1", "loc_robot1", "loc3", "loc_robot2", "loc_ham1"]
-        path = system_graph.get_shortest_any_path("loc_stacker1", "loc_ham1")
+        expected_path = ["stacker1", "robot1", "loc3", "robot2", "ham1"]
+        path = system_graph.get_shortest_any_path("stacker1", "ham1")
         assert path == expected_path
 
     def test_no_path_through_in_use_plate(self, system_graph: SystemGraph):
         loc3 = system_graph.locations["loc3"]
         loc3.load_labware(Labware("plate", labware_type="mock_labware"))
         try:
-            path = system_graph.get_shortest_available_path("loc_stacker1", "loc_ham1")
+            path = system_graph.get_shortest_available_path("stacker1", "ham1")
             assert False
         except nx.NetworkXNoPath:
             assert True
@@ -45,7 +45,20 @@ class TestRouteBuilder:
         builder = RouteBuilder(thread, system_graph)
         route = builder.get_route()
         
-        expected_stops = ["stacker1", "robot1", "loc3", "robot2", "ham1", "loc5"]
+        expected_stops = [
+            "stacker1", 
+            "robot1", 
+            "loc3", 
+            "robot2", 
+            "ham1", 
+            "robot2", 
+            "loc3", 
+            "robot1", 
+            "shaker1", 
+            "robot1", 
+            "loc3", 
+            "robot2", 
+            "loc5"]
         stops = [stop.name for stop in route.path]
         assert stops == expected_stops
 
@@ -59,11 +72,9 @@ class TestRouteBuilder:
         completed_actions: List[Dict[str, str]] = []
         plate = Labware("plate", "mock_labware")
         ham_method = Method("venus_method", [MethodAction(ham1, "run", [plate], [plate])])
-        shaker_method = Method("shaker_method", [MethodAction(shaker1, "shake", [plate], [plate])])
         thread = LabwareThread(name=plate.name,
                                labware=plate,
-                               method_sequence=[ham_method, 
-                                                shaker_method],
+                               method_sequence=[ham_method],
                                 start_location=system_graph.locations["stacker1"],
                                 end_location=system_graph.locations["loc5"]
         )
@@ -81,103 +92,108 @@ class TestRouteBuilder:
 
         builder = RouteBuilder(thread, system_graph)
         route = builder.get_route()
+        for action in route.actions:
+            action.set_labware(plate)
+            action.execute() 
 
 
         expected_actions = [
             # stacker1 downstack
             {
-                "res":"stacker1",
+                "resource":"stacker1",
                 "action":"unload_labware",
-                "labware":"plate"
+                "labware": plate.name
             },         
             # robot1 pick stacker1   
             {
-                "res": "robot1",
+                "resource": "robot1",
                 "action": "pick",
                 "location": "stacker1",
-                "labware": "plate"
+                "labware": plate.name
             },
             # robot1 place loc3
             {
-                "res": "robot1",
+                "resource": "robot1",
                 "action": "place",
                 "location": "loc3",
-                "labware": "plate"
+                "labware": plate.name
             },
             # loc3 load
             {
-                "res": "lo3",
+                "resource": "loc3",
                 "action": "load_labware",
-                "labware": "plate"
+                "labware": plate.name
             },
             # loc3 execute
             {
-                "res": "loc3", 
+                "resource": "loc3", 
                 "action":"execute"
             },
              # loc3 unload
             {
-                "res":"loc3",
+                "resource":"loc3",
                 "action":"unload_labware",
-                "labware":"plate"
+                "labware":plate.name
             },
             
             # robot2 pick loc3
             {
-                "res": "robot2",
+                "resource": "robot2",
                 "action": "pick",
                 "location": "loc3",
-                "labware": "plate"
+                "labware": plate.name
             },
             # robot2 place ham1
             {
-                "res":"robot2",
+                "resource":"robot2",
                 "action":"place",
                 "location":"ham1",
-                "labware":"plate"
+                "labware":plate.name
             },
             # ham1 load
             {
-                "res":"ham1",
+                "resource":"ham1",
                 "action":"load_labware",
-                "labware":"plate"
+                "labware":plate.name
             },
             # ham1 execute
             {
-                "res":"ham1",
+                "resource":"ham1",
                 "action":"execute"
             },
             # ham1 unload
             {
-                "res":"ham1",
+                "resource":"ham1",
                 "action":"unload_labware",
-                "labware":"plate"
+                "labware":plate.name
             },
             # robot2 pick ham1
             {
-                "res":"robot2",
+                "resource":"robot2",
                 "action":"pick",
                 "location":"ham1",
-                "labware":"plate"
+                "labware":plate.name
             },
             # robot2 place loc5
             {
-                "res":"robot2",
+                "resource":"robot2",
                 "action":"place",
                 "location":"loc5",
-                "labware":"plate"
+                "labware":plate.name
             },
             # loc5 load
             {
-                "res":"loc5",
+                "resource":"loc5",
                 "action":"load_labware",
-                "labware":"plate"
+                "labware":plate.name
             },
             # loc5 execute
             {
-                "res":"loc5",
+                "resource":"loc5",
                 "action":"execute"
             }
         ]
+
+        assert completed_actions == expected_actions
 
         
