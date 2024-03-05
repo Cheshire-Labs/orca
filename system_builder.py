@@ -1,8 +1,8 @@
+from resource_models.location import Location
 from resource_models.transporter_resource import TransporterResource
 from resource_models.base_resource import IResource
 from resource_models.base_resource import BaseResource
 from resource_models.labware import LabwareTemplate
-from resource_models.loadable_resources.location import Location
 from resource_models.resource_factory import ResourceFactory, ResourcePoolFactory
 from resource_models.resource_pool import EquipmentResourcePool
 from system_template import SystemTemplate

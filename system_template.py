@@ -1,11 +1,10 @@
 from typing import Any, Dict, Optional
+from resource_models.location import Location
 from resource_models.transporter_resource import TransporterResource
 from resource_models.base_resource import IResource
-from resource_models.base_resource import BaseResource
-from resource_models.loadable_resources.ilabware_loadable import LoadableEquipmentResource
+from resource_models.base_resource import BaseLabwareableResource
 
 from resource_models.labware import Labware, LabwareTemplate
-from resource_models.loadable_resources.location import Location
 from system import System
 from workflow_models.workflow import Method, Workflow
 
@@ -51,8 +50,8 @@ class SystemTemplate:
         self._resources = value
 
     @property
-    def equipment(self) -> Dict[str, LoadableEquipmentResource]:
-        return {name: r for name, r in self._resources.items() if isinstance(r, LoadableEquipmentResource)}
+    def equipment(self) -> Dict[str, BaseLabwareableResource]:
+        return {name: r for name, r in self._resources.items() if isinstance(r, BaseLabwareableResource)}
    
     @property
     def labware_transporters(self) -> Dict[str, TransporterResource]:

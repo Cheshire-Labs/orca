@@ -3,8 +3,6 @@ from __future__ import annotations
 from typing import Any, Dict
 import uuid
 
-from resource_models.base_resource import IUseable
-
 class LabwareTemplate:
     def __init__(self, name: str, type: str):
         self._name = name
@@ -22,7 +20,7 @@ class LabwareTemplate:
     def labware_type(self, value: str) -> None:
         self._labware_type = value
 
-class Labware(IUseable):
+class Labware:
 
     @staticmethod
     def from_template(labware: LabwareTemplate) -> Labware:
@@ -33,7 +31,6 @@ class Labware(IUseable):
         self._init_options: Dict[str, Any] = {}
         self._name = name
         self._labware_type = labware_type
-        self._in_use = False
     
     @property
     def name(self) -> str:
@@ -46,13 +43,6 @@ class Labware(IUseable):
     @property
     def labware_type(self) -> str:
         return self._labware_type
-    
-    @property
-    def is_busy(self) -> bool:
-        return self._in_use
-    
-    def set_in_use(self, in_use: bool) -> None:
-        self._in_use = in_use
 
     def set_init_options(self, init_options: Dict[str, Any]) -> None:
         self._init_options = init_options

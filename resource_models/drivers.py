@@ -1,14 +1,12 @@
-from dataclasses import dataclass
-import xml.etree.ElementTree as ET
 import subprocess
 
 from typing import Any, Dict, List, Optional
+from resource_models.location import Location
 from resource_models.transporter_resource import TransporterResource
 
 from resource_models.base_resource import IResource
-from resource_models.loadable_resources.ilabware_loadable import LoadableEquipmentResource
+from resource_models.base_resource import BaseLabwareableResource
 from resource_models.labware import Labware
-from resource_models.loadable_resources.location import Location
 
 
 class PlaceHolderNonLabwareResource(IResource):
@@ -27,7 +25,7 @@ class PlaceHolderNonLabwareResource(IResource):
 
 
 # TODO: Just a placehodler for now
-class PlaceHolderResource(LoadableEquipmentResource):
+class PlaceHolderResource(BaseLabwareableResource):
     def __init__(self, name: str, mocking_type: Optional[str] = None):
         super().__init__(name)
         self._mocking_type = mocking_type
@@ -103,7 +101,7 @@ class PlaceHolderRoboticArm(TransporterResource):
         return self._positions
     
 
-class VenusProtocol(LoadableEquipmentResource):
+class VenusProtocol(BaseLabwareableResource):
     def __init__(self, name: str):
         super().__init__(name)
         self._default_exe_path = r"C:\Program Files (x86)\HAMILTON\Bin\HxRun.exe"

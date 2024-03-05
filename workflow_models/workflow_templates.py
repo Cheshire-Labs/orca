@@ -1,15 +1,15 @@
 
 from abc import ABC
 from typing import Any, Dict, List, Optional
-from resource_models.loadable_resources.ilabware_loadable import LoadableEquipmentResource
+from resource_models.location import Location
+from resource_models.base_resource import BaseLabwareableResource
 
 from resource_models.labware import LabwareTemplate
-from resource_models.loadable_resources.location import Location
 from workflow_models.action import BaseAction
 
 
 class MethodActionTemplate(BaseAction, ABC):
-    def __init__(self, resource: LoadableEquipmentResource, command: str, options: Optional[Dict[str, Any]] = None, inputs: Optional[List[LabwareTemplate]] = None, outputs: Optional[List[LabwareTemplate]] = None):
+    def __init__(self, resource: BaseLabwareableResource, command: str, options: Optional[Dict[str, Any]] = None, inputs: Optional[List[LabwareTemplate]] = None, outputs: Optional[List[LabwareTemplate]] = None):
         self._resource = resource
         self._command = command
         self._options: Dict[str, Any] = {} if options is None else options
@@ -17,7 +17,7 @@ class MethodActionTemplate(BaseAction, ABC):
         self._outputs: List[LabwareTemplate] = outputs if outputs is not None else []
 
     @property
-    def resource(self) -> LoadableEquipmentResource:
+    def resource(self) -> BaseLabwareableResource:
         return self._resource
     @property
     def inputs(self) -> List[LabwareTemplate]:

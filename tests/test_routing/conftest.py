@@ -1,7 +1,7 @@
 
-from resource_models.loadable_resources.location import Location
-
 import pytest
+from resource_models.location import Location
+from resource_models.plate_pad import PlatePad
 
 from routing.system_graph import SystemGraph
 from tests.mock import MockEquipmentResource, MockRoboticArm
@@ -39,16 +39,12 @@ def system_graph(robot1, robot2, stacker1, shaker1, ham1) -> SystemGraph:
     loc4 = Location("loc4")
     loc5 = Location("loc5")
     loc6 = Location("loc6")
-    loc_robot1 = Location("robot1")
-    loc_robot1.set_resource(robot1)
-    loc_robot2 = Location("robot2")
-    loc_robot2.set_resource(robot2)
-    loc_stacker1 = Location("stacker1")
-    loc_stacker1.set_resource(stacker1)
-    loc_shaker1 = Location("shaker1")
-    loc_shaker1.set_resource(shaker1)
-    loc_ham1 = Location("ham1")
-    loc_ham1.set_resource(ham1)
+    loc_robot1 = Location("robot1",robot1)
+    loc_robot2 = Location("robot2",robot2)
+    loc_stacker1 = Location("stacker1",stacker1)
+    loc_shaker1 = Location("shaker1",shaker1)
+    loc_ham1 = Location("ham1",ham1)
+
     
     # add locations to graph
     graph.add_location(loc1)
@@ -66,25 +62,25 @@ def system_graph(robot1, robot2, stacker1, shaker1, ham1) -> SystemGraph:
     # Add edges with actions
     # loc3 is the connecting location
     # robot1 -> [loc1, loc2, loc3, stacker1, shaker1]
-    graph.add_edge("robot1", "loc1")
-    graph.add_edge("robot1", "loc2")
-    graph.add_edge("robot1", "loc3")
-    graph.add_edge("robot1", "stacker1")
-    graph.add_edge("robot1", "shaker1")
-    graph.add_edge("loc1", "robot1")
-    graph.add_edge("loc2", "robot1")
-    graph.add_edge("loc3", "robot1")
-    graph.add_edge("stacker1", "robot1")
-    graph.add_edge("shaker1", "robot1")
+    graph.add_edge("robot1", "loc1", robot1)
+    graph.add_edge("robot1", "loc2",robot1) 
+    graph.add_edge("robot1", "loc3",robot1)
+    graph.add_edge("robot1", "stacker1",robot1)
+    graph.add_edge("robot1", "shaker1",robot1)
+    graph.add_edge("loc1", "robot1",robot1)
+    graph.add_edge("loc2", "robot1",robot1)
+    graph.add_edge("loc3", "robot1",robot1)
+    graph.add_edge("stacker1", "robot1",robot1)
+    graph.add_edge("shaker1", "robot1",robot1)
 
     # robot2 -> [loc3, loc4, loc5, ham1]
-    graph.add_edge("robot2", "loc3")
-    graph.add_edge("robot2", "loc4")
-    graph.add_edge("robot2", "loc5")
-    graph.add_edge("robot2", "ham1")
-    graph.add_edge("loc3", "robot2")
-    graph.add_edge("loc4", "robot2")
-    graph.add_edge("loc5", "robot2")
-    graph.add_edge("ham1", "robot2")
+    graph.add_edge("robot2", "loc3",robot2)
+    graph.add_edge("robot2", "loc4",robot2)
+    graph.add_edge("robot2", "loc5",robot2)
+    graph.add_edge("robot2", "ham1",robot2)
+    graph.add_edge("loc3", "robot2",robot2)
+    graph.add_edge("loc4", "robot2",robot2)
+    graph.add_edge("loc5", "robot2",robot2)
+    graph.add_edge("ham1", "robot2",robot2)
 
     return graph

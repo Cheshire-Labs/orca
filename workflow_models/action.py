@@ -1,9 +1,9 @@
 from abc import ABC
 from enum import Enum, auto
+from resource_models.location import Location
 from resource_models.transporter_resource import TransporterResource
-from resource_models.loadable_resources.ilabware_loadable import LoadableEquipmentResource
+from resource_models.base_resource import LabwareLoadable
 from resource_models.labware import Labware
-from resource_models.loadable_resources.location import Location
     
 
 class ActionStatus(Enum):
@@ -52,27 +52,24 @@ class NullAction(BaseAction):
         pass  
 
 class UnloadLabwareAction(BaseAction):
-    def __init__(self, resource: LoadableEquipmentResource, labware: Labware) -> None:
+    def __init__(self, resource: LabwareLoadable, labware: Labware) -> None:
         super().__init__()
         self._resource = resource
         self._labware = labware
 
     def _perform_action(self) -> None:
-        self._labware.set_in_use(True)
         self._resource.unload_labware(self._labware)
-        self._labware.set_in_use(False)
+
 
 
 class LoadLabwareAction(BaseAction):
-    def __init__(self, resource: LoadableEquipmentResource, labware: Labware) -> None:
+    def __init__(self, resource: LabwareLoadable, labware: Labware) -> None:
         super().__init__()
         self._resource = resource
         self._labware = labware
 
     def _perform_action(self) -> None:
-        self._labware.set_in_use(True)
         self._resource.load_labware(self._labware)
-        self._labware.set_in_use(False)
 
 
 class PickAction(BaseAction):
@@ -83,9 +80,7 @@ class PickAction(BaseAction):
         self._src_location = src_location
 
     def _perform_action(self) -> None:
-        self._labware.set_in_use(True)
         self._transporter.pick(self._src_location)
-        self._labware.set_in_use(False)
 
 
 class PlaceAction(BaseAction):
@@ -96,6 +91,4 @@ class PlaceAction(BaseAction):
         self._target_location = target_location
 
     def _perform_action(self) -> None:
-        self._labware.set_in_use(True)
         self._transporter.place(self._target_location)
-        self._labware.set_in_use(False)

@@ -1,24 +1,21 @@
 from typing import Optional, Dict, Any, Callable, List
+from resource_models.location import Location
 
 from resource_models.transporter_resource import TransporterResource
 from resource_models.labware import Labware
-from resource_models.loadable_resources.ilabware_loadable import LoadableEquipmentResource
-from resource_models.loadable_resources.location import Location
+from resource_models.base_resource import BaseLabwareableResource
 
-class MockEquipmentResource(LoadableEquipmentResource):
+class MockEquipmentResource(BaseLabwareableResource):
     def __init__(self, name: str, mocking_type: Optional[str] = None):
         super().__init__(name)
         self._mocking_type = mocking_type
+        self._stage_labware: Optional[Labware] = None
+        self._loaded_labware: List[Labware] = []
+
         self._on_intialize: Callable[[Dict[str, Any]], None] = lambda x: None
         self._on_load_labware: Callable[[Labware], None] = lambda x: None
         self._on_unload_labware: Callable[[Labware], None] = lambda x: None
         self._on_execute: Callable[[], None] = lambda: None
-
-    def set_command_options(self, options: Dict[str, Any]) -> None:
-        self._command_options = options
-    
-    def set_command(self, command: str) -> None:
-        self._command = command
 
     def initialize(self) -> bool:
         print(f"Initializing MockResource")
@@ -29,26 +26,34 @@ class MockEquipmentResource(LoadableEquipmentResource):
         self._on_intialize(self._init_options)
         return self._is_initialized
 
+    def stage_labware(self, labware: Labware) -> None:
+        if self._stage_labware is not None:
+            raise ValueError(f"Stage already contains labware: {self._stage_labware}")
+        self._stage_labware = labware
+        print(f"{self._name} - labware {labware} staged")
+
+    def unstage_labware(self, labware: Labware) -> None:
+        if self._stage_labware != labware:
+            raise ValueError(f"Stage labware {self._stage_labware} does not match labware {labware} to unstage")
+        self._stage_labware = None
+        print(f"{self._name} - labware {labware} unstaged")
+
     def load_labware(self, labware: Labware) -> None:
-        self._is_running = True
-        print(f"{self._name} open plate door")
+        if labware != self._stage_labware:
+            raise ValueError(f"Labware {labware} not on stage.  Stage contains labware {self._stage_labware}")
         self._on_load_labware(labware)
-        self._is_running = False
+        print(f"{self._name} - labware {labware} loaded from stage")
 
     def unload_labware(self, labware: Labware) -> None:
-        self._is_running = True
-        print(f"{self._name} close plate door")
-        self._on_unload_labware(labware)
-        self._is_running = False
-
-    def is_running(self) -> bool:
-        return self._is_running
+        if labware not in self._loaded_labware:
+            raise ValueError(f"Labware {labware} not found in loaded labwares")
+        self._loaded_labware.remove(labware)
+        print(f"{self._name} - labware {self.labware} unloaded to stage")
+        self._stage_labware = labware
 
     def execute(self) -> None:
-        self._is_running = True
         print(f"{self._name} execute")
         self._on_execute()
-        self._is_running = False
 
     def set_on_intialize(self, on_intialize: Callable[[Dict[str, Any]], None]) -> None:
         self._on_intialize = on_intialize
@@ -61,8 +66,6 @@ class MockEquipmentResource(LoadableEquipmentResource):
 
     def set_on_execute(self, on_execute: Callable[[], None]) -> None:
         self._on_execute = on_execute
-
-
 
 class MockRoboticArm(TransporterResource):
     def __init__(self, name: str, mocking_type: Optional[str] = None) -> None:

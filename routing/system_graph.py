@@ -1,8 +1,10 @@
 from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
-from resource_models.loadable_resources.location import Location
-from resource_models.loadable_resources.location import Location
+from resource_models.location import Location
+from resource_models.base_resource import BaseLabwareableResource
 import networkx as nx
+
+from resource_models.transporter_resource import TransporterResource
 
 
 class _NetworkXHandler:
@@ -15,8 +17,8 @@ class _NetworkXHandler:
     def add_node(self, name: str, location: Location) -> None:
         self._graph.add_node(name, location=location) # type: ignore
     
-    def add_edge(self, start: str, end: str, weight: float = 5.0) -> None:
-        self._graph.add_edge(start, end, weight=weight) # type: ignore
+    def add_edge(self, start: str, end: str, transporter: TransporterResource, weight: float = 5.0) -> None:
+        self._graph.add_edge(start, end, weight=weight, transporter=transporter) # type: ignore
 
     def has_path(self, source: str, target: str) -> bool:
         return nx.has_path(self._graph, source, target) # type: ignore
@@ -56,7 +58,7 @@ class SystemGraph:
 
     def __init__(self) -> None:
         self._graph: _NetworkXHandler = _NetworkXHandler()
-        self._equipment_map: Dict[str, str] = {}
+        self._equipment_map: Dict[str, Location] = {}
 
     @property
     def locations(self) -> Dict[str, Location]:
@@ -66,21 +68,21 @@ class SystemGraph:
         return nodes
     
     def add_location(self, location: Location) -> None:
-        self._graph.add_node(location.name, location)
-        if location.resource is not None:
-            self._equipment_map[location.resource.name] = location.name
+        self._graph.add_node(location.teachpoint_name, location=location)
+        if isinstance(location.resource, BaseLabwareableResource):
+            self._equipment_map[location.resource.name] = location
 
-    def get_resource_location(self, resource_name: str) -> str:
+    def get_resource_location(self, resource_name: str) -> Location:
         if resource_name not in self._equipment_map.keys():
             raise ValueError(f"Resource {resource_name} does not exist")
         return self._equipment_map[resource_name]
 
-    def add_edge(self, start: str, end: str, weight: float = 5.0) -> None:
+    def add_edge(self, start: str, end: str, transporter: TransporterResource, weight: float = 5.0) -> None:
         if start not in self._graph.get_nodes():
             raise ValueError(f"Node {start} does not exist")
         if end not in self._graph.get_nodes():
             raise ValueError(f"Node {end} does not exist")
-        self._graph.add_edge(start, end, weight=weight) 
+        self._graph.add_edge(start, end, transporter=transporter, weight=weight) 
 
     def set_edge_weight(self, start: str, end: str, weight: float) -> None:
         self._graph[start][end]['weight'] = weight
@@ -152,6 +154,9 @@ class SystemGraph:
     
     def get_all_shortest_any_paths(self, source: str, target: str) -> List[List[str]]:
         return self._graph.get_all_shortest_paths(source, target)
+    
+    def get_transporter_between(self, source: str, target: str) -> TransporterResource:
+        return self._graph.get_edge_data(source, target)["transporter"]
     
     def _get_available_locations(self) -> Dict[str, Dict[str, Any]]:
         nodes = {}
