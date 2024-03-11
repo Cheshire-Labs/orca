@@ -29,6 +29,11 @@ class PlaceHolderResource(Equipment, LabwareLoadable):
     def __init__(self, name: str, mocking_type: Optional[str] = None):
         super().__init__(name)
         self._mocking_type = mocking_type
+        self._labware: Optional[Labware] = None
+
+    @property
+    def labware(self) -> Optional[Labware]:
+        return self._labware
 
     def initialize(self) -> bool:
         print(f"Initializing MockResource")
@@ -47,6 +52,14 @@ class PlaceHolderResource(Equipment, LabwareLoadable):
         self._is_running = True
         print(f"{self._name} close plate door")
         self._is_running = False
+
+    def notify_picked(self, labware: Labware) -> None:
+        self._labware = None
+        print(f"{self._name} {labware} picked")
+    
+    def notify_placed(self, labware: Labware) -> None:
+        self._labware = labware
+        print(f"{self._name} recieved {labware}")
 
     def is_running(self) -> bool:
         return self._is_running

@@ -1,6 +1,5 @@
 from importlib.resources import Resource
 from typing import Any, Dict, List
-from resource_models.base_resource import IResource
 from resource_models.drivers import PlaceHolderNonLabwareResource, PlaceHolderResource, PlaceHolderRoboticArm, VenusProtocol
 from resource_models.base_resource import BaseResource
 
@@ -11,12 +10,13 @@ from system_template import SystemTemplate
 
 class ResourceFactory:
 
-    def create(self, resource_name: str, resource_config: Dict[str, Any]) -> IResource:
+    def create(self, resource_name: str, resource_config: Dict[str, Any]) -> BaseResource:
         if 'type' not in resource_config.keys():
                 raise KeyError("No resource type defined in config")
+        resource: BaseResource
         res_type = resource_config['type']
-        if res_type == 'venus-method':
-            resource = VenusProtocol(resource_name)
+        if res_type == 'ml-star':
+            resource = PlaceHolderResource(resource_name, mocking_type="Hamilton MLSTAR")
         elif res_type == 'acell':
             resource = PlaceHolderRoboticArm(resource_name, "ACell")
         elif res_type == 'mock-robot':
