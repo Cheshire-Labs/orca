@@ -1,5 +1,6 @@
 from abc import ABC
 from enum import Enum, auto
+from typing import Any, Dict
 from resource_models.location import Location
 from resource_models.transporter_resource import TransporterResource
 from resource_models.base_resource import LabwareLoadable
@@ -51,44 +52,47 @@ class NullAction(BaseAction):
     def _perform_action(self) -> None:
         pass  
 
-class UnloadLabwareAction(BaseAction):
-    def __init__(self, resource: LabwareLoadable, labware: Labware) -> None:
-        super().__init__()
-        self._resource = resource
-        self._labware = labware
+# class StageForPickAction(BaseAction):
+#     def __init__(self, resource: LabwareLoadable, labware: Labware) -> None:
+#         super().__init__()
+#         self._resource = resource
+#         self._labware = labware
 
-    def _perform_action(self) -> None:
-        self._resource.unload_labware(self._labware)
-
-
-
-class LoadLabwareAction(BaseAction):
-    def __init__(self, resource: LabwareLoadable, labware: Labware) -> None:
-        super().__init__()
-        self._resource = resource
-        self._labware = labware
-
-    def _perform_action(self) -> None:
-        self._resource.load_labware(self._labware)
+#     def _perform_action(self) -> None:
+#         self._resource.prepare_for_pick(self._labware)
 
 
-class PickAction(BaseAction):
-    def __init__(self, transporter: TransporterResource, labware: Labware, src_location: Location) -> None:
-        super().__init__()
-        self._transporter = transporter
-        self._labware = labware
-        self._src_location = src_location
 
-    def _perform_action(self) -> None:
-        self._transporter.pick(self._src_location)
+# class StageForPlaceAction(BaseAction):
+#     def __init__(self, resource: LabwareLoadable, labware: Labware) -> None:
+#         super().__init__()
+#         self._resource = resource
+#         self._labware = labware
+
+#     def _perform_action(self) -> None:
+#         self._resource.prepare_for_place(self._labware)
 
 
-class PlaceAction(BaseAction):
-    def __init__(self, transporter: TransporterResource, labware: Labware, target_location: Location) -> None:
-        super().__init__()
-        self._transporter = transporter
-        self._labware = labware
-        self._target_location = target_location
+# class PickAction(BaseAction):
+#     def __init__(self, transporter: TransporterResource, labware: Labware, src_location: Location) -> None:
+#         super().__init__()
+#         self._transporter = transporter
+#         self._labware = labware
+#         self._src_location = src_location
 
-    def _perform_action(self) -> None:
-        self._transporter.place(self._target_location)
+#     def _perform_action(self) -> None:
+#         self._transporter.pick(self._src_location)
+        
+
+
+# class PlaceAction(BaseAction):
+#     def __init__(self, transporter: TransporterResource, labware: Labware, target_location: Location) -> None:
+#         super().__init__()
+#         self._transporter = transporter
+#         self._labware = labware
+#         self._target_location = target_location
+
+#     def _perform_action(self) -> None:
+#         self._transporter.place(self._target_location)
+
+

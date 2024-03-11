@@ -6,7 +6,7 @@ from typing import List, Optional
 from resource_models.labware import Labware
 
 
-class TransporterResource(BaseResource, Location):
+class TransporterResource(BaseResource):
     def __init__(self, name: str):
         super().__init__(name)
         self._labware: Optional[Labware] = None
@@ -26,3 +26,6 @@ class TransporterResource(BaseResource, Location):
     @abstractmethod
     def get_taught_positions(self) -> List[str]:
         raise NotImplementedError
+    
+    def __str__(self) -> str:
+        return f"Transporter: {self._name}"

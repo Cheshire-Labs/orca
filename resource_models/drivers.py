@@ -4,8 +4,8 @@ from typing import Any, Dict, List, Optional
 from resource_models.location import Location
 from resource_models.transporter_resource import TransporterResource
 
-from resource_models.base_resource import IResource
-from resource_models.base_resource import BaseLabwareableResource
+from resource_models.base_resource import BaseResource, Equipment, IResource, LabwareLoadable
+
 from resource_models.labware import Labware
 
 
@@ -25,7 +25,7 @@ class PlaceHolderNonLabwareResource(IResource):
 
 
 # TODO: Just a placehodler for now
-class PlaceHolderResource(BaseLabwareableResource):
+class PlaceHolderResource(Equipment, LabwareLoadable):
     def __init__(self, name: str, mocking_type: Optional[str] = None):
         super().__init__(name)
         self._mocking_type = mocking_type
@@ -38,18 +38,12 @@ class PlaceHolderResource(BaseLabwareableResource):
         self._is_initialized = True
         return self._is_initialized
 
-    def set_command(self, command: str) -> None:
-        self._command = command
-    
-    def set_command_options(self, options: Dict[str, Any]) -> None:
-        self._command_options = options
-
-    def load_labware(self, labware: Labware) -> None:
+    def prepare_for_place(self, labware: Labware) -> None:
         self._is_running = True
         print(f"{self._name} open plate door")
         self._is_running = False
 
-    def unload_labware(self, labware: Labware) -> None:
+    def prepare_for_pick(self, labware: Labware) -> None:
         self._is_running = True
         print(f"{self._name} close plate door")
         self._is_running = False
@@ -81,11 +75,11 @@ class PlaceHolderRoboticArm(TransporterResource):
         return self._is_initialized
 
     def pick(self, location: Location) -> None:
-        self._validate_position(location.name)
+        self._validate_position(location.teachpoint_name)
         print(f"{self._name} pick {self._plate_type} from {location}")
     
     def place(self, location: Location) -> None:
-        self._validate_position(location.name)
+        self._validate_position(location.teachpoint_name)
         print(f"{self._name} place {self._plate_type} to {location}")
 
     def _validate_position(self, position: str) -> None:
@@ -101,21 +95,30 @@ class PlaceHolderRoboticArm(TransporterResource):
         return self._positions
     
 
-class VenusProtocol(BaseLabwareableResource):
+class VenusProtocol(BaseResource, LabwareLoadable):
     def __init__(self, name: str):
         super().__init__(name)
         self._default_exe_path = r"C:\Program Files (x86)\HAMILTON\Bin\HxRun.exe"
+        self._locked = False
 
     def initialize(self) -> bool:
         # add a simple hamilton initialization script here
 
         raise NotImplementedError()
 
-    def load_labware(self, labware: Labware) -> None:
+    def prepare_for_place(self, labware: Labware) -> None:
         print("Move carriage to load position")
+        self._locked = True
 
-    def unload_labware(self, labware: Labware) -> None:
+    def prepare_for_pick(self, labware: Labware) -> None:
         print("Move carriage to unload position")
+        self._locked = True
+
+    def notify_picked(self, labware: Labware) -> None:
+        self._locked = False
+
+    def notify_placed(self, labware: Labware) -> None:
+        self._locked = False
 
     def set_command(self, command: str) -> None:
         self._command = command

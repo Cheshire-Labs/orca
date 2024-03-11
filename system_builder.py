@@ -1,7 +1,6 @@
 from resource_models.location import Location
 from resource_models.transporter_resource import TransporterResource
-from resource_models.base_resource import IResource
-from resource_models.base_resource import BaseResource
+from resource_models.base_resource import IResource, LabwareLoadable
 from resource_models.labware import LabwareTemplate
 from resource_models.resource_factory import ResourceFactory, ResourcePoolFactory
 from resource_models.resource_pool import EquipmentResourcePool
@@ -18,8 +17,8 @@ from typing import Any, Dict, List, Optional
 class SystemTemplateBuilder:
     def __init__(self) -> None:
         self._name: Optional[str] = None
-        self._description: Optional[str] = None
-        self._version: Optional[str] = None
+        self._version: str = 'latest'
+        self._description: str = ''        
         self._options: Dict[str, Any] = {}
         self._labware_defs: Dict[str, Dict[str, Any]] = {}
         self._resource_defs: Dict[str, Dict[str, Any]] = {}
@@ -97,7 +96,7 @@ class SystemTemplateBuilder:
 
         for _, res in system.resources.items():
             # skip resources like newtowrk switches, etc that don't have plate pad locations
-            if isinstance(res, BaseResource) \
+            if isinstance(res, LabwareLoadable) \
                 and not isinstance(res, EquipmentResourcePool) \
                 and not isinstance(res, TransporterResource):
                 # set resource to each location
@@ -105,7 +104,7 @@ class SystemTemplateBuilder:
                 location_name = self._resource_defs[res.name].get("plate_pad", res.name)
                 if location_name not in system.locations.keys():
                     raise LookupError(f"Location {location_name} referenced in resource {res.name} is not recognized.  Locations must be defined by the transporting resource.")
-                system.locations[location_name].set_resource(res)
+                system.locations[location_name].resource = res
 
     def _build_methods(self, system: SystemTemplate) -> None:
 
@@ -117,9 +116,12 @@ class SystemTemplateBuilder:
             actions: List[MethodActionTemplate] = []
             for action_index, action_config in enumerate(method_def['actions']):
                 for resource_name, action_options in action_config.items():
+                    # TODO: Fix this part to better handle the location and resource name - may need to switch config to be location instead of resource
                     if resource_name not in system.equipment.keys():
                         raise LookupError(f"The resource name '{resource_name}' in method actions is not recognized as a defined resource")
-                    resource = system.equipment[resource_name]
+                    if resource_name not in system.locations.keys():
+                        raise LookupError(f"The resource name '{resource_name}' in method actions is not recognized as a defined location")
+                    location = system.locations[resource_name]
 
                 # get command
                 if "command" not in action_options.keys():
@@ -138,7 +140,7 @@ class SystemTemplateBuilder:
                     output_labware_names: List[str] = action_options["outputs"] if isinstance(action_options["outputs"], List) else [action_options["outputs"]]
                     outputs = [system.labwares[labware_name] for labware_name in output_labware_names]
 
-                action = MethodActionTemplate(resource=resource, command=command, options=action_options, inputs=inputs, outputs=outputs)
+                action = MethodActionTemplate(location=location, command=command, options=action_options, inputs=inputs, outputs=outputs)
                 actions.append(action)
 
             [method.append_action(a) for a in actions]
@@ -187,6 +189,8 @@ class SystemTemplateBuilder:
         return system.locations[loc_name]
 
     def build(self) -> SystemTemplate:
+        if self._name is None:
+            raise ValueError("System name is not set.  System name must be set before building.")
         system = SystemTemplate(self._name, self._description, self._version, self._options)
         self._build_labwares(system)
         self._build_resources(system)

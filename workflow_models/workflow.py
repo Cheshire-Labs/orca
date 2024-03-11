@@ -3,47 +3,47 @@ from __future__ import annotations
 import time
 from typing import Any, Dict, List, Optional
 from resource_models.location import Location
-from resource_models.base_resource import BaseResource
-from resource_models.base_resource import BaseLabwareableResource
 from resource_models.labware import Labware
 from workflow_models.action import ActionStatus, BaseAction
 from workflow_models.method_status import MethodStatus
 from workflow_models.workflow_templates import LabwareThreadTemplate, MethodActionTemplate, MethodTemplate, WorkflowTemplate
 
+
 class MethodAction(BaseAction):
     @staticmethod
-    def from_template(template: MethodActionTemplate, labware_instance_inputs: List[Labware]) -> MethodAction:
+    def from_template(action_template: MethodActionTemplate, labwares: Dict[str, Labware]) -> MethodAction:
         """
         Builds a MethodActionInstance object based on the provided template and labware instance inputs.
         If the output labware is also an input labware in the template, the output will be set to the corresponding input LabwareInstance.
         Otherwise, a new LabwareInstance will be created.
         """
-
+        
+        labware_instance_inputs: List[Labware] = [labwares[input_template.name] for input_template in action_template.inputs]
         labware_instance_outputs: List[Labware] = []
-        for template_output in template.outputs:
+        for template_output in action_template.outputs:
             output = next((labware for labware in labware_instance_inputs if labware.name == template_output.name), Labware(template_output.name, template_output.labware_type))
             labware_instance_outputs.append(output)
-        instance = MethodAction(template.resource, template.command, labware_instance_inputs, labware_instance_outputs, template.options)
+        
+        instance = MethodAction(action_template.location, action_template.command, labware_instance_inputs, labware_instance_outputs, action_template.options)
         return instance
 
-
     def __init__(self, 
-                 resource: BaseLabwareableResource, 
+                 location: Location,
                  command: str, 
                  labware_instance_inputs: List[Labware], 
                  labware_instance_outputs: List[Labware], 
                  options: Dict[str, Any] = {}) -> None:
-        self._resource: BaseLabwareableResource = resource
+        self._location: Location = location
         self._command: str = command
         self._options: Dict[str, Any] = options
         self._awaiting_labware_inputs: List[Labware] = labware_instance_inputs
         self._loaded_labware_inputs: List[Labware] = []
         self._outputs: List[Labware] = labware_instance_outputs
         self._status: ActionStatus = ActionStatus.CREATED
-
+    
     @property
-    def resource(self) -> BaseLabwareableResource:
-        return self._resource
+    def location(self) -> Location:
+        return self._location
     
     @property
     def awaiting_labware_inputs(self) -> List[Labware]:
@@ -58,27 +58,29 @@ class MethodAction(BaseAction):
         self._loaded_labware_inputs.append(labware)
         if self._awaiting_labware_inputs == []:
             self._status = ActionStatus.READY
-        self._resource.load_labware(labware)
+        self._location.prepare_for_place(labware)
 
-    def unload_lawbare(self, labware: Labware) -> None:
+    def unload_labware(self, labware: Labware) -> None:
         if labware not in self._outputs:
             raise ValueError(f"Labware is not an output of this method. Labware {labware} is not available to be unloaded")
-        self._resource.unload_labware(labware)
+        self._location.prepare_for_pick(labware)
         self._outputs.remove(labware)
 
     def _perform_action(self) -> None:
-        self._resource.set_command(self._command)
-        self._resource.set_command_options(self._options)
+        if self._location.resource is None:
+            raise ValueError(f"Location {self._location} does not have a resource assigned")
+        self._location.resource.set_command(self._command)
+        self._location.resource.set_command_options(self._options)
         self._status = ActionStatus.IN_PROGRESS
-        self._resource.execute()
+        self._location.resource.execute()
         self._status = ActionStatus.COMPLETED
 
 
 
 class Method:
     @staticmethod
-    def from_template(labware_instance_inputs: List[Labware], template: MethodTemplate) -> Method:
-        actions = [MethodAction.from_template(action_template, labware_instance_inputs) for action_template in template.actions]
+    def from_template(template: MethodTemplate, labwares: Dict[str, Labware]) -> Method:
+        actions = [MethodAction.from_template(action_template, labwares) for action_template in template.actions]
         return Method(template.name, actions)
 
     def __init__(self, name: str, actions: List[MethodAction]) -> None:
@@ -127,10 +129,10 @@ class Method:
 
 class LabwareThread:
     @staticmethod
-    def from_template(template: LabwareThreadTemplate, labware: Optional[Labware] = None) -> LabwareThread:
-        labware = Labware.from_template(template.labware) if labware is None else labware
-        method_seq = [Method.from_template(method) for method in template.methods]
-        thread = LabwareThread(labware.name, labware, method_sequence=method_seq, start_location=template.start, end_location=template.end)
+    def from_template(template: LabwareThreadTemplate, labwares: Dict[str, Labware]) -> LabwareThread:
+        method_seq = [Method.from_template(method, labwares) for method in template.methods]
+        labware_name = template.labware.name
+        thread = LabwareThread(labware_name, labwares[labware_name], method_sequence=method_seq, start_location=template.start, end_location=template.end)
         thread.set_start_location(template.start)
         thread.set_end_location(template.end)
         return thread
@@ -223,7 +225,7 @@ class LabwareThread:
 class Workflow:
     @staticmethod
     def from_template(template: WorkflowTemplate, labwares: Dict[str, Labware]) -> Workflow:
-        threads = {thread_name: LabwareThread.from_template(thread_template) for thread_name, thread_template in template.labware_threads.items()}
+        threads = {thread_name: LabwareThread.from_template(thread_template, labwares) for thread_name, thread_template in template.labware_threads.items()}
         workflow = Workflow(template.name, threads)
         return workflow
 

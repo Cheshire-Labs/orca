@@ -35,7 +35,6 @@ class BaseResource(IInitializableResource, ABC):
         self._is_busy = False
         self._is_initialized = False
         self._init_options: Dict[str, Any] = {}
-        self._options: Dict[str, Any] = {}
 
     @property
     def name(self) -> str:
@@ -50,7 +49,7 @@ class BaseResource(IInitializableResource, ABC):
 
     def set_init_options(self, init_options: Dict[str, Any]) -> None:
         self._init_options = init_options
-    
+
     def __str__(self) -> str:
         return self._name
 
@@ -60,38 +59,79 @@ class LabwareLoadable(ABC):
         raise NotImplementedError
     
     @abstractmethod
-    def load_labware(self, labware: Labware) -> None:
+    def prepare_for_pick(self, labware: Labware) -> None:
+        raise NotImplementedError
+    
+    @abstractmethod
+    def prepare_for_place(self, labware: Labware) -> None:
         raise NotImplementedError
 
     @abstractmethod
-    def unload_labware(self, labware: Labware) -> None:
+    def notify_picked(self, labware: Labware) -> None:
         raise NotImplementedError
     
-class BaseLabwareableResource(BaseResource, LabwareLoadable):
-    def __init__(self, name: str) -> None:
+    @abstractmethod
+    def notify_placed(self, labware: Labware) -> None:
+        raise NotImplementedError
+
+class Equipment(BaseResource, LabwareLoadable, ABC):
+    """
+    Represents a piece of equipment.  Not to be used for Transporters and equipment that does not operate on labware.
+
+    Args:
+        name (str): The name of the equipment.
+
+    Attributes:
+        _command (str): The command to be executed by the equipment.
+        _options (Dict[str, Any]): The options for the command.
+
+    Methods:
+        set_command: Sets the command to be executed by the equipment.
+        set_command_options: Sets the options for the command.
+        execute: Executes the command.
+
+    """
+
+    def __init__(self, name: str):
         super().__init__(name)
-        self._labware: Optional[Labware] = None
+        self._command: Optional[str] = None
+        self._options: Dict[str, Any] = {} 
 
-    @property
-    def is_busy(self) -> bool:
-        return self._labware is not None
-    
-    @property
-    def labware(self) -> Optional[Labware]:
-        return self._labware
+    def set_command(self, command: str) -> None:
+        """
+        Sets the command to be executed by the equipment.
 
-    def load_labware(self, labware: Labware) -> None:
-        if self._labware is not None:
-            raise ResourceUnavailableError(f"Error setting labware '{labware}' to resource '{self}'.  Resource is already occupied by '{self._labware}'")
-        self._labware = labware
+        Args:
+            command (str): The command to be executed.
 
-    def unload_labware(self, labware: Labware) -> None:
-        if self._labware != labware:
-            raise ResourceUnavailableError(f"Error unloading labware '{labware}' from resource '{self}'.  Resource does not contain '{labware}' resource is occupied by '{self._labware}'")
-        self._labware = None
+        Returns:
+            None
 
+        """
+        self._command = command
 
+    def set_command_options(self, options: Dict[str, Any]) -> None:
+        """
+        Sets the options for the command.
 
+        Args:
+            options (Dict[str, Any]): The options for the command.
+
+        Returns:
+            None
+
+        """
+        self._options = options
+
+    def execute(self) -> None:
+        """
+        Executes the command.
+
+        Raises:
+            NotImplementedError: If the method is not implemented in a subclass.
+
+        """
+        raise NotImplementedError
     
 
     

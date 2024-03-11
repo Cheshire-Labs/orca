@@ -2,11 +2,11 @@ from typing import Any, Dict, Optional
 from resource_models.location import Location
 from resource_models.transporter_resource import TransporterResource
 from resource_models.base_resource import IResource
-from resource_models.base_resource import BaseLabwareableResource
+from resource_models.base_resource import LabwareLoadable
 
 from resource_models.labware import Labware, LabwareTemplate
 from system import System
-from workflow_models.workflow import Method, Workflow
+from workflow_models.workflow import Workflow
 
 from workflow_models.workflow_templates import MethodTemplate, WorkflowTemplate
 
@@ -50,8 +50,8 @@ class SystemTemplate:
         self._resources = value
 
     @property
-    def equipment(self) -> Dict[str, BaseLabwareableResource]:
-        return {name: r for name, r in self._resources.items() if isinstance(r, BaseLabwareableResource)}
+    def equipment(self) -> Dict[str, LabwareLoadable]:
+        return {name: r for name, r in self._resources.items() if isinstance(r, LabwareLoadable)}
    
     @property
     def labware_transporters(self) -> Dict[str, TransporterResource]:
@@ -85,9 +85,8 @@ class SystemTemplate:
 
         # TODO: figure out how to create the labware instances needed
 
-        labwares = {name: Labware.from_template(labware) for name, labware in self._labwares.items()}
-        workflows = {name: Workflow.from_template(workflow) for name, workflow in self._workflows.items()}
-        methods = {name: Method.from_template(method) for name, method in self._methods.items()}
+        labwares = {name: Labware.from_template(labware_template) for name, labware_template in self._labwares.items()}
+        workflows = {name: Workflow.from_template(workflow_template, labwares=labwares) for name, workflow_template in self._workflows.items()}
         
         return System(name=self._name,
                       description=self._description,
@@ -96,6 +95,5 @@ class SystemTemplate:
                       labwares=labwares,
                       resources=self._resources,
                       locations=self._locations,
-                      methods=methods,
                       workflows=workflows)
 

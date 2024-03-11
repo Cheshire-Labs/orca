@@ -3,7 +3,7 @@ from resource_models.transporter_resource import TransporterResource
 from resource_models.location import Location
 from resource_models.labware import Labware
 from routing.system_graph import SystemGraph
-from workflow_models.action import BaseAction, LoadLabwareAction, PickAction, PlaceAction, UnloadLabwareAction
+from workflow_models.action import BaseAction
 from workflow_models.workflow import LabwareThread
 
 
@@ -35,50 +35,28 @@ class RouteStep(BaseAction):
     def target(self, target: Location) -> None:
         self._target = target
 
-    def set_post_load_actions(self, actions: List[BaseAction]) -> None:
+    def set_actions(self, actions: List[BaseAction]) -> None:
         self._post_load_actions = actions
 
     def set_labware(self, labware: Labware) -> None:
         self._labware = labware
-
-    def get_actions(self) -> List[BaseAction]:
-        if self._labware is None:
-            raise ValueError("Labware must be set before getting actions")
-        actions: List[BaseAction] = []
-        actions.append(UnloadLabwareAction(self._source, self._labware))
-        actions.append(PickAction(self._transporter, self._labware, self._source))
-        actions.append(PlaceAction(self._transporter, self._labware, self._target))
-        actions.append(LoadLabwareAction(self._target, self._labware))
-        return actions
     
     def _perform_action(self) -> None:
-        for action in self.get_actions():
-            action.execute() 
+        if self._labware is None:
+            raise ValueError("Labware must be set before getting actions")
+        # move the labware
+        self._source.prepare_for_pick(self._labware)
+        self._transporter.pick(self._source)
+        self._source.notify_picked(self._labware)
+        self._target.prepare_for_place(self._labware)
+        self._transporter.place(self._target)
+        self._target.notify_placed(self._labware)
+
+        # perform the action
+        for action in self._post_load_actions:
+            action.execute()
+
     
-    # def _append_source_actions(self, actions: List[BaseAction]) -> None:
-    #     if self._labware is None:
-    #         raise ValueError("Labware must be set before getting actions")
-
-    #     elif isinstance(self._source.resource, TransporterResource):
-    #         # coming from robot
-    #         actions.append(PlaceAction(self._source.resource, self._labware, self._target))
-    #     elif isinstance(self._source.resource, EquipmentResource):
-    #         actions.append(UnloadLabwareAction(self._source.resource, self._labware))
-    #     else:
-    #         actions.append(NullAction())
-
-    # def _append_target_actions(self, actions: List[BaseAction]) -> None:
-    #     if self._labware is None:
-    #         raise ValueError("Labware must be set before getting actions")
-
-    #     elif isinstance(self._target.resource, TransporterResource):
-    #         # going to robot
-    #         actions.append(PickAction(self._target.resource, self._labware, self._source))
-    #     elif isinstance(self._target.resource, EquipmentResource):
-    #         actions.append(LoadLabwareAction(self._target.resource, self._labware))
-    #         actions.extend(self._post_load_actions)
-    #     else:
-    #         actions.append(NullAction())
 
 
 class Route:
@@ -112,7 +90,7 @@ class Route:
             self._core_actions[location.teachpoint_name] = []
         self._core_actions[location.teachpoint_name].append(action)
 
-    def _build_route(self, system: SystemGraph) -> None:
+    def build_route(self, system: SystemGraph) -> None:
         self._edges = []
         for core_location, core_actions in self._core_actions.items():
 
@@ -131,7 +109,7 @@ class Route:
                 transporter = system.get_transporter_between(path_src_loc, path_tgt_loc)
                 self._edges.append(RouteStep(source_location, target_location, transporter))
                 path_src_loc = path_tgt_loc
-            self._edges[-1].set_post_load_actions(core_actions)
+            self._edges[-1].set_actions(core_actions)
 
         # build to the end of the route
         end_path: List[str] = system.get_shortest_available_path(self._edges[-1].target.teachpoint_name, self._end.teachpoint_name)
@@ -152,11 +130,10 @@ class RouteBuilder:
         route = Route(self._thread.start_location, self._thread.end_location)
         for method in self._thread.methods:
             for action in method.actions:
-                res_location = self._system.get_resource_location(action.resource.name)
-                route.add_stop(res_location, action)
+                route.add_stop(action.location, action)
         return route
 
     def get_route(self) -> Route:
         route = self._get_base_route()
-        route._build_route(self._system)
+        route.build_route(self._system)
         return route

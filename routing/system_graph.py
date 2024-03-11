@@ -1,8 +1,9 @@
 from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
+from resource_models.base_resource import LabwareLoadable
 from resource_models.location import Location
-from resource_models.base_resource import BaseLabwareableResource
 import networkx as nx
+import matplotlib.pyplot as plt
 
 from resource_models.transporter_resource import TransporterResource
 
@@ -49,6 +50,10 @@ class _NetworkXHandler:
     def get_edge_data(self, source: str, target: str) -> Dict[str, Any]:
         return self._graph.edges[source, target]
 
+    def draw(self) -> None:
+        nx.draw(self._graph, with_labels=True) # type: ignore
+        plt.show() # type: ignore
+
     def __getitem__(self, key: str) -> Dict[str, Any]:
         return self._graph.nodes[key]
     
@@ -69,8 +74,8 @@ class SystemGraph:
     
     def add_location(self, location: Location) -> None:
         self._graph.add_node(location.teachpoint_name, location=location)
-        if isinstance(location.resource, BaseLabwareableResource):
-            self._equipment_map[location.resource.name] = location
+        if isinstance(location.resource, LabwareLoadable):
+            self._equipment_map[location.teachpoint_name] = location
 
     def get_resource_location(self, resource_name: str) -> Location:
         if resource_name not in self._equipment_map.keys():
@@ -93,35 +98,6 @@ class SystemGraph:
     
     def has_any_route(self, source: str, target: str) -> bool:
         return self._graph.has_path(source, target)
-    
-    # def get_shortest_any_route(self, source: str, target: str) -> Route:
-    #     path: List[str] = self._get_shortest_any_path(source, target)
-    #     return self._get_route_from_path(path)
-    
-    # def get_all_shortest_any_routes(self, source: str, target: str) -> List[Route]:
-    #     paths: List[List[str]] = self._get_all_shortest_any_paths(source, target)
-    #     return [self._get_route_from_path(path) for path in paths]
-    
-    # def get_shortest_available_route(self, source: str, target: str) -> Route:
-    #     path: List[str] = self._get_shortest_available_path(source, target)
-    #     return self._get_route_from_path(path)
-    
-    # def get_shortest_available_route(self, locations: List[str]) -> Route:
-    #     path: List[str] = []
-    #     start_location = locations.pop(0)
-    #     for location in locations:
-    #         if not self._graph.has_path(start_location, location):
-    #             raise ValueError(f"No available route from {start_location} to {location}")
-    #         path_segment = self._get_shortest_available_path(start_location, location)
-    #         path.extend(path_segment)
-    #         start_location = location
-    #     return self._get_route_from_path(path)
-    
-    # def get_all_shortest_available_routes(self, source: str, target: str) -> List[Route]:
-    #     paths: List[List[str]] = self._get_all_shortest_available_paths(source, target)
-    #     return [self._get_route_from_path(path) for path in paths]
-    
-    
     
     def get_blocking_locations(self, source: str, target: str) -> List[Location]:
         # TODO: add input validations of source and target entered
@@ -158,6 +134,10 @@ class SystemGraph:
     def get_transporter_between(self, source: str, target: str) -> TransporterResource:
         return self._graph.get_edge_data(source, target)["transporter"]
     
+    def draw(self) -> None:
+        self._graph.draw()
+        
+
     def _get_available_locations(self) -> Dict[str, Dict[str, Any]]:
         nodes = {}
         for node, nodedata in self._graph.get_nodes().items():
@@ -166,14 +146,6 @@ class SystemGraph:
                 nodes[node] = nodedata
         return nodes
     
-    # def _get_route_from_path(self, path: List[str]) -> Route:
-    #     path_graph = self._graph.get_path_graph(path)
-    #     steps: List[RouteSingleStep] = []
-    #     for start_name, end_name, data in path_graph.get_all_edges():
-    #         start = self._graph.get_node_data(start_name)["location"]
-    #         end = self._graph.get_node_data(end_name)["location"]
-    #         steps.append(RouteSingleStep(start, end, data["weight"], data["action"]))
-    #     return Route(steps)
 
 
 
