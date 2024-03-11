@@ -87,7 +87,11 @@ class MockEquipmentResource(Equipment, LabwareLoadable):
 
     def execute(self) -> None:
         print(f"{self} - execute - {self._command}")
+        if self._command is None:
+            raise ValueError(f"{self} - No command to execute")
         self._on_execute(self._command)
+        self._command = None
+        self._options = {}
 
 
 
