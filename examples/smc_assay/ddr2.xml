@@ -1,5 +1,5 @@
 <teachpoints>
-    <trachpoint name="centrifuge" />
+    <teachpoint name="centrifuge" />
     <teachpoint name="sealer" />
     <teachpoint name="translator_1_end" />
     <teachpoint name="translater_2_start" />
