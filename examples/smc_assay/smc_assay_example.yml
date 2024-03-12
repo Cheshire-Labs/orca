@@ -62,6 +62,7 @@ resources:
         com: "COM8"
     plate-hotel:
         type: agilent-hotel
+        plate-pad: "plate_hotel"
     smc-pro:
         type: smc-pro
         ip: 192.168.1.122
@@ -71,25 +72,25 @@ resources:
     ddr-1:
         type: ddr
         ip: 192.168.1.125
-        positions: ddr1.xml
+        positions: examples\\smc_assay\\ddr1.xml
 
     ddr-2:
         type: ddr
         ip: 192.168.1.126
-        positions: ddr2.xml
+        positions: examples\\smc_assay\\ddr2.xml
     ddr-3:
         type: ddr
         ip: 192.168.1.127
-        positions: ddr3.xml
+        positions: examples\\smc_assay\\ddr3.xml
 
     translator-1:
         type: translator
         com: "COM5"
-        positions: translator2.xml
+        positions: examples\\smc_assay\\translator2.xml
     translater-2:
         type: translator
         com: "COM6"
-        positions: translator2.xml
+        positions: examples\\smc_assay\\translator2.xml
 
 
 ## STACKERS
