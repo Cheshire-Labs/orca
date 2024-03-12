@@ -2,6 +2,7 @@ import subprocess
 
 from typing import Any, Dict, List, Optional
 from resource_models.location import Location
+from resource_models.resource_extras.teachpoints import Teachpoint
 from resource_models.transporter_resource import TransporterResource
 
 from resource_models.base_resource import BaseResource, Equipment, LabwareLoadable
@@ -114,15 +115,18 @@ class PlaceHolderRoboticArm(TransporterResource):
         self._plate_type: Optional[str] = None
         self._positions: List[str] = []
         self._command: Optional[str] = None
+        
 
     def initialize(self) -> None:
         print(f"Initializing MockResource")
         print(f"Name: {self._name}")
         print(f"Type: {self._mocking_type}")
         print(f"Mock Initialized")
-        if "teachpoints" in self._init_options:
-            self._positions = self._init_options["teachpoints"]
         self._is_initialized = True
+    
+    def set_init_options(self, init_options: Dict[str, Any]) -> None:
+        super().set_init_options(init_options)
+        self._load_taught_positions()
 
 
     def pick(self, location: Location) -> None:
@@ -149,6 +153,17 @@ class PlaceHolderRoboticArm(TransporterResource):
 
     def get_taught_positions(self) -> List[str]:
         return self._positions
+    
+    def _load_taught_positions(self) -> None:
+        
+        if "positions" in self._init_options:
+            positions_config = self._init_options["positions"]
+            if isinstance(positions_config, list):
+                self._positions = positions_config
+            elif isinstance(positions_config, str):
+                self._positions = [t.name for t in Teachpoint.load_teachpoints_from_file(positions_config)]
+            else:
+                raise ValueError(f"Positions configuration for {self._name} is not recognized.  Must be a filepath string or list of strings naming the teachpoints")
     
 
 class VenusProtocol(BaseResource, LabwareLoadable):
