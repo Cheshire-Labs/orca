@@ -101,7 +101,7 @@ class SystemTemplateBuilder:
                 and not isinstance(res, TransporterResource):
                 # set resource to each location
                 # if the plate-pad is not set in the resource definition, then use the resource name
-                location_name = self._resource_defs[res.name].get("plate_pad", res.name)
+                location_name = self._resource_defs[res.name].get("plate-pad", res.name)
                 if location_name not in system.locations.keys():
                     raise LookupError(f"Location {location_name} referenced in resource {res.name} is not recognized.  Locations must be defined by the transporting resource.")
                 system.locations[location_name].resource = res
