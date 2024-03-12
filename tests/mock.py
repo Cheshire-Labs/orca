@@ -1,10 +1,6 @@
 from typing import Optional, Dict, Any, Callable, List
-from resource_models.base_resource import Equipment, LabwareLoadable
 from resource_models.drivers import PlaceHolderResource, PlaceHolderRoboticArm
 from resource_models.location import Location
-from resource_models.resource_extras.teachpoints import Teachpoint
-
-from resource_models.transporter_resource import TransporterResource
 from resource_models.labware import Labware
 
 
