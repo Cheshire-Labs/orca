@@ -89,8 +89,8 @@ class SystemTemplateBuilder:
 
         # build locations from labware transporters
         for _, transporter in system.labware_transporters.items():
-            reachable_locations = transporter.get_taught_positions()
-            for loc_name in reachable_locations:
+            taught_positions = transporter.get_taught_positions()
+            for loc_name in taught_positions:
                 if loc_name not in system.locations.keys():
                     system.locations[loc_name] = Location(loc_name)
 

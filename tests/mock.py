@@ -1,6 +1,7 @@
 from typing import Optional, Dict, Any, Callable, List
 from resource_models.base_resource import Equipment, LabwareLoadable
 from resource_models.location import Location
+from resource_models.resource_extras.teachpoints import Teachpoint
 
 from resource_models.transporter_resource import TransporterResource
 from resource_models.labware import Labware
@@ -140,16 +141,7 @@ class MockRoboticArm(TransporterResource):
     def _load_teachpoints(self, teachpoints: List[str] | str) -> None:
         if isinstance(teachpoints, str):
             if ".xml" in teachpoints:
-                self._positions = self._load_teachpoints_from_file(teachpoints)
+                self._positions = [t.name for t in Teachpoint.load_teachpoints_from_file(teachpoints)]
         else:
             self._positions = teachpoints
 
-    def _load_teachpoints_from_file(self, file_path: str) -> List[str]:
-        import xml.etree.ElementTree as ET
-        positions: List[str] = []
-        tree = ET.parse(file_path)
-        root = tree.getroot()
-        for teachpoint in root.findall('teachpoint'):
-            name = str(teachpoint.get('name'))
-            positions.append(name)
-        return positions
