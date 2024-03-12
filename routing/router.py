@@ -4,7 +4,6 @@ from resource_models.location import Location
 from resource_models.labware import Labware
 from routing.system_graph import SystemGraph
 from workflow_models.action import BaseAction
-from workflow_models.workflow import LabwareThread
 
 
 class RouteStep(BaseAction):
@@ -121,19 +120,3 @@ class Route:
             self._edges.append(RouteStep(source_location, target_location, transporter))
             end_path_src_loc = end_path_tgt_loc                
 
-class RouteBuilder:
-    def __init__(self, thread: LabwareThread, system: SystemGraph) -> None:
-        self._system = system
-        self._thread = thread
-        
-    def _get_base_route(self) -> Route:
-        route = Route(self._thread.start_location, self._thread.end_location)
-        for method in self._thread.methods:
-            for action in method.actions:
-                route.add_stop(action.location, action)
-        return route
-
-    def get_route(self) -> Route:
-        route = self._get_base_route()
-        route.build_route(self._system)
-        return route

@@ -2,7 +2,7 @@
 from typing import Dict, List
 import conftest
 from resource_models.labware import Labware
-from routing.router import RouteBuilder
+from routing.route_builder import RouteBuilder
 from routing.system_graph import SystemGraph
 from tests.mock import MockEquipmentResource, MockRoboticArm
 from workflow_models.workflow import LabwareThread, Method, MethodAction

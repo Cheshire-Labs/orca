@@ -8,16 +8,17 @@ from system_builder import ConfigSystemBuilder
 
 class Orca:
     @staticmethod
-    def run(config_file: str, workflow: Optional[str] = None):
+    def run(config_file: str, workflow_name: Optional[str] = None):
         builder = ConfigSystemBuilder()
         builder.set_all_config_files(config_file)
-        system = builder.build()
-        if workflow is None:
+        system_template = builder.build()
+        if workflow_name is None:
             raise ValueError("workflow is None.  Workflow must be a string")
-        if workflow not in system.workflows.keys():
-            raise LookupError(f"Workflow {workflow} is not defined with then System.  Make sure it is included in the config file and the config file loaded correctly.")
-        workflow_obj = system.workflows[workflow]
-        executer = WorkflowExecuter(system, workflow=workflow_obj)
+        if workflow_name not in system_template.workflows.keys():
+            raise LookupError(f"Workflow {workflow_name} is not defined with then System.  Make sure it is included in the config file and the config file loaded correctly.")
+        system = system_template.create_system_instance()
+        workflow = system.workflows[workflow_name]
+        executer = WorkflowExecuter(workflow, system.system_graph)
         executer.execute()
 
     @staticmethod
@@ -48,7 +49,7 @@ def main():
     args = parser.parse_args()
     if args.subcommand == "run":
         try:
-            Orca.run(config_file=args.config, workflow=args.workflow)
+            Orca.run(config_file=args.config, workflow_name=args.workflow)
         except ValueError as ve:
             print(f"Error: {ve}")
         except LookupError as le:
@@ -57,5 +58,5 @@ def main():
 
 if __name__ == '__main__':
     # Orca.run(config_file="tests\\mock_config1.yml", workflow="test-workflow2")
-    Orca.run(config_file="examples\\smc_assay_example.yml", workflow="smc-assay")
+    # Orca.run(config_file="examples\\smc_assay_example.yml", workflow_name="smc-assay")
 

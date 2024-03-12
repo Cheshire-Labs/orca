@@ -23,14 +23,13 @@ class MockEquipmentResource(Equipment, LabwareLoadable):
     def labware(self) -> Optional[Labware]:
         return self._stage_labware
 
-    def initialize(self) -> bool:
+    def initialize(self) -> None:
         print(f"Initializing MockResource")
         print(f"Name: {self._name}")
         print(f"Type: {self._mocking_type}")
         print(f"Mock Initialized")
         self._is_initialized = True
         self._on_intialize(self._init_options)
-        return self._is_initialized
 
     def prepare_for_place(self, labware: Labware) -> None:
         if self._stage_labware != None:
@@ -104,13 +103,14 @@ class MockRoboticArm(TransporterResource):
         self._on_pick: Callable[[Labware, Location], None] = lambda x, y: None
         self._on_place: Callable[[Labware, Location], None] = lambda x, y: None
 
-    def initialize(self) -> bool:
+    def initialize(self) -> None:
         print(f"Initializing MockResource")
         print(f"Name: {self._name}")
         print(f"Type: {self._mocking_type}")
         print(f"Mock Initialized")
+        if "teachpoints" in self._init_options:
+            self._positions = self._init_options["teachpoints"]
         self._is_initialized = True
-        return self._is_initialized
 
     def pick(self, location: Location) -> None:
         if self._labware is not None:
@@ -137,3 +137,19 @@ class MockRoboticArm(TransporterResource):
     def set_taught_positions(self, positions: List[str]) -> None:
         self._positions = positions
 
+    def _load_teachpoints(self, teachpoints: List[str] | str) -> None:
+        if isinstance(teachpoints, str):
+            if ".xml" in teachpoints:
+                self._positions = self._load_teachpoints_from_file(teachpoints)
+        else:
+            self._positions = teachpoints
+
+    def _load_teachpoints_from_file(self, file_path: str) -> List[str]:
+        import xml.etree.ElementTree as ET
+        positions: List[str] = []
+        tree = ET.parse(file_path)
+        root = tree.getroot()
+        for teachpoint in root.findall('teachpoint'):
+            name = str(teachpoint.get('name'))
+            positions.append(name)
+        return positions

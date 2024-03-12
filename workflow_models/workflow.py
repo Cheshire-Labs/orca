@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 from typing import Any, Dict, List, Optional
 from resource_models.location import Location
 from resource_models.labware import Labware
@@ -173,6 +172,10 @@ class LabwareThread:
         return self._current_location
 
     @property
+    def labware(self) -> Labware:
+        return self._labware
+    
+    @property
     def methods(self) -> List[Method]:
         return self._method_seq
     
@@ -187,25 +190,6 @@ class LabwareThread:
     @property
     def queued_methods(self) -> List[Method]:
         return [method for method in self._method_seq if method.status == MethodStatus.QUEUED]
-    
-    @property
-    def labware(self) -> Labware:
-        return self._labware
-    
-    @property
-    def completed_actions(self) -> List[BaseAction]:
-        raise NotImplementedError
-
-    @property
-    def current_action(self) -> BaseAction:
-        raise NotImplementedError
-
-    @property
-    def queued_actions(self) -> List[BaseAction]:
-        raise NotImplementedError
-    
-    def _build_actions(self, method: MethodTemplate) -> List[BaseAction]:
-        raise NotImplementedError
 
     def is_completed(self) -> bool:
         return all(method.status in [MethodStatus.COMPLETED, MethodStatus.CANCELED] for method in self._method_seq)
@@ -219,7 +203,6 @@ class LabwareThread:
     def get_next_action(self) -> BaseAction:
         raise NotImplementedError
 
-    
 
 
 class Workflow:
@@ -236,6 +219,4 @@ class Workflow:
     @property
     def labware_threads(self) ->  Dict[str, LabwareThread]:
         return self._labware_threads
-
-
 
