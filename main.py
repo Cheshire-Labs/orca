@@ -58,5 +58,4 @@ def main():
 
 if __name__ == '__main__':
     # Orca.run(config_file="tests\\mock_config1.yml", workflow="test-workflow2")
-    # Orca.run(config_file="examples\\smc_assay_example.yml", workflow_name="smc-assay")
-
+    Orca.run(config_file="examples\\smc_assay\\smc_assay_example.yml", workflow_name="smc-assay")
