@@ -1,0 +1,26 @@
+<teachpoints>
+    <trachpoint name="centrifuge" />
+    <teachpoint name="sealer" />
+    <teachpoint name="translator_1_end" />
+    <teachpoint name="translater_2_start" />
+    <teachpoint name="stacker_1" />
+    <teachpoint name="stacker_2" />
+    <teachpoint name="stacker_3" />
+    <teachpoint name="stacker_4" />
+    <teachpoint name="stacker_5" />
+    <teachpoint name="stacker_6" />
+    <teachpoint name="stacker_7" />
+    <teachpoint name="shaker_1" />
+    <teachpoint name="shaker_2" />
+    <teachpoint name="shaker_3" />
+    <teachpoint name="shaker_4" />
+    <teachpoint name="shaker_5" />
+    <teachpoint name="shaker_6" />
+    <teachpoint name="shaker_7" />
+    <teachpoint name="shaker_8" />
+    <teachpoint name="shaker_9" />
+    <teachpoint name="shaker_10" />
+    <teachpoint name="pad_4" />
+    <teachpoint name="pad_5" />
+    <teachpoint name="pad_6" />
+</teachpoints>

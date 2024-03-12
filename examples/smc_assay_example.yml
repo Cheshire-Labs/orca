@@ -71,69 +71,25 @@ resources:
     ddr-1:
         type: mock-robot
         ip: 192.168.1.125
-        positions: 
-            - biotek_1
-            - bravo_96
-            - translator_1_start
-            - waste_1
-            - pad_1
-            - pad_2
-            - pad_3
+        positions: ddr1.xml
 
     ddr-2:
         type: mock-robot
         ip: 192.168.1.126
-        positions: 
-            - centrifuge
-            - sealer
-            - translator_1_end
-            - translater_2_start
-            - stacker_1
-            - stacker_2
-            - stacker_3
-            - stacker_4
-            - stacker_5
-            - stacker_6
-            - stacker_7
-            - shaker_1
-            - shaker_2
-            - shaker_3
-            - shaker_4
-            - shaker_5
-            - shaker_6
-            - shaker_7
-            - shaker_8
-            - shaker_9
-            - shaker_10
-            - pad_4
-            - pad_5
-            - pad_6
+        positions: ddr2.xml
     ddr-3:
         type: mock-robot
         ip: 192.168.1.127
-        positions: 
-            - biotek_2
-            - bravo_384
-            - plate_hotel
-            - smc_pro
-            - translater_2_end
-            - waste_2
-            - pad_7
-            - pad_8
-            - pad_9
+        positions: ddr3.xml
 
     translator-1:
         type: translator
         com: "COM5"
-        positions: 
-            - translator_1_start
-            - translator_1_end
+        positions: translator2.xml
     translater-2:
         type: translator
         com: "COM6"
-        positions:
-            - translater_2_start
-            - translater_2_end
+        positions: translator2.xml
 
 
 ## STACKERS
