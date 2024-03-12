@@ -16,14 +16,15 @@ class IResource(ABC):
     
 
 class IInitializableResource(IResource, ABC):
-    @abstractmethod
-    def initialize(self) -> bool:
-        raise NotImplementedError
     
-    @abstractmethod
+    @property
     def is_initialized(self) -> bool:
         raise NotImplementedError
     
+    @abstractmethod
+    def initialize(self) -> None:
+        raise NotImplementedError
+
     @abstractmethod
     def set_init_options(self, init_options: Dict[str, Any]) -> None:
         raise NotImplementedError
@@ -41,9 +42,6 @@ class BaseResource(IInitializableResource, ABC):
         return self._name
 
     @property
-    def is_busy(self) -> bool:
-        return self._is_busy
-
     def is_initialized(self) -> bool:
         return self._is_initialized
 
@@ -54,6 +52,10 @@ class BaseResource(IInitializableResource, ABC):
         return self._name
 
 class LabwareLoadable(ABC):
+    @property
+    def is_busy(self) -> bool:
+        raise NotImplementedError
+    
     @property
     def labware(self) -> Optional[Labware]:
         raise NotImplementedError

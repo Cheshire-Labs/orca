@@ -4,16 +4,21 @@ from typing import Any, Dict, List, Optional
 from resource_models.location import Location
 from resource_models.transporter_resource import TransporterResource
 
-from resource_models.base_resource import BaseResource, Equipment, IResource, LabwareLoadable
+from resource_models.base_resource import BaseResource, Equipment, LabwareLoadable
 
 from resource_models.labware import Labware
 
 
-class PlaceHolderNonLabwareResource(IResource):
+class PlaceHolderNonLabwareResource(BaseResource):
     def __init__(self, name: str, mocking_type: Optional[str] = None):
         self._name = name
         self._mocking_type = mocking_type
         self._init_options: Dict[str, Any] = {}
+        self._is_initialized = False
+    
+    @property
+    def is_initialized(self) -> bool:
+        return self._is_initialized
     
     @property
     def name(self) -> str:
@@ -22,9 +27,9 @@ class PlaceHolderNonLabwareResource(IResource):
     def set_init_options(self, init_options: Dict[str, Any]) -> None:
         self._init_options = init_options
 
+    def initialize(self) -> None:
+        self._is_initialized = True
 
-
-# TODO: Just a placehodler for now
 class PlaceHolderResource(Equipment, LabwareLoadable):
     def __init__(self, name: str, mocking_type: Optional[str] = None):
         super().__init__(name)
@@ -35,13 +40,13 @@ class PlaceHolderResource(Equipment, LabwareLoadable):
     def labware(self) -> Optional[Labware]:
         return self._labware
 
-    def initialize(self) -> bool:
+    def initialize(self) -> None:
         print(f"Initializing MockResource")
         print(f"Name: {self._name}")
         print(f"Type: {self._mocking_type}")
         print(f"Mock Initialized")
         self._is_initialized = True
-        return self._is_initialized
+
 
     def prepare_for_place(self, labware: Labware) -> None:
         self._is_running = True
@@ -79,13 +84,13 @@ class PlaceHolderRoboticArm(TransporterResource):
         self._positions: List[str] = []
         self._command: Optional[str] = None
 
-    def initialize(self) -> bool:
+    def initialize(self) -> None:
         print(f"Initializing MockRoboticArm")
         print(f"Name: {self._name}")
         print(f"Type: {self._mocking_type}")
         print(f"Mock Initialized")
         self._is_initialized = True
-        return self._is_initialized
+
 
     def pick(self, location: Location) -> None:
         self._validate_position(location.teachpoint_name)
@@ -114,7 +119,7 @@ class VenusProtocol(BaseResource, LabwareLoadable):
         self._default_exe_path = r"C:\Program Files (x86)\HAMILTON\Bin\HxRun.exe"
         self._locked = False
 
-    def initialize(self) -> bool:
+    def initialize(self) -> None:
         # add a simple hamilton initialization script here
 
         raise NotImplementedError()

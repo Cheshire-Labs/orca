@@ -1,6 +1,6 @@
 from resource_models.location import Location
 from resource_models.transporter_resource import TransporterResource
-from resource_models.base_resource import IResource, LabwareLoadable
+from resource_models.base_resource import Equipment, IResource, LabwareLoadable
 from resource_models.labware import LabwareTemplate
 from resource_models.resource_factory import ResourceFactory, ResourcePoolFactory
 from resource_models.resource_pool import EquipmentResourcePool
@@ -96,7 +96,7 @@ class SystemTemplateBuilder:
 
         for _, res in system.resources.items():
             # skip resources like newtowrk switches, etc that don't have plate pad locations
-            if isinstance(res, LabwareLoadable) \
+            if isinstance(res, Equipment) \
                 and not isinstance(res, EquipmentResourcePool) \
                 and not isinstance(res, TransporterResource):
                 # set resource to each location
