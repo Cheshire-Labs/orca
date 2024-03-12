@@ -69,16 +69,16 @@ resources:
 
 ## ROBOTICS
     ddr-1:
-        type: mock-robot
+        type: ddr
         ip: 192.168.1.125
         positions: ddr1.xml
 
     ddr-2:
-        type: mock-robot
+        type: ddr
         ip: 192.168.1.126
         positions: ddr2.xml
     ddr-3:
-        type: mock-robot
+        type: ddr
         ip: 192.168.1.127
         positions: ddr3.xml
 
