@@ -141,39 +141,51 @@ resources:
     shaker-1:
         type: shaker
         com: "COM9"
+        plate-pad: shaker_1
     shaker-2:
         type: shaker
         com: "COM10"
+        plate-pad: shaker_2
     shaker-3:
         type: shaker
         com: "COM11"
+        plate-pad: shaker_3
     shaker-4:
         type: shaker
         com: "COM12"
+        plate-pad: shaker_4
     shaker-5:
         type: shaker
         com: "COM13"
+        plate-pad: shaker_5
     shaker-6:
         type: shaker
         com: "COM14"
+        plate-pad: shaker_6
     shaker-7:
         type: shaker
         com: "COM15"
+        plate-pad: shaker_7
     shaker-8:
         type: shaker
         com: "COM16"
+        plate-pad: shaker_8
     shaker-9:
         type: shaker
         com: "COM17"
+        plate-pad: shaker_9
     shaker-10:
         type: shaker
         com: "COM18"
+        plate-pad: shaker_10
 
 ## WASTE
     waste-1:
         type: waste
+        plate-pad: waste_1
     waste-2:
         type: waste
+        plate-pad: waste_2
     
 
 ## NETWORKING
