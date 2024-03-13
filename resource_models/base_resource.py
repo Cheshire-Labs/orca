@@ -33,7 +33,6 @@ class BaseResource(IInitializableResource, ABC):
 
     def __init__(self, name: str):
         self._name = name
-        self._is_busy = False
         self._is_initialized = False
         self._init_options: Dict[str, Any] = {}
 
@@ -53,7 +52,7 @@ class BaseResource(IInitializableResource, ABC):
 
 class LabwareLoadable(ABC):
     @property
-    def is_busy(self) -> bool:
+    def is_available(self) -> bool:
         raise NotImplementedError
     
     @property

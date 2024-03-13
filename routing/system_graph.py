@@ -18,7 +18,7 @@ class _NetworkXHandler:
     def add_node(self, name: str, location: Location) -> None:
         self._graph.add_node(name, location=location) # type: ignore
     
-    def add_edge(self, start: str, end: str, transporter: TransporterResource, weight: float = 5.0) -> None:
+    def add_edge(self, start: str, end: str, transporter: TransporterResource, weight: float = 1.0) -> None:
         self._graph.add_edge(start, end, weight=weight, transporter=transporter) # type: ignore
 
     def has_path(self, source: str, target: str) -> bool:
@@ -31,11 +31,11 @@ class _NetworkXHandler:
         return self._graph.nodes[name]
     
     def get_shortest_path(self, source: str, target: str) -> List[str]:
-        path: List[str] = nx.shortest_path(self._graph, source, target) # type: ignore
+        path: List[str] = nx.shortest_path(self._graph, source, target, weight='weight') # type: ignore
         return path
 
     def get_all_shortest_paths(self, source: str, target: str) -> List[List[str]]:
-        return list(nx.all_shortest_paths(self._graph, source, target)) # type: ignore
+        return list(nx.all_shortest_paths(self._graph, source, target, weight='weight')) # type: ignore
 
     def get_subgraph(self, nodes: List[str]) -> _NetworkXHandler:
         return _NetworkXHandler(nx.subgraph(self._graph, nodes)) # type: ignore
@@ -49,6 +49,9 @@ class _NetworkXHandler:
 
     def get_edge_data(self, source: str, target: str) -> Dict[str, Any]:
         return self._graph.edges[source, target]
+    
+    def get_distance(self, source: str, target: str) -> float:
+        return nx.shortest_path_length(self._graph, source, target, weight='weight') # type: ignore
 
     def draw(self) -> None:
         nx.draw(self._graph, with_labels=True) # type: ignore
@@ -101,21 +104,21 @@ class SystemGraph:
     
     def get_blocking_locations(self, source: str, target: str) -> List[Location]:
         # TODO: add input validations of source and target entered
-        locations: List[Location] = []
+        blocking_locs: List[Location] = []
         for location_name in self.get_shortest_any_path(source, target):
             location: Location = self._graph.get_node_data(location_name)["location"]
-            if location.is_busy:
-                locations.append(location)
-        return locations
+            if not location.is_available:
+                blocking_locs.append(location)
+        return blocking_locs
     
     def get_all_blocking_locations(self, source: str, target: str) -> List[Location]:
-        locations: List[Location] = []
+        blocking_locs: List[Location] = []
         for path in self.get_all_shortest_any_paths(source, target):
             for location_name in path:
                 location: Location = self._graph.get_node_data(location_name)["location"]
-                if location.is_busy:
-                    locations.append(location)
-        return locations
+                if not location.is_available:
+                    blocking_locs.append(location)
+        return blocking_locs
     
     def get_shortest_available_path(self, source: str, target: str) -> List[str]:
         available_graph = self._graph.get_subgraph([name for name, _ in self._get_available_locations().items()])
@@ -131,6 +134,9 @@ class SystemGraph:
     def get_all_shortest_any_paths(self, source: str, target: str) -> List[List[str]]:
         return self._graph.get_all_shortest_paths(source, target)
     
+    def get_distance(self, source: str, target: str) -> float:
+        return self._graph.get_distance(source, target)
+    
     def get_transporter_between(self, source: str, target: str) -> TransporterResource:
         return self._graph.get_edge_data(source, target)["transporter"]
     
@@ -142,7 +148,7 @@ class SystemGraph:
         nodes = {}
         for node, nodedata in self._graph.get_nodes().items():
             location: Location = nodedata["location"]
-            if not location.is_busy:
+            if location.is_available:
                 nodes[node] = nodedata
         return nodes
     

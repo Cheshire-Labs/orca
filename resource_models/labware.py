@@ -20,11 +20,10 @@ class LabwareTemplate:
     def labware_type(self, value: str) -> None:
         self._labware_type = value
 
-class Labware:
+    def create_instance(self) -> Labware:
+        return Labware(self.name, self.labware_type)
 
-    @staticmethod
-    def from_template(labware: LabwareTemplate) -> Labware:
-        return Labware(labware.name, labware.labware_type)
+class Labware:
     
     def __init__(self, name: str, labware_type: str) -> None:
         self._id = str(uuid.uuid4())

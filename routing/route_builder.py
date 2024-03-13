@@ -11,8 +11,11 @@ class RouteBuilder:
     def _get_base_route(self) -> Route:
         route = Route(self._thread.start_location, self._thread.end_location)
         for method in self._thread.methods:
-            for action in method.actions:
-                route.add_stop(action.location, action)
+            for resolver in method.action_resolvers:
+                previous_location = route.path[-1]
+                action = resolver.get_best_action(previous_location, self._system)
+                location = self._system.get_resource_location(action.resource.name)
+                route.add_stop(location, action)
         return route
 
     def get_route(self) -> Route:

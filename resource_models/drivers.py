@@ -39,6 +39,10 @@ class PlaceHolderResource(Equipment, LabwareLoadable):
         self._loaded_labware: List[Labware] = []
 
     @property
+    def is_available(self) -> bool:
+        return self._stage_labware is None
+
+    @property
     def labware(self) -> Optional[Labware]:
         return self._stage_labware
 

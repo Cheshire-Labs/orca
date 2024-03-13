@@ -26,8 +26,8 @@ class Location(LabwareLoadable, ABC):
         return self._resource.labware
 
     @property
-    def is_busy(self) -> bool:
-        return self._resource.labware is not None
+    def is_available(self) -> bool:
+        return self._resource.labware is None
 
     @property
     def resource(self) -> Optional[Equipment]:

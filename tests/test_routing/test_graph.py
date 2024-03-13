@@ -2,10 +2,11 @@
 from typing import Dict, List
 import conftest
 from resource_models.labware import Labware
+from resource_models.resource_pool import EquipmentResourcePool
 from routing.route_builder import RouteBuilder
 from routing.system_graph import SystemGraph
 from tests.mock import MockEquipmentResource, MockRoboticArm
-from workflow_models.workflow import LabwareThread, Method, MethodAction
+from workflow_models.workflow import LabwareThread, Method, MethodAction, MethodActionResolver
 
 import networkx as nx
 
@@ -35,8 +36,13 @@ class TestRouteBuilder:
                                        shaker1: MockEquipmentResource, 
                                        ham1: MockEquipmentResource):
         plate = Labware("plate", "mock_labware")
-        ham_method = Method("venus_method", [MethodAction(system_graph.get_resource_location("ham1"), "run", [plate], [plate])])
-        shaker_method = Method("shaker_method", [MethodAction(system_graph.get_resource_location("shaker1"), "shake", [plate], [plate])])
+        ham_method = Method("venus_method", 
+                            [MethodActionResolver(EquipmentResourcePool("ham1", [ham1]), "run", [plate], [plate])
+                             ])
+        shaker_method = Method("shaker_method", 
+                               [
+                                   MethodActionResolver(EquipmentResourcePool("shaker1", [shaker1]), "shake", [plate], [plate])
+                                   ])
         thread = LabwareThread(name=plate.name,
                                labware=plate,
                                method_sequence=[ham_method, 
@@ -69,7 +75,7 @@ class TestRouteBuilder:
         completed_actions: List[Dict[str, str]] = []
         plate = Labware("plate", "mock_labware")
         
-        ham_method = Method("venus_method", [MethodAction(system_graph.get_resource_location("ham1"), "run", [plate], [plate])])
+        ham_method = Method("venus_method", [MethodActionResolver(EquipmentResourcePool("ham1", [ham1]), "run", [plate], [plate])])
         thread = LabwareThread(name=plate.name,
                                 labware=plate,
                                 method_sequence=[ham_method],

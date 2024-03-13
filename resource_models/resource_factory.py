@@ -1,10 +1,10 @@
 from importlib.resources import Resource
 from typing import Any, Dict, List
 from resource_models.drivers import PlaceHolderNonLabwareResource, PlaceHolderResource, PlaceHolderRoboticArm, VenusProtocol
-from resource_models.base_resource import BaseResource
+from resource_models.base_resource import BaseResource, Equipment
 
 from resource_models.resource_pool import EquipmentResourcePool
-from system_template import SystemTemplate
+from workflow_models.workflow_templates import SystemTemplate
 
 
 
@@ -67,20 +67,18 @@ class ResourcePoolFactory:
     def create(self, pool_name: str, pool_config: Dict[str, Any]) -> EquipmentResourcePool:
         if 'type' not in pool_config.keys():
             raise KeyError("No resource type defined in config")
-        
         res_type = pool_config['type']
         if res_type != 'pool':
             raise ValueError(f"Resource pool {pool_name} type set as {res_type} instead of 'pool'")
-        pool: EquipmentResourcePool = EquipmentResourcePool(pool_name)
         if "resources" not in pool_config.keys():
             raise KeyError(f"No resources defined in resource pool {pool_name}")
-        resources: List[BaseResource] = []
+        resources: List[Equipment] = []
         for res_name in pool_config['resources']:
             if res_name not in self._system.resources.keys():
                 raise KeyError(f"Resource {res_name} from resource pool {pool_name} not found in system")
             res = self._system.resources[res_name]
-            if not isinstance(res, BaseResource):
+            if not isinstance(res, Equipment):
                 raise ValueError(f"Resource {res_name} from resource pool {pool_name} is not a valid equipment resource")
             resources.append(res)
-        pool.set_resources(resources)
-        return pool    
+            
+        return EquipmentResourcePool(pool_name, resources)    

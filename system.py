@@ -1,4 +1,4 @@
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from resource_models.location import Location
 from resource_models.transporter_resource import TransporterResource
 from resource_models.base_resource import IResource, LabwareLoadable
@@ -13,18 +13,16 @@ class System:
                  description: str,
                  version: str,
                  options: Dict[str, Any],
-                 labwares: Dict[str, Labware],
                  resources: Dict[str, IResource],
-                 locations: Dict[str, Location],
-                 workflows: Dict[str, Workflow]) -> None:
+                 locations: Dict[str, Location]) -> None:
         self._name = name
         self._description = description
         self._version = version 
         self._options = options
-        self._labwares: Dict[str, Labware] = labwares
+        self._labwares: Dict[str, Labware] = {}
         self._resources: Dict[str, IResource] = resources
         self._locations: Dict[str, Location] = locations
-        self._workflows: Dict[str, Workflow] = workflows
+        self._workflow: Optional[Dict[str, Workflow]] = None
         self._system_graph: SystemGraph = self._build_system_graph()
     
     @property
@@ -34,6 +32,9 @@ class System:
     @property
     def labwares(self) -> Dict[str, Labware]:
         return self._labwares
+    
+    def add_labware(self, labware: Labware) -> None:
+        self._labwares[labware.name] = labware
     
     @property
     def resources(self) -> Dict[str, IResource]:
@@ -53,7 +54,13 @@ class System:
     
     @property
     def workflows(self) -> Dict[str, Workflow]:
+        if self._workflows is None:
+            raise ValueError("Workflows have not been set")
         return self._workflows
+    
+    @workflows.setter
+    def workflows(self, workflows: Dict[str, Workflow]) -> None:
+        self._workflows = workflows
     
     @property
     def system_graph(self) -> SystemGraph:

@@ -1,19 +1,17 @@
 from resource_models.location import Location
 from resource_models.transporter_resource import TransporterResource
-from resource_models.base_resource import Equipment, IResource, LabwareLoadable
+from resource_models.base_resource import Equipment, IResource
 from resource_models.labware import LabwareTemplate
 from resource_models.resource_factory import ResourceFactory, ResourcePoolFactory
 from resource_models.resource_pool import EquipmentResourcePool
-from system_template import SystemTemplate
+from workflow_models.workflow_templates import SystemTemplate
 
 from workflow_models.workflow_templates import MethodActionTemplate, MethodTemplate, LabwareThreadTemplate, WorkflowTemplate
 
 from pyaml import yaml
 
-
 from typing import Any, Dict, List, Optional
 
-    
 class SystemTemplateBuilder:
     def __init__(self) -> None:
         self._name: Optional[str] = None
@@ -78,7 +76,7 @@ class SystemTemplateBuilder:
         system.resources = resources
         for name, resource_def in resource_pool_defs.items():
             pool = ResourcePoolFactory(system).create(name, resource_def)
-            system.resources[name] = pool   
+            system.resource_pools[name] = pool   
 
     def _build_locations(self, system: SystemTemplate) -> None:
         system.locations = {}
@@ -115,33 +113,35 @@ class SystemTemplateBuilder:
                 raise KeyError(f"Method {method_name} does not contain a 'actions' definition.  Method must have actions")
             actions: List[MethodActionTemplate] = []
             for action_index, action_config in enumerate(method_def['actions']):
+                
                 for resource_name, action_options in action_config.items():
                     # TODO: Fix this part to better handle the location and resource name - may need to switch config to be location instead of resource
-                    if resource_name not in system.equipment.keys():
-                        raise LookupError(f"The resource name '{resource_name}' in method actions is not recognized as a defined resource")
-                    if resource_name not in system.locations.keys():
-                        raise LookupError(f"The resource name '{resource_name}' in method actions is not recognized as a defined location")
-                    location = system.locations[resource_name]
+                    if resource_name in system.equipment.keys():
+                        resource: Equipment | EquipmentResourcePool = system.equipment[resource_name]
+                    elif resource_name in system.resource_pools.keys():
+                        resource = system.resource_pools[resource_name]
+                    else:
+                        raise LookupError(f"The resource name '{resource_name}' in method actions is not recognized as a defined resource or resource pool")
+                    
+                    # get command
+                    if "command" not in action_options.keys():
+                        raise KeyError(f"No 'command' defined in the action (index={action_index}) for {resource_name} in method {method_name}")
+                    command = action_options["command"]
 
-                # get command
-                if "command" not in action_options.keys():
-                    raise KeyError(f"No 'command' defined in the action (index={action_index}) for {resource_name} in method {method_name}")
-                command = action_options["command"]
+                    # get input labwares
+                    inputs = None
+                    if "inputs" in action_options.keys():
+                        input_labware_names: List[str] = action_options["inputs"] if isinstance(action_options["inputs"], List) else [action_options["inputs"]]
+                        inputs = [system.labwares[labware_name] for labware_name in input_labware_names]
 
-                # get input labwares
-                inputs = None
-                if "inputs" in action_options.keys():
-                    input_labware_names: List[str] = action_options["inputs"] if isinstance(action_options["inputs"], List) else [action_options["inputs"]]
-                    inputs = [system.labwares[labware_name] for labware_name in input_labware_names]
-
-                # get output labwares
-                outputs = None
-                if "outputs" in action_options.keys():
-                    output_labware_names: List[str] = action_options["outputs"] if isinstance(action_options["outputs"], List) else [action_options["outputs"]]
-                    outputs = [system.labwares[labware_name] for labware_name in output_labware_names]
-
-                action = MethodActionTemplate(location=location, command=command, options=action_options, inputs=inputs, outputs=outputs)
-                actions.append(action)
+                    # get output labwares
+                    outputs = None
+                    if "outputs" in action_options.keys():
+                        output_labware_names: List[str] = action_options["outputs"] if isinstance(action_options["outputs"], List) else [action_options["outputs"]]
+                        outputs = [system.labwares[labware_name] for labware_name in output_labware_names]
+                    
+                    action = MethodActionTemplate(resource, command=command, options=action_options, inputs=inputs, outputs=outputs)
+                    actions.append(action)
 
             [method.append_action(a) for a in actions]
             methods[method_name] = method
@@ -199,6 +199,8 @@ class SystemTemplateBuilder:
         self._build_workflows(system)
         return system
 
+
+
 class ConfigSystemBuilder:
 
     def __init__(self) -> None:
@@ -208,7 +210,7 @@ class ConfigSystemBuilder:
         self.locations_config_file: Optional[str] = None
         self.methods_config_file: Optional[str] = None
         self.workflows_config_file: Optional[str] = None
-    
+
     def set_all_config_files(self, config_file: str) -> None:
         self.system_config_file = config_file
         self.labwares_config_file = config_file
