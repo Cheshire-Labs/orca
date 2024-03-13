@@ -1,5 +1,6 @@
 
 from abc import ABC
+from types import MappingProxyType
 from typing import Any, Dict, List, Optional
 from resource_models.base_resource import Equipment, IResource
 from resource_models.location import Location
@@ -194,6 +195,7 @@ class SystemTemplate:
         self._locations: Dict[str, Location] = {}
         self._methods: Dict[str, MethodTemplate] = {}
         self._workflows: Dict[str, WorkflowTemplate] = {}
+        self._resource_pools: Dict[str, EquipmentResourcePool] = {}
 
     @property
     def options(self) -> Dict[str, Any]:
@@ -216,16 +218,22 @@ class SystemTemplate:
         self._resources = value
 
     @property
-    def equipment(self) -> Dict[str, Equipment]:
-        return {name: r for name, r in self._resources.items() if isinstance(r, Equipment)}
+    def equipment(self) -> MappingProxyType[str, Equipment]:
+        equipment = {name: r for name, r in self._resources.items() if isinstance(r, Equipment)}
+        return MappingProxyType(equipment)
+    
+    @property
+    def labware_transporters(self) -> MappingProxyType[str, TransporterResource]:
+        transporters = {name: r for name, r in self._resources.items() if isinstance(r, TransporterResource)}
+        return MappingProxyType(transporters)
     
     @property
     def resource_pools(self) -> Dict[str, EquipmentResourcePool]:
-        return {name: r for name, r in self._resources.items() if isinstance(r, EquipmentResourcePool)}
+        return self._resource_pools
 
-    @property
-    def labware_transporters(self) -> Dict[str, TransporterResource]:
-        return {name: r for name, r in self._resources.items() if isinstance(r, TransporterResource)}
+    @resource_pools.setter
+    def resource_pools(self, value: Dict[str, EquipmentResourcePool]) -> None:
+        self._resource_pools = value
 
     @property
     def locations(self) -> Dict[str, Location]:

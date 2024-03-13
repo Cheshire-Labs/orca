@@ -64,16 +64,18 @@ class SystemTemplateBuilder:
         system.labwares = labwares
     
     def _build_resources(self, system: SystemTemplate) -> None:
-        resources: Dict[str, IResource] = {}
         resource_pool_defs: Dict[str, Dict[str, Any]] = {}
+
+        # build resources from resource defs in config, defer resource pool creation
         for name, resource_def in self._resource_defs.items():
             if "type" not in resource_def.keys():
                 raise KeyError(f"Resource {name} does not contain a 'type' definition.  Resource must have a type")
             if resource_def["type"] == "pool":
                 resource_pool_defs[name] = resource_def
                 continue
-            resources[name] = ResourceFactory().create(name, resource_def)
-        system.resources = resources
+            system.resources[name] = ResourceFactory().create(name, resource_def)
+
+        # build resource pools
         for name, resource_def in resource_pool_defs.items():
             pool = ResourcePoolFactory(system).create(name, resource_def)
             system.resource_pools[name] = pool   
