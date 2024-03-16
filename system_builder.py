@@ -184,11 +184,16 @@ class SystemTemplateBuilder:
     def __get_plate_thread_location_name(self, workflow_name: str, loc_name: str, system: SystemTemplate) -> Location:
          # if auto-transport option is on just add the location
         if self.is_auto_transport() and loc_name not in system.locations.keys():
-            system.locations[loc_name] = Location(loc_name)
+            return Location(loc_name)
         else:
-            if loc_name not in system.locations.keys():
+            if loc_name in system.locations.keys():
+                return system.locations[loc_name]
+            elif loc_name in system.equipment.keys():
+                return system.get_resource_location(loc_name)
+            # TODO: add in for resource pools
+            else:
                 raise LookupError(f"Start property value {loc_name} referenced in workflow {workflow_name} is not recognized.  Locations must be defined by the transporting resource.")
-        return system.locations[loc_name]
+
 
     def build(self) -> SystemTemplate:
         if self._name is None:
