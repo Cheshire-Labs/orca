@@ -10,7 +10,7 @@ from resource_models.resource_pool import EquipmentResourcePool
 from resource_models.transporter_resource import TransporterResource
 from system import System
 from workflow_models.action import BaseAction
-from workflow_models.workflow import LabwareThread, Method, MethodAction, MethodActionResolver, Workflow
+from workflow_models.workflow import LabwareThread, Method, MethodActionResolver, Workflow
 
 
 class MethodActionTemplate(BaseAction, ABC):
@@ -138,13 +138,19 @@ class LabwareThreadBuilder:
         self._system: System = system
 
     def create_instance(self) -> LabwareThread:
+        
+        # Instantiate labware
+        labware_instance = self._template.labware.create_instance()
+        self._system.add_labware(labware_instance)
+
+        # Build the method sequence
         method_seq: List[Method] = []
         for method_template in self._template.methods:
             method_builder = MethodBuilder(method_template, self._system)
             method = method_builder.create_instance()
             method_seq.append(method)
-        labware_instance = self._template.labware.create_instance()
-        self._system.add_labware(labware_instance)
+        
+        # create the thread
         thread = LabwareThread(labware_instance.name, labware_instance, method_sequence=method_seq, start_location=self._template.start, end_location=self._template.end)
         thread.set_start_location(self._template.start)
         thread.set_end_location(self._template.end)
