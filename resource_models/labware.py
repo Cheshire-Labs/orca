@@ -33,7 +33,7 @@ class Labware:
     
     @property
     def name(self) -> str:
-        return f"{self._name}:{self._id}"
+        return f"{self._name}"
 
     @property   
     def id(self) -> str:
