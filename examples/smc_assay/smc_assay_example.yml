@@ -339,13 +339,8 @@ methods:
 
 workflows:
     smc-assay:
-        sample-plate:
-            start: stacker-sample-start
-            end: stacker-sample-end
-            steps:
-                - sample-to-bead-plate
-
         plate-1:
+            labware: plate-1
             start: stacker-plate-1-start
             end: waste-1
             steps:
@@ -362,45 +357,78 @@ workflows:
                 - combine-plates
                 - centrifuge
                 - read
-              
+
+        sample-plate:
+            labware: sample-plate
+            start: stacker-sample-start
+            end: stacker-sample-end
+            steps:
+                - ${self:plate-1.sample-to-bead-plate}      
+        
         final-plate:
+            labware: final-plate
             start: stacker-final-plate-start
             end: plate-hotel
+            scripts: 
+                - spawn-final-plate-script
             steps:
+                - ${self:plate-1.sample-to-bead-plate}
                 - combine-plates
                 - transfer-eluate
                 - centrifuge
                 - read
         
+        tips-96:
+            labware: tips-96
+            start: stacker-96-tips
+            end: waste-1
+            steps:
+                - delid
+                - - ${self:plate-1.sample-to-bead-plate}
+                  - ${self:plate-1.add-detection-antibody}
+                  - ${self:plate-1.add-elution-buffer-b}
+
+        tips-384:
+            labware: tips-384
+            start: stacker-384-tips-start
+            end: stacker-384-tips-end
+            scripts: 
+                - spawn-384-tips-script
+            steps:
+                - delid
+                - ${self:plate-1.combine-plates}
 
 ## SCRIPT EXAMPLES
 scripts:
-    get-positions: 
-        script: get-positions.py:get-positions(${0}, ${1})
+    spawn-384-tips-script:
+        source: spawn_384_tips.py:Spawn384TipsScript
 
-    worklist-iter: 
-        source: file-row-iterator("worklist.csv") 
-        mapping:
-            src: "source"
-            dest: "destination"
-            vol: "volume"
-            liq-class: "liquid_class_name"
+    # get-positions: 
+    #     source: get-positions.py:get-positions(${0}, ${1})
 
-    api-worklist-iter: 
-        source: http-get("http://api.com/worklist") 
-        mapping:
-            src: "source"
-            dest: "destination"
-            vol: "volume"
+    # worklist-iter: 
+    #     source: file-row-iterator("worklist.csv") 
+    #     mapping:
+    #         src: "source"
+    #         dest: "destination"
+    #         vol: "volume"
+    #         liq-class: "liquid_class_name"
 
-    id-iter: 
-        source: file-row-iterator("ids.txt") 
-        mapping:
-            id: "id"
+    # api-worklist-iter: 
+    #     source: http-get("http://api.com/worklist") 
+    #     mapping:
+    #         src: "source"
+    #         dest: "destination"
+    #         vol: "volume"
 
-    fed-api-worklist-iter: 
-        worklist-source: http-get("http://api.com/get-volume/{id-iter.id}") 
-        mapping:
-            src: "source"
-            dest: "destination"
-            vol: "volume"
+    # id-iter: 
+    #     source: file-row-iterator("ids.txt") 
+    #     mapping:
+    #         id: "id"
+
+    # fed-api-worklist-iter: 
+    #     worklist-source: http-get("http://api.com/get-volume/{id-iter.id}") 
+    #     mapping:
+    #         src: "source"
+    #         dest: "destination"
+    #         vol: "volume"
