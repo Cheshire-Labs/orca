@@ -4,9 +4,10 @@ from typing import Any, Dict
 import uuid
 
 class LabwareTemplate:
-    def __init__(self, name: str, type: str):
+    def __init__(self, name: str, type: str, options: Dict[str, Any] = {}) -> None:
         self._name = name
         self._labware_type = type
+        self._options = options
     
     @property
     def name(self) -> str:
