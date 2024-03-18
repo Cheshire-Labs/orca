@@ -60,7 +60,6 @@ class _NetworkXHandler:
     def __getitem__(self, key: str) -> Dict[str, Any]:
         return self._graph.nodes[key]
     
-    
 
 class SystemGraph:
 

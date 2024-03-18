@@ -10,7 +10,7 @@ class RouteBuilder:
 
     def _get_base_route(self) -> Route:
         route = Route(self._thread.start_location, self._thread.end_location)
-        for method in self._thread.methods:
+        for name, method in self._thread.methods.items():
             for resolver in method.action_resolvers:
                 previous_location = route.path[-1]
                 action = resolver.get_best_action(previous_location, self._system)

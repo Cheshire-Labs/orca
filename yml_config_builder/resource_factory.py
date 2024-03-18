@@ -1,20 +1,19 @@
-from importlib.resources import Resource
-from typing import Any, Dict, List
-from resource_models.drivers import PlaceHolderNonLabwareResource, PlaceHolderResource, PlaceHolderRoboticArm, VenusProtocol
+from typing import List
+from resource_models.drivers import PlaceHolderNonLabwareResource, PlaceHolderResource, PlaceHolderRoboticArm
 from resource_models.base_resource import BaseResource, Equipment
 
 from resource_models.resource_pool import EquipmentResourcePool
 from workflow_models.workflow_templates import SystemTemplate
+from yml_config_builder.configs import ResourceConfig, ResourcePoolConfig
+
 
 
 
 class ResourceFactory:
 
-    def create(self, resource_name: str, resource_config: Dict[str, Any]) -> BaseResource:
-        if 'type' not in resource_config.keys():
-                raise KeyError("No resource type defined in config")
+    def create(self, resource_name: str, resource_config: ResourceConfig) -> BaseResource:
         resource: BaseResource
-        res_type = resource_config['type']
+        res_type = resource_config.type
         if res_type == 'ml-star':
             resource = PlaceHolderResource(resource_name, mocking_type="Hamilton MLSTAR")
         elif res_type == 'acell':
@@ -51,29 +50,27 @@ class ResourceFactory:
             resource = PlaceHolderResource(resource_name, "Shaker")
         elif res_type == 'waste':
             resource = PlaceHolderResource(resource_name, "Waste")
+        elif res_type == 'delidder':
+            resource = PlaceHolderResource(resource_name, "Delidder")
         elif res_type == 'serial-switch':
             resource = PlaceHolderNonLabwareResource(resource_name, "Serial Switch")
         elif res_type == 'switch':
             resource = PlaceHolderNonLabwareResource(resource_name, "Switch")
         else:
             raise ValueError(f"Unknown resource type: {res_type}")
-        resource.set_init_options(resource_config)
+        resource.set_init_options(resource_config.model_extra)
         return resource
     
 class ResourcePoolFactory:
     def __init__(self, system: SystemTemplate) -> None:
         self._system = system
 
-    def create(self, pool_name: str, pool_config: Dict[str, Any]) -> EquipmentResourcePool:
-        if 'type' not in pool_config.keys():
-            raise KeyError("No resource type defined in config")
-        res_type = pool_config['type']
+    def create(self, pool_name: str, pool_config: ResourcePoolConfig) -> EquipmentResourcePool:
+        res_type = pool_config.type
         if res_type != 'pool':
             raise ValueError(f"Resource pool {pool_name} type set as {res_type} instead of 'pool'")
-        if "resources" not in pool_config.keys():
-            raise KeyError(f"No resources defined in resource pool {pool_name}")
         resources: List[Equipment] = []
-        for res_name in pool_config['resources']:
+        for res_name in pool_config.resources:
             if res_name not in self._system.resources.keys():
                 raise KeyError(f"Resource {res_name} from resource pool {pool_name} not found in system")
             res = self._system.resources[res_name]

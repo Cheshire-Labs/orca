@@ -6,7 +6,8 @@ from resource_models.resource_pool import EquipmentResourcePool
 from routing.route_builder import RouteBuilder
 from routing.system_graph import SystemGraph
 from tests.mock import MockEquipmentResource, MockRoboticArm
-from workflow_models.workflow import LabwareThread, Method, MethodAction, MethodActionResolver
+from workflow_models.method_action import LabwareInputManager, LabwareInstanceMatcher, MethodActionResolver
+from workflow_models.workflow import LabwareThread, Method
 
 import networkx as nx
 
@@ -36,12 +37,19 @@ class TestRouteBuilder:
                                        shaker1: MockEquipmentResource, 
                                        ham1: MockEquipmentResource):
         plate = Labware("plate", "mock_labware")
+        labware_instance_matcher = LabwareInstanceMatcher([plate])
         ham_method = Method("venus_method", 
-                            [MethodActionResolver(EquipmentResourcePool("ham1", [ham1]), "run", [plate], [plate])
+                            [MethodActionResolver(EquipmentResourcePool("ham1", [ham1]), 
+                                                  "run", 
+                                                  LabwareInputManager([labware_instance_matcher]),
+                                                  [])
                              ])
         shaker_method = Method("shaker_method", 
                                [
-                                   MethodActionResolver(EquipmentResourcePool("shaker1", [shaker1]), "shake", [plate], [plate])
+                                   MethodActionResolver(EquipmentResourcePool("shaker1", [shaker1]), 
+                                                        "shake", 
+                                                        LabwareInputManager([labware_instance_matcher]), 
+                                                        [])
                                    ])
         thread = LabwareThread(name=plate.name,
                                labware=plate,
@@ -74,8 +82,11 @@ class TestRouteBuilder:
                                              ham1: MockEquipmentResource):
         completed_actions: List[Dict[str, str]] = []
         plate = Labware("plate", "mock_labware")
-        
-        ham_method = Method("venus_method", [MethodActionResolver(EquipmentResourcePool("ham1", [ham1]), "run", [plate], [plate])])
+        labware_instance_matcher = LabwareInstanceMatcher([plate])
+        ham_method = Method("venus_method", [MethodActionResolver(EquipmentResourcePool("ham1", [ham1]), 
+                                                                  "run", 
+                                                                  LabwareInputManager([labware_instance_matcher]), 
+                                                        [])])
         thread = LabwareThread(name=plate.name,
                                 labware=plate,
                                 method_sequence=[ham_method],

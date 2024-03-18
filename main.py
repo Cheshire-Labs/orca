@@ -1,7 +1,7 @@
 import argparse
 from typing import Optional
 from workflow_executor import WorkflowExecuter
-from system_builder import ConfigSystemBuilder
+from yml_config_builder.template_builders import ConfigFile
 
 
 
@@ -9,14 +9,14 @@ from system_builder import ConfigSystemBuilder
 class Orca:
     @staticmethod
     def run(config_file: str, workflow_name: Optional[str] = None):
-        builder = ConfigSystemBuilder()
-        builder.set_all_config_files(config_file)
-        system_template = builder.build()
+        config = ConfigFile(config_file)
+        system_template = config.get_system_template()
+        system = system_template.create_system_instance()
         if workflow_name is None:
             raise ValueError("workflow is None.  Workflow must be a string")
         if workflow_name not in system_template.workflows.keys():
             raise LookupError(f"Workflow {workflow_name} is not defined with then System.  Make sure it is included in the config file and the config file loaded correctly.")
-        system = system_template.create_system_instance()
+       
         workflow = system.workflows[workflow_name]
         executer = WorkflowExecuter(workflow, system.system_graph)
         executer.execute()

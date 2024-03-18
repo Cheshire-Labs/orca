@@ -5,35 +5,36 @@ from typing import Any, Dict, List, Optional
 from resource_models.base_resource import Equipment, IResource
 from resource_models.location import Location
 
-from resource_models.labware import Labware, LabwareTemplate
+from resource_models.labware import LabwareTemplate
 from resource_models.resource_pool import EquipmentResourcePool
 from resource_models.transporter_resource import TransporterResource
 from system import System
 from workflow_models.action import BaseAction
-from workflow_models.workflow import LabwareThread, Method, MethodActionResolver, Workflow
+from workflow_models.method_action import ILabwareMatcher, LabwareInputManager, MethodActionResolver
+from workflow_models.workflow import LabwareThread, Method, Workflow
 
 
 class MethodActionTemplate(BaseAction, ABC):
-    def __init__(self, resource: Equipment | EquipmentResourcePool, 
-                 command: str, 
-                 options: Optional[Dict[str, Any]] = None, 
-                 inputs: Optional[List[LabwareTemplate]] = None, 
-                 outputs: Optional[List[LabwareTemplate]] = None):
+    def __init__(self, resource: Equipment | EquipmentResourcePool,
+                 command: str,
+                 inputs: List[ILabwareMatcher],
+                 outputs: Optional[List[LabwareTemplate]] = None,
+                 options: Optional[Dict[str, Any]] = None):
         if isinstance(resource, Equipment):
             self._resource_pool: EquipmentResourcePool = EquipmentResourcePool(resource.name, [resource])
         else:
             self._resource_pool = resource
         self._command = command
         self._options: Dict[str, Any] = {} if options is None else options
-        self._inputs: List[LabwareTemplate] = inputs if inputs is not None else []
+        self._inputs: List[ILabwareMatcher] = inputs
         self._outputs: List[LabwareTemplate] = outputs if outputs is not None else []
 
     @property
     def resource_pool(self) -> EquipmentResourcePool:
         return self._resource_pool
-    
+
     @property
-    def inputs(self) -> List[LabwareTemplate]:
+    def inputs(self) -> List[ILabwareMatcher]:
         return self._inputs
     
     @property
@@ -43,13 +44,10 @@ class MethodActionTemplate(BaseAction, ABC):
     @property
     def command(self) -> str:
         return self._command
-    
+
     @property
     def options(self) -> Dict[str, Any]:
         return self._options
-
-    
-
 
 class MethodActionBuilder:
 
@@ -58,24 +56,22 @@ class MethodActionBuilder:
         self._system: System = system
 
     def create_instance(self) -> MethodActionResolver:        
-        labware_instance_inputs: List[Labware] = [self._system.labwares[input_template.name] for input_template in self._template.inputs]
-        labware_instance_outputs: List[Labware] = []
-        for template_output in self._template.outputs:
-            output = next((labware for labware in labware_instance_inputs if labware.name == template_output.name), Labware(template_output.name, template_output.labware_type))
-            labware_instance_outputs.append(output)
+        labware_input_manager: LabwareInputManager = LabwareInputManager(self._template.inputs)
+        labware_instance_outputs: List[ILabwareMatcher] = []
         
         instance = MethodActionResolver(self._template.resource_pool, 
                                 self._template.command, 
-                                labware_instance_inputs,
+                                labware_input_manager,
                                 labware_instance_outputs,
                                 self._template.options)
         return instance
     
 class MethodTemplate:
 
-    def __init__(self, name: str):
+    def __init__(self, name: str, options: Dict[str, Any] = {}):
         self._name = name
         self._actions: List[MethodActionTemplate] = []
+        self._options = options
 
     @property
     def name(self) -> str:
@@ -186,43 +182,34 @@ class WorkflowBuilder:
 
 
 class SystemTemplate:
-    def __init__(self,
-                name: str,
-                description: str = "",
-                version: str = "latest",
-                options: Dict[str, Any] = {}
-                ) -> None:
+    def __init__(self, name: str, version: str, description: str, options: Dict[str, Any] = {}) -> None:
         self._name = name
-        self._description = description
         self._version = version
+        self._description = description
         self._options = options
-        self._labwares: Dict[str, LabwareTemplate] = {}
+        self._labware_templates: Dict[str, LabwareTemplate] = {}
         self._resources: Dict[str, IResource] = {}
+        self._resource_pools: Dict[str, EquipmentResourcePool] = {}
         self._locations: Dict[str, Location] = {}
         self._methods: Dict[str, MethodTemplate] = {}
-        self._workflows: Dict[str, WorkflowTemplate] = {}
-        self._resource_pools: Dict[str, EquipmentResourcePool] = {}
+        self._workflows: Dict[str, WorkflowTemplate] = {}        
 
     @property
-    def options(self) -> Dict[str, Any]:
-        return self._options
+    def name(self) -> str:
+        return self._name
 
     @property
-    def labwares(self) -> Dict[str, LabwareTemplate]:
-        return self._labwares
+    def version(self) -> str:
+        return self._version
 
-    @labwares.setter
-    def labwares(self, value: Dict[str, LabwareTemplate]) -> None:
-        self._labwares = value
+    @property
+    def description(self) -> str:
+        return self._description
 
     @property
     def resources(self) -> Dict[str, IResource]:
         return self._resources
-
-    @resources.setter
-    def resources(self, value: Dict[str, IResource]) -> None:
-        self._resources = value
-
+    
     @property
     def equipment(self) -> MappingProxyType[str, Equipment]:
         equipment = {name: r for name, r in self._resources.items() if isinstance(r, Equipment)}
@@ -236,34 +223,53 @@ class SystemTemplate:
     @property
     def resource_pools(self) -> Dict[str, EquipmentResourcePool]:
         return self._resource_pools
-
-    @resource_pools.setter
-    def resource_pools(self, value: Dict[str, EquipmentResourcePool]) -> None:
-        self._resource_pools = value
-
+    
     @property
     def locations(self) -> Dict[str, Location]:
         return self._locations
 
-    @locations.setter
-    def locations(self, value: Dict[str, Location]) -> None:
-        self._locations = value
-
+    @property
+    def labwares(self) -> Dict[str, LabwareTemplate]:
+        return self._labware_templates
+    
     @property
     def methods(self) -> Dict[str, MethodTemplate]:
         return self._methods
-
-    @methods.setter
-    def methods(self, value: Dict[str, MethodTemplate]) -> None:
-        self._methods = value
 
     @property
     def workflows(self) -> Dict[str, WorkflowTemplate]:
         return self._workflows
 
-    @workflows.setter
-    def workflows(self, value: Dict[str, WorkflowTemplate]) -> None:
-        self._workflows = value
+
+    def add_labware(self, name: str, labware: LabwareTemplate) -> None:
+        if name in self._labware_templates.keys():
+            raise KeyError(f"Labware {name} is already defined in the system.  Each labware must have a unique name")
+        self._labware_templates[name] = labware
+
+    def add_resource(self, name: str, resource: IResource) -> None:
+        if name in self._resources.keys():
+            raise KeyError(f"Resource {name} is already defined in the system.  Each resource must have a unique name")
+        self._resources[name] = resource
+
+    def add_resource_pool(self, name: str, resource_pool: EquipmentResourcePool) -> None:
+        if name in self._resource_pools.keys():
+            raise KeyError(f"Resource Pool {name} is already defined in the system.  Each resource pool must have a unique name")
+        self._resource_pools[name] = resource_pool
+
+    def add_method_template(self, name: str, method: MethodTemplate) -> None:
+        if name in self._methods.keys():
+            raise KeyError(f"Method {name} is already defined in the system.  Each method must have a unique name")
+        self._methods[name] = method
+
+    def add_workflow_template(self, name: str, workflow: WorkflowTemplate) -> None:
+        if name in self._workflows.keys():
+            raise KeyError(f"Workflow {name} is already defined in the system.  Each workflow must have a unique name")
+        self._workflows[name] = workflow
+
+    def add_location(self, location: Location) -> None:
+        if location.teachpoint_name in self._locations.keys():
+            raise KeyError(f"Location {location.teachpoint_name} is already defined in the system.  Each location must have a unique name")
+        self._locations[location.teachpoint_name] = location
 
     def get_resource_location(self, resource_name: str) -> Location:
         # TODO: better design

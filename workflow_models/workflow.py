@@ -1,76 +1,11 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
-from resource_models.base_resource import Equipment
+from typing import Dict, List, Optional
 from resource_models.location import Location
 from resource_models.labware import Labware
-from resource_models.resource_pool import EquipmentResourcePool
-from routing.system_graph import SystemGraph
-from workflow_models.action import ActionStatus, BaseAction
+from workflow_models.action import BaseAction
+from workflow_models.method_action import MethodActionResolver
 from workflow_models.method_status import MethodStatus
-
-
-class MethodAction(BaseAction):
-
-    def __init__(self, 
-                 resource: Equipment,
-                 command: str, 
-                 labware_instance_inputs: List[Labware], 
-                 labware_instance_outputs: List[Labware], 
-                 options: Dict[str, Any] = {}) -> None:
-        self._resource: Equipment = resource
-        self._command: str = command
-        self._options: Dict[str, Any] = options
-        self._awaiting_labware_inputs: List[Labware] = labware_instance_inputs
-        self._loaded_labware_inputs: List[Labware] = []
-        self._outputs: List[Labware] = labware_instance_outputs
-        self._status: ActionStatus = ActionStatus.CREATED
-    
-    @property
-    def resource(self) -> Equipment:
-        return self._resource
-    
-    @property
-    def awaiting_labware_inputs(self) -> List[Labware]:
-        return self._awaiting_labware_inputs
-
-    def _perform_action(self) -> None:
-        self._resource.set_command(self._command)
-        self._resource.set_command_options(self._options)
-        self._status = ActionStatus.IN_PROGRESS
-        self._resource.execute()
-        self._status = ActionStatus.COMPLETED
-
-    def __str__(self) -> str:
-        return f"Method Action: {self._resource.name} - {self._command}"
-    
-class MethodActionResolver(BaseAction):
-    def __init__(self, 
-                 resource_pool: EquipmentResourcePool,
-                 command: str, 
-                 labware_instance_inputs: List[Labware], 
-                 labware_instance_outputs: List[Labware], 
-                 options: Dict[str, Any] = {}) -> None:
-        self._resource_pool: EquipmentResourcePool = resource_pool
-        self._command: str = command
-        self._options: Dict[str, Any] = options
-        self._awaiting_labware_inputs: List[Labware] = labware_instance_inputs
-        self._loaded_labware_inputs: List[Labware] = []
-        self._outputs: List[Labware] = labware_instance_outputs
-    
-    @property
-    def resource_pool(self) -> EquipmentResourcePool:
-        return self._resource_pool
-    
-    def get_best_action(self, sourcing_location: Location, system: SystemGraph) -> MethodAction:
-        available_resources = [resource for resource in self._resource_pool.resources if resource.is_available]
-        ordered_resources = sorted(available_resources, key=lambda x: system.get_distance(sourcing_location.teachpoint_name, system.get_resource_location(x.name).teachpoint_name))
-        if not ordered_resources:
-            raise ValueError(f"{self}: No available resources")
-        return MethodAction(ordered_resources[0], self._command, self._awaiting_labware_inputs, self._outputs, self._options)      
-        
-    def __str__(self) -> str:
-        return f"Method Action Resolver: {self._resource_pool.name} - {self._command}"
 
 
 class Method:
@@ -161,8 +96,8 @@ class LabwareThread:
         return self._labware
     
     @property
-    def methods(self) -> List[Method]:
-        return self._method_seq
+    def methods(self) -> Dict[str, Method]:
+        return {m.name: m for m in self._method_seq}
     
     @property
     def completed_methods(self) -> List[Method]:
