@@ -362,26 +362,26 @@ workflows:
                 end: waste-1
                 steps:
                     - method: sample-to-bead-plate 
-                      on-init: 
+                      spawn: 
                         - sample-plate
                         - tips-96
                     - incubate-2hrs
                     - post-capture-wash
                     - method: add-detection-antibody
-                      on-init: 
+                      spawn: 
                         - tips-96
                     - incubate-1-hr
                     - pre-transfer-wash
                     - discard-supernatant
                     - method: add-elution-buffer-b
-                      on-init: 
+                      spawn: 
                         - tips-96
                     - incubate-10-min
                     - method: add-buffer-d
-                      on-init:
+                      spawn:
                         - tips-96
                     - method: combine-plates
-                      on-init:
+                      spawn:
                         - final-plate
                         - tips-384
 
@@ -404,7 +404,7 @@ workflows:
                 steps:
                     - ${0}
                     - method: transfer-eluate
-                      on-init:
+                      spawn:
                         - tips-384(${self})
                     - centrifuge
                     - read
