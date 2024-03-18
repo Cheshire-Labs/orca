@@ -3,7 +3,7 @@ system:
     version: "0.0.1"
     description: "SMC Assay Example"
 
-labwares:
+labwares: &labwares
     sample-plate:
         type: "Matrix 96 Well"
     plate-1:
@@ -32,10 +32,12 @@ resources:
         type: biotek
         com: "COM3"
         plate-pad: "biotek_1"
+    
     biotek-2:
         type: biotek
         com: "COM4"
         plate-pad: "biotek_2"
+    
     bravo-96-head:
         type: bravo
         ip: 192.168.1.123
@@ -45,6 +47,7 @@ resources:
             1: bead-reservoir
             2: detection-reservoir
             6: waste
+    
     bravo-384-head:
         type: bravo
         ip: 192.168.1.124
@@ -57,12 +60,20 @@ resources:
     sealer:
         type: plateloc
         com: "COM7"
+    
     centrifuge:
         type: vspin
         com: "COM8"
+    
     plate-hotel:
         type: agilent-hotel
         plate-pad: "plate_hotel"
+
+    delidder:
+        type: delidder
+        com: COM19
+        plate-pad: "delidder"
+
     smc-pro:
         type: smc-pro
         ip: 192.168.1.122
@@ -91,7 +102,6 @@ resources:
         type: translator
         com: "COM6"
         positions: examples\\smc_assay\\translator2.xml
-
 
 ## STACKERS
     stacker-sample-start:
@@ -336,67 +346,89 @@ methods:
                 protocol: read.pro
                 filepath: "results.csv"
 
+    delid:
+        actions:
+            - delidder:
+                command: delid
+                inputs: [$ANY]
 
 workflows:
     smc-assay:
-        plate-1:
-            labware: plate-1
-            start: stacker-plate-1-start
-            end: waste-1
-            steps:
-                - sample-to-bead-plate
-                - incubate-2hrs
-                - post-capture-wash
-                - add-detection-antibody
-                - incubate-1-hr
-                - pre-transfer-wash
-                - discard-supernatant
-                - add-elution-buffer-b
-                - incubate-10-min
-                - add-buffer-d
-                - combine-plates
-                - centrifuge
-                - read
+        threads:
+            plate-1: 
+                labware: plate-1
+                type: primary
+                start: stacker-plate-1-start
+                end: waste-1
+                steps:
+                    - method: sample-to-bead-plate 
+                      on-init: 
+                        - sample-plate
+                        - tips-96
+                    - incubate-2hrs
+                    - post-capture-wash
+                    - method: add-detection-antibody
+                      on-init: 
+                        - tips-96
+                    - incubate-1-hr
+                    - pre-transfer-wash
+                    - discard-supernatant
+                    - method: add-elution-buffer-b
+                      on-init: 
+                        - tips-96
+                    - incubate-10-min
+                    - method: add-buffer-d
+                      on-init:
+                        - tips-96
+                    - method: combine-plates
+                      on-init:
+                        - final-plate
+                        - tips-384
 
-        sample-plate:
-            labware: sample-plate
-            start: stacker-sample-start
-            end: stacker-sample-end
-            steps:
-                - ${self:plate-1.sample-to-bead-plate}      
-        
-        final-plate:
-            labware: final-plate
-            start: stacker-final-plate-start
-            end: plate-hotel
-            scripts: 
-                - spawn-final-plate-script
-            steps:
-                - ${self:plate-1.sample-to-bead-plate}
-                - combine-plates
-                - transfer-eluate
-                - centrifuge
-                - read
-        
-        tips-96:
-            labware: tips-96
-            start: stacker-96-tips
-            end: waste-1
-            steps:
-                - delid
-                - - ${self:plate-1.sample-to-bead-plate}
-                  - ${self:plate-1.add-detection-antibody}
-                  - ${self:plate-1.add-elution-buffer-b}
+            sample-plate:
+                type: wrapper
+                labware: sample-plate
+                start: stacker-sample-start
+                end: stacker-sample-end
+                steps:
+                    - delid
+                    - ${0}      
+            
+            final-plate:
+                type: wrapper
+                labware: final-plate
+                start: stacker-final-plate-start
+                end: plate-hotel
+                scripts: 
+                    - spawn-final-plate-script
+                steps:
+                    - ${0}
+                    - method: transfer-eluate
+                      on-init:
+                        - tips-384(${self})
+                    - centrifuge
+                    - read
+            
+            tips-96:
+                type: wrapper
+                labware: tips-96
+                start: stacker-96-tips
+                end: waste-1
+                steps:
+                    - delid
+                    - ${0}
 
-        tips-384:
-            labware: tips-384
-            start: stacker-384-tips-start
-            end: stacker-384-tips-end
-            scripts: 
-                - spawn-384-tips-script
-            steps:
-                - delid
-                - ${self:plate-1.combine-plates}
+            tips-384:
+                type: wrapper
+                labware: tips-384
+                start: stacker-384-tips-start
+                end: stacker-384-tips-end
+                scripts: 
+                    - spawn-384-tips-script
+                steps:
+                    - delid
+                    - ${0}
+           
 
 ## SCRIPT EXAMPLES
 scripts:
