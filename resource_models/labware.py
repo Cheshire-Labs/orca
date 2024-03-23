@@ -24,6 +24,31 @@ class LabwareTemplate:
     def create_instance(self) -> Labware:
         return Labware(self.name, self.labware_type)
 
+class AnyLabwareTemplate:
+    """A class that represents any labware template"""
+
+    @property
+    def name(self) -> str:
+        return "$any"
+
+    def create_instance(self) -> AnyLabware:
+        return AnyLabware()
+    
+    def __str__(self) -> str:
+        return "$AnyLabwareTemplate"
+
+
+class AnyLabware:
+    """A class that represents any labware"""
+
+    @property
+    def name(self) -> str:
+        return "$any"
+
+    def __str__(self) -> str:
+        return "$AnyLabware"
+
+
 class Labware:
     
     def __init__(self, name: str, labware_type: str) -> None:

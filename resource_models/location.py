@@ -24,6 +24,10 @@ class Location(LabwareLoadable, ABC):
     @property
     def labware(self) -> Optional[Labware]:
         return self._resource.labware
+    
+    def set_labware(self, labware: Labware) -> None:
+        # TODO: this will need to be restricted to only initilaizing the labware
+        self._resource.set_labware(labware)
 
     @property
     def is_available(self) -> bool:

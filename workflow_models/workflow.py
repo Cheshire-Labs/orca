@@ -1,69 +1,70 @@
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Set, Union
 from resource_models.location import Location
-from resource_models.labware import Labware
-from workflow_models.action import BaseAction
-from workflow_models.method_action import MethodActionResolver
+from resource_models.labware import AnyLabware, Labware, LabwareTemplate
+from routing.router import Route
+from routing.system_graph import SystemGraph
+from workflow_models.method_action import DynamicResourceAction, LocationAction
 from workflow_models.method_status import MethodStatus
+
 
 
 class Method:
 
-    def __init__(self, name: str, action_resolvers: List[MethodActionResolver]) -> None:
+    def __init__(self, name: str) -> None:
         self._name = name
-        self._action_resolvers: List[MethodActionResolver] = action_resolvers
-        self._status = MethodStatus.CREATED
-        self._parent_plate_thread_id: Optional[str] = None
+        self._steps: List[DynamicResourceAction] = []
+        self._status: MethodStatus = MethodStatus.CREATED
+        self._children_threads: List[str] = []
 
     @property
     def name(self) -> str:
         return self._name
     
     @property
-    def action_resolvers(self) -> List[MethodActionResolver]:
-        return self._action_resolvers
+    def expected_inputs(self) -> List[Union[Labware, AnyLabware]]:
+        # compile a set of the labware templates that are expected as inputs
+        expected_inputs: Set[Union[Labware, AnyLabware]] = set()
+        for action in self._steps:
+            expected_inputs.update(action.expected_inputs)
+        return list(expected_inputs)
     
     @property
-    def status(self) -> MethodStatus:
-        if all(action.status == MethodStatus.CANCELED for action in self._action_resolvers):
-            return MethodStatus.CANCELED
-        elif all(action.status in [MethodStatus.COMPLETED, MethodStatus.CANCELED] for action in self._action_resolvers):
-            return MethodStatus.COMPLETED
-        elif any(action.status == MethodStatus.ERRORED for action in self._action_resolvers):
-            return MethodStatus.ERRORED
-        elif any(action.status == MethodStatus.PAUSED for action in self._action_resolvers):
-            return MethodStatus.PAUSED
-        elif any(action.status == MethodStatus.AWAITING_RESOURCES for action in self._action_resolvers):
-            return MethodStatus.AWAITING_RESOURCES
-        elif any(action.status == MethodStatus.RUNNING for action in self._action_resolvers):
-            return MethodStatus.RUNNING
-        elif all(action.status == MethodStatus.READY for action in self._action_resolvers):
-            return MethodStatus.READY
-        elif all(action.status == MethodStatus.QUEUED for action in self._action_resolvers):
-            return MethodStatus.QUEUED
-        else:
-            return MethodStatus.CREATED
-
-    def append_action_resolver(self, action: MethodActionResolver):
-        self._action_resolvers.append(action)
+    def expected_outputs(self) -> List[Labware]:
+        # compile a set of the labware templates that are expected as outputs
+        expected_outputs: Set[Labware] = set()
+        for action in self._steps:
+            expected_outputs.update(action.expected_outputs)
+        return list(expected_outputs)
     
-    def get_next_action_resolver(self) -> Optional[MethodActionResolver]:
-        return next((action 
-                     for action in self._action_resolvers 
-                     if action.status in [MethodStatus.AWAITING_RESOURCES, MethodStatus.READY, MethodStatus.QUEUED]), None)
+    def append_step(self, step: DynamicResourceAction) -> None:
+        self._steps.append(step)
 
+    def resolve_next_action(self, reference_point: Location, system_graph: SystemGraph) -> LocationAction:
+        if self._status == MethodStatus.CREATED:
+            self._status = MethodStatus.RUNNING
+            # TODO: set children threads to spawn here
+
+        dynamic_action = self._steps.pop(0)
+        return dynamic_action.resolve_resource_action(reference_point, system_graph)
+
+    def set_children_threads(self, thread_names: List[str]) -> None:
+        self._children_threads = thread_names
+
+
+       
 
 class LabwareThread:
 
-    def __init__(self, name: str, labware: Labware, method_sequence: List[Method], start_location: Location, end_location: Location) -> None:
+    def __init__(self, name: str, labware: Labware, start_location: Location, end_location: Location, system_graph: SystemGraph) -> None:
         self._name: str = name
         self._labware: Labware = labware
-        self._method_seq: List[Method] = method_sequence
         self._start_location: Location = start_location
         self._current_location: Location = self._start_location
         self._end_location: Location = end_location
-        self._status: MethodStatus = MethodStatus.CREATED
+        self._route: Route | None = None
+        self._system_graph: SystemGraph = system_graph
 
     @property
     def name(self) -> str:
@@ -72,11 +73,6 @@ class LabwareThread:
     @property
     def start_location(self) -> Location:
         return self._start_location
-    
-    def set_start_location(self, location: Location) -> None:
-        if self._status in [MethodStatus.CREATED]:
-            self._current_location = self._start_location
-        self._start_location = location
     
     @property
     def end_location(self) -> Location:
@@ -95,33 +91,20 @@ class LabwareThread:
     def labware(self) -> Labware:
         return self._labware
     
-    @property
-    def methods(self) -> Dict[str, Method]:
-        return {m.name: m for m in self._method_seq}
+    def initialize_labware(self) -> None:
+        self._start_location.set_labware(self._labware)
+
+    def execute_action(self, action: LocationAction) -> None:
+        if self._route is None:
+            self._route = Route(self._current_location, self._system_graph , action.location)
+        else:
+            self._route.extend_to_location(action.location)
+        
+        for step in self._route:
+            step.set_labware(self._labware)
+            step.execute()
     
-    @property
-    def completed_methods(self) -> List[Method]:
-        return [method for method in self._method_seq if method.status == MethodStatus.COMPLETED]
-    
-    @property
-    def current_method(self) -> Method:
-        return next((step for step in self._method_seq if step.status in [MethodStatus.RUNNING]))
 
-    @property
-    def queued_methods(self) -> List[Method]:
-        return [method for method in self._method_seq if method.status == MethodStatus.QUEUED]
-
-    def is_completed(self) -> bool:
-        return all(method.status in [MethodStatus.COMPLETED, MethodStatus.CANCELED] for method in self._method_seq)
-
-    def start(self) -> None:
-        raise NotImplementedError
-
-    def stop(self) -> None:
-        raise NotImplementedError
-
-    def get_next_action(self) -> BaseAction:
-        raise NotImplementedError
 
 
 

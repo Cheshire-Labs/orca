@@ -1,16 +1,16 @@
 
-from typing import Dict, List
+from typing import Dict, List, Optional, Union
 import yaml
 
 from resource_models.base_resource import Equipment
-from resource_models.labware import LabwareTemplate
+from resource_models.labware import AnyLabwareTemplate, LabwareTemplate
 from resource_models.location import Location
-from workflow_models.method_action import AnyLabwareMatcher, ILabwareMatcher, LabwareToTemplateMatcher
 from yml_config_builder.configs import LabwareConfig, LabwareThreadConfig, MethodActionConfig, MethodConfig, ResourceConfig, ResourcePoolConfig, SystemConfig, ThreadStepConfig, WorkflowConfig
 from yml_config_builder.resource_factory import ResourceFactory, ResourcePoolFactory
 from resource_models.resource_pool import EquipmentResourcePool
 from resource_models.transporter_resource import TransporterResource
-from workflow_models.workflow_templates import LabwareThreadTemplate, MethodActionTemplate, MethodTemplate, SystemTemplate, WorkflowTemplate
+from workflow_models.workflow_templates import IMethodResolver, JunctionMethodTemplate, LabwareThreadTemplate, MethodActionTemplate, MethodTemplate, SystemTemplate, WorkflowTemplate
+from yml_config_builder.special_yml_parsing import get_dynamic_yaml_keys, is_dynamic_yaml
 
 
 class LabwareConfigToTemplateAdapter:
@@ -42,21 +42,21 @@ class MethodActionConfigToTemplate:
             raise LookupError(f"The resource name '{resource_name}' in method actions is not recognized as a defined resource or resource pool")
         
         # Get the input labware templates
-        input_matchers: List[ILabwareMatcher] = []
+        inputs: List[Union[LabwareTemplate, AnyLabwareTemplate]] = []
         for input in self._config.inputs:
             if input == "$ANY":
-                input_matchers.append(AnyLabwareMatcher())
-            elif input in system_template.labwares.keys():
-                input_matchers.append(LabwareToTemplateMatcher([system_template.labwares[input]]))
+                inputs.append(AnyLabwareTemplate())
+            elif input in system_template.labware_templates.keys():
+                inputs.append(system_template.labware_templates[input])
             else:
                 raise LookupError(f"The input labware name '{input}' in method actions is not recognized as a defined labware.  Input must be a recognized labware or keyword")
             
         # Get the output labware templates
-        outputs = [system_template.labwares[name] for name in self._config.outputs]
+        outputs = [system_template.labware_templates[name] for name in self._config.outputs]
 
         return MethodActionTemplate(resource,
                                      self._config.command,
-                                         input_matchers,
+                                         inputs,
                                            outputs, 
                                            self._config.model_extra,)
 
@@ -81,29 +81,11 @@ class LabwareThreadConfigToTemplateAdapter:
         self._name = name
         self._config = config
 
-    def get_template(self, system: SystemTemplate) -> LabwareThreadTemplate:
+    def get_template(self, system_template: SystemTemplate) -> LabwareThreadTemplate:
 
-        # Get labware
-        if self._config.labware not in system.labwares.keys():
-            raise KeyError(f"Labware Thread {self._name} defines labware {self._config.labware} which is not in the system labwares")
-        labware = system.labwares[self._config.labware]
-        
-        # Get start location
-        if self._config.start in system.locations.keys():
-            start_location = system.locations[self._config.start]
-        elif self._config.start in system.resources.keys():
-            start_location = system.get_resource_location(self._config.start)
-        else:
-            raise KeyError(f"Labware Thread {self._name} defines start location {self._config.start} which is not in the system locations or system resources")
-
-        # Get end location
-        if self._config.end in system.locations.keys():
-             end_location = system.locations[self._config.end]
-        elif self._config.end in system.resources.keys():
-            end_location = system.get_resource_location(self._config.end)
-        else:
-            raise KeyError(f"Labware Thread {self._name} defines end location {self._config.end} which is not in the system locations or system resources")
-        
+        labware = self._get_labware(system_template)
+        start_location = self._get_location(self._config.start, system_template)
+        end_location = self._get_location(self._config.end, system_template)
         # make labware thread
         labware_thread = LabwareThreadTemplate(labware=labware, start=start_location, end=end_location)
 
@@ -111,18 +93,44 @@ class LabwareThreadConfigToTemplateAdapter:
         for step in self._config.steps:
             if isinstance(step, str):
                 method_name = step
-                if method_name not in system.methods.keys():
-                    raise LookupError(f"Method {method_name} referenced in labware thread {self._name} is not defined.  Method {method_name} must be defined")
-                method = system.methods[method_name]
-                labware_thread.add_method(method)
+                method_resolver = self._get_method_resolver(method_name, system_template)
+                labware_thread.add_method(method_resolver)
+
             elif isinstance(step, ThreadStepConfig):
-                if step.method not in system.methods.keys():
-                    raise LookupError(f"Method {step.method} referenced in labware thread {self._name} is not defined.  Method {step.method} must be defined")
-                method = system.methods[step.method]
-                labware_thread.add_method(method, step.model_dump())
+                method_resolver = self._get_method_resolver(step.method, system_template, step)
+                labware_thread.add_method(method_resolver)
+            else:
+                raise ValueError(f"Labware Thread {self._name} has an invalid step type {step}.  Steps must be a string or a ThreadStepConfig")
+
         return labware_thread
 
+    def _get_labware(self, system_template: SystemTemplate) -> LabwareTemplate:
+        if self._config.labware not in system_template.labware_templates.keys():
+            raise KeyError(f"Labware Thread {self._name} defines labware {self._config.labware} which is not in the system labwares")
+        return system_template.labware_templates[self._config.labware]
 
+    def _get_location(self, location_name: str, system_template: SystemTemplate) -> Location:
+        if location_name in system_template.locations.keys():
+            return system_template.locations[location_name]
+        elif location_name in system_template.resources.keys():
+            return system_template.get_resource_location(location_name)
+        else:
+            raise KeyError(f"Labware Thread {self._name} defines a start/end location {location_name} which is not in the system locations or system resources")
+    
+    def _get_method_resolver(self, method_name: str, system_template: SystemTemplate, step_config: Optional[ThreadStepConfig] = None) -> IMethodResolver:
+        if is_dynamic_yaml(method_name):
+            input_index = [int(key) for key in get_dynamic_yaml_keys(method_name)]
+            shared_method = JunctionMethodTemplate()
+            return shared_method
+
+        if method_name not in system_template.method_templates.keys():
+            raise LookupError(f"Method {method_name} referenced in labware thread {self._name} is not defined.  Method {method_name} must be defined")
+        method = system_template.method_templates[method_name]
+        if step_config is not None:
+            if step_config.spawn:
+                # TODO: figure out how to attach the actual thread here
+                method.set_spawn(step_config.spawn)
+        return method
 
 class WorkflowConfigToTemplateAdapter:
     def __init__(self, name: str, config: WorkflowConfig) -> None:
@@ -169,6 +177,7 @@ class SystemConfigToTemplateAdapter:
             for loc_name in taught_positions:
                 if loc_name not in system_template.locations.keys():
                     system_template.locations[loc_name] = Location(loc_name)
+                    
 
         for _, res in system_template.resources.items():
             # skip resources like newtowrk switches, etc that don't have plate pad locations

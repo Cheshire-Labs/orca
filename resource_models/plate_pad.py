@@ -14,10 +14,13 @@ class PlatePad(Equipment):
     @property
     def labware(self) -> Optional[Labware]:
         return self._labware
+    
+    def set_labware(self, labware: Labware) -> None:
+        # TODO: this will need to be restricted to only initilaizing the labware
+        self._labware = labware
 
-    def initialize(self) -> bool:
+    def initialize(self) -> None:
         self._is_initialized = True
-        return self._is_initialized
     
     def notify_picked(self, labware: Labware) -> None:
         print(f"Labware {labware} picked from plate pad {self}")

@@ -6,7 +6,7 @@ from routing.system_graph import SystemGraph
 from workflow_models.action import BaseAction
 
 
-class RouteStep(BaseAction):
+class MoveAction(BaseAction):
     def __init__(self, 
                  source: Location, 
                  target: Location, 
@@ -15,27 +15,27 @@ class RouteStep(BaseAction):
         self._source = source
         self._target = target
         self._transporter: TransporterResource = transporter
-        self._post_load_actions: List[BaseAction] = []
+        # self._post_load_actions: List[ResourceAction] = []
         self._labware: Optional[Labware] = None
 
     @property
     def source(self) -> Location:
         return self._source
     
-    @source.setter
-    def source(self, source:Location) -> None:
-        self._source = source
+    # @source.setter
+    # def source(self, source:Location) -> None:
+    #     self._source = source
 
     @property
     def target(self) -> Location:
         return self._target
     
-    @target.setter
-    def target(self, target: Location) -> None:
-        self._target = target
+    # @target.setter
+    # def target(self, target: Location) -> None:
+    #     self._target = target
 
-    def set_actions(self, actions: List[BaseAction]) -> None:
-        self._post_load_actions = actions
+    # def set_actions(self, actions: List[ResourceAction]) -> None:
+    #     self._post_load_actions = actions
 
     def set_labware(self, labware: Labware) -> None:
         self._labware = labware
@@ -51,27 +51,26 @@ class RouteStep(BaseAction):
         self._transporter.place(self._target)
         self._target.notify_placed(self._labware)
 
-        # perform the action
-        for action in self._post_load_actions:
-            action.execute()
+        # # perform the action
+        # for action in self._post_load_actions:
+        #     action.execute()
 
     
 
 
 class Route:
-    def __init__(self, start: Location, end: Location) -> None:
+    def __init__(self, start: Location, system_graph: SystemGraph, end: Optional[Location] = None) -> None:
         self._start = start
-        self._end = end
-        self._core_actions: Dict[str, List[BaseAction]] = {}
-        self._edges: List[RouteStep] = []
-
+        self._end = start
+        self._edges: List[MoveAction] = []
+        self._system_graph = system_graph
+        if end is not None:
+            self.extend_to_location(end)
+        # self._core_actions: Dict[str, List[ResourceAction]] = {}
+        
     @property
     def start(self) -> Location:
         return self._start
-    
-    @property
-    def end(self) -> Location:
-        return self._end
 
     @property
     def path(self) -> List[Location]:
@@ -80,43 +79,41 @@ class Route:
             path.append(edge.target) 
         return path
     
-    @property
-    def actions(self) -> List[RouteStep]:
-        return self._edges
+    # @property
+    # def actions(self) -> List[MoveAction]:
+    #     return self._edges
 
-    def add_stop(self, location: Location, action: BaseAction) -> None:
-        if location not in self._core_actions.keys():
-            self._core_actions[location.teachpoint_name] = []
-        self._core_actions[location.teachpoint_name].append(action)
+    # def add_stop(self, location: Location, action: ResourceAction) -> None:
+    #     if location not in self._core_actions.keys():
+    #         self._core_actions[location.teachpoint_name] = []
+    #     self._core_actions[location.teachpoint_name].append(action)
 
-    def build_route(self, system: SystemGraph) -> None:
-        self._edges = []
-        for core_location, core_actions in self._core_actions.items():
+   
 
-            # get the source and target locations
-            core_src_location = self._edges[-1].target if len(self._edges) > 0 else self._start 
-            core_tgt_location = system.locations[core_location]
+    def extend_to_location(self, end_location: Location) -> None:
+        """
+        Extends the route to the specified end location by adding move actions to the route.
 
-            # get the shortest path between the two locations
-            path: List[str] = system.get_shortest_available_path(core_src_location.teachpoint_name, core_tgt_location.teachpoint_name)
+        Args:
+            end_location (Location): The end location to extend the route to.
+            system (SystemGraph): The system graph containing the locations and transporters.
 
-            # build the route actions from the path
-            path_src_loc = path.pop(0)
-            for path_tgt_loc in path:
-                source_location = system.locations[path_src_loc]
-                target_location = system.locations[path_tgt_loc]
-                transporter = system.get_transporter_between(path_src_loc, path_tgt_loc)
-                self._edges.append(RouteStep(source_location, target_location, transporter))
-                path_src_loc = path_tgt_loc
-            self._edges[-1].set_actions(core_actions)
+        Returns:
+            None
+        """
+        previous_end = self._end
+        new_end = end_location
+        extended_path = self._system_graph.get_shortest_available_path(previous_end.teachpoint_name, new_end.teachpoint_name)
 
-        # build to the end of the route
-        end_path: List[str] = system.get_shortest_available_path(self._edges[-1].target.teachpoint_name, self._end.teachpoint_name)
-        end_path_src_loc = end_path.pop(0)
-        for end_path_tgt_loc in end_path:
-            source_location = system.locations[end_path_src_loc]
-            target_location = system.locations[end_path_tgt_loc]
-            transporter = system.get_transporter_between(end_path_src_loc, end_path_tgt_loc)
-            self._edges.append(RouteStep(source_location, target_location, transporter))
-            end_path_src_loc = end_path_tgt_loc                
-
+        end_path_src_loc = previous_end.teachpoint_name      
+        for stop in extended_path:
+            source_location = self._system_graph.locations[end_path_src_loc]
+            target_location = self._system_graph.locations[stop]
+            transporter = self._system_graph.get_transporter_between(end_path_src_loc, stop)
+            self._edges.append(MoveAction(source_location, target_location, transporter))
+            end_path_src_loc = stop
+        self._end = end_location
+    
+    def __iter__(self):
+        return iter(self._edges)
+ 

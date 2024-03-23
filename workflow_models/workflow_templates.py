@@ -1,23 +1,22 @@
 
 from abc import ABC
 from types import MappingProxyType
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Union
 from resource_models.base_resource import Equipment, IResource
 from resource_models.location import Location
 
-from resource_models.labware import LabwareTemplate
+from resource_models.labware import AnyLabware, AnyLabwareTemplate, Labware, LabwareTemplate
 from resource_models.resource_pool import EquipmentResourcePool
 from resource_models.transporter_resource import TransporterResource
 from system import System
-from workflow_models.action import BaseAction
-from workflow_models.method_action import ILabwareMatcher, LabwareInputManager, MethodActionResolver
+from workflow_models.method_action import DynamicResourceAction
 from workflow_models.workflow import LabwareThread, Method, Workflow
 
 
-class MethodActionTemplate(BaseAction, ABC):
+class MethodActionTemplate:
     def __init__(self, resource: Equipment | EquipmentResourcePool,
                  command: str,
-                 inputs: List[ILabwareMatcher],
+                 inputs: List[Union[LabwareTemplate, AnyLabwareTemplate]],
                  outputs: Optional[List[LabwareTemplate]] = None,
                  options: Optional[Dict[str, Any]] = None):
         if isinstance(resource, Equipment):
@@ -26,7 +25,7 @@ class MethodActionTemplate(BaseAction, ABC):
             self._resource_pool = resource
         self._command = command
         self._options: Dict[str, Any] = {} if options is None else options
-        self._inputs: List[ILabwareMatcher] = inputs
+        self._inputs: List[Union[LabwareTemplate, AnyLabwareTemplate]] = inputs
         self._outputs: List[LabwareTemplate] = outputs if outputs is not None else []
 
     @property
@@ -34,7 +33,7 @@ class MethodActionTemplate(BaseAction, ABC):
         return self._resource_pool
 
     @property
-    def inputs(self) -> List[ILabwareMatcher]:
+    def inputs(self) -> List[Union[LabwareTemplate, AnyLabwareTemplate]]:
         return self._inputs
     
     @property
@@ -55,22 +54,37 @@ class MethodActionBuilder:
         self._template: MethodActionTemplate = template
         self._system: System = system
 
-    def create_instance(self) -> MethodActionResolver:        
-        labware_input_manager: LabwareInputManager = LabwareInputManager(self._template.inputs)
-        labware_instance_outputs: List[ILabwareMatcher] = []
+    def create_instance(self) -> DynamicResourceAction:        
         
-        instance = MethodActionResolver(self._template.resource_pool, 
+        # TODO: this will need to find the actually labware that should be going into the method the specific workflow
+        inputs: List[Union[Labware, AnyLabware]] = [] 
+        for input_template in self._template.inputs:
+            if isinstance(input_template, AnyLabwareTemplate):
+                inputs.append(AnyLabware())
+            else:
+                inputs.append(self._system.labwares[input_template.name])
+
+        outputs: List[Labware] = [self._system.labwares[output.name] for output in self._template.outputs]
+
+        instance = DynamicResourceAction(self._template.resource_pool, 
                                 self._template.command, 
-                                labware_input_manager,
-                                labware_instance_outputs,
+                                inputs,
+                                outputs,
                                 self._template.options)
         return instance
     
-class MethodTemplate:
+
+
+class IMethodResolver(ABC):
+    def get_instance(self, system: System) -> Method:
+        raise NotImplementedError("MethodResolver must implement get_instance method")
+
+class MethodTemplate(IMethodResolver):
 
     def __init__(self, name: str, options: Dict[str, Any] = {}):
         self._name = name
         self._actions: List[MethodActionTemplate] = []
+        self._thread_names_to_spawn: List[str] = []
         self._options = options
 
     @property
@@ -80,33 +94,56 @@ class MethodTemplate:
     @property
     def actions(self) -> List[MethodActionTemplate]:
         return self._actions
+    
+    @property
+    def inputs(self) -> List[Union[LabwareTemplate, AnyLabwareTemplate]]:
+        inputs: Set[Union[LabwareTemplate, AnyLabwareTemplate]] = set()
+        for action in self._actions:
+            inputs.update(action.inputs)
+        return list(inputs)
+    
+    @property
+    def outputs(self) -> List[LabwareTemplate]:
+        outputs: Set[LabwareTemplate] = set()
+        for action in self._actions:
+            outputs.update(action.outputs)
+        return list(outputs)
 
     def append_action(self, action: MethodActionTemplate):
         self._actions.append(action)
 
+    def set_spawn(self, thread_names_to_spawn: List[str]) -> None:
+        self._thread_names_to_spawn = thread_names_to_spawn
 
-
-class MethodBuilder:
-    def __init__(self, template: MethodTemplate, system: System) -> None:
-        self._template: MethodTemplate = template
-        self._system: System = system
-
-    def create_instance(self) -> Method:
-        actions: List[MethodActionResolver] = []
-        for action_template in self._template.actions:
-            builder = MethodActionBuilder(action_template, self._system)
+    def get_instance(self, system: System) -> Method:
+        method = Method(self.name)
+        for action_template in self.actions:
+            builder = MethodActionBuilder(action_template, system)
             action = builder.create_instance()
-            actions.append(action)
-        return Method(self._template.name, actions)
+            method.append_step(action)
+        method.set_children_threads(self._thread_names_to_spawn)
+        return method
     
+class JunctionMethodTemplate(IMethodResolver):
+    def __init__(self) -> None:
+        self._method: Method | None = None
+    
+    def set_method(self, method: Method) -> None:
+        self._method = method
 
+    def get_instance(self, system: System) -> Method:
+        if self._method is None:
+            raise NotImplementedError("Method has not been set")
+        return self._method
+    
 class LabwareThreadTemplate:
 
     def __init__(self, labware: LabwareTemplate, start: Location, end: Location) -> None:
         self._labware: LabwareTemplate = labware
         self._start: Location = start
         self._end: Location = end
-        self._methods: List[MethodTemplate] = []
+        self._methods: List[IMethodResolver] = []
+        self._spawning_method: Method | None = None
 
     @property
     def labware(self) -> LabwareTemplate:
@@ -121,12 +158,18 @@ class LabwareThreadTemplate:
         return self._end
     
     @property
-    def methods(self) -> List[MethodTemplate]:
+    def method_resolvers(self) -> List[IMethodResolver]:
         return self._methods
     
-    def add_method(self, method: MethodTemplate, method_step_options: Optional[Dict[str, Any]] = None) -> None:
-        # TODO: may add option to update method options at the Workflow level
+    def set_spawning_method(self, spawning_method: Method) -> None:
+        self._spawning_method
+        for m in self._methods:
+            if isinstance(m, JunctionMethodTemplate):
+                m.set_method(spawning_method)  
+    
+    def add_method(self, method: IMethodResolver) -> None:
         self._methods.append(method)
+
 
 class LabwareThreadBuilder:
     def __init__(self, template: LabwareThreadTemplate, system: System) -> None:
@@ -141,16 +184,19 @@ class LabwareThreadBuilder:
 
         # Build the method sequence
         method_seq: List[Method] = []
-        for method_template in self._template.methods:
-            method_builder = MethodBuilder(method_template, self._system)
-            method = method_builder.create_instance()
+        for method_resolver in self._template.method_resolvers:
+            method = method_resolver.get_instance(self._system)
             method_seq.append(method)
         
         # create the thread
-        thread = LabwareThread(labware_instance.name, labware_instance, method_sequence=method_seq, start_location=self._template.start, end_location=self._template.end)
-        thread.set_start_location(self._template.start)
-        thread.set_end_location(self._template.end)
+        thread = LabwareThread(labware_instance.name,
+                                labware_instance, 
+                                self._template.start,
+                                self._template.end,
+                                self._system.system_graph)
+
         return thread
+
 
 class WorkflowTemplate:
     
@@ -229,15 +275,15 @@ class SystemTemplate:
         return self._locations
 
     @property
-    def labwares(self) -> Dict[str, LabwareTemplate]:
+    def labware_templates(self) -> Dict[str, LabwareTemplate]:
         return self._labware_templates
     
     @property
-    def methods(self) -> Dict[str, MethodTemplate]:
+    def method_templates(self) -> Dict[str, MethodTemplate]:
         return self._methods
 
     @property
-    def workflows(self) -> Dict[str, WorkflowTemplate]:
+    def workflow_templates(self) -> Dict[str, WorkflowTemplate]:
         return self._workflows
 
 
@@ -286,8 +332,8 @@ class SystemTemplate:
                       options=self._options,
                       resources=self._resources,
                       locations=self._locations)
-        workflow_builders = {name: WorkflowBuilder(template, system) for name, template in self._workflows.items()}
-        workflows = {name: builder.create_instance() for name, builder in workflow_builders.items()}
+        # workflow_builders = {name: WorkflowBuilder(template, system) for name, template in self._workflows.items()}
+        # workflows = {name: builder.create_instance() for name, builder in workflow_builders.items()}
         
-        system.workflows = workflows
+        # system.workflows = workflows
         return system

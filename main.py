@@ -1,7 +1,11 @@
 import argparse
-from typing import Optional
+from typing import Dict, Optional
+from method_executor import MethodExecutor
+from resource_models.labware import Labware, LabwareTemplate
+from resource_models.location import Location
 from workflow_executor import WorkflowExecuter
 from yml_config_builder.template_builders import ConfigFile
+import json
 
 
 
@@ -14,11 +18,40 @@ class Orca:
         system = system_template.create_system_instance()
         if workflow_name is None:
             raise ValueError("workflow is None.  Workflow must be a string")
-        if workflow_name not in system_template.workflows.keys():
+        if workflow_name not in system_template.workflow_templates.keys():
             raise LookupError(f"Workflow {workflow_name} is not defined with then System.  Make sure it is included in the config file and the config file loaded correctly.")
        
         workflow = system.workflows[workflow_name]
         executer = WorkflowExecuter(workflow, system.system_graph)
+        executer.execute()
+
+    @staticmethod
+    def run_method(config_file: str, method_name: Optional[str] = None, start_map_json: Optional[str] = None, end_map_json: Optional[str] = None):
+        config = ConfigFile(config_file)
+        system_template = config.get_system_template()
+        system = system_template.create_system_instance()
+        if method_name is None:
+            raise ValueError("method is None.  Method must be a string")
+        if method_name not in system_template.method_templates.keys():
+            raise LookupError(f"Method {method_name} is not defined with then System.  Make sure it is included in the config file and the config file loaded correctly.")
+        if start_map_json is None:
+            raise ValueError("start_map is None.  Start_map must be a string")
+        if end_map_json is None:
+            raise ValueError("end_map is None.  End_map must be a string")
+        
+        def labware_location_hook(d: Dict[str, str]):
+            for key, value in d.items():
+                if key not in system_template.labware_templates:
+                    raise ValueError(f"Labware {key} is not defined in the system")
+                if value not in system.locations:
+                    raise ValueError(f"Location {value} is not defined in the system")
+            return {key: system.locations[value] for key, value in d.items()}
+
+        start_map: Dict[str, Location] = json.loads(start_map_json, object_hook=labware_location_hook)
+        end_map: Dict[str, Location] = json.loads(end_map_json, object_hook=labware_location_hook)
+
+        method_template = system_template.method_templates[method_name]
+        executer = MethodExecutor(method_template, system, start_map, end_map)
         executer.execute()
 
     @staticmethod
@@ -37,6 +70,13 @@ def main():
     run_parser.add_argument("--config", help="Configuration file")
     run_parser.add_argument("--workflow", help="Workflow to be run")
 
+    # RUN METHOD
+    run_method_parser = subparsers.add_parser("run-method", help="Run a specific method")
+    run_method_parser.add_argument("--config", help="Configuration file")
+    run_method_parser.add_argument("--method", help="Method to be run")
+    run_method_parser.add_argument("--start-map", help="Json Dictionary of labware to start location mapping")
+    run_method_parser.add_argument("--end-map", help="Json Dictionary of labware to end location mapping")
+
     # INIT
     init_parser = subparsers.add_parser("init", help="Initialize the lab instruments")
     init_parser.add_argument("--config", help="Configuration file")
@@ -47,15 +87,22 @@ def main():
     run_parser.add_argument("--method", help="Method to check")
 
     args = parser.parse_args()
-    if args.subcommand == "run":
-        try:
+    
+    try:
+        if args.subcommand == "run":
             Orca.run(config_file=args.config, workflow_name=args.workflow)
-        except ValueError as ve:
-            print(f"Error: {ve}")
-        except LookupError as le:
-            print(f"Error: {le}")
+        elif args.subcommand == "run-method":
+            Orca.run_method(args.config, args.method, args.start_map, args.end_map)
+    except ValueError as ve:
+        print(f"Error: {ve}")
+    except LookupError as le:
+        print(f"Error: {le}")
 
 
 if __name__ == '__main__':
     # Orca.run(config_file="tests\\mock_config1.yml", workflow="test-workflow2")
-    Orca.run(config_file="examples\\smc_assay\\smc_assay_example.yml", workflow_name="smc-assay")
+    # Orca.run(config_file="examples\\smc_assay\\smc_assay_example.yml", workflow_name="smc-assay")
+    Orca.run_method(config_file="examples\\smc_assay\\smc_assay_example.yml", 
+             method_name="incubate-2hrs",
+             start_map_json=json.dumps({"plate-1": "pad_1"}),
+             end_map_json=json.dumps({"plate-1": "pad_3"}))

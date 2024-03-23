@@ -1,5 +1,5 @@
 import unittest
-from routing.router import Route, Location, BaseAction, SystemGraph
+from routing.router import Route, Location, EquipmentAction, SystemGraph
 from tests.mock import MockRoboticArm
 from workflow_models.workflow import LabwareThread
 
@@ -20,11 +20,11 @@ class TestRoute(unittest.TestCase):
 
     def test_add_stop(self):
         route = Route(Location("Location1"), Location("Location3"))
-        action1 = BaseAction()
-        action2 = BaseAction()
+        action1 = EquipmentAction()
+        action2 = EquipmentAction()
         route.add_stop(Location("Location2"), action1)
         route.add_stop(Location("Location3"), action2)
-        route.build_route(self.system)
+        route.extend_to_location(self.system)
         self.assertEqual(len(route.actions), 2)
         self.assertEqual(route.actions[0].source.teachpoint_name, "Location1")
         self.assertEqual(route.actions[0].target.teachpoint_name, "Location2")
@@ -33,11 +33,11 @@ class TestRoute(unittest.TestCase):
 
     def test_build_route(self):
         route = Route(Location("Location1"), Location("Location3"))
-        action1 = BaseAction()
-        action2 = BaseAction()
+        action1 = EquipmentAction()
+        action2 = EquipmentAction()
         route.add_stop(Location("Location2"), action1)
         route.add_stop(Location("Location3"), action2)
-        route.build_route(self.system)
+        route.extend_to_location(self.system)
 
         self.assertEqual(len(route.actions), 2)
 

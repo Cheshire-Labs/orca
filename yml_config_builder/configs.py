@@ -23,13 +23,13 @@ class MethodActionConfig(ConfigModel):
 class MethodConfig(ConfigModel):
     model_config = ConfigDict(extra='allow')
     script: List[str] = []
-    spawn: List[str] = Field([], alias='on-init')
+    on_init: List[str] = Field([], alias='on-init')
     actions: List[Dict[str, MethodActionConfig]]
 
 class ThreadStepConfig(ConfigModel):
     model_config = ConfigDict(extra='allow')
     method: str
-    on_init: List[str] = Field([], alias='on-init')
+    spawn: List[str] = []
 
 class LabwareThreadConfig(ConfigModel):
     model_config = ConfigDict(extra='allow')

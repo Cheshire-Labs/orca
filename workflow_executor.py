@@ -1,6 +1,5 @@
 from typing import Dict, Iterator, List
-from routing.route_builder import RouteBuilder
-from routing.router import Route, RouteStep
+from routing.router import Route, MoveAction
 from routing.system_graph import SystemGraph
 from workflow_models.workflow import Workflow
 
@@ -18,7 +17,7 @@ class RouteManager:
             routes.append(route)
         return routes
 
-    def generate_next_step(self) -> Iterator[RouteStep]:
+    def generate_next_step(self) -> Iterator[MoveAction]:
         # TODO: add logic to determine the next step
         routes = self._get_routes()
         yield routes[0].actions[0]

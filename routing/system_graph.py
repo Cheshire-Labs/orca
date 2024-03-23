@@ -77,7 +77,7 @@ class SystemGraph:
     def add_location(self, location: Location) -> None:
         self._graph.add_node(location.teachpoint_name, location=location)
         if isinstance(location.resource, LabwareLoadable):
-            self._equipment_map[location.teachpoint_name] = location
+            self._equipment_map[location.resource.name] = location
 
     def get_resource_location(self, resource_name: str) -> Location:
         if resource_name not in self._equipment_map.keys():

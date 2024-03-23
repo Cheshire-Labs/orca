@@ -1,12 +1,12 @@
 
 from typing import Dict, List
 import conftest
+from method_executor import MethodExecutor
 from resource_models.labware import Labware
 from resource_models.resource_pool import EquipmentResourcePool
-from routing.route_builder import RouteBuilder
 from routing.system_graph import SystemGraph
 from tests.mock import MockEquipmentResource, MockRoboticArm
-from workflow_models.method_action import LabwareInputManager, LabwareInstanceMatcher, MethodActionResolver
+from workflow_models.method_action import DynamicResourceAction, LocationAction
 from workflow_models.workflow import LabwareThread, Method
 
 import networkx as nx
@@ -38,26 +38,28 @@ class TestRouteBuilder:
                                        ham1: MockEquipmentResource):
         plate = Labware("plate", "mock_labware")
         labware_instance_matcher = LabwareInstanceMatcher([plate])
-        ham_method = Method("venus_method", 
-                            [MethodActionResolver(EquipmentResourcePool("ham1", [ham1]), 
-                                                  "run", 
-                                                  LabwareInputManager([labware_instance_matcher]),
-                                                  [])
-                             ])
-        shaker_method = Method("shaker_method", 
-                               [
-                                   MethodActionResolver(EquipmentResourcePool("shaker1", [shaker1]), 
+        ham_method = Method("venus_method")
+        ham_method.append_step(DynamicResourceAction(EquipmentResourcePool("ham1", [ham1]), 
+                                                     "run", 
+                                                     LabwareInputManager([labware_instance_matcher]), 
+                                                     []))
+        shaker_method = Method("shaker_method")
+        shaker_method.append_step(DynamicResourceAction(EquipmentResourcePool("shaker1", [shaker1]), 
                                                         "shake", 
                                                         LabwareInputManager([labware_instance_matcher]), 
                                                         [])
-                                   ])
-        thread = LabwareThread(name=plate.name,
-                               labware=plate,
-                               method_sequence=[ham_method, 
-                                                shaker_method],
-                                start_location=system_graph.locations["stacker1"],
-                                end_location=system_graph.locations["loc5"]
+                                   )
+        thread = LabwareThread(plate.name,
+                               plate,
+                                system_graph.locations["stacker1"],
+                                system_graph.locations["loc5"],
+                                system_graph
         )
+
+
+        executer = MethodExecutor(ham_method, system_graph, system_graph.locations["loc3"], system_graph.locations["loc3"])
+        method_sequence=[ham_method, 
+                                                shaker_method],
 
         builder = RouteBuilder(thread, system_graph)
         route = builder.get_route()
@@ -83,10 +85,11 @@ class TestRouteBuilder:
         completed_actions: List[Dict[str, str]] = []
         plate = Labware("plate", "mock_labware")
         labware_instance_matcher = LabwareInstanceMatcher([plate])
-        ham_method = Method("venus_method", [MethodActionResolver(EquipmentResourcePool("ham1", [ham1]), 
+        ham_method = Method("venus_method")
+        ham_method.append_step(LocationAction(EquipmentResourcePool("ham1", [ham1]), 
                                                                   "run", 
                                                                   LabwareInputManager([labware_instance_matcher]), 
-                                                        [])])
+                                                        []))
         thread = LabwareThread(name=plate.name,
                                 labware=plate,
                                 method_sequence=[ham_method],

@@ -59,6 +59,10 @@ class LabwareLoadable(ABC):
     def labware(self) -> Optional[Labware]:
         raise NotImplementedError
     
+    def set_labware(self, labware: Labware) -> None:
+        # TODO: this will need to be restricted to only initilaizing the labware, probably with a LabwareManager service
+        raise NotImplementedError
+    
     @abstractmethod
     def prepare_for_pick(self, labware: Labware) -> None:
         raise NotImplementedError
