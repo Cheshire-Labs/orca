@@ -8,15 +8,20 @@ from resource_models.labware import Labware
 from abc import ABC
 
 from resource_models.plate_pad import PlatePad
-from typing import List
+from typing import List, Callable
 
+
+class ILocationObeserver(ABC):
+    def location_notify(self, event: str, location: "Location", resource: Equipment) -> None:
+        pass
 
 class Location(LabwareLoadable, ABC):
     def __init__(self, teachpoint_name: str, resource: Optional[Equipment] = None) -> None:
         self._teachpoint_name = teachpoint_name
         self._resource: Equipment = resource if resource else PlatePad(teachpoint_name)
         self._options: Dict[str, Any] = {}
-
+        self._observers: List[ILocationObeserver] = []
+                              
     @property
     def teachpoint_name(self) -> str:
         return self._teachpoint_name
@@ -34,12 +39,14 @@ class Location(LabwareLoadable, ABC):
         return self._resource.labware is None
 
     @property
-    def resource(self) -> Optional[Equipment]:
+    def resource(self) -> Equipment:
         return self._resource
     
     @resource.setter
     def resource(self, resource: Equipment) -> None:
         self._resource = resource
+        for obeserver in self._observers:
+            obeserver.location_notify("resource_set", self, resource)
 
     def set_options(self, options: Dict[str, Any]) -> None:
         self._options = options
@@ -58,4 +65,7 @@ class Location(LabwareLoadable, ABC):
 
     def __str__(self) -> str:
         return f"Location: {self._teachpoint_name}"
+    
+    def add_observer(self, observer: ILocationObeserver) -> None:
+        self._observers.append(observer)
     
