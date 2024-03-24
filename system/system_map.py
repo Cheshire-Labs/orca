@@ -180,7 +180,10 @@ class SystemMap(ILocationRegistry, IRouteBuilder, IResourceLocator, ILocationObe
         return blocking_locs
     
     def get_shortest_available_path(self, source: str, target: str) -> List[str]:
-        available_graph = self._graph.get_subgraph([name for name, _ in self._get_available_locations().items()])
+        # build a subgraph of available nodes, except for the source as that's where the labware being moved is
+        subgraph_nodes = [source]
+        subgraph_nodes.extend([name for name, _ in self._get_available_locations().items()])
+        available_graph = self._graph.get_subgraph(subgraph_nodes)
         return available_graph.get_shortest_path(source, target)
     
     def get_shortest_any_path(self, source: str, target: str) -> List[str]:
