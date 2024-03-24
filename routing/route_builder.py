@@ -1,5 +1,5 @@
 from routing.router import Route
-from routing.system_graph import SystemGraph
+from system.system_map import SystemMap
 from workflow_models.workflow import LabwareThread
 
 

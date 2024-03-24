@@ -1,14 +1,14 @@
 
 from abc import ABC
-from types import MappingProxyType
 from typing import Any, Dict, List, Optional, Set, Union
-from resource_models.base_resource import Equipment, IResource
+from resource_models.base_resource import Equipment
 from resource_models.location import Location
 
 from resource_models.labware import AnyLabware, AnyLabwareTemplate, Labware, LabwareTemplate
 from resource_models.resource_pool import EquipmentResourcePool
-from resource_models.transporter_resource import TransporterResource
-from system import System
+
+from system.system_map import SystemMap
+from system.registry_interfaces import ILabwareRegistry
 from workflow_models.method_action import DynamicResourceAction
 from workflow_models.workflow import LabwareThread, Method, Workflow
 
@@ -50,9 +50,9 @@ class MethodActionTemplate:
 
 class MethodActionBuilder:
 
-    def __init__(self, template: MethodActionTemplate, system: System) -> None:
+    def __init__(self, template: MethodActionTemplate, labware_reg: ILabwareRegistry) -> None:
         self._template: MethodActionTemplate = template
-        self._system: System = system
+        self._labware_reg = labware_reg
 
     def create_instance(self) -> DynamicResourceAction:        
         
@@ -62,9 +62,9 @@ class MethodActionBuilder:
             if isinstance(input_template, AnyLabwareTemplate):
                 inputs.append(AnyLabware())
             else:
-                inputs.append(self._system.labwares[input_template.name])
+                inputs.append(self._labware_reg.get_labware(input_template.name))
 
-        outputs: List[Labware] = [self._system.labwares[output.name] for output in self._template.outputs]
+        outputs: List[Labware] = [self._labware_reg.get_labware(output.name) for output in self._template.outputs]
 
         instance = DynamicResourceAction(self._template.resource_pool, 
                                 self._template.command, 
@@ -76,7 +76,7 @@ class MethodActionBuilder:
 
 
 class IMethodResolver(ABC):
-    def get_instance(self, system: System) -> Method:
+    def get_instance(self, labware_reg: ILabwareRegistry) -> Method:
         raise NotImplementedError("MethodResolver must implement get_instance method")
 
 class MethodTemplate(IMethodResolver):
@@ -115,10 +115,10 @@ class MethodTemplate(IMethodResolver):
     def set_spawn(self, thread_names_to_spawn: List[str]) -> None:
         self._thread_names_to_spawn = thread_names_to_spawn
 
-    def get_instance(self, system: System) -> Method:
+    def get_instance(self, labware_reg: ILabwareRegistry) -> Method:
         method = Method(self.name)
         for action_template in self.actions:
-            builder = MethodActionBuilder(action_template, system)
+            builder = MethodActionBuilder(action_template, labware_reg)
             action = builder.create_instance()
             method.append_step(action)
         method.set_children_threads(self._thread_names_to_spawn)
@@ -131,23 +131,27 @@ class JunctionMethodTemplate(IMethodResolver):
     def set_method(self, method: Method) -> None:
         self._method = method
 
-    def get_instance(self, system: System) -> Method:
+    def get_instance(self, labware_reg: ILabwareRegistry) -> Method:
         if self._method is None:
             raise NotImplementedError("Method has not been set")
         return self._method
     
 class LabwareThreadTemplate:
 
-    def __init__(self, labware: LabwareTemplate, start: Location, end: Location) -> None:
-        self._labware: LabwareTemplate = labware
+    def __init__(self, labware_template: LabwareTemplate, start: Location, end: Location) -> None:
+        self._labware_template: LabwareTemplate = labware_template
         self._start: Location = start
         self._end: Location = end
         self._methods: List[IMethodResolver] = []
         self._spawning_method: Method | None = None
 
     @property
-    def labware(self) -> LabwareTemplate:
-        return self._labware
+    def name(self) -> str:
+        return self._labware_template.name
+
+    @property
+    def labware_template(self) -> LabwareTemplate:
+        return self._labware_template
     
     @property
     def start(self) -> Location:
@@ -172,20 +176,21 @@ class LabwareThreadTemplate:
 
 
 class LabwareThreadBuilder:
-    def __init__(self, template: LabwareThreadTemplate, system: System) -> None:
+    def __init__(self, template: LabwareThreadTemplate, labware_registry: ILabwareRegistry, system_map: SystemMap) -> None:
         self._template: LabwareThreadTemplate = template
-        self._system: System = system
+        self._labware_registry: ILabwareRegistry = labware_registry
+        self._system_map: SystemMap = system_map
 
     def create_instance(self) -> LabwareThread:
         
         # Instantiate labware
-        labware_instance = self._template.labware.create_instance()
-        self._system.add_labware(labware_instance)
+        labware_instance = self._template.labware_template.create_instance()
+        self._labware_registry.add_labware(labware_instance)
 
         # Build the method sequence
         method_seq: List[Method] = []
         for method_resolver in self._template.method_resolvers:
-            method = method_resolver.get_instance(self._system)
+            method = method_resolver.get_instance(self._labware_registry)
             method_seq.append(method)
         
         # create the thread
@@ -193,7 +198,7 @@ class LabwareThreadBuilder:
                                 labware_instance, 
                                 self._template.start,
                                 self._template.end,
-                                self._system.system_graph)
+                                self._system_map)
 
         return thread
 
@@ -214,126 +219,29 @@ class WorkflowTemplate:
 
 
 class WorkflowBuilder:
-    def __init__(self, template: WorkflowTemplate, system: System) -> None:
+    def __init__(self, template: WorkflowTemplate, labware_registry: ILabwareRegistry, system_map: SystemMap) -> None:
         self._template: WorkflowTemplate = template
-        self._system: System = system
+        self._labware_registry: ILabwareRegistry = labware_registry
+        self._system_map: SystemMap = system_map
     
     def create_instance(self) -> Workflow:
         threads: Dict[str, LabwareThread] = {}
         for thread_name, thread_template in self._template.labware_threads.items():
-            builder = LabwareThreadBuilder(thread_template, self._system)
+            builder = LabwareThreadBuilder(thread_template, self._labware_registry, self._system_map)
             thread = builder.create_instance()
             threads[thread_name] = thread
         return Workflow(self._template.name, threads)
 
+    # def create_system_instance(self) -> System:
 
-class SystemTemplate:
-    def __init__(self, name: str, version: str, description: str, options: Dict[str, Any] = {}) -> None:
-        self._name = name
-        self._version = version
-        self._description = description
-        self._options = options
-        self._labware_templates: Dict[str, LabwareTemplate] = {}
-        self._resources: Dict[str, IResource] = {}
-        self._resource_pools: Dict[str, EquipmentResourcePool] = {}
-        self._locations: Dict[str, Location] = {}
-        self._methods: Dict[str, MethodTemplate] = {}
-        self._workflows: Dict[str, WorkflowTemplate] = {}        
-
-    @property
-    def name(self) -> str:
-        return self._name
-
-    @property
-    def version(self) -> str:
-        return self._version
-
-    @property
-    def description(self) -> str:
-        return self._description
-
-    @property
-    def resources(self) -> Dict[str, IResource]:
-        return self._resources
-    
-    @property
-    def equipment(self) -> MappingProxyType[str, Equipment]:
-        equipment = {name: r for name, r in self._resources.items() if isinstance(r, Equipment)}
-        return MappingProxyType(equipment)
-    
-    @property
-    def labware_transporters(self) -> MappingProxyType[str, TransporterResource]:
-        transporters = {name: r for name, r in self._resources.items() if isinstance(r, TransporterResource)}
-        return MappingProxyType(transporters)
-    
-    @property
-    def resource_pools(self) -> Dict[str, EquipmentResourcePool]:
-        return self._resource_pools
-    
-    @property
-    def locations(self) -> Dict[str, Location]:
-        return self._locations
-
-    @property
-    def labware_templates(self) -> Dict[str, LabwareTemplate]:
-        return self._labware_templates
-    
-    @property
-    def method_templates(self) -> Dict[str, MethodTemplate]:
-        return self._methods
-
-    @property
-    def workflow_templates(self) -> Dict[str, WorkflowTemplate]:
-        return self._workflows
-
-
-    def add_labware(self, name: str, labware: LabwareTemplate) -> None:
-        if name in self._labware_templates.keys():
-            raise KeyError(f"Labware {name} is already defined in the system.  Each labware must have a unique name")
-        self._labware_templates[name] = labware
-
-    def add_resource(self, name: str, resource: IResource) -> None:
-        if name in self._resources.keys():
-            raise KeyError(f"Resource {name} is already defined in the system.  Each resource must have a unique name")
-        self._resources[name] = resource
-
-    def add_resource_pool(self, name: str, resource_pool: EquipmentResourcePool) -> None:
-        if name in self._resource_pools.keys():
-            raise KeyError(f"Resource Pool {name} is already defined in the system.  Each resource pool must have a unique name")
-        self._resource_pools[name] = resource_pool
-
-    def add_method_template(self, name: str, method: MethodTemplate) -> None:
-        if name in self._methods.keys():
-            raise KeyError(f"Method {name} is already defined in the system.  Each method must have a unique name")
-        self._methods[name] = method
-
-    def add_workflow_template(self, name: str, workflow: WorkflowTemplate) -> None:
-        if name in self._workflows.keys():
-            raise KeyError(f"Workflow {name} is already defined in the system.  Each workflow must have a unique name")
-        self._workflows[name] = workflow
-
-    def add_location(self, location: Location) -> None:
-        if location.teachpoint_name in self._locations.keys():
-            raise KeyError(f"Location {location.teachpoint_name} is already defined in the system.  Each location must have a unique name")
-        self._locations[location.teachpoint_name] = location
-
-    def get_resource_location(self, resource_name: str) -> Location:
-        # TODO: better design
-        for location in self._locations.values():
-            if location.resource is not None and location.resource.name == resource_name:
-                return location
-        raise ValueError(f"Resource {resource_name} not found in locations")
-
-    def create_system_instance(self) -> System:
-
-        system = System(name=self._name,
-                      description=self._description,
-                      version=self._version,
-                      options=self._options,
-                      resources=self._resources,
-                      locations=self._locations)
-        # workflow_builders = {name: WorkflowBuilder(template, system) for name, template in self._workflows.items()}
-        # workflows = {name: builder.create_instance() for name, builder in workflow_builders.items()}
+    #     system = System(name=self._name,
+    #                   description=self._description,
+    #                   version=self._version,
+    #                   options=self._options,
+    #                   resources=self._resources,
+    #                   locations=self._locations)
+    #     # workflow_builders = {name: WorkflowBuilder(template, system) for name, template in self._workflows.items()}
+    #     # workflows = {name: builder.create_instance() for name, builder in workflow_builders.items()}
         
-        # system.workflows = workflows
-        return system
+    #     # system.workflows = workflows
+    #     return system

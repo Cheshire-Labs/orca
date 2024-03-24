@@ -1,5 +1,5 @@
 import unittest
-from routing.router import Route, Location, EquipmentAction, SystemGraph
+from routing.router import Route, Location, EquipmentAction, SystemMap
 from tests.mock import MockRoboticArm
 from workflow_models.workflow import LabwareThread
 
@@ -11,7 +11,7 @@ class TestRoute(unittest.TestCase):
         self.robot1 = MockRoboticArm("robot1")
         self.robot2 = MockRoboticArm("robot2")
         # Create a sample SystemGraph for testing
-        self.system = SystemGraph()
+        self.system = SystemMap()
         self.system.add_location(Location("Location1"))
         self.system.add_location(Location("Location2"))
         self.system.add_location(Location("Location3"))

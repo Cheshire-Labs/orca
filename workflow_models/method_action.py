@@ -3,7 +3,7 @@ from resource_models.base_resource import Equipment
 from resource_models.labware import AnyLabware, Labware, LabwareTemplate
 from resource_models.location import Location
 from resource_models.resource_pool import EquipmentResourcePool
-from routing.system_graph import SystemGraph
+from system.system_map import SystemMap
 from workflow_models.action import ActionStatus, BaseAction
 
 
@@ -182,9 +182,9 @@ class DynamicResourceAction:
         return self._expected_outputs
 
 
-    def resolve_resource_action(self, reference_point: Location, system_graph: SystemGraph) -> LocationAction:
-        resource = self._resource_pool.get_closest_available_resource(reference_point, system_graph)
-        location = system_graph.get_resource_location(resource.name)
+    def resolve_resource_action(self, reference_point: Location, system_map: SystemMap) -> LocationAction:
+        resource = self._resource_pool.get_closest_available_resource(reference_point, system_map)
+        location = system_map.get_resource_location(resource.name)
         return LocationAction(location,
                               self._command,
                               self._expected_inputs,

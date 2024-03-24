@@ -1,18 +1,19 @@
 from typing import Dict, Iterator, List
 from routing.router import Route, MoveAction
-from routing.system_graph import SystemGraph
+from system.system_map import SystemMap
 from workflow_models.workflow import Workflow
+from workflow_models.workflow_templates import WorkflowTemplate
 
 
 class RouteManager:
-    def __init__(self, workflow: Workflow, system: SystemGraph) -> None:
+    def __init__(self, workflow: Workflow, system: SystemMap) -> None:
         self._workflow = workflow
-        self._system_graph = system
+        self._system_map = system
 
     def _get_routes(self) -> List[Route]:
         routes: List[Route] = []
         for _, thread in self._workflow.labware_threads.items():
-            builder = RouteBuilder(thread, self._system_graph)
+            builder = RouteBuilder(thread, self._system_map)
             route = builder.get_route()
             routes.append(route)
         return routes
@@ -26,11 +27,11 @@ class RouteManager:
 
 
 class WorkflowExecuter:
-    def __init__(self, workflow: Workflow, system_graph: SystemGraph) -> None:
+    def __init__(self, workflow: WorkflowTemplate, system_map: SystemMap) -> None:
         self._workflow = workflow
-        self._system_graph = system_graph
+        self._system_map = system_map
 
     def execute(self) -> None:
-        route_manager = RouteManager(self._workflow, self._system_graph)
+        route_manager = RouteManager(self._workflow, self._system_map)
         for step in route_manager.generate_next_step():
             step.execute()

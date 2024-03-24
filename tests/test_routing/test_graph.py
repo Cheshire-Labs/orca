@@ -4,7 +4,7 @@ import conftest
 from method_executor import MethodExecutor
 from resource_models.labware import Labware
 from resource_models.resource_pool import EquipmentResourcePool
-from routing.system_graph import SystemGraph
+from system.system_map import SystemMap
 from tests.mock import MockEquipmentResource, MockRoboticArm
 from workflow_models.method_action import DynamicResourceAction, LocationAction
 from workflow_models.workflow import LabwareThread, Method
@@ -13,18 +13,18 @@ import networkx as nx
 
 
 class TestSystemGraph:
-    def test_get_shortest_path(self, system_graph: SystemGraph):
+    def test_get_shortest_path(self, system_map: SystemMap):
         expected_path = ["stacker1", "loc3", "ham1"]
-        path = system_graph.get_shortest_any_path("stacker1", "ham1")
+        path = system_map.get_shortest_any_path("stacker1", "ham1")
         assert path == expected_path
 
-    def test_no_path_through_in_use_plate(self, system_graph: SystemGraph):
-        loc3 = system_graph.locations["loc3"]
+    def test_no_path_through_in_use_plate(self, system_map: SystemMap):
+        loc3 = system_map.get_location("loc3")
         blocking_labware = Labware("plate", labware_type="mock_labware")
         loc3.prepare_for_place(blocking_labware)
         loc3.notify_placed(blocking_labware)
         try:
-            path = system_graph.get_shortest_available_path("stacker1", "ham1")
+            path = system_map.get_shortest_available_path("stacker1", "ham1")
             assert False
         except nx.NetworkXNoPath:
             assert True
@@ -33,35 +33,34 @@ class TestSystemGraph:
 class TestRouteBuilder:
 
     def test_route_builds_correct_path(self, 
-                                       system_graph: SystemGraph, 
+                                       system_map: SystemMap, 
                                        shaker1: MockEquipmentResource, 
                                        ham1: MockEquipmentResource):
         plate = Labware("plate", "mock_labware")
-        labware_instance_matcher = LabwareInstanceMatcher([plate])
         ham_method = Method("venus_method")
         ham_method.append_step(DynamicResourceAction(EquipmentResourcePool("ham1", [ham1]), 
                                                      "run", 
-                                                     LabwareInputManager([labware_instance_matcher]), 
+                                                     [plate], 
                                                      []))
         shaker_method = Method("shaker_method")
         shaker_method.append_step(DynamicResourceAction(EquipmentResourcePool("shaker1", [shaker1]), 
                                                         "shake", 
-                                                        LabwareInputManager([labware_instance_matcher]), 
+                                                        [plate], 
                                                         [])
                                    )
         thread = LabwareThread(plate.name,
                                plate,
-                                system_graph.locations["stacker1"],
-                                system_graph.locations["loc5"],
-                                system_graph
+                                system_map.get_location("stacker1"),
+                                system_map.get_location("loc5"),
+                                system_map
         )
 
 
-        executer = MethodExecutor(ham_method, system_graph, system_graph.locations["loc3"], system_graph.locations["loc3"])
+        executer = MethodExecutor(ham_method, system_map, system_map.get_locations("loc3"), system_map.get_locations("loc3"))
         method_sequence=[ham_method, 
                                                 shaker_method],
 
-        builder = RouteBuilder(thread, system_graph)
+        builder = RouteBuilder(thread, system_map)
         route = builder.get_route()
         
         expected_stops = [
@@ -76,7 +75,7 @@ class TestRouteBuilder:
         assert stops == expected_stops
 
     def test_route_assigns_actions_correctly(self, 
-                                             system_graph: SystemGraph,
+                                             system_map: SystemMap,
                                              robot1: MockRoboticArm,
                                              robot2: MockRoboticArm, 
                                              stacker1: MockEquipmentResource, 
@@ -93,8 +92,8 @@ class TestRouteBuilder:
         thread = LabwareThread(name=plate.name,
                                 labware=plate,
                                 method_sequence=[ham_method],
-                                start_location=system_graph.locations["stacker1"],
-                                end_location=system_graph.locations["loc5"]
+                                start_location=system_map.locations["stacker1"],
+                                end_location=system_map.locations["loc5"]
         )
 
         stacker1._on_load_labware = lambda x: completed_actions.append({"resource": stacker1.name, "action": "load_labware", "labware": x.name})
@@ -110,9 +109,9 @@ class TestRouteBuilder:
         robot2._on_place = lambda x, y: completed_actions.append({"resource": robot2.name, "action": "place", "location": y.teachpoint_name, "labware": x.name})
 
 
-        # system_graph.draw()
+        # system_map.draw()
         
-        builder = RouteBuilder(thread, system_graph)
+        builder = RouteBuilder(thread, system_map)
         
         stacker1._loaded_labware = [plate]
         route = builder.get_route()

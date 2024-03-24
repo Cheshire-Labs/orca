@@ -3,7 +3,7 @@ from resource_models.drivers import PlaceHolderNonLabwareResource, PlaceHolderRe
 from resource_models.base_resource import BaseResource, Equipment
 
 from resource_models.resource_pool import EquipmentResourcePool
-from workflow_models.workflow_templates import SystemTemplate
+from system.registry_interfaces import IResourceRegistry
 from yml_config_builder.configs import ResourceConfig, ResourcePoolConfig
 
 
@@ -62,8 +62,8 @@ class ResourceFactory:
         return resource
     
 class ResourcePoolFactory:
-    def __init__(self, system: SystemTemplate) -> None:
-        self._system = system
+    def __init__(self, resource_reg: IResourceRegistry) -> None:
+        self._resource_reg = resource_reg
 
     def create(self, pool_name: str, pool_config: ResourcePoolConfig) -> EquipmentResourcePool:
         res_type = pool_config.type
@@ -71,9 +71,10 @@ class ResourcePoolFactory:
             raise ValueError(f"Resource pool {pool_name} type set as {res_type} instead of 'pool'")
         resources: List[Equipment] = []
         for res_name in pool_config.resources:
-            if res_name not in self._system.resources.keys():
+            try:
+                res = self._resource_reg.get_resource(res_name)
+            except KeyError:
                 raise KeyError(f"Resource {res_name} from resource pool {pool_name} not found in system")
-            res = self._system.resources[res_name]
             if not isinstance(res, Equipment):
                 raise ValueError(f"Resource {res_name} from resource pool {pool_name} is not a valid equipment resource")
             resources.append(res)

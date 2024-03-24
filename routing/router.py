@@ -2,7 +2,7 @@ from typing import Any, Dict, List, Optional
 from resource_models.transporter_resource import TransporterResource
 from resource_models.location import Location
 from resource_models.labware import Labware
-from routing.system_graph import SystemGraph
+from system.system_map import SystemMap
 from workflow_models.action import BaseAction
 
 
@@ -59,11 +59,11 @@ class MoveAction(BaseAction):
 
 
 class Route:
-    def __init__(self, start: Location, system_graph: SystemGraph, end: Optional[Location] = None) -> None:
+    def __init__(self, start: Location, system_map: SystemMap, end: Optional[Location] = None) -> None:
         self._start = start
         self._end = start
         self._edges: List[MoveAction] = []
-        self._system_graph = system_graph
+        self._system_map = system_map
         if end is not None:
             self.extend_to_location(end)
         # self._core_actions: Dict[str, List[ResourceAction]] = {}
@@ -77,18 +77,7 @@ class Route:
         path = [self._start]
         for edge in self._edges:
             path.append(edge.target) 
-        return path
-    
-    # @property
-    # def actions(self) -> List[MoveAction]:
-    #     return self._edges
-
-    # def add_stop(self, location: Location, action: ResourceAction) -> None:
-    #     if location not in self._core_actions.keys():
-    #         self._core_actions[location.teachpoint_name] = []
-    #     self._core_actions[location.teachpoint_name].append(action)
-
-   
+        return path   
 
     def extend_to_location(self, end_location: Location) -> None:
         """
@@ -103,13 +92,13 @@ class Route:
         """
         previous_end = self._end
         new_end = end_location
-        extended_path = self._system_graph.get_shortest_available_path(previous_end.teachpoint_name, new_end.teachpoint_name)
+        extended_path = self._system_map.get_shortest_available_path(previous_end.teachpoint_name, new_end.teachpoint_name)
 
         end_path_src_loc = previous_end.teachpoint_name      
         for stop in extended_path:
-            source_location = self._system_graph.locations[end_path_src_loc]
-            target_location = self._system_graph.locations[stop]
-            transporter = self._system_graph.get_transporter_between(end_path_src_loc, stop)
+            source_location = self._system_map.get_location(end_path_src_loc)
+            target_location = self._system_map.get_location(stop)
+            transporter = self._system_map.get_transporter_between(end_path_src_loc, stop)
             self._edges.append(MoveAction(source_location, target_location, transporter))
             end_path_src_loc = stop
         self._end = end_location

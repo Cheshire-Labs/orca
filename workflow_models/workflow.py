@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import Dict, List, Set, Union
 from resource_models.location import Location
-from resource_models.labware import AnyLabware, Labware, LabwareTemplate
+from resource_models.labware import AnyLabware, Labware
 from routing.router import Route
-from routing.system_graph import SystemGraph
+from system.system_map import SystemMap
 from workflow_models.method_action import DynamicResourceAction, LocationAction
 from workflow_models.method_status import MethodStatus
 
@@ -41,13 +41,13 @@ class Method:
     def append_step(self, step: DynamicResourceAction) -> None:
         self._steps.append(step)
 
-    def resolve_next_action(self, reference_point: Location, system_graph: SystemGraph) -> LocationAction:
+    def resolve_next_action(self, reference_point: Location, system_map: SystemMap) -> LocationAction:
         if self._status == MethodStatus.CREATED:
             self._status = MethodStatus.RUNNING
             # TODO: set children threads to spawn here
 
         dynamic_action = self._steps.pop(0)
-        return dynamic_action.resolve_resource_action(reference_point, system_graph)
+        return dynamic_action.resolve_resource_action(reference_point, system_map)
 
     def set_children_threads(self, thread_names: List[str]) -> None:
         self._children_threads = thread_names
@@ -57,14 +57,14 @@ class Method:
 
 class LabwareThread:
 
-    def __init__(self, name: str, labware: Labware, start_location: Location, end_location: Location, system_graph: SystemGraph) -> None:
+    def __init__(self, name: str, labware: Labware, start_location: Location, end_location: Location, system_map: SystemMap) -> None:
         self._name: str = name
         self._labware: Labware = labware
         self._start_location: Location = start_location
         self._current_location: Location = self._start_location
         self._end_location: Location = end_location
         self._route: Route | None = None
-        self._system_graph: SystemGraph = system_graph
+        self._system_map: SystemMap = system_map
 
     @property
     def name(self) -> str:
@@ -96,7 +96,7 @@ class LabwareThread:
 
     def execute_action(self, action: LocationAction) -> None:
         if self._route is None:
-            self._route = Route(self._current_location, self._system_graph , action.location)
+            self._route = Route(self._current_location, self._system_map , action.location)
         else:
             self._route.extend_to_location(action.location)
         
@@ -118,6 +118,10 @@ class Workflow:
     def __init__(self, name:str, threads: Dict[str, LabwareThread]) -> None:
         self._name = name
         self._labware_threads:  Dict[str, LabwareThread] = threads
+
+    @property
+    def name(self) -> str:
+        return self._name
 
     @property
     def labware_threads(self) ->  Dict[str, LabwareThread]:

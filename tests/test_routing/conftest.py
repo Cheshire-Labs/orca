@@ -3,7 +3,7 @@ import pytest
 from resource_models.location import Location
 from resource_models.plate_pad import PlatePad
 
-from routing.system_graph import SystemGraph
+from system.system_map import SystemMap
 from tests.mock import MockEquipmentResource, MockRoboticArm
 
 
@@ -33,8 +33,8 @@ def ham1(request) -> MockEquipmentResource:
     return MockEquipmentResource("ham1", mocking_type="hamilton")
 
 @pytest.fixture
-def system_graph(robot1: MockRoboticArm, robot2: MockRoboticArm, stacker1: MockEquipmentResource, shaker1: MockEquipmentResource, ham1: MockEquipmentResource) -> SystemGraph:
-    graph = SystemGraph()
+def system_map(robot1: MockRoboticArm, robot2: MockRoboticArm, stacker1: MockEquipmentResource, shaker1: MockEquipmentResource, ham1: MockEquipmentResource) -> SystemMap:
+    graph = SystemMap()
 
     # create Locations
     for location in robot2.get_taught_positions() + robot1.get_taught_positions():

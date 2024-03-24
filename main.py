@@ -1,10 +1,9 @@
 import argparse
 from typing import Dict, Optional
 from method_executor import MethodExecutor
-from resource_models.labware import Labware, LabwareTemplate
 from resource_models.location import Location
 from workflow_executor import WorkflowExecuter
-from yml_config_builder.template_builders import ConfigFile
+from yml_config_builder.config_to_template_builders import ConfigFile
 import json
 
 
@@ -14,25 +13,26 @@ class Orca:
     @staticmethod
     def run(config_file: str, workflow_name: Optional[str] = None):
         config = ConfigFile(config_file)
-        system_template = config.get_system_template()
-        system = system_template.create_system_instance()
+        system = config.get_system()
         if workflow_name is None:
             raise ValueError("workflow is None.  Workflow must be a string")
-        if workflow_name not in system_template.workflow_templates.keys():
+        try:
+            workflow_template = system.get_workflow_template(workflow_name)
+        except KeyError:
             raise LookupError(f"Workflow {workflow_name} is not defined with then System.  Make sure it is included in the config file and the config file loaded correctly.")
        
-        workflow = system.workflows[workflow_name]
-        executer = WorkflowExecuter(workflow, system.system_graph)
+        executer = WorkflowExecuter(workflow_template, system.system_map)
         executer.execute()
 
     @staticmethod
     def run_method(config_file: str, method_name: Optional[str] = None, start_map_json: Optional[str] = None, end_map_json: Optional[str] = None):
         config = ConfigFile(config_file)
-        system_template = config.get_system_template()
-        system = system_template.create_system_instance()
+        system = config.get_system()
         if method_name is None:
             raise ValueError("method is None.  Method must be a string")
-        if method_name not in system_template.method_templates.keys():
+        try:
+            method_template = system.get_method_template(method_name)
+        except KeyError:
             raise LookupError(f"Method {method_name} is not defined with then System.  Make sure it is included in the config file and the config file loaded correctly.")
         if start_map_json is None:
             raise ValueError("start_map is None.  Start_map must be a string")
@@ -40,23 +40,29 @@ class Orca:
             raise ValueError("end_map is None.  End_map must be a string")
         
         def labware_location_hook(d: Dict[str, str]):
+
             for key, value in d.items():
-                if key not in system_template.labware_templates:
+                try:
+                    system.get_labware_template(key)
+                except KeyError:
                     raise ValueError(f"Labware {key} is not defined in the system")
-                if value not in system.locations:
+                try:
+                    location = system.get_location(value)
+                except KeyError:
                     raise ValueError(f"Location {value} is not defined in the system")
-            return {key: system.locations[value] for key, value in d.items()}
+            return {key: system.get_location(value) for key, value in d.items()}
 
         start_map: Dict[str, Location] = json.loads(start_map_json, object_hook=labware_location_hook)
         end_map: Dict[str, Location] = json.loads(end_map_json, object_hook=labware_location_hook)
 
-        method_template = system_template.method_templates[method_name]
-        executer = MethodExecutor(method_template, system, start_map, end_map)
+        method_template = system.get_method_template(method_name)
+        executer = MethodExecutor(method_template, system, start_map, end_map, system.system_map)
         executer.execute()
 
     @staticmethod
     def check():
         raise NotImplementedError()
+    
     @staticmethod
     def init():
         raise NotImplementedError()

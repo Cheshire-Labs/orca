@@ -1,4 +1,5 @@
 from __future__ import annotations
+from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Tuple
 from resource_models.base_resource import LabwareLoadable
 from resource_models.location import Location
@@ -7,6 +8,46 @@ import matplotlib.pyplot as plt
 
 from resource_models.transporter_resource import TransporterResource
 
+
+
+class IResourceLocator(ABC):
+    def get_resource_location(self, resource_name: str) -> Location:
+        raise NotImplementedError
+    
+class IRouteBuilder(ABC):
+    
+        def get_shortest_available_path(self, source: str, target: str) -> List[str]:
+            raise NotImplementedError
+        
+        def get_shortest_any_path(self, source: str, target: str) -> List[str]:
+            raise NotImplementedError
+        
+        def get_all_shortest_available_paths(self, source: str, target: str) -> List[List[str]]:
+            raise NotImplementedError
+        
+        def get_all_shortest_any_paths(self, source: str, target: str) -> List[List[str]]:
+            raise NotImplementedError
+        
+        def get_distance(self, source: str, target: str) -> float:
+            raise NotImplementedError
+        
+        def get_transporter_between(self, source: str, target: str) -> TransporterResource:
+            raise NotImplementedError
+        
+        def has_available_route(self, source: str, target: str) -> bool:
+            raise NotImplementedError
+        
+        def has_any_route(self, source: str, target: str) -> bool:
+            raise NotImplementedError
+        
+        def get_blocking_locations(self, source: str, target: str) -> List[Location]:
+            raise NotImplementedError
+        
+        def get_all_blocking_locations(self, source: str, target: str) -> List[Location]:
+            raise NotImplementedError
+        
+        def draw(self) -> None:
+            raise NotImplementedError
 
 class _NetworkXHandler:
     
@@ -59,21 +100,34 @@ class _NetworkXHandler:
 
     def __getitem__(self, key: str) -> Dict[str, Any]:
         return self._graph.nodes[key]
+
+
+class ILocationRegistry(ABC):
+    @abstractmethod
+    def get_location(self, name: str) -> Location:
+        raise NotImplementedError
+
+    @abstractmethod
+    def add_location(self, location: Location):
+        raise NotImplementedError
     
 
-class SystemGraph:
+class SystemMap(ILocationRegistry, IRouteBuilder, IResourceLocator):
 
     def __init__(self) -> None:
         self._graph: _NetworkXHandler = _NetworkXHandler()
         self._equipment_map: Dict[str, Location] = {}
 
-    @property
-    def locations(self) -> Dict[str, Location]:
-        nodes = {}
-        for name, node in self._graph.get_nodes().items(): 
-            nodes[name] = node["location"]
-        return nodes
+    # @property
+    # def locations(self) -> Dict[str, Location]:
+    #     nodes = {}
+    #     for name, node in self._graph.get_nodes().items(): 
+    #         nodes[name] = node["location"]
+    #     return nodes
     
+    def get_location(self, name: str) -> Location:
+        return self._graph.get_node_data(name)["location"]
+
     def add_location(self, location: Location) -> None:
         self._graph.add_node(location.teachpoint_name, location=location)
         if isinstance(location.resource, LabwareLoadable):
@@ -150,6 +204,8 @@ class SystemGraph:
             if location.is_available:
                 nodes[node] = nodedata
         return nodes
+
+
     
 
 
