@@ -1,12 +1,15 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
+import itertools
 from typing import Any, Dict, List, Optional, Tuple
-from resource_models.base_resource import LabwareLoadable
-from resource_models.location import Location
+from resource_models.base_resource import IResource, LabwareLoadable
+from resource_models.location import ILocationObeserver, Location
 import networkx as nx
 import matplotlib.pyplot as plt
 
 from resource_models.transporter_resource import TransporterResource
+from system.resource_registry import IResourceRegistry
+from system.resource_registry import IResourceRegistryObesrver
 
 
 
@@ -112,19 +115,16 @@ class ILocationRegistry(ABC):
         raise NotImplementedError
     
 
-class SystemMap(ILocationRegistry, IRouteBuilder, IResourceLocator):
+class SystemMap(ILocationRegistry, IRouteBuilder, IResourceLocator, ILocationObeserver, IResourceRegistryObesrver):
 
-    def __init__(self) -> None:
+    def __init__(self, resource_registry: IResourceRegistry) -> None:
         self._graph: _NetworkXHandler = _NetworkXHandler()
         self._equipment_map: Dict[str, Location] = {}
+        self._resource_registry = resource_registry
+        for transporter in self._resource_registry.transporters:
+            self.add_transporter(transporter)
+        self._resource_registry.add_observer(self)
 
-    # @property
-    # def locations(self) -> Dict[str, Location]:
-    #     nodes = {}
-    #     for name, node in self._graph.get_nodes().items(): 
-    #         nodes[name] = node["location"]
-    #     return nodes
-    
     def get_location(self, name: str) -> Location:
         return self._graph.get_node_data(name)["location"]
 
@@ -132,11 +132,17 @@ class SystemMap(ILocationRegistry, IRouteBuilder, IResourceLocator):
         self._graph.add_node(location.teachpoint_name, location=location)
         if isinstance(location.resource, LabwareLoadable):
             self._equipment_map[location.resource.name] = location
+        location.add_observer(self)
 
     def get_resource_location(self, resource_name: str) -> Location:
-        if resource_name not in self._equipment_map.keys():
-            raise ValueError(f"Resource {resource_name} does not exist")
-        return self._equipment_map[resource_name]
+        try:
+            return self._equipment_map[resource_name]
+        except KeyError:
+            resource_name = resource_name.replace("-", "_")
+            try:
+                return self._equipment_map[resource_name]
+            except KeyError:
+                raise ValueError(f"Resource {resource_name} does not exist")
 
     def add_edge(self, start: str, end: str, transporter: TransporterResource, weight: float = 5.0) -> None:
         if start not in self._graph.get_nodes():
@@ -205,8 +211,27 @@ class SystemMap(ILocationRegistry, IRouteBuilder, IResourceLocator):
                 nodes[node] = nodedata
         return nodes
 
+    def add_transporter(self, transporter: TransporterResource) -> None:
+        taught_locations = transporter.get_taught_positions()
+        # add teachpoints as locations if they don't exist and connect them as an edge
+        for edge in itertools.combinations(taught_locations, 2):
+            try:
+                self.get_location(edge[0])
+            except KeyError:
+                self.add_location(Location(edge[0]))
+            try:
+                self.get_location(edge[1])
+            except KeyError:
+                self.add_location(Location(edge[1]))
+            self.add_edge(edge[0], edge[1], transporter)
+            self.add_edge(edge[1], edge[0], transporter)
 
-    
+    def resource_registry_notify(self, event: str, resource: IResource) -> None:
+        if event == "resource_added":
+            if isinstance(resource, TransporterResource):
+                self.add_transporter(resource)
 
-
-
+    def location_notify(self, event: str, location: Location, resource: IResource) -> None:
+        if event == "resource_set":
+            if isinstance(resource, LabwareLoadable):
+                self._equipment_map[resource.name] = location

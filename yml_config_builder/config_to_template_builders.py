@@ -5,12 +5,13 @@ import yaml
 from resource_models.base_resource import Equipment
 from resource_models.labware import AnyLabwareTemplate, LabwareTemplate
 from resource_models.location import Location
-from system.registry_interfaces import ILabwareTemplateRegistry, IResourceRegistry
-from system.registries import InstanceRegistry, LabwareRegistry, ResourceRegistry
+from system.registry_interfaces import ILabwareTemplateRegistry
+from system.registries import InstanceRegistry, LabwareRegistry
+from system.resource_registry import IResourceRegistry, ResourceRegistry
 from system.system import System, SystemInfo
 from system.system_map import ILocationRegistry, IResourceLocator, SystemMap
 from system.registries import TemplateRegistry
-from system.template_registry_interfaces import ILabwareThreadTemplateRegistry, IMethodTemplateRegistry, IWorkflowTemplateRegistry
+from system.template_registry_interfaces import IMethodTemplateRegistry, IWorkflowTemplateRegistry
 from yml_config_builder.configs import LabwareConfig, LabwareThreadConfig, MethodActionConfig, MethodConfig, ResourceConfig, ResourcePoolConfig, SystemConfig, ThreadStepConfig, WorkflowConfig
 from yml_config_builder.resource_factory import ResourceFactory, ResourcePoolFactory
 from resource_models.resource_pool import EquipmentResourcePool
@@ -41,10 +42,14 @@ class MethodActionConfigToTemplate:
         
         # Get the equipment or resource pool object
         try:
-            resource = resource_reg.get_resource(resource_name)
+            resource: Equipment | EquipmentResourcePool = resource_reg.get_equipment(resource_name)
+            
         except KeyError:
-            raise LookupError(f"The resource name '{resource_name}' in method actions is not recognized as a defined resource or resource pool")
-        if not isinstance(resource, Equipment) or not isinstance(resource, EquipmentResourcePool):
+            try:
+                resource = resource_reg.get_resource_pool(resource_name)
+            except KeyError:
+                raise LookupError(f"The resource name '{resource_name}' in method actions is not recognized as a defined resource or resource pool")
+        if not isinstance(resource, Equipment) and not isinstance(resource, EquipmentResourcePool):
             raise TypeError(f"The resource name '{resource_name}' in method actions is not an Equipment or EquipmentResourcePool")
 
         # Get the input labware templates
@@ -60,7 +65,7 @@ class MethodActionConfigToTemplate:
                 inputs.append(labware_template)
         # Get the output labware templates
         outputs = [labware_temp_reg.get_labware_template(name) for name in self._config.outputs]
-
+        
         return MethodActionTemplate(resource,
                                      self._config.command,
                                          inputs,
@@ -177,13 +182,15 @@ class ConfigToSystemBuilder:
             pool = ResourcePoolFactory(resource_reg).create(name, resource_config)
             resource_reg.add_resource_pool(pool)
 
-    def _build_locations(self, resource_registry: IResourceRegistry) -> None:
+    def _build_locations(self, resource_registry: IResourceRegistry, system_map: SystemMap) -> None:
         # build locations from location defs in config
         for location_name, location_config in self._config.locations.items():
-             location = Location(location_config.teachpoint_name)
-             location.set_options(location_config.model_extra)  
+            location = Location(location_config.teachpoint_name)
+            location.set_options(location_config.model_extra)  
+            system_map.add_location(location)
+        
 
-    def _connect_resources_to_locations(self, resource_registry: IResourceRegistry, location_reg: ILocationRegistry) -> None:
+        # TODO:  resource_config should probably be in Resource and this all moved to SystemMap
         for res in resource_registry.resources:
             # skip resources like newtowrk switches, etc that don't have plate pad locations
             if isinstance(res, Equipment) \
@@ -200,7 +207,7 @@ class ConfigToSystemBuilder:
                     location_name = res.name
 
                 try:
-                    location = location_reg.get_location(location_name)
+                    location = system_map.get_location(location_name)
                 except KeyError:
                     raise LookupError(f"Location {location_name} referenced in resource {res.name} is not recognized.  Locations must be defined by the transporting resource.")
                 location.resource = res
@@ -221,12 +228,10 @@ class ConfigToSystemBuilder:
             workflow_temp_reg.add_workflow_template(workflow_template)
 
     def get_system(self) -> System:
-       
-        system_map = SystemMap()
-        resource_reg = ResourceRegistry(system_map)
+        resource_reg = ResourceRegistry()
         self._build_resources(resource_reg)
-        self._build_locations(resource_reg)
-        self._connect_resources_to_locations(resource_reg, system_map)
+        system_map = SystemMap(resource_reg)
+        self._build_locations(resource_reg, system_map)
         template_registry = TemplateRegistry()
         labware_registry = LabwareRegistry()
         self._build_labware_templates(labware_registry)

@@ -6,7 +6,8 @@ from resource_models.transporter_resource import TransporterResource
 from resource_models.base_resource import Equipment, IResource
 
 from resource_models.labware import Labware, LabwareTemplate
-from system.registry_interfaces import ILabwareRegistry, ILabwareTemplateRegistry, ILabwareThreadRegisty, IMethodRegistry, IResourceRegistry, IWorkflowRegistry
+from system.registry_interfaces import ILabwareRegistry, ILabwareTemplateRegistry, ILabwareThreadRegisty, IMethodRegistry, IWorkflowRegistry
+from system.resource_registry import IResourceRegistry, IResourceRegistryObesrver
 from system.system_map import ILocationRegistry, SystemMap
 from system.registries import InstanceRegistry, LabwareRegistry, TemplateRegistry
 from system.template_registry_interfaces import ILabwareThreadTemplateRegistry, IMethodTemplateRegistry, IWorkflowTemplateRegistry
@@ -157,4 +158,5 @@ class System(IResourceRegistry, ILabwareRegistry, ILabwareTemplateRegistry, IWor
     def add_method(self, method: Method) -> None:
         self._instances.add_method(method)
 
-
+    def add_observer(self, observer: IResourceRegistryObesrver) -> None:
+        return self._resources.add_observer(observer)

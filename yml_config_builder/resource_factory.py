@@ -3,7 +3,7 @@ from resource_models.drivers import PlaceHolderNonLabwareResource, PlaceHolderRe
 from resource_models.base_resource import BaseResource, Equipment
 
 from resource_models.resource_pool import EquipmentResourcePool
-from system.registry_interfaces import IResourceRegistry
+from system.resource_registry import IResourceRegistry
 from yml_config_builder.configs import ResourceConfig, ResourcePoolConfig
 
 
