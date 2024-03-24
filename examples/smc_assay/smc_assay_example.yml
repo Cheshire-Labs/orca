@@ -97,7 +97,8 @@ resources:
     translator-1:
         type: translator
         com: "COM5"
-        positions: examples\\smc_assay\\translator2.xml
+        positions: examples\\smc_assay\\translator1.xml
+        
     translater-2:
         type: translator
         com: "COM6"
