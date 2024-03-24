@@ -95,7 +95,7 @@ class Route:
         extended_path = self._system_map.get_shortest_available_path(previous_end.teachpoint_name, new_end.teachpoint_name)
 
         end_path_src_loc = previous_end.teachpoint_name      
-        for stop in extended_path:
+        for stop in extended_path[1:]:
             source_location = self._system_map.get_location(end_path_src_loc)
             target_location = self._system_map.get_location(stop)
             transporter = self._system_map.get_transporter_between(end_path_src_loc, stop)
