@@ -183,7 +183,7 @@ class DynamicResourceAction:
 
 
     def resolve_resource_action(self, reference_point: Location, system_map: SystemMap) -> LocationAction:
-        resource = self._resource_pool.get_closest_available_resource(reference_point, system_map)
+        resource = self._get_closest_available_resource(self._resource_pool, reference_point, system_map)
         location = system_map.get_resource_location(resource.name)
         return LocationAction(location,
                               self._command,
@@ -191,5 +191,14 @@ class DynamicResourceAction:
                               self._expected_outputs,
                               self._options)
 
+    def _get_closest_available_resource(self, resource_pool: EquipmentResourcePool, reference_point: Location, system_map: SystemMap) -> Equipment:
+        available_resources = [resource for resource in resource_pool.resources if resource.is_available]
+        ordered_resources = sorted(available_resources, key=lambda x: 
+                                   system_map.get_distance(reference_point.teachpoint_name, 
+                                                       system_map.get_resource_location(x.name).teachpoint_name))
+        if not ordered_resources:
+            raise ValueError(f"{self}: No available resources")
+        return ordered_resources[0]
+    
     def __str__(self) -> str:
         return f"Resource Action Pool: {self._resource_pool.name} - {self._command}"
