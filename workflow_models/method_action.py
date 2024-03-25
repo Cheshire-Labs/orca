@@ -10,8 +10,6 @@ from workflow_models.action import BaseAction
 from abc import ABC
 from typing import Any, Dict, List, Union
 
-from workflow_models.status_enums import ActionStatus
-
 
 class LocationAction(BaseAction):
     def __init__(self,
@@ -35,32 +33,13 @@ class LocationAction(BaseAction):
     def location(self) -> Location:
         return self._location
 
-    # def prepare_for_pick(self, labware: Labware) -> None:
-
-    # def prepare_for_place(self, labware: Labware) -> None: 
-
-    # def notify_picked(self, labware: Labware) -> None:
-    
-    # def notify_placed(self, labware: Labware) -> None:
-    #     self._input_manager.load_labware(self._input_manager._loaded_labware)
-    #     self._resource.load_labware(self._input_manager._loaded_labware)
-
     def _perform_action(self) -> None:
-        # # Check that all the labware has arrived
-        # if self._input_manager.is_awaiting_labware():
-        #     raise ValueError("Not all the labware has arrived")
-
 
         # Execute the action
         if self.resource is not None:
             self.resource.set_command(self._command)
             self.resource.set_command_options(self._options)
             self.resource.execute()
-
-        # Set the labware as available to pickup
-        # self._resource.unload_labware()
-        # self._input_manager.unload_labware()
-
 
     def __str__(self) -> str:
         return f"Location Action: {self.location} - {self._command}"
