@@ -41,12 +41,16 @@ class Method:
     def append_step(self, step: DynamicResourceAction) -> None:
         self._steps.append(step)
 
+    def has_completed(self) -> bool:
+        return self._status == MethodStatus.COMPLETED
+
     def resolve_next_action(self, reference_point: Location, system_map: SystemMap) -> LocationAction:
-        if self._status == MethodStatus.CREATED:
-            self._status = MethodStatus.RUNNING
-            # TODO: set children threads to spawn here
+        self._status = MethodStatus.RUNNING
+        # TODO: set children threads to spawn here
 
         dynamic_action = self._steps.pop(0)
+        if len(self._steps) == 0:
+            self._status = MethodStatus.COMPLETED
         return dynamic_action.resolve_resource_action(reference_point, system_map)
 
     def set_children_threads(self, thread_names: List[str]) -> None:
@@ -103,8 +107,16 @@ class LabwareThread:
         for step in self._route:
             step.set_labware(self._labware)
             step.execute()
+        action.execute()
     
-
+    def send_to_end_location(self) -> None:
+        if self._route is None:
+            self._route = Route(self._current_location, self._system_map , self._end_location)
+        else:
+            self._route.extend_to_location(self._end_location)
+        for step in self._route:
+            step.set_labware(self._labware)
+            step.execute()
 
 
 

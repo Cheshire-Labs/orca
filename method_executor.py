@@ -1,8 +1,10 @@
 from typing import Dict, List, Optional, Union
 from resource_models.labware import AnyLabware, AnyLabwareTemplate, LabwareTemplate
 from resource_models.location import Location
+from routing.router import MoveAction
 from system.system_map import SystemMap
 from system.registry_interfaces import ILabwareRegistry
+from workflow_models.method_action import LocationAction
 from workflow_models.workflow import LabwareThread
 from workflow_models.workflow_templates import MethodTemplate
 
@@ -60,7 +62,10 @@ class MethodExecutor:
         
         for thread in self._threads:
             current_location = thread.current_location
-            next_action = self._method.resolve_next_action(current_location, self._system_map)
-            thread.execute_action(next_action)
+            while not self._method.has_completed():
+                next_action = self._method.resolve_next_action(current_location, self._system_map)
+                thread.execute_action(next_action)
+            # send the labware to end location
+            thread.send_to_end_location()
             
             
