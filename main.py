@@ -6,9 +6,6 @@ from workflow_executor import WorkflowExecuter
 from yml_config_builder.config_to_template_builders import ConfigFile
 import json
 
-
-
-
 class Orca:
     @staticmethod
     def run(config_file: str, workflow_name: Optional[str] = None):

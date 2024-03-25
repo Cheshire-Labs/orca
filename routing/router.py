@@ -4,6 +4,7 @@ from resource_models.location import Location
 from resource_models.labware import Labware
 from system.system_map import SystemMap
 from workflow_models.action import BaseAction
+from workflow_models.method_action import LocationAction
 from workflow_models.status_enums import ActionStatus
 
 
@@ -16,27 +17,19 @@ class MoveAction(BaseAction):
         self._source = source
         self._target = target
         self._transporter: TransporterResource = transporter
-        # self._post_load_actions: List[ResourceAction] = []
+        self._post_load_actions: List[LocationAction] = []
         self._labware: Optional[Labware] = None
 
     @property
     def source(self) -> Location:
         return self._source
-    
-    # @source.setter
-    # def source(self, source:Location) -> None:
-    #     self._source = source
 
     @property
     def target(self) -> Location:
         return self._target
     
-    # @target.setter
-    # def target(self, target: Location) -> None:
-    #     self._target = target
-
-    # def set_actions(self, actions: List[ResourceAction]) -> None:
-    #     self._post_load_actions = actions
+    def append_load_actions(self, action: LocationAction) -> None:
+        self._post_load_actions.append(action)
 
     def set_labware(self, labware: Labware) -> None:
         self._labware = labware
@@ -44,6 +37,7 @@ class MoveAction(BaseAction):
     def _perform_action(self) -> None:
         if self._labware is None:
             raise ValueError("Labware must be set before getting actions")
+
         # move the labware
         self._source.prepare_for_pick(self._labware)
         self._transporter.pick(self._source)
@@ -52,21 +46,20 @@ class MoveAction(BaseAction):
         self._transporter.place(self._target)
         self._target.notify_placed(self._labware)
 
-        # # perform the action
-        # for action in self._post_load_actions:
-        #     action.execute()
+        # perform the action
+        for action in self._post_load_actions:
+            action.execute()
+
 
     
 
 
 class Route:
-    def __init__(self, start: Location, system_map: SystemMap, end: Optional[Location] = None) -> None:
+    def __init__(self, start: Location, system_map: SystemMap) -> None:
         self._start = start
         self._end = start
         self._edges: List[MoveAction] = []
         self._system_map = system_map
-        if end is not None:
-            self.extend_to_location(end)
         # self._core_actions: Dict[str, List[ResourceAction]] = {}
         
     @property
@@ -79,6 +72,10 @@ class Route:
         for edge in self._edges:
             path.append(edge.target) 
         return path   
+
+    def extend_to_action(self, action: LocationAction) -> None:
+        self.extend_to_location(action.location)
+        self._edges[-1].append_load_actions(action)
 
     def extend_to_location(self, end_location: Location) -> None:
         """
@@ -100,10 +97,15 @@ class Route:
             source_location = self._system_map.get_location(end_path_src_loc)
             target_location = self._system_map.get_location(stop)
             transporter = self._system_map.get_transporter_between(end_path_src_loc, stop)
-            self._edges.append(MoveAction(source_location, target_location, transporter))
+            move_action = MoveAction(source_location, target_location, transporter)
+            self._edges.append(move_action)
             end_path_src_loc = stop
         self._end = end_location
+
+
+    def pending_actions(self) -> List[MoveAction]:
+        return [edge for edge in self._edges if edge.status == ActionStatus.CREATED]
     
     def __iter__(self):
-        return iter(self._edges)
+        return iter(self.pending_actions())
  
