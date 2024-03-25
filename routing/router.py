@@ -4,6 +4,7 @@ from resource_models.location import Location
 from resource_models.labware import Labware
 from system.system_map import SystemMap
 from workflow_models.action import BaseAction
+from workflow_models.status_enums import ActionStatus
 
 
 class MoveAction(BaseAction):

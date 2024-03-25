@@ -1,15 +1,6 @@
 from abc import ABC
-from enum import Enum, auto
 
-    
-
-class ActionStatus(Enum):
-    CREATED = auto()
-    READY = auto()
-    IN_PROGRESS = auto()
-    COMPLETED = auto()
-    FAILED = auto()
-    # CANCELLED = auto() # TODO: Implement
+from workflow_models.status_enums import ActionStatus
 
 
 class IAction(ABC):
@@ -29,16 +20,21 @@ class BaseAction(IAction, ABC):
         return self._status
 
     def execute(self) -> None:
+        if self._status == ActionStatus.COMPLETED:
+            raise ValueError("Action has already been completed")
         self._status = ActionStatus.IN_PROGRESS
         try:
             self._perform_action()
         except Exception as e:
-            self._status = ActionStatus.FAILED
+            self._status = ActionStatus.ERRORED
             raise e        
         self._status = ActionStatus.COMPLETED
 
     def _perform_action(self) -> None:
         raise NotImplementedError
+    
+    def reset(self) -> None:
+        self._status = ActionStatus.CREATED
 
 
 class NullAction(BaseAction):

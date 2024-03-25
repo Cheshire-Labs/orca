@@ -6,7 +6,7 @@ from resource_models.labware import AnyLabware, Labware
 from routing.router import Route
 from system.system_map import SystemMap
 from workflow_models.method_action import DynamicResourceAction, LocationAction
-from workflow_models.method_status import MethodStatus
+from workflow_models.status_enums import MethodStatus
 
 
 
@@ -45,7 +45,7 @@ class Method:
         return self._status == MethodStatus.COMPLETED
 
     def resolve_next_action(self, reference_point: Location, system_map: SystemMap) -> LocationAction:
-        self._status = MethodStatus.RUNNING
+        self._status = MethodStatus.IN_PROGRESS
         # TODO: set children threads to spawn here
 
         dynamic_action = self._steps.pop(0)
@@ -57,6 +57,7 @@ class Method:
         self._children_threads = thread_names
 
 
+    
        
 
 class LabwareThread:
