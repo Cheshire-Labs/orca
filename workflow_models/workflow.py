@@ -99,24 +99,22 @@ class LabwareThread:
         self._start_location.set_labware(self._labware)
 
     def execute_action(self, action: LocationAction) -> None:
-        if self._route is None:
-            self._route = Route(self._current_location, self._system_map , action.location)
-        else:
-            self._route.extend_to_location(action.location)
-        
+        # TODO:  fix this
+
+        self._route = Route(self._current_location, self._system_map , action.location)
         for step in self._route:
             step.set_labware(self._labware)
             step.execute()
+            self._current_location = step.target
         action.execute()
     
     def send_to_end_location(self) -> None:
-        if self._route is None:
-            self._route = Route(self._current_location, self._system_map , self._end_location)
-        else:
-            self._route.extend_to_location(self._end_location)
+        # TODO:  fix this
+        self._route = Route(self._current_location, self._system_map , self._end_location)
         for step in self._route:
             step.set_labware(self._labware)
             step.execute()
+            self._current_location = step.target
 
 
 
