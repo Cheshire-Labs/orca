@@ -34,6 +34,8 @@ class LocationAction(BaseAction):
         return self._location
 
     def _perform_action(self) -> None:
+        # TODO: check the correct labware is present
+        
 
         # Execute the action
         if self.resource is not None:

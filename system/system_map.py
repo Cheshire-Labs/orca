@@ -2,7 +2,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 import itertools
 from typing import Any, Dict, List, Optional, Tuple
-from resource_models.base_resource import IResource, LabwareLoadable
+from resource_models.base_resource import IResource, LabwarePlaceable
 from resource_models.location import ILocationObeserver, Location
 import networkx as nx
 import matplotlib.pyplot as plt
@@ -130,7 +130,7 @@ class SystemMap(ILocationRegistry, IRouteBuilder, IResourceLocator, ILocationObe
 
     def add_location(self, location: Location) -> None:
         self._graph.add_node(location.teachpoint_name, location=location)
-        if isinstance(location.resource, LabwareLoadable):
+        if isinstance(location.resource, LabwarePlaceable):
             self._equipment_map[location.resource.name] = location
         location.add_observer(self)
 
@@ -236,5 +236,5 @@ class SystemMap(ILocationRegistry, IRouteBuilder, IResourceLocator, ILocationObe
 
     def location_notify(self, event: str, location: Location, resource: IResource) -> None:
         if event == "resource_set":
-            if isinstance(resource, LabwareLoadable):
+            if isinstance(resource, LabwarePlaceable):
                 self._equipment_map[resource.name] = location

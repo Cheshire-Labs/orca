@@ -50,7 +50,7 @@ class BaseResource(IInitializableResource, ABC):
     def __str__(self) -> str:
         return self._name
 
-class LabwareLoadable(ABC):
+class LabwarePlaceable(ABC):
     @property
     def is_available(self) -> bool:
         raise NotImplementedError
@@ -79,7 +79,7 @@ class LabwareLoadable(ABC):
     def notify_placed(self, labware: Labware) -> None:
         raise NotImplementedError
 
-class Equipment(BaseResource, LabwareLoadable, ABC):
+class Equipment(BaseResource, LabwarePlaceable, ABC):
     """
     Represents a piece of equipment.  Not to be used for Transporters and equipment that does not operate on labware.
 

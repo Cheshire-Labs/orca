@@ -5,7 +5,7 @@ from resource_models.location import Location
 from resource_models.resource_extras.teachpoints import Teachpoint
 from resource_models.transporter_resource import TransporterResource
 
-from resource_models.base_resource import BaseResource, Equipment, LabwareLoadable
+from resource_models.base_resource import BaseResource, Equipment, LabwarePlaceable
 
 from resource_models.labware import Labware
 
@@ -31,7 +31,7 @@ class PlaceHolderNonLabwareResource(BaseResource):
     def initialize(self) -> None:
         self._is_initialized = True
 
-class PlaceHolderResource(Equipment, LabwareLoadable):
+class PlaceHolderResource(Equipment, LabwarePlaceable):
     def __init__(self, name: str, mocking_type: Optional[str] = None):
         super().__init__(name)
         self._mocking_type = mocking_type
@@ -174,7 +174,7 @@ class PlaceHolderRoboticArm(TransporterResource):
                 raise ValueError(f"Positions configuration for {self._name} is not recognized.  Must be a filepath string or list of strings naming the teachpoints")
     
 
-class VenusProtocol(BaseResource, LabwareLoadable):
+class VenusProtocol(BaseResource, LabwarePlaceable):
     def __init__(self, name: str):
         super().__init__(name)
         self._default_exe_path = r"C:\Program Files (x86)\HAMILTON\Bin\HxRun.exe"

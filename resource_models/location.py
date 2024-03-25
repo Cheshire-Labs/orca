@@ -1,7 +1,7 @@
 from typing import Optional
 
 from typing import Any, Dict
-from resource_models.base_resource import Equipment, LabwareLoadable
+from resource_models.base_resource import Equipment, LabwarePlaceable
 from resource_models.labware import Labware
 
 
@@ -15,7 +15,7 @@ class ILocationObeserver(ABC):
     def location_notify(self, event: str, location: "Location", resource: Equipment) -> None:
         pass
 
-class Location(LabwareLoadable, ABC):
+class Location(LabwarePlaceable, ABC):
     def __init__(self, teachpoint_name: str, resource: Optional[Equipment] = None) -> None:
         self._teachpoint_name = teachpoint_name
         self._resource: Equipment = resource if resource else PlatePad(teachpoint_name)
