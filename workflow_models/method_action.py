@@ -37,7 +37,7 @@ class LocationAction(BaseAction):
 
     def _perform_action(self) -> None:
         # TODO: check the correct labware is present
-        
+        self._check_all_labware_loaded()
 
         # Execute the action
         if self.resource is not None:
@@ -45,6 +45,22 @@ class LocationAction(BaseAction):
             self.resource.set_command_options(self._options)
             self.resource.execute()
 
+    def _check_all_labware_loaded(self) -> None:
+        loaded_labwares = self.resource.loaded_labware[:]
+        any_labware_count = 0
+        for labware in self._expected_inputs:
+            if isinstance(labware, AnyLabware):
+                any_labware_count += 1
+                continue
+            if labware not in loaded_labwares:
+                raise ValueError(f"Labware {labware} is not loaded in {self.resource}")
+            else:
+                loaded_labwares.remove(labware)
+                    
+        if len(loaded_labwares) != any_labware_count:
+            raise ValueError(f"Labware {loaded_labwares} is loaded in {self.resource} but not expected")
+        
+        
     def __str__(self) -> str:
         return f"Location Action: {self.location} - {self._command}"
     
