@@ -105,7 +105,11 @@ def main():
 if __name__ == '__main__':
     # Orca.run(config_file="tests\\mock_config1.yml", workflow="test-workflow2")
     # Orca.run(config_file="examples\\smc_assay\\smc_assay_example.yml", workflow_name="smc-assay")
-    Orca.run_method(config_file="examples\\smc_assay\\smc_assay_example.yml", 
-             method_name="incubate-2hrs",
-             start_map_json=json.dumps({"plate-1": "pad_1"}),
-             end_map_json=json.dumps({"plate-1": "pad_3"}))
+    # Orca.run_method(config_file="examples\\smc_assay\\smc_assay_example.yml", 
+    #          method_name="incubate-2hrs",
+    #          start_map_json=json.dumps({"plate-1": "pad_1"}),
+    #          end_map_json=json.dumps({"plate-1": "pad_3"}))
+    Orca.run_method(config_file="examples\\smc_assay\\smc_assay_example.yml",
+                    method_name="add-detection-antibody",
+                    start_map_json=json.dumps({"plate-1": "pad_1", "tips-96": "pad_3"},
+                    end_map_json=json.dumps({"plate-1": "pad_6", "tips-96": "pad_2"})))
