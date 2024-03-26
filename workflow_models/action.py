@@ -1,7 +1,11 @@
 from abc import ABC
+from typing import List
 
 from workflow_models.status_enums import ActionStatus
 
+class IActionObserver:
+    def action_notify(self, event: str, action: 'BaseAction') -> None:
+        pass
 
 class IAction(ABC):
     @property
@@ -14,6 +18,7 @@ class IAction(ABC):
 class BaseAction(IAction, ABC):
     def __init__(self) -> None:
         self._status: ActionStatus = ActionStatus.CREATED
+        self._observers: List[IActionObserver] = []
 
     @property
     def status(self) -> ActionStatus:
@@ -36,6 +41,8 @@ class BaseAction(IAction, ABC):
     def reset(self) -> None:
         self._status = ActionStatus.CREATED
 
+    def add_observer(self, observer: IActionObserver) -> None:
+        self._observers.append(observer)
 
 class NullAction(BaseAction):
     def __init__(self) -> None:
@@ -43,5 +50,7 @@ class NullAction(BaseAction):
 
     def _perform_action(self) -> None:
         pass  
+
+
 
 
