@@ -74,10 +74,5 @@ class MethodExecutor:
         for thread in self._threads:
             while not thread.has_completed():
                 thread.execute_next_action()
-            # current_location = thread.current_location
-            # while not self._method.has_completed():
-            #     next_action = self._method.resolve_next_action(current_location, self._system_map)
-            #     thread._execute_action(next_action)
-            # # send the labware to end location
-            # thread.send_to_end_location()
+
             

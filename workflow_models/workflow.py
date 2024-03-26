@@ -8,8 +8,6 @@ from system.system_map import SystemMap
 from workflow_models.method_action import DynamicResourceAction, LocationAction
 from workflow_models.status_enums import MethodStatus, LabwareThreadStatus
 
-
-
 class Method:
 
     def __init__(self, name: str) -> None:
@@ -146,11 +144,6 @@ class LabwareThread:
 
 
 class Workflow:
-    # @staticmethod
-    # def from_template(template: WorkflowTemplate, labwares: Dict[str, Labware]) -> Workflow:
-    #     threads = {thread_name: LabwareThread.from_template(thread_template, labwares) for thread_name, thread_template in template.labware_threads.items()}
-    #     workflow = Workflow(template.name, threads)
-    #     return workflow
 
     def __init__(self, name:str, threads: Dict[str, LabwareThread]) -> None:
         self._name = name

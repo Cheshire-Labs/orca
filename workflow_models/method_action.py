@@ -6,8 +6,6 @@ from resource_models.resource_pool import EquipmentResourcePool
 from system.system_map import SystemMap
 from workflow_models.action import BaseAction
 
-
-from abc import ABC
 from typing import Any, Dict, List, Union, cast
 
 
