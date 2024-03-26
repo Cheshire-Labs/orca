@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from resource_models.labware import Labware
 
@@ -128,6 +128,7 @@ class Equipment(BaseResource, LabwarePlaceable, ABC):
         """
         self._options = options
 
+    @abstractmethod
     def execute(self) -> None:
         """
         Executes the command.
@@ -138,6 +139,10 @@ class Equipment(BaseResource, LabwarePlaceable, ABC):
         """
         raise NotImplementedError
     
+    @property
+    @abstractmethod
+    def loaded_labware(self) -> List[Labware]:
+        raise NotImplementedError
 
     
     
