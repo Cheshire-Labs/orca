@@ -5,13 +5,13 @@ class ActionStatus(Enum):
     IN_PROGRESS = auto()
     COMPLETED = auto()
     ERRORED = auto()
+    AWAITING_LABWARE = auto()
 
 class MethodStatus(Enum):
     CREATED = auto()
     READY = auto()
     IN_PROGRESS = auto()
     AWAITING_RESOURCE = auto()
-    AWAITING_LABWARE = auto()
     COMPLETED = auto()
 
 class LabwareThreadStatus(Enum):
