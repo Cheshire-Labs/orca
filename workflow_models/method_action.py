@@ -8,7 +8,7 @@ from workflow_models.action import BaseAction
 
 
 from abc import ABC
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Union, cast
 
 
 class LocationAction(BaseAction):
@@ -19,6 +19,8 @@ class LocationAction(BaseAction):
                  expected_outputs: List[Labware],
                  options: Dict[str, Any] = {}) -> None:
         super().__init__()
+        if location.resource is None or not isinstance(location.resource, Equipment):
+            raise ValueError(f"Location {location} does not have an Equipment resource")
         self._location = location
         self._command: str = command
         self._options: Dict[str, Any] = options
@@ -26,8 +28,8 @@ class LocationAction(BaseAction):
         self._expected_outputs = expected_outputs
 
     @property
-    def resource(self) -> Equipment | None:
-        return self._location.resource
+    def resource(self) -> Equipment:
+        return cast(Equipment, self._location.resource)
     
     @property
     def location(self) -> Location:

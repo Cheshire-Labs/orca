@@ -46,6 +46,10 @@ class PlaceHolderResource(Equipment, LabwarePlaceable):
     def labware(self) -> Optional[Labware]:
         return self._stage_labware
     
+    @property
+    def loaded_labware(self) -> List[Labware]:
+        return self._loaded_labware
+    
     def set_labware(self, labware: Labware) -> None:
         # TODO: this will need to be restricted to only initilaizing the labware
         self._stage_labware = labware
@@ -56,7 +60,6 @@ class PlaceHolderResource(Equipment, LabwarePlaceable):
         print(f"Type: {self._mocking_type}")
         print(f"Mock Initialized")
         self._is_initialized = True
-
 
     def prepare_for_place(self, labware: Labware) -> None:
         if self._stage_labware is not None:

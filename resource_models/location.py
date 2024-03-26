@@ -1,7 +1,7 @@
 from typing import Optional
 
 from typing import Any, Dict
-from resource_models.base_resource import Equipment, LabwarePlaceable
+from resource_models.base_resource import LabwarePlaceable
 from resource_models.labware import Labware
 
 
@@ -12,13 +12,13 @@ from typing import List, Callable
 
 
 class ILocationObeserver(ABC):
-    def location_notify(self, event: str, location: "Location", resource: Equipment) -> None:
+    def location_notify(self, event: str, location: "Location", resource: LabwarePlaceable) -> None:
         pass
 
 class Location(LabwarePlaceable, ABC):
-    def __init__(self, teachpoint_name: str, resource: Optional[Equipment] = None) -> None:
+    def __init__(self, teachpoint_name: str, resource: Optional[LabwarePlaceable] = None) -> None:
         self._teachpoint_name = teachpoint_name
-        self._resource: Equipment = resource if resource else PlatePad(teachpoint_name)
+        self._resource: LabwarePlaceable = resource if resource else PlatePad(teachpoint_name)
         self._options: Dict[str, Any] = {}
         self._observers: List[ILocationObeserver] = []
                               
@@ -39,11 +39,11 @@ class Location(LabwarePlaceable, ABC):
         return self._resource.labware is None
 
     @property
-    def resource(self) -> Equipment:
+    def resource(self) -> LabwarePlaceable:
         return self._resource
     
     @resource.setter
-    def resource(self, resource: Equipment) -> None:
+    def resource(self, resource: LabwarePlaceable) -> None:
         self._resource = resource
         for obeserver in self._observers:
             obeserver.location_notify("resource_set", self, resource)

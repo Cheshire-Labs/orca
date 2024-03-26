@@ -1,9 +1,9 @@
 from typing import Optional
-from resource_models.base_resource import Equipment
+from resource_models.base_resource import BaseResource, LabwarePlaceable
 from resource_models.labware import Labware
 
 
-class PlatePad(Equipment):
+class PlatePad(BaseResource, LabwarePlaceable):
 
     def __init__(self, name: str) -> None:
         super().__init__(name)
