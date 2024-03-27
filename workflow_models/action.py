@@ -1,6 +1,7 @@
 from abc import ABC
 from typing import List
 
+from resource_models.labware import Labware
 from workflow_models.status_enums import ActionStatus
 
 class IActionObserver:
@@ -44,13 +45,11 @@ class BaseAction(IAction, ABC):
     def add_observer(self, observer: IActionObserver) -> None:
         self._observers.append(observer)
 
+
 class NullAction(BaseAction):
     def __init__(self) -> None:
         super().__init__()
 
     def _perform_action(self) -> None:
         pass  
-
-
-
 
