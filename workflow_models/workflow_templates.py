@@ -9,7 +9,7 @@ from resource_models.resource_pool import EquipmentResourcePool
 
 from system.system_map import SystemMap
 from system.registry_interfaces import ILabwareRegistry
-from workflow_models.method_action import DynamicResourceAction
+from workflow_models.location_action import DynamicResourceAction
 from workflow_models.workflow import LabwareThread, Method, Workflow
 
 

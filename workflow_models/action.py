@@ -1,7 +1,6 @@
 from abc import ABC
 from typing import List
 
-from resource_models.labware import Labware
 from workflow_models.status_enums import ActionStatus
 
 class IActionObserver:
@@ -18,17 +17,27 @@ class IAction(ABC):
 
 class BaseAction(IAction, ABC):
     def __init__(self) -> None:
-        self._status: ActionStatus = ActionStatus.CREATED
+        self.__status: ActionStatus = ActionStatus.CREATED
         self._observers: List[IActionObserver] = []
 
     @property
     def status(self) -> ActionStatus:
         return self._status
+    
+    @property
+    def _status(self) -> ActionStatus:
+        return self.__status
+
+    @_status.setter
+    def _status(self, status: ActionStatus) -> None:
+        self.__status = status
+        for observer in self._observers:
+            observer.action_notify(self.__status.name, self)
 
     def execute(self) -> None:
         if self._status == ActionStatus.COMPLETED:
             raise ValueError("Action has already been completed")
-        self._status = ActionStatus.IN_PROGRESS
+        self._statues = ActionStatus.IN_PROGRESS
         try:
             self._perform_action()
         except Exception as e:

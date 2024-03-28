@@ -1,12 +1,14 @@
 import uuid
 from resource_models.base_resource import Equipment
-from resource_models.labware import AnyLabware, Labware, LabwareTemplate
+from resource_models.labware import AnyLabware, Labware
 from resource_models.location import Location
 from resource_models.resource_pool import EquipmentResourcePool
 from system.system_map import SystemMap
 from workflow_models.action import BaseAction
 
 from typing import Any, Dict, List, Union, cast
+
+from workflow_models.status_enums import ActionStatus
 
 
 class LocationAction(BaseAction):
@@ -35,7 +37,14 @@ class LocationAction(BaseAction):
 
     def _perform_action(self) -> None:
         # TODO: check the correct labware is present
-        self._check_all_labware_loaded()
+        if len(self.get_missing_labware()) > 0:
+            raise ValueError(f"Missing labware: {self.get_missing_labware()}")
+
+
+
+        # TODO: DELETE DELETE DELETE
+        for Labware in self.resource.loaded_labware:
+            print("LOADED LABWARE: ", Labware.name)
 
         # Execute the action
         if self.resource is not None:
@@ -43,22 +52,27 @@ class LocationAction(BaseAction):
             self.resource.set_command_options(self._options)
             self.resource.execute()
 
-    def _check_all_labware_loaded(self) -> None:
+    def get_missing_labware(self) -> List[Union[Labware, AnyLabware]]:
         loaded_labwares = self.resource.loaded_labware[:]
         any_labware_count = 0
+        missing_labware: List[Union[Labware, AnyLabware]] = []
+
         for labware in self._expected_inputs:
             if isinstance(labware, AnyLabware):
                 any_labware_count += 1
                 continue
             if labware not in loaded_labwares:
-                raise ValueError(f"Labware {labware} is not loaded in {self.resource}")
+                missing_labware.append(labware)
             else:
                 loaded_labwares.remove(labware)
                     
         if len(loaded_labwares) != any_labware_count:
-            raise ValueError(f"Labware {loaded_labwares} is loaded in {self.resource} but not expected")
-        
-        
+            for _ in range(any_labware_count - len(loaded_labwares)):
+                missing_labware.append(AnyLabware())
+        if len(missing_labware) > 0:
+            self._status = ActionStatus.AWAITING_LABWARES
+        return missing_labware
+
     def __str__(self) -> str:
         return f"Location Action: {self.location} - {self._command}"
     

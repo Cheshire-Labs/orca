@@ -71,8 +71,9 @@ class MethodExecutor:
 
     def execute(self):
         
-        for thread in self._threads:
-            while not thread.has_completed():
+        while all(not thread.has_completed() for thread in self._threads):
+            for thread in self._threads:
                 thread.execute_next_action()
+
 
             

@@ -1,6 +1,7 @@
 from typing import Dict, Iterator, List
-from routing.router import Route, MoveAction
+from routing.router import Route
 from system.system_map import SystemMap
+from routing.router import MoveAction
 from workflow_models.workflow import Workflow
 from workflow_models.workflow_templates import WorkflowTemplate
 

@@ -8,7 +8,7 @@ from resource_models.labware import Labware
 from abc import ABC
 
 from resource_models.plate_pad import PlatePad
-from typing import List, Callable
+from typing import List
 
 
 class ILocationObeserver(ABC):
