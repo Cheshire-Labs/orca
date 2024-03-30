@@ -98,6 +98,8 @@ class InstanceRegistry(IThreadRegistry, IWorkflowRegistry, IMethodRegistry):
     def __init__(self, labware_reg: LabwareRegistry, system_map: SystemMap) -> None:
         self._labware_registry = labware_reg
         self._system_map = system_map
+        self._thread_factory = ThreadFactory(self._labware_registry, self._system_map)
+        self._workflow_factory = WorkflowFactory(self, self._labware_registry, self._system_map)
         self._labware_threads: Dict[str, LabwareThread] = {}
         self._workflows: Dict[str, Workflow] = {}
         self._methods: Dict[str, Method] = {}
@@ -127,14 +129,13 @@ class InstanceRegistry(IThreadRegistry, IWorkflowRegistry, IMethodRegistry):
         self._methods[method.name] = method
  
     def create_thread_instance(self, template: ThreadTemplate) -> LabwareThread:
-        factory = ThreadFactory(self._labware_registry, self._system_map)
-        return factory.create_instance(template)
+        return self._thread_factory.create_instance(template)
     
     def create_method_instance(self, template: MethodTemplate) -> Method:
         raise NotImplementedError()
     
     def create_workflow_instance(self, template: WorkflowTemplate) -> Workflow:
-        raise NotImplementedError()
+        return self._workflow_factory.create_instance(template)
 
 
 class WorkflowFactory:
