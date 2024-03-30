@@ -1,11 +1,11 @@
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 from resource_models.labware import AnyLabware, Labware, LabwareTemplate
 from resource_models.location import Location
+from system.registries import ThreadManager
 from system.system_map import SystemMap
-from system.registry_interfaces import ILabwareRegistry
+from system.labware_registry_interfaces import ILabwareRegistry
 from workflow_models.workflow import LabwareThread
 from workflow_models.workflow_templates import MethodTemplate
-
 
 class MethodExecutor:
     def __init__(self, 
@@ -21,7 +21,7 @@ class MethodExecutor:
         self._start_mapping = labware_start_mapping
         self._end_mappping = labware_end_mapping
         self._system_map = system_map
-        self._threads: List[LabwareThread] = []
+        self._thread_manager = ThreadManager()
 
         self._validate_labware_location_mappings()
         labware_dict = self._create_input_labware_instance(selected_any_labware)
@@ -63,17 +63,14 @@ class MethodExecutor:
                                     self._end_mappping[labware.name],
                                     self._system_map)
             thread.initialize_labware()
-            self._threads.append(thread)
+            self._thread_manager.add_thread(thread)
 
     def _apply_method_to_labware_threads(self):
-        for thread in self._threads:
+        for thread in self._thread_manager.threads:
             thread.append_method_sequence(self._method)
 
     def execute(self):
-        
-        while all(not thread.has_completed() for thread in self._threads):
-            for thread in self._threads:
-                thread.execute_next_action()
+        self._thread_manager.execute()
 
 
-            
+

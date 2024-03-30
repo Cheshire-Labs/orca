@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from typing import Dict, List
 from resource_models.location import Location
 from resource_models.labware import Labware
@@ -9,34 +10,51 @@ from workflow_models.action import BaseAction, IActionObserver
 from workflow_models.location_action import DynamicResourceAction, LocationAction
 from workflow_models.status_enums import ActionStatus, MethodStatus, LabwareThreadStatus
 
+
+
+# class IMethod(ABC, IActionObserver):
+
+#     @property
+#     @abstractmethod
+#     def name(self) -> str:
+#         raise NotImplementedError
+    
+#     @abstractmethod
+#     def append_step(self, step: DynamicResourceAction) -> None:
+#         raise NotImplementedError
+    
+#     @abstractmethod
+#     def has_completed(self) -> bool:
+#         raise NotImplementedError
+
+#     @abstractmethod
+#     def resolve_next_action(self, reference_point: Location, system_map: SystemMap) -> LocationAction:
+#         raise NotImplementedError
+    
+#     @abstractmethod
+#     def action_notify(self, event: str, action: BaseAction) -> None:
+#         raise NotImplementedError
+   
+
+
+# TODO: Recently added, decide to keep or scrap
+class IMethodObserver(ABC):
+    @abstractmethod
+    def method_notify(self, event: str, method: Method) -> None:
+        raise NotImplementedError
+    
 class Method(IActionObserver):
 
     def __init__(self, name: str) -> None:
         self._name = name
         self._steps: List[DynamicResourceAction] = []
         self._status: MethodStatus = MethodStatus.CREATED
-        self._children_threads: List[str] = []
         self._current_step: LocationAction | None = None
+        self._observers: List[IMethodObserver] = []
 
     @property
     def name(self) -> str:
         return self._name
-    
-    # @property
-    # def expected_inputs(self) -> List[Union[Labware, AnyLabware]]:
-    #     # compile a set of the labware templates that are expected as inputs
-    #     expected_inputs: Set[Union[Labware, AnyLabware]] = set()
-    #     for action in self._steps:
-    #         expected_inputs.update(action.expected_inputs)
-    #     return list(expected_inputs)
-    
-    # @property
-    # def expected_outputs(self) -> List[Labware]:
-    #     # compile a set of the labware templates that are expected as outputs
-    #     expected_outputs: Set[Labware] = set()
-    #     for action in self._steps:
-    #         expected_outputs.update(action.expected_outputs)
-    #     return list(expected_outputs)
     
     def append_step(self, step: DynamicResourceAction) -> None:
         self._steps.append(step)
@@ -49,8 +67,6 @@ class Method(IActionObserver):
             return self._current_step
         
         self._status = MethodStatus.IN_PROGRESS
-        # TODO: set children threads to spawn here
-
         if len(self._steps) == 0:
             self._status = MethodStatus.COMPLETED
             raise ValueError("No more steps to execute")
@@ -61,16 +77,16 @@ class Method(IActionObserver):
             self._current_step.add_observer(self)
             return self._current_step
 
-    def set_children_threads(self, thread_names: List[str]) -> None:
-        self._children_threads = thread_names
-
     def action_notify(self, event: str, action: BaseAction) -> None:
         if event == ActionStatus.COMPLETED.name:
             self._current_step = None
             if len(self._steps) == 0:
                 self._status = MethodStatus.COMPLETED
 
-       
+    def add_observer(self, observer: IMethodObserver) -> None:
+        self._observers.append(observer)
+
+
 
 class LabwareThread:
 
@@ -83,7 +99,6 @@ class LabwareThread:
         self._system_map: SystemMap = system_map
         self._method_sequence: List[Method] = []
         self._current_method: Method | None = None
-        
         self._status: LabwareThreadStatus = LabwareThreadStatus.CREATED
 
 
@@ -166,15 +181,31 @@ class LabwareThread:
  
 class Workflow:
 
-    def __init__(self, name:str, threads: Dict[str, LabwareThread]) -> None:
+    def __init__(self, name:str) -> None:
         self._name = name
-        self._labware_threads:  Dict[str, LabwareThread] = threads
+        self._start_threads: Dict[str, LabwareThread] = {}
+        self._threads:  Dict[str, LabwareThread] = {}
 
     @property
     def name(self) -> str:
         return self._name
 
     @property
-    def labware_threads(self) ->  Dict[str, LabwareThread]:
-        return self._labware_threads
+    def start_threads(self) -> List[LabwareThread]:
+        return list(self._start_threads.values())
 
+    def add_start_thread(self, thread: LabwareThread) -> None:
+        self._threads[thread.name] = thread
+        self._start_threads[thread.name] = thread
+
+    @property
+    def threads(self) -> List[LabwareThread]:
+        return list(self._threads.values())
+    
+    def add_thread(self, thread: LabwareThread) -> None:
+        self._threads[thread.name] = thread
+
+
+    def execute(self) -> None:
+        for thread in self._threads.values():
+            thread.execute_next_action()

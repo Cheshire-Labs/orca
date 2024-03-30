@@ -1,24 +1,19 @@
-from resource_models.labware import Labware, LabwareTemplate
-
-
 from abc import ABC, abstractmethod
-from typing import List
 
 from workflow_models.workflow import LabwareThread, Method, Workflow
+from workflow_models.workflow_templates import ThreadTemplate, MethodTemplate, WorkflowTemplate
 
-class ILabwareRegistry(ABC):
-    
-    @property
+class IThreadRegistry(ABC):
     @abstractmethod
-    def labwares(self) -> List[Labware]:
-        pass
-    
-    @abstractmethod
-    def get_labware(self, name: str) -> Labware:
+    def get_labware_thread(self, name: str) -> LabwareThread:
         raise NotImplementedError
 
     @abstractmethod
-    def add_labware(self, labware: Labware) -> None:
+    def add_labware_thread(self, labware_thread: LabwareThread) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def create_thread_instance(self, template: ThreadTemplate) -> LabwareThread:
         raise NotImplementedError
 
 
@@ -31,6 +26,10 @@ class IWorkflowRegistry(ABC):
     def add_workflow(self, workflow: Workflow) -> None:
         raise NotImplementedError
     
+    @abstractmethod
+    def create_workflow_instance(self, template: WorkflowTemplate) -> Workflow:
+        raise NotImplementedError
+    
 class IMethodRegistry(ABC):
     @abstractmethod
     def get_method(self, name: str) -> Method:
@@ -39,27 +38,14 @@ class IMethodRegistry(ABC):
     @abstractmethod
     def add_method(self, method: Method) -> None:
         raise NotImplementedError
-
-
-class ILabwareTemplateRegistry(ABC):
-    @abstractmethod
-    def get_labware_template(self, name: str) -> LabwareTemplate:
-        raise NotImplementedError
-
-    @abstractmethod
-    def add_labware_template(self, labware: LabwareTemplate) -> None:
-        raise NotImplementedError
-
-
-class ILabwareThreadRegisty(ABC):
-    @abstractmethod
-    def get_labware_thread(self, name: str) -> LabwareThread:
-        raise NotImplementedError
-
-    @abstractmethod
-    def add_labware_thread(self, labware_thread: LabwareThread) -> None:
-        raise NotImplementedError
-
-
-
     
+    @abstractmethod
+    def create_method_instance(self, template: MethodTemplate) -> Method:
+        raise NotImplementedError
+
+
+class IThreadManager(ABC):
+    @abstractmethod
+    def add_thread(self, thread: LabwareThread) -> None:
+        raise NotImplementedError
+

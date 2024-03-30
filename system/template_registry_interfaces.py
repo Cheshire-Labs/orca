@@ -1,16 +1,16 @@
-from workflow_models.workflow_templates import LabwareThreadTemplate, MethodTemplate, WorkflowTemplate
+from workflow_models.workflow_templates import ThreadTemplate, MethodTemplate, WorkflowTemplate
 
 
 from abc import ABC, abstractmethod
 
 
-class ILabwareThreadTemplateRegistry(ABC):
+class IThreadTemplateRegistry(ABC):
     @abstractmethod
-    def get_labware_thread_template(self, name: str) -> LabwareThreadTemplate:
+    def get_labware_thread_template(self, name: str) -> ThreadTemplate:
         raise NotImplementedError
 
     @abstractmethod
-    def add_labware_thread_template(self, labware_thread: LabwareThreadTemplate) -> None:
+    def add_labware_thread_template(self, labware_thread: ThreadTemplate) -> None:
         raise NotImplementedError
 
 

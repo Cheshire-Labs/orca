@@ -1,11 +1,14 @@
+from system.labware_registry_interfaces import ILabwareRegistry, ILabwareTemplateRegistry
+from system.registry_interfaces import IThreadManager
 from resource_models.labware import Labware, LabwareTemplate
-from system.registry_interfaces import ILabwareRegistry, ILabwareTemplateRegistry, ILabwareThreadRegisty, IMethodRegistry, IWorkflowRegistry
-from system.template_registry_interfaces import ILabwareThreadTemplateRegistry, IMethodTemplateRegistry, IWorkflowTemplateRegistry
+from system.registry_interfaces import IThreadRegistry, IMethodRegistry, IWorkflowRegistry
+from system.system_map import SystemMap
+from system.template_registry_interfaces import IThreadTemplateRegistry, IMethodTemplateRegistry, IWorkflowTemplateRegistry
 from workflow_models.workflow import LabwareThread, Method, Workflow
-from workflow_models.workflow_templates import LabwareThreadTemplate, MethodTemplate, WorkflowTemplate
+from workflow_models.workflow_templates import ThreadTemplate, MethodTemplate, WorkflowTemplate
 
 
-from typing import List, Dict
+from typing import List, Dict, Union
 
 
 class LabwareRegistry(ILabwareRegistry, ILabwareTemplateRegistry):
@@ -30,13 +33,13 @@ class LabwareRegistry(ILabwareRegistry, ILabwareTemplateRegistry):
         self._labware_templates[labware.name] = labware
 
 
-class TemplateRegistry(ILabwareThreadTemplateRegistry, IWorkflowTemplateRegistry, IMethodTemplateRegistry):
+class TemplateRegistry(IThreadTemplateRegistry, IWorkflowTemplateRegistry, IMethodTemplateRegistry):
     def __init__(self) -> None:
-        self._labware_thread_templates: Dict[str, LabwareThreadTemplate] = {}
+        self._labware_thread_templates: Dict[str, ThreadTemplate] = {}
         self._method_templates: Dict[str, MethodTemplate] = {}
         self._workflow_templates: Dict[str, WorkflowTemplate] = {}
 
-    def get_labware_thread_template(self, name: str) -> LabwareThreadTemplate:
+    def get_labware_thread_template(self, name: str) -> ThreadTemplate:
         return self._labware_thread_templates[name]
 
     def get_workflow_template(self, name: str) -> WorkflowTemplate:
@@ -45,7 +48,7 @@ class TemplateRegistry(ILabwareThreadTemplateRegistry, IWorkflowTemplateRegistry
     def get_method_template(self, name: str) -> MethodTemplate:
         return self._method_templates[name]
 
-    def add_labware_thread_template(self, thread_template: LabwareThreadTemplate) -> None:
+    def add_labware_thread_template(self, thread_template: ThreadTemplate) -> None:
         name = thread_template.name
         if name in self._labware_thread_templates.keys():
             raise KeyError(f"Labware {name} is already defined in the system.  Each labware must have a unique name")
@@ -64,8 +67,37 @@ class TemplateRegistry(ILabwareThreadTemplateRegistry, IWorkflowTemplateRegistry
         self._workflow_templates[name] = workflow
 
 
-class InstanceRegistry(ILabwareThreadRegisty, IWorkflowRegistry, IMethodRegistry):
-    def __init__(self) -> None:
+class ThreadFactory:
+    def __init__(self, labware_registry: ILabwareRegistry, system_map: SystemMap) -> None:
+        self._labware_registry: ILabwareRegistry = labware_registry
+        self._system_map: SystemMap = system_map
+
+    def create_instance(self, template: ThreadTemplate) -> LabwareThread:
+
+        # Instantiate labware
+        labware_instance = template.labware_template.create_instance()
+        self._labware_registry.add_labware(labware_instance)
+
+        # Build the method sequence
+        method_seq: List[Method] = []
+        for method_resolver in template.method_resolvers:
+            method = method_resolver.get_instance(self._labware_registry)
+            method_seq.append(method)
+
+        # create the thread
+        thread = LabwareThread(labware_instance.name,
+                                labware_instance,
+                                template.start_location,
+                                template.end_location,
+                                self._system_map)
+
+        return thread
+
+
+class InstanceRegistry(IThreadRegistry, IWorkflowRegistry, IMethodRegistry):
+    def __init__(self, labware_reg: LabwareRegistry, system_map: SystemMap) -> None:
+        self._labware_registry = labware_reg
+        self._system_map = system_map
         self._labware_threads: Dict[str, LabwareThread] = {}
         self._workflows: Dict[str, Workflow] = {}
         self._methods: Dict[str, Method] = {}
@@ -94,3 +126,49 @@ class InstanceRegistry(ILabwareThreadRegisty, IWorkflowRegistry, IMethodRegistry
             raise KeyError(f"Method {method.name} is already defined in the system.  Each method must have a unique name")
         self._methods[method.name] = method
  
+    def create_thread_instance(self, template: ThreadTemplate) -> LabwareThread:
+        factory = ThreadFactory(self._labware_registry, self._system_map)
+        return factory.create_instance(template)
+    
+    def create_method_instance(self, template: MethodTemplate) -> Method:
+        raise NotImplementedError()
+    
+    def create_workflow_instance(self, template: WorkflowTemplate) -> Workflow:
+        raise NotImplementedError()
+
+
+class WorkflowFactory:
+    def __init__(self, labware_thread_reg: IThreadRegistry, labware_registry: ILabwareRegistry, system_map: SystemMap) -> None:
+        self._labware_thread_reg: IThreadRegistry = labware_thread_reg
+        self._labware_registry: ILabwareRegistry = labware_registry
+        self._system_map: SystemMap = system_map
+
+    def create_instance(self, template: WorkflowTemplate) -> Workflow:
+        workflow = Workflow(template.name)
+        for thread_template in template.start_threads:
+            thread = self._labware_thread_reg.create_thread_instance(thread_template)
+            workflow.add_start_thread(thread)
+        return workflow
+
+
+class ThreadManager(IThreadManager):
+    def __init__(self) -> None:
+        self._threads: List[LabwareThread] = []
+        self._has_completed = False
+
+    @property
+    def threads(self) -> List[LabwareThread]:
+        return self._threads
+
+    def has_completed(self) -> bool:
+        return self._has_completed
+
+    def add_thread(self, thread: LabwareThread) -> None:
+        self._threads.append(thread)
+
+    def execute(self) -> None:
+        while all(not thread.has_completed() for thread in self._threads):
+            for thread in self._threads:
+                thread.execute_next_action()
+        self._has_completed = True
+    

@@ -3,7 +3,7 @@ from typing import Dict, Optional
 from method_executor import MethodExecutor
 from resource_models.location import Location
 from workflow_executor import WorkflowExecuter
-from yml_config_builder.config_to_template_builders import ConfigFile
+from yml_config_builder.config_to_template_adapters import ConfigFile
 import json
 
 class Orca:
@@ -18,7 +18,8 @@ class Orca:
         except KeyError:
             raise LookupError(f"Workflow {workflow_name} is not defined with then System.  Make sure it is included in the config file and the config file loaded correctly.")
        
-        executer = WorkflowExecuter(workflow_template, system.system_map)
+        executer = WorkflowExecuter(workflow_template,
+                                    system)
         executer.execute()
 
     @staticmethod
