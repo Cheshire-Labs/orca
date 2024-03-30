@@ -3,7 +3,7 @@ from typing import Dict, Optional
 from method_executor import MethodExecutor
 from resource_models.location import Location
 from workflow_executor import WorkflowExecuter
-from yml_config_builder.template_factories import ConfigFile
+from yml_config_builder.config_file import ConfigFile
 import json
 
 class Orca:

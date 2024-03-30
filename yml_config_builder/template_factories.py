@@ -1,6 +1,5 @@
 
 from typing import Dict, List, Optional, Tuple, Union
-import yaml
 
 from resource_models.base_resource import Equipment
 from resource_models.labware import AnyLabwareTemplate, LabwareTemplate
@@ -282,13 +281,4 @@ class ConfigToSystemBuilder:
         self._build_workflow_templates( workflow_template_factory, template_registry)
         return system
 
-class ConfigFile:
-    def __init__(self, path: str) -> None:
-        self._path = path
-        with open(self._path, 'r') as f:
-            self._yml = yaml.load(f, Loader=yaml.FullLoader)
-        self._config = SystemConfig.model_validate(self._yml)
-    
-    def get_system(self) -> System:
-        return ConfigToSystemBuilder(self._config).get_system()
         
