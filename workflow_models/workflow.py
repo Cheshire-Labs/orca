@@ -48,13 +48,29 @@ class Method(IActionObserver):
     def __init__(self, name: str) -> None:
         self._name = name
         self._steps: List[DynamicResourceAction] = []
-        self._status: MethodStatus = MethodStatus.CREATED
+        self.__status: MethodStatus = MethodStatus.CREATED
         self._current_step: LocationAction | None = None
         self._observers: List[IMethodObserver] = []
 
     @property
     def name(self) -> str:
         return self._name
+    
+    @property
+    def status(self) -> MethodStatus:
+        return self._status
+    
+    @property
+    def _status(self) -> MethodStatus:
+        return self.__status
+
+    @_status.setter
+    def _status(self, status: MethodStatus) -> None:
+        if self.__status == status:
+            return
+        self.__status = status
+        for observer in self._observers:
+            observer.method_notify(self._status.name, self)
     
     def append_step(self, step: DynamicResourceAction) -> None:
         self._steps.append(step)
@@ -68,6 +84,7 @@ class Method(IActionObserver):
         
         self._status = MethodStatus.IN_PROGRESS
         if len(self._steps) == 0:
+            
             self._status = MethodStatus.COMPLETED
             raise ValueError("No more steps to execute")
         
@@ -204,7 +221,6 @@ class Workflow:
     
     def add_thread(self, thread: LabwareThread) -> None:
         self._threads[thread.name] = thread
-
 
     def execute(self) -> None:
         for thread in self._threads.values():

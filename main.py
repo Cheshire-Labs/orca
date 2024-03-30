@@ -8,7 +8,7 @@ import json
 
 class Orca:
     @staticmethod
-    def run(config_file: str, workflow_name: Optional[str] = None):
+    def run_workflow(config_file: str, workflow_name: Optional[str] = None):
         config = ConfigFile(config_file)
         system = config.get_system()
         if workflow_name is None:
@@ -17,9 +17,8 @@ class Orca:
             workflow_template = system.get_workflow_template(workflow_name)
         except KeyError:
             raise LookupError(f"Workflow {workflow_name} is not defined with then System.  Make sure it is included in the config file and the config file loaded correctly.")
-       
-        executer = WorkflowExecuter(workflow_template,
-                                    system)
+        workflow_template = system.get_workflow_template(workflow_name)
+        executer = WorkflowExecuter(workflow_template, system, system)
         executer.execute()
 
     @staticmethod
@@ -94,7 +93,7 @@ def main():
     
     try:
         if args.subcommand == "run":
-            Orca.run(config_file=args.config, workflow_name=args.workflow)
+            Orca.run_workflow(config_file=args.config, workflow_name=args.workflow)
         elif args.subcommand == "run-method":
             Orca.run_method(args.config, args.method, args.start_map, args.end_map)
     except ValueError as ve:
@@ -110,7 +109,8 @@ if __name__ == '__main__':
     #          method_name="incubate-2hrs",
     #          start_map_json=json.dumps({"plate-1": "pad_1"}),
     #          end_map_json=json.dumps({"plate-1": "pad_3"}))
-    Orca.run_method(config_file="examples\\smc_assay\\smc_assay_example.yml",
-                    method_name="add-detection-antibody",
-                    start_map_json=json.dumps({"plate-1": "pad_1", "tips-96": "pad_3"}),
-                    end_map_json=json.dumps({"plate-1": "pad_6", "tips-96": "pad_2"}))
+    # Orca.run_method(config_file="examples\\smc_assay\\smc_assay_example.yml",
+    #                 method_name="add-detection-antibody",
+    #                 start_map_json=json.dumps({"plate-1": "pad_1", "tips-96": "pad_3"}),
+    #                 end_map_json=json.dumps({"plate-1": "pad_6", "tips-96": "pad_2"}))
+    Orca.run_workflow(config_file="examples\\smc_assay\\smc_assay_example.yml", workflow_name="smc-assay")

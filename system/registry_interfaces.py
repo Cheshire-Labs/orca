@@ -48,4 +48,8 @@ class IThreadManager(ABC):
     @abstractmethod
     def add_thread(self, thread: LabwareThread) -> None:
         raise NotImplementedError
+    
+    @abstractmethod
+    def execute(self) -> None:
+        raise NotImplementedError
 

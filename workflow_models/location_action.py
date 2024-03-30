@@ -1,8 +1,9 @@
 import uuid
 from resource_models.base_resource import Equipment
-from resource_models.labware import AnyLabware, Labware
+from resource_models.labware import AnyLabware, AnyLabwareTemplate, Labware, LabwareTemplate
 from resource_models.location import Location
 from resource_models.resource_pool import EquipmentResourcePool
+from system.labware_registry_interfaces import ILabwareRegistry
 from system.system_map import SystemMap
 from workflow_models.action import BaseAction
 
@@ -78,10 +79,11 @@ class LocationAction(BaseAction):
     
 class DynamicResourceAction:
     def __init__(self,
+                 labware_registry: ILabwareRegistry,
                  resource: EquipmentResourcePool | List[Equipment] | Equipment,
                  command: str,
-                 expected_inputs: List[Union[Labware, AnyLabware]],
-                 expected_outputs: List[Labware],
+                 expected_inputs: List[Union[LabwareTemplate, AnyLabwareTemplate]],
+                 expected_outputs: List[LabwareTemplate],
                  options: Dict[str, Any] = {}) -> None:
         if isinstance(resource, EquipmentResourcePool):
             self._resource_pool: EquipmentResourcePool = resource
@@ -93,17 +95,18 @@ class DynamicResourceAction:
         self._options: Dict[str, Any] = options
         self._expected_inputs = expected_inputs
         self._expected_outputs = expected_outputs
+        self._labware_reg = labware_registry
 
     @property
     def resource_pool(self) -> EquipmentResourcePool:
         return self._resource_pool
     
     @property
-    def expected_inputs(self) -> List[Union[Labware, AnyLabware]]:
+    def expected_inputs(self) -> List[Union[LabwareTemplate, AnyLabwareTemplate]]:
         return self._expected_inputs
     
     @property
-    def expected_outputs(self) -> List[Labware]:
+    def expected_outputs(self) -> List[LabwareTemplate]:
         return self._expected_outputs
 
 
@@ -112,9 +115,22 @@ class DynamicResourceAction:
         location = system_map.get_resource_location(resource.name)
         return LocationAction(location,
                               self._command,
-                              self._expected_inputs,
-                              self._expected_outputs,
+                              self._resolve_expected_inputs(),
+                              self._resolve_expected_outputs(),
                               self._options)
+    
+    def _resolve_expected_inputs(self) -> List[Union[Labware, AnyLabware]]:
+        inputs: List[Union[Labware, AnyLabware]] = []
+        for input_template in self._expected_inputs:
+            if isinstance(input_template, AnyLabwareTemplate):
+                inputs.append(AnyLabware())
+            else:
+                inputs.append(self._labware_reg.get_labware(input_template.name))
+        return inputs
+
+    def _resolve_expected_outputs(self) -> List[Labware]:
+        outputs: List[Labware] = [self._labware_reg.get_labware(output.name) for output in self._expected_outputs]
+        return outputs
 
     def _get_closest_available_resource(self, resource_pool: EquipmentResourcePool, reference_point: Location, system_map: SystemMap) -> Equipment:
         available_resources = [resource for resource in resource_pool.resources if resource.is_available]

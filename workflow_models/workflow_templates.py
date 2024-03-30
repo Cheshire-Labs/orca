@@ -61,21 +61,15 @@ class MethodActionFactory:
 
     def create_instance(self) -> DynamicResourceAction:
 
-        # TODO: this will need to find the actually labware that should be going into the method the specific workflow
-        inputs: List[Union[Labware, AnyLabware]] = []
-        for input_template in self._template.inputs:
-            if isinstance(input_template, AnyLabwareTemplate):
-                inputs.append(AnyLabware())
-            else:
-                inputs.append(self._labware_reg.get_labware(input_template.name))
+        # TODO: since refactoring, this MethodActionTemplate and DynamicResourceAction are very similar
 
-        outputs: List[Labware] = [self._labware_reg.get_labware(output.name) for output in self._template.outputs]
-
-        instance = DynamicResourceAction(self._template.resource_pool,
-                                self._template.command,
-                                inputs,
-                                outputs,
-                                self._template.options)
+        instance = DynamicResourceAction(self._labware_reg,
+                                        self._template.resource_pool,
+                                        self._template.command,
+                                        self._template.inputs,
+                                        self._template.outputs,
+                                        self._template.options,
+                                        )
         return instance
 
 class MethodTemplate(IMethodTemplate):
@@ -198,11 +192,11 @@ class WorkflowTemplate:
         return self._name
 
     @property
-    def labware_threads(self) -> List[ThreadTemplate]:
+    def thread_templates(self) -> List[ThreadTemplate]:
         return list(self._threads.values())
 
     @property
-    def start_threads(self) -> List[ThreadTemplate]:
+    def start_thread_templates(self) -> List[ThreadTemplate]:
         return list(self._start_threads.values())
     
     def add_thread(self, thread: ThreadTemplate, is_start: bool = False) -> None:

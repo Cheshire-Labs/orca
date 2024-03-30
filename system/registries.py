@@ -79,10 +79,13 @@ class ThreadFactory:
         self._labware_registry.add_labware(labware_instance)
 
         # Build the method sequence
-        method_seq: List[Method] = []
-        for method_resolver in template.method_resolvers:
-            method = method_resolver.get_instance(self._labware_registry)
-            method_seq.append(method)
+
+        # TODO: below code comment-disabled 03/30/2024 - relocate the execution of methods
+
+        # method_seq: List[Method] = []
+        # for method_resolver in template.method_resolvers:
+        #     method = method_resolver.get_instance(self._labware_registry)
+        #     method_seq.append(method)
 
         # create the thread
         thread = LabwareThread(labware_instance.name,
@@ -146,7 +149,7 @@ class WorkflowFactory:
 
     def create_instance(self, template: WorkflowTemplate) -> Workflow:
         workflow = Workflow(template.name)
-        for thread_template in template.start_threads:
+        for thread_template in template.start_thread_templates:
             thread = self._labware_thread_reg.create_thread_instance(thread_template)
             workflow.add_start_thread(thread)
         return workflow
