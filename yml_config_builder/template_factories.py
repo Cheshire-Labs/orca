@@ -71,7 +71,7 @@ class MethodActionConfigToTemplate:
                                     outputs, 
                                     config.model_extra)
 
-class MethodConfigToTemplate:
+class MethodTemplateFactory:
     def __init__(self, resource_reg: IResourceRegistry, labware_template_reg: ILabwareTemplateRegistry) -> None:
         self._template_builder = MethodActionConfigToTemplate(resource_reg, labware_template_reg)
 
@@ -87,7 +87,7 @@ class MethodConfigToTemplate:
 
 ## Workflow building
 
-class LabwareThreadConfigToTemplateAdapter:
+class ThreadTemplateFactory:
     def __init__(self,
                 labware_temp_reg: ILabwareTemplateRegistry, 
                 location_reg: ILocationRegistry, 
@@ -163,21 +163,12 @@ class LabwareThreadConfigToTemplateAdapter:
                     method.add_method_observer(spawn_action)
         return method
 
-class WorkflowConfigToTemplateAdapter:
+class WorkflowTemplateFactory:
     def __init__(self,
-                 labware_temp_reg: ILabwareTemplateRegistry, 
-                 location_reg: ILocationRegistry, 
-                 thread_temp_reg: IThreadTemplateRegistry, 
-                 method_temp_reg: IMethodTemplateRegistry,
-                 thread_reg: IThreadRegistry, 
-                 resource_locator: IResourceLocator) -> None:
+                 thread_template_factory: ThreadTemplateFactory,
+                 thread_temp_reg: IThreadTemplateRegistry) -> None:
         self._thread_temp_reg: IThreadTemplateRegistry = thread_temp_reg
-        self._adapter = LabwareThreadConfigToTemplateAdapter(labware_temp_reg, 
-                                                           location_reg, 
-                                                           method_temp_reg, 
-                                                           thread_temp_reg, 
-                                                           thread_reg, 
-                                                           resource_locator)
+        self._thread_template_factory = thread_template_factory
 
     def get_template(self, name: str, config: WorkflowConfig) -> WorkflowTemplate:
         workflow = WorkflowTemplate(name)
@@ -185,7 +176,7 @@ class WorkflowConfigToTemplateAdapter:
         thread_templates: List[Tuple[ThreadTemplate, LabwareThreadConfig]] = []
         # initialize thread templates
         for thread_name, thread_config in config.threads.items():
-            thread_template = self._adapter.get_template(thread_name, thread_config)
+            thread_template = self._thread_template_factory.get_template(thread_name, thread_config)
             thread_templates.append((thread_template, thread_config))
 
         # register thread templates
@@ -194,7 +185,7 @@ class WorkflowConfigToTemplateAdapter:
 
         # appply methods to thread templates
         for thread_template, thread_config in thread_templates:
-            self._adapter.apply_methods(thread_template, thread_config)
+            self._thread_template_factory.apply_methods(thread_template, thread_config)
             
             if thread_config.type == "start":
                 workflow.add_thread(thread_template, is_start=True)
@@ -256,33 +247,39 @@ class ConfigToSystemBuilder:
             labware_template = adapter.get_template(labware_name, labware_config)
             labware_temp_reg.add_labware_template(labware_template)
 
-    def _build_method_templates(self, method_temp_Reg: IMethodTemplateRegistry, resource_reg: IResourceRegistry, labware_temp_reg: ILabwareTemplateRegistry) -> None:
-        adapter = MethodConfigToTemplate(resource_reg, labware_temp_reg)
+    def _build_method_templates(self, method_template_factory: MethodTemplateFactory, method_temp_Reg: IMethodTemplateRegistry) -> None:
         for method_name, method_config in self._config.methods.items():
-            method_template = adapter.get_template(method_name, method_config)
+            method_template = method_template_factory.get_template(method_name, method_config)
             method_temp_Reg.add_method_template( method_template)
 
-    def _build_workflow_templates(self, workflow_temp_reg: IWorkflowTemplateRegistry, labware_temp_reg: ILabwareTemplateRegistry, location_reg: ILocationRegistry, thread_temp_reg: IThreadTemplateRegistry, method_temp_reg: IMethodTemplateRegistry, thread_reg: IThreadRegistry, resource_locator: IResourceLocator) -> None:
-        adapter = WorkflowConfigToTemplateAdapter( labware_temp_reg, location_reg, thread_temp_reg, method_temp_reg, thread_reg, resource_locator)
+    def _build_workflow_templates(self, workflow_template_factory: WorkflowTemplateFactory, workflow_temp_reg: IWorkflowTemplateRegistry) -> None:
         for workflow_name, workflow_config in self._config.workflows.items():
-            
-            workflow_template = adapter.get_template(workflow_name, workflow_config,)
+            workflow_template = workflow_template_factory.get_template(workflow_name, workflow_config,)
             workflow_temp_reg.add_workflow_template(workflow_template)
 
     def get_system(self) -> System:
         resource_reg = ResourceRegistry()
-        self._build_resources(resource_reg)
         system_map = SystemMap(resource_reg)
-        self._build_locations(resource_reg, system_map)
         template_registry = TemplateRegistry()
         labware_registry = LabwareRegistry()
         instance_registry = InstanceRegistry(labware_registry, system_map)
-        self._build_labware_templates(labware_registry)
-        self._build_method_templates(template_registry, resource_reg, labware_registry)
-        self._build_workflow_templates(template_registry, labware_registry, system_map, template_registry, template_registry, instance_registry, system_map)
         system_info = SystemInfo(self._config.system.name, self._config.system.version, self._config.system.description, self._config.model_extra)
-        
         system = System(system_info, system_map, resource_reg, template_registry, labware_registry, instance_registry)
+        
+        # TODO: Move factories out
+        method_template_factory = MethodTemplateFactory(resource_reg, labware_registry)
+        thread_template_factory = ThreadTemplateFactory(labware_registry, 
+                                                           system_map, 
+                                                           template_registry, 
+                                                           template_registry, 
+                                                           instance_registry, 
+                                                           system_map)
+        workflow_template_factory = WorkflowTemplateFactory(thread_template_factory, template_registry)
+        self._build_resources(resource_reg)
+        self._build_locations(resource_reg, system_map)
+        self._build_labware_templates(labware_registry)
+        self._build_method_templates(method_template_factory, template_registry)
+        self._build_workflow_templates( workflow_template_factory, template_registry)
         return system
 
 class ConfigFile:
