@@ -1,5 +1,5 @@
 
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
 import yaml
 
 from resource_models.base_resource import Equipment
@@ -23,32 +23,29 @@ from yml_config_builder.special_yml_parsing import get_dynamic_yaml_keys, is_dyn
 
 
 class LabwareConfigToTemplateAdapter:
-    def __init__(self, name: str, config: LabwareConfig) -> None:
-        self._name = name
-        self._config: LabwareConfig = config
 
-    def get_template(self) -> LabwareTemplate:
-        labware = LabwareTemplate(self._name, self._config.type, self._config.model_extra)
+    def get_template(self, name: str, config: LabwareConfig) -> LabwareTemplate:
+        labware = LabwareTemplate(name, config.type, config.model_extra)
         return labware
 
 class MethodActionConfigToTemplate:
-    def __init__(self, name: str, config: MethodActionConfig) -> None:
-        self._name = name
-        self._config = config
+    def __init__(self, resource_reg: IResourceRegistry, labware_temp_reg: ILabwareTemplateRegistry) -> None:
+        self._resource_reg: IResourceRegistry = resource_reg
+        self._labware_temp_reg: ILabwareTemplateRegistry = labware_temp_reg
 
-    def get_template(self, resource_reg: IResourceRegistry, labware_temp_reg: ILabwareTemplateRegistry) -> MethodActionTemplate:
+    def get_template(self, name: str, config: MethodActionConfig)  -> MethodActionTemplate:
         # Get the resource name
-        resource_name = self._config.resource
+        resource_name = config.resource
         if resource_name is None:
-            resource_name = self._name
+            resource_name = name
         
         # Get the equipment or resource pool object
         try:
-            resource: Equipment | EquipmentResourcePool = resource_reg.get_equipment(resource_name)
+            resource: Equipment | EquipmentResourcePool = self._resource_reg.get_equipment(resource_name)
             
         except KeyError:
             try:
-                resource = resource_reg.get_resource_pool(resource_name)
+                resource = self._resource_reg.get_resource_pool(resource_name)
             except KeyError:
                 raise LookupError(f"The resource name '{resource_name}' in method actions is not recognized as a defined resource or resource pool")
         if not isinstance(resource, Equipment) and not isinstance(resource, EquipmentResourcePool):
@@ -56,35 +53,34 @@ class MethodActionConfigToTemplate:
 
         # Get the input labware templates
         inputs: List[Union[LabwareTemplate, AnyLabwareTemplate]] = []
-        for input in self._config.inputs:
+        for input in config.inputs:
             if input == "$ANY":
                 inputs.append(AnyLabwareTemplate())
             else:
                 try:
-                    labware_template = labware_temp_reg.get_labware_template(input)
+                    labware_template = self._labware_temp_reg.get_labware_template(input)
                 except KeyError:
                     raise LookupError(f"The input labware name '{input}' in method actions is not recognized as a defined labware.  Input must be a recognized labware or keyword")
                 inputs.append(labware_template)
         # Get the output labware templates
-        outputs = [labware_temp_reg.get_labware_template(name) for name in self._config.outputs]
+        outputs = [self._labware_temp_reg.get_labware_template(name) for name in config.outputs]
         
         return MethodActionTemplate(resource,
-                                     self._config.command,
-                                         inputs,
-                                           outputs, 
-                                           self._config.model_extra,)
+                                    config.command,
+                                    inputs,
+                                    outputs, 
+                                    config.model_extra)
 
 class MethodConfigToTemplate:
-    def __init__(self, name: str, config: MethodConfig) -> None:
-        self._name = name
-        self._config = config
+    def __init__(self, resource_reg: IResourceRegistry, labware_template_reg: ILabwareTemplateRegistry) -> None:
+        self._template_builder = MethodActionConfigToTemplate(resource_reg, labware_template_reg)
 
-    def get_template(self, resource_reg: IResourceRegistry, labware_temp_reg: ILabwareTemplateRegistry) -> MethodTemplate:
-        method = MethodTemplate(self._name, self._config.model_extra)
-        for action_item in self._config.actions:
+    def get_template(self, name: str, config: MethodConfig, ) -> MethodTemplate:
+        method = MethodTemplate(name, config.model_extra)
+        
+        for action_item in config.actions:
             for action_name, action_config in action_item.items():
-                template_builder = MethodActionConfigToTemplate(action_name, action_config)
-                method_action_template = template_builder.get_template(resource_reg, labware_temp_reg)
+                method_action_template = self._template_builder.get_template(action_name, action_config)
                 method.append_action(method_action_template)
         return method    
 
@@ -92,99 +88,114 @@ class MethodConfigToTemplate:
 ## Workflow building
 
 class LabwareThreadConfigToTemplateAdapter:
-    def __init__(self, name: str, config: LabwareThreadConfig) -> None:
-        self._name = name
-        self._config = config
+    def __init__(self,
+                labware_temp_reg: ILabwareTemplateRegistry, 
+                location_reg: ILocationRegistry, 
+                method_temp_reg: IMethodTemplateRegistry, 
+                labware_thread_temp_reg: IThreadTemplateRegistry, 
+                thread_reg: IThreadRegistry,
+                resource_locator: IResourceLocator) -> None:
+        self._labware_temp_reg: ILabwareTemplateRegistry = labware_temp_reg
+        self._location_reg: ILocationRegistry = location_reg
+        self._method_temp_reg: IMethodTemplateRegistry = method_temp_reg
+        self._thread_temp_reg: IThreadTemplateRegistry = labware_thread_temp_reg
+        self._thread_reg: IThreadRegistry = thread_reg
+        self._resource_locator: IResourceLocator = resource_locator
 
     def get_template(self, 
-                     labware_temp_reg: ILabwareTemplateRegistry, 
-                     location_reg: ILocationRegistry, 
-                     method_temp_reg: IMethodTemplateRegistry, 
-                     labware_thread_temp_reg: IThreadTemplateRegistry, 
-                     thread_reg: IThreadRegistry,
-                     resource_locator: IResourceLocator) -> ThreadTemplate:
-
-        labware = self._get_labware_template(labware_temp_reg)
-        start_location = self._get_location(self._config.start, location_reg, resource_locator)
-        end_location = self._get_location(self._config.end, location_reg, resource_locator)
-        # make labware thread
-        labware_thread = ThreadTemplate(labware_template=labware, start=start_location, end=end_location)
-
-        for step in self._config.steps:
-            if isinstance(step, str):
-                method_name = step
-                method_resolver = self._get_method_resolver(method_name, 
-                                                            method_temp_reg,
-                                                            labware_thread_temp_reg,
-                                                              thread_reg)
-                labware_thread.add_method(method_resolver)
-
-            elif isinstance(step, ThreadStepConfig):
-                method_resolver = self._get_method_resolver(step.method, method_temp_reg,labware_thread_temp_reg, thread_reg, step)
-                labware_thread.add_method(method_resolver)
-            else:
-                raise ValueError(f"Labware Thread {self._name} has an invalid step type {step}.  Steps must be a string or a ThreadStepConfig")
-
+                name: str, 
+                config: LabwareThreadConfig) -> ThreadTemplate:
+        try:
+            labware = self._get_labware_template(config)
+            start_location = self._get_location(self._location_reg, config.start)                                            
+            end_location = self._get_location(self._location_reg, config.end)
+            # make labware thread
+            labware_thread = ThreadTemplate(labware_template=labware, start=start_location, end=end_location)
+        except KeyError as e:
+            raise KeyError(f"Error building labware thread {name}") from e
         return labware_thread
 
-    def _get_labware_template(self, labware_temp_reg: ILabwareTemplateRegistry) -> LabwareTemplate:
+    def _get_labware_template(self,
+                            config: LabwareThreadConfig) -> LabwareTemplate:
         try:
-            return labware_temp_reg.get_labware_template(self._config.labware)
+            return self._labware_temp_reg.get_labware_template(config.labware)
         except KeyError as e:
-            raise KeyError(f"Labware Thread {self._name} defines labware {self._config.labware} which is not in the system labwares") from e
+            raise KeyError(f"Labware {config.labware} is not in the system labwares") from e
 
-    def _get_location(self, location_name: str, location_registry: ILocationRegistry, resource_locator: IResourceLocator) -> Location:
+    def _get_location(self, location_registry: ILocationRegistry, location_name: str) -> Location:
         try:
             return location_registry.get_location(location_name)
         except KeyError:
             try:
-                return resource_locator.get_resource_location(location_name)
+                return self._resource_locator.get_resource_location(location_name)
             except KeyError:
-                 raise KeyError(f"Labware Thread {self._name} defines a start/end location {location_name} which is not in the system locations or system resources")
-           
+                 raise KeyError(f"Start/end location {location_name} which is not in the system locations or system resources")
     
-    def _get_method_resolver(self, method_name: str, method_temp_reg: IMethodTemplateRegistry, thread_template_reg: IThreadTemplateRegistry, thread_reg: IThreadRegistry, step_config: Optional[ThreadStepConfig] = None) -> IMethodTemplate:
+    def apply_methods(self, thread_template: ThreadTemplate, config: LabwareThreadConfig) -> None:
+        for step in config.steps:
+            if isinstance(step, str):
+                method_name = step
+                method_resolver = self._get_method_resolver(method_name)
+                thread_template.add_method(method_resolver)
+
+            elif isinstance(step, ThreadStepConfig):
+                method_resolver = self._get_method_resolver(step.method, step)
+                thread_template.add_method(method_resolver)
+            else:
+                raise ValueError(f"Labware Thread {thread_template.name} has an invalid step type {step}.  Steps must be a string or a ThreadStepConfig")
+
+
+    def _get_method_resolver(self, method_name: str, step_config: Optional[ThreadStepConfig] = None) -> IMethodTemplate:
         if is_dynamic_yaml(method_name):
             input_index = [int(key) for key in get_dynamic_yaml_keys(method_name)]
             shared_method = JunctionMethodTemplate()
             return shared_method
 
         try: 
-            method = method_temp_reg.get_method_template(method_name)
+            method = self._method_temp_reg.get_method_template(method_name)
         except KeyError:
-            raise LookupError(f"Method {method_name} referenced in labware thread {self._name} is not defined.  Method {method_name} must be defined")
+            raise LookupError(f"Method {method_name} is not defined.  Method {method_name} must be defined")
         if step_config is not None:
             if step_config.spawn:
                 for thread_name in step_config.spawn:
-                    thread_template = thread_template_reg.get_labware_thread_template(thread_name)
-                    spawn_action = SpawnThreadAction(thread_reg, thread_template)
+                    thread_template = self._thread_temp_reg.get_labware_thread_template(thread_name)
+                    spawn_action = SpawnThreadAction(self._thread_reg, thread_template)
                     method.add_method_observer(spawn_action)
         return method
 
 class WorkflowConfigToTemplateAdapter:
-    def __init__(self, name: str, config: WorkflowConfig) -> None:
-        self._name = name
-        self._config = config
+    def __init__(self,
+                 labware_temp_reg: ILabwareTemplateRegistry, 
+                 location_reg: ILocationRegistry, 
+                 thread_temp_reg: IThreadTemplateRegistry, 
+                 method_temp_reg: IMethodTemplateRegistry,
+                 thread_reg: IThreadRegistry, 
+                 resource_locator: IResourceLocator) -> None:
+        self._thread_temp_reg: IThreadTemplateRegistry = thread_temp_reg
+        self._adapter = LabwareThreadConfigToTemplateAdapter(labware_temp_reg, 
+                                                           location_reg, 
+                                                           method_temp_reg, 
+                                                           thread_temp_reg, 
+                                                           thread_reg, 
+                                                           resource_locator)
 
-    def get_template(self, 
-                     labware_temp_reg: ILabwareTemplateRegistry, 
-                     location_reg: ILocationRegistry, 
-                     thread_temp_reg: IThreadTemplateRegistry, 
-                     method_temp_reg: IMethodTemplateRegistry,
-                     thread_reg: IThreadRegistry, 
-                     resource_locator: IResourceLocator) -> WorkflowTemplate:
-        workflow = WorkflowTemplate(self._name)
-        thread_templates: List[ThreadTemplate] = []
-        for thread_name, thread_config in self._config.threads.items():
+    def get_template(self, name: str, config: WorkflowConfig) -> WorkflowTemplate:
+        workflow = WorkflowTemplate(name)
+        
+        thread_templates: List[Tuple[ThreadTemplate, LabwareThreadConfig]] = []
+        # initialize thread templates
+        for thread_name, thread_config in config.threads.items():
+            thread_template = self._adapter.get_template(thread_name, thread_config)
+            thread_templates.append((thread_template, thread_config))
+
+        # register thread templates
+        for thread_template, _ in thread_templates:
+            self._thread_temp_reg.add_labware_thread_template(thread_template)
+
+        # appply methods to thread templates
+        for thread_template, thread_config in thread_templates:
+            self._adapter.apply_methods(thread_template, thread_config)
             
-            adapter = LabwareThreadConfigToTemplateAdapter(thread_name, thread_config)
-            thread_template = adapter.get_template(labware_temp_reg,
-                                                    location_reg,
-                                                    method_temp_reg,
-                                                    thread_temp_reg,
-                                                    thread_reg,
-                                                    resource_locator)
-            thread_templates.append(thread_template)
             if thread_config.type == "start":
                 workflow.add_thread(thread_template, is_start=True)
         return workflow
@@ -218,8 +229,6 @@ class ConfigToSystemBuilder:
             location.set_options(location_config.model_extra)  
             system_map.add_location(location)
         
-
-        # TODO:  resource_config should probably be in Resource and this all moved to SystemMap
         for res in resource_registry.resources:
             # skip resources like newtowrk switches, etc that don't have plate pad locations
             if isinstance(res, Equipment) \
@@ -242,19 +251,22 @@ class ConfigToSystemBuilder:
                 location.resource = res
 
     def _build_labware_templates(self, labware_temp_reg: ILabwareTemplateRegistry) -> None:
+        adapter = LabwareConfigToTemplateAdapter()
         for labware_name, labware_config in self._config.labwares.items():
-            labware_template = LabwareConfigToTemplateAdapter(labware_name, labware_config).get_template()
+            labware_template = adapter.get_template(labware_name, labware_config)
             labware_temp_reg.add_labware_template(labware_template)
 
     def _build_method_templates(self, method_temp_Reg: IMethodTemplateRegistry, resource_reg: IResourceRegistry, labware_temp_reg: ILabwareTemplateRegistry) -> None:
+        adapter = MethodConfigToTemplate(resource_reg, labware_temp_reg)
         for method_name, method_config in self._config.methods.items():
-            method_template = MethodConfigToTemplate(method_name, method_config).get_template(resource_reg, labware_temp_reg)
+            method_template = adapter.get_template(method_name, method_config)
             method_temp_Reg.add_method_template( method_template)
 
     def _build_workflow_templates(self, workflow_temp_reg: IWorkflowTemplateRegistry, labware_temp_reg: ILabwareTemplateRegistry, location_reg: ILocationRegistry, thread_temp_reg: IThreadTemplateRegistry, method_temp_reg: IMethodTemplateRegistry, thread_reg: IThreadRegistry, resource_locator: IResourceLocator) -> None:
+        adapter = WorkflowConfigToTemplateAdapter( labware_temp_reg, location_reg, thread_temp_reg, method_temp_reg, thread_reg, resource_locator)
         for workflow_name, workflow_config in self._config.workflows.items():
-            adapter = WorkflowConfigToTemplateAdapter(workflow_name, workflow_config)
-            workflow_template = adapter.get_template(labware_temp_reg, location_reg, thread_temp_reg, method_temp_reg, thread_reg, resource_locator)
+            
+            workflow_template = adapter.get_template(workflow_name, workflow_config,)
             workflow_temp_reg.add_workflow_template(workflow_template)
 
     def get_system(self) -> System:
