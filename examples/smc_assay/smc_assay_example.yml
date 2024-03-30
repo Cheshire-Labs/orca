@@ -406,7 +406,7 @@ workflows:
                     - ${0}
                     - method: transfer-eluate
                       spawn:
-                        - tips-384(${self})
+                        - tips-384
                     - centrifuge
                     - read
             
