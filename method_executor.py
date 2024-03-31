@@ -2,6 +2,7 @@ from typing import Dict, Optional
 from resource_models.labware import AnyLabware, Labware, LabwareTemplate
 from resource_models.location import Location
 from system.registries import ThreadManager
+from system.registry_interfaces import IThreadManager
 from system.system_map import SystemMap
 from system.labware_registry_interfaces import ILabwareRegistry
 from workflow_models.workflow import LabwareThread
@@ -11,7 +12,7 @@ class MethodExecutor:
     def __init__(self, 
                  template: MethodTemplate, 
                  labware_reg: ILabwareRegistry, 
-                 thread_manager: ThreadManager,
+                 thread_manager: IThreadManager,
                  labware_start_mapping: Dict[str, Location], 
                  labware_end_mapping: Dict[str, Location],
                  system_map: SystemMap, 
@@ -27,7 +28,6 @@ class MethodExecutor:
         labware_dict = self._create_input_labware_instance(selected_any_labware)
         self._create_labware_threads(labware_dict)
         self._method = self._template.get_instance(self._labware_registry)
-        self._apply_method_to_labware_threads()
 
     def _validate_labware_location_mappings(self) -> None:
         # validate that each labware in the expected inputs is in the start_map
@@ -64,10 +64,6 @@ class MethodExecutor:
                                     self._system_map)
             thread.initialize_labware()
             self._thread_manager.add_thread(thread)
-
-    def _apply_method_to_labware_threads(self):
-        for thread in self._thread_manager.threads:
-            thread.append_method_sequence(self._method)
 
     def execute(self):
         self._thread_manager.execute()

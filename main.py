@@ -56,7 +56,12 @@ class Orca:
         end_map: Dict[str, Location] = json.loads(end_map_json, object_hook=labware_location_hook)
 
         method_template = system.get_method_template(method_name)
-        executer = MethodExecutor(method_template, system, start_map, end_map, system.system_map)
+        executer = MethodExecutor(method_template,
+                                system, 
+                                   system._instances.thread_manager,
+                                   start_map, 
+                                   end_map, 
+                                   system.system_map)
         executer.execute()
 
     @staticmethod
