@@ -52,6 +52,10 @@ class BaseResource(IInitializableResource, ABC):
 
 class LabwarePlaceable(ABC):
     @property
+    def name(self) -> str:
+        raise NotImplementedError
+    
+    @property
     def is_available(self) -> bool:
         raise NotImplementedError
     

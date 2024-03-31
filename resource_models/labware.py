@@ -73,4 +73,4 @@ class Labware:
         self._init_options = init_options
 
     def __str__(self) -> str:
-        return f"{self._name}:{self._id}"
+        return f"{self._name}"

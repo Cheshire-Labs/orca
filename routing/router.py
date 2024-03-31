@@ -1,24 +1,20 @@
 from typing import Any, Dict, List, Optional
-from resource_models.transporter_resource import TransporterResource
-from resource_models.location import Location
 from resource_models.labware import Labware
+from resource_models.location import Location
+from resource_models.transporter_resource import TransporterResource
 from system.system_map import SystemMap
 from workflow_models.action import BaseAction
-from workflow_models.method_action import LocationAction
-from workflow_models.status_enums import ActionStatus
 
 
 class MoveAction(BaseAction):
-    def __init__(self, 
-                 source: Location, 
-                 target: Location, 
+    def __init__(self,
+                 source: Location,
+                 target: Location,
                  transporter: TransporterResource) -> None:
         super().__init__()
         self._source = source
         self._target = target
         self._transporter: TransporterResource = transporter
-        self._post_load_actions: List[LocationAction] = []
-        self._labware: Optional[Labware] = None
 
     @property
     def source(self) -> Location:
@@ -28,9 +24,6 @@ class MoveAction(BaseAction):
     def target(self) -> Location:
         return self._target
     
-    def append_load_actions(self, action: LocationAction) -> None:
-        self._post_load_actions.append(action)
-
     def set_labware(self, labware: Labware) -> None:
         self._labware = labware
     
@@ -46,19 +39,11 @@ class MoveAction(BaseAction):
         self._transporter.place(self._target)
         self._target.notify_placed(self._labware)
 
-        # perform the action
-        for action in self._post_load_actions:
-            action.execute()
-
-
-    
-
-
 class Route:
     def __init__(self, start: Location, system_map: SystemMap) -> None:
         self._start = start
         self._end = start
-        self._edges: List[MoveAction] = []
+        self._path: List[Location] = [start]
         self._system_map = system_map
         # self._core_actions: Dict[str, List[ResourceAction]] = {}
         
@@ -68,44 +53,18 @@ class Route:
 
     @property
     def path(self) -> List[Location]:
-        path = [self._start]
-        for edge in self._edges:
-            path.append(edge.target) 
-        return path   
-
-    def extend_to_action(self, action: LocationAction) -> None:
-        self.extend_to_location(action.location)
-        self._edges[-1].append_load_actions(action)
+        return self._path
 
     def extend_to_location(self, end_location: Location) -> None:
-        """
-        Extends the route to the specified end location by adding move actions to the route.
-
-        Args:
-            end_location (Location): The end location to extend the route to.
-            system (SystemGraph): The system graph containing the locations and transporters.
-
-        Returns:
-            None
-        """
-        previous_end = self._end
-        new_end = end_location
-        extended_path = self._system_map.get_shortest_available_path(previous_end.teachpoint_name, new_end.teachpoint_name)
-
-        end_path_src_loc = previous_end.teachpoint_name      
-        for stop in extended_path[1:]:
-            source_location = self._system_map.get_location(end_path_src_loc)
-            target_location = self._system_map.get_location(stop)
-            transporter = self._system_map.get_transporter_between(end_path_src_loc, stop)
-            move_action = MoveAction(source_location, target_location, transporter)
-            self._edges.append(move_action)
-            end_path_src_loc = stop
+    
+        path = self._system_map.get_shortest_available_path(self._end.teachpoint_name, end_location.teachpoint_name)
+        for stop in path[1:]:
+            self._path.append(self._system_map.get_location(stop))
         self._end = end_location
 
-
-    def pending_actions(self) -> List[MoveAction]:
-        return [edge for edge in self._edges if edge.status == ActionStatus.CREATED]
-    
     def __iter__(self):
-        return iter(self.pending_actions())
+        return iter(self._path)
+    
+    def __getitem__(self, index: int) -> Location:
+        return self._path[index]
  

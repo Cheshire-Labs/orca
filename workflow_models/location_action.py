@@ -1,12 +1,15 @@
 import uuid
 from resource_models.base_resource import Equipment
-from resource_models.labware import AnyLabware, Labware, LabwareTemplate
+from resource_models.labware import AnyLabware, AnyLabwareTemplate, Labware, LabwareTemplate
 from resource_models.location import Location
 from resource_models.resource_pool import EquipmentResourcePool
+from system.labware_registry_interfaces import ILabwareRegistry
 from system.system_map import SystemMap
 from workflow_models.action import BaseAction
 
 from typing import Any, Dict, List, Union, cast
+
+from workflow_models.status_enums import ActionStatus
 
 
 class LocationAction(BaseAction):
@@ -35,7 +38,13 @@ class LocationAction(BaseAction):
 
     def _perform_action(self) -> None:
         # TODO: check the correct labware is present
-        self._check_all_labware_loaded()
+        if len(self.get_missing_labware()) > 0:
+            raise ValueError(f"Missing labware: {self.get_missing_labware()}")
+
+
+        # TODO: DELETE DELETE DELETE
+        for Labware in self.resource.loaded_labware:
+            print("LOADED LABWARE: ", Labware.name)
 
         # Execute the action
         if self.resource is not None:
@@ -43,31 +52,37 @@ class LocationAction(BaseAction):
             self.resource.set_command_options(self._options)
             self.resource.execute()
 
-    def _check_all_labware_loaded(self) -> None:
+    def get_missing_labware(self) -> List[Union[Labware, AnyLabware]]:
         loaded_labwares = self.resource.loaded_labware[:]
         any_labware_count = 0
+        missing_labware: List[Union[Labware, AnyLabware]] = []
+
         for labware in self._expected_inputs:
             if isinstance(labware, AnyLabware):
                 any_labware_count += 1
                 continue
             if labware not in loaded_labwares:
-                raise ValueError(f"Labware {labware} is not loaded in {self.resource}")
+                missing_labware.append(labware)
             else:
                 loaded_labwares.remove(labware)
                     
         if len(loaded_labwares) != any_labware_count:
-            raise ValueError(f"Labware {loaded_labwares} is loaded in {self.resource} but not expected")
-        
-        
+            for _ in range(any_labware_count - len(loaded_labwares)):
+                missing_labware.append(AnyLabware())
+        if len(missing_labware) > 0:
+            self._status = ActionStatus.AWAITING_LABWARES
+        return missing_labware
+
     def __str__(self) -> str:
         return f"Location Action: {self.location} - {self._command}"
     
 class DynamicResourceAction:
     def __init__(self,
+                 labware_registry: ILabwareRegistry,
                  resource: EquipmentResourcePool | List[Equipment] | Equipment,
                  command: str,
-                 expected_inputs: List[Union[Labware, AnyLabware]],
-                 expected_outputs: List[Labware],
+                 expected_inputs: List[Union[LabwareTemplate, AnyLabwareTemplate]],
+                 expected_outputs: List[LabwareTemplate],
                  options: Dict[str, Any] = {}) -> None:
         if isinstance(resource, EquipmentResourcePool):
             self._resource_pool: EquipmentResourcePool = resource
@@ -79,17 +94,18 @@ class DynamicResourceAction:
         self._options: Dict[str, Any] = options
         self._expected_inputs = expected_inputs
         self._expected_outputs = expected_outputs
+        self._labware_reg = labware_registry
 
     @property
     def resource_pool(self) -> EquipmentResourcePool:
         return self._resource_pool
     
     @property
-    def expected_inputs(self) -> List[Union[Labware, AnyLabware]]:
+    def expected_inputs(self) -> List[Union[LabwareTemplate, AnyLabwareTemplate]]:
         return self._expected_inputs
     
     @property
-    def expected_outputs(self) -> List[Labware]:
+    def expected_outputs(self) -> List[LabwareTemplate]:
         return self._expected_outputs
 
 
@@ -98,9 +114,22 @@ class DynamicResourceAction:
         location = system_map.get_resource_location(resource.name)
         return LocationAction(location,
                               self._command,
-                              self._expected_inputs,
-                              self._expected_outputs,
+                              self._resolve_expected_inputs(),
+                              self._resolve_expected_outputs(),
                               self._options)
+    
+    def _resolve_expected_inputs(self) -> List[Union[Labware, AnyLabware]]:
+        inputs: List[Union[Labware, AnyLabware]] = []
+        for input_template in self._expected_inputs:
+            if isinstance(input_template, AnyLabwareTemplate):
+                inputs.append(AnyLabware())
+            else:
+                inputs.append(self._labware_reg.get_labware(input_template.name))
+        return inputs
+
+    def _resolve_expected_outputs(self) -> List[Labware]:
+        outputs: List[Labware] = [self._labware_reg.get_labware(output.name) for output in self._expected_outputs]
+        return outputs
 
     def _get_closest_available_resource(self, resource_pool: EquipmentResourcePool, reference_point: Location, system_map: SystemMap) -> Equipment:
         available_resources = [resource for resource in resource_pool.resources if resource.is_available]

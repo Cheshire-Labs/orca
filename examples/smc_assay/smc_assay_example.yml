@@ -291,7 +291,7 @@ methods:
         actions:
             - bravo-384-head:
                 command: run
-                inputs: [plate-1, buffer-b-reservoir]
+                inputs: [plate-1]
                 deck-setup:
                     1: buffer-b-reservoir
                     9: plate-1
@@ -358,7 +358,7 @@ workflows:
         threads:
             plate-1: 
                 labware: plate-1
-                type: primary
+                type: start
                 start: stacker-plate-1-start
                 end: waste-1
                 steps:
@@ -406,7 +406,7 @@ workflows:
                     - ${0}
                     - method: transfer-eluate
                       spawn:
-                        - tips-384(${self})
+                        - tips-384
                     - centrifuge
                     - read
             

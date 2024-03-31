@@ -1,18 +1,18 @@
-from types import MappingProxyType
-from typing import Dict, Any, List, Optional
+from typing import Dict, List
 from resource_models.location import Location
 from resource_models.resource_pool import EquipmentResourcePool
 from resource_models.transporter_resource import TransporterResource
 from resource_models.base_resource import Equipment, IResource
 
 from resource_models.labware import Labware, LabwareTemplate
-from system.registry_interfaces import ILabwareRegistry, ILabwareTemplateRegistry, ILabwareThreadRegisty, IMethodRegistry, IWorkflowRegistry
+from system.labware_registry_interfaces import ILabwareRegistry, ILabwareTemplateRegistry
+from system.registry_interfaces import IThreadRegistry, IMethodRegistry, IWorkflowRegistry
 from system.resource_registry import IResourceRegistry, IResourceRegistryObesrver
 from system.system_map import ILocationRegistry, SystemMap
 from system.registries import InstanceRegistry, LabwareRegistry, TemplateRegistry
-from system.template_registry_interfaces import ILabwareThreadTemplateRegistry, IMethodTemplateRegistry, IWorkflowTemplateRegistry
+from system.template_registry_interfaces import IThreadTemplateRegistry, IMethodTemplateRegistry, IWorkflowTemplateRegistry
 from workflow_models.workflow import LabwareThread, Method, Workflow
-from workflow_models.workflow_templates import LabwareThreadTemplate, MethodTemplate, WorkflowTemplate
+from workflow_models.workflow_templates import ThreadTemplate, MethodTemplate, WorkflowTemplate
 
 
 class SystemInfo:
@@ -40,7 +40,7 @@ class SystemInfo:
     
 
 
-class System(IResourceRegistry, ILabwareRegistry, ILabwareTemplateRegistry, IWorkflowTemplateRegistry, IMethodTemplateRegistry, ILabwareThreadTemplateRegistry, ILocationRegistry, IWorkflowRegistry, ILabwareThreadRegisty, IMethodRegistry):
+class System(IResourceRegistry, ILabwareRegistry, ILabwareTemplateRegistry, IWorkflowTemplateRegistry, IMethodTemplateRegistry, IThreadTemplateRegistry, ILocationRegistry, IWorkflowRegistry, IThreadRegistry, IMethodRegistry):
     def __init__(self, info: SystemInfo, system_map: SystemMap, resource_registry: IResourceRegistry, template_registry: TemplateRegistry, labware_registry: LabwareRegistry, instance_registry: InstanceRegistry) -> None:
         self._info = info
         self._resources = resource_registry
@@ -121,10 +121,10 @@ class System(IResourceRegistry, ILabwareRegistry, ILabwareTemplateRegistry, IWor
     def add_labware_template(self, labware: LabwareTemplate) -> None:
         self._labwares.add_labware_template(labware)
     
-    def get_labware_thread_template(self, name: str) -> LabwareThreadTemplate:
+    def get_labware_thread_template(self, name: str) -> ThreadTemplate:
         return self._templates.get_labware_thread_template(name)
     
-    def add_labware_thread_template(self, thread: LabwareThreadTemplate) -> None:
+    def add_labware_thread_template(self, thread: ThreadTemplate) -> None:
         self._templates.add_labware_thread_template(thread)
 
     def get_method_template(self, name: str) -> MethodTemplate:
@@ -138,7 +138,6 @@ class System(IResourceRegistry, ILabwareRegistry, ILabwareTemplateRegistry, IWor
     
     def add_workflow_template(self, workflow: WorkflowTemplate) -> None:
         self._templates.add_workflow_template(workflow)
-    
 
     def get_workflow(self, name: str) -> Workflow:
         return self._instances.get_workflow(name)
@@ -146,11 +145,11 @@ class System(IResourceRegistry, ILabwareRegistry, ILabwareTemplateRegistry, IWor
     def add_workflow(self, workflow: Workflow) -> None:
         self._instances.add_workflow(workflow)
 
-    def get_labware_thread(self, name: str) -> LabwareThread:
-        return self._instances.get_labware_thread(name)
+    def get_thread(self, name: str) -> LabwareThread:
+        return self._instances.get_thread(name)
 
-    def add_labware_thread(self, labware_thread: LabwareThread) -> None:
-        self._instances.add_labware_thread(labware_thread)
+    def add_thread(self, labware_thread: LabwareThread) -> None:
+        self._instances.add_thread(labware_thread)
 
     def get_method(self, name: str) -> Method:
         return self._instances.get_method(name)
@@ -160,3 +159,12 @@ class System(IResourceRegistry, ILabwareRegistry, ILabwareTemplateRegistry, IWor
 
     def add_observer(self, observer: IResourceRegistryObesrver) -> None:
         return self._resources.add_observer(observer)
+    
+    def create_method_instance(self, template: MethodTemplate) -> Method:
+        return self._instances.create_method_instance(template)
+    
+    def create_thread_instance(self, template: ThreadTemplate) -> LabwareThread:
+        return self._instances.create_thread_instance(template)
+    
+    def execute_workflow(self, template: WorkflowTemplate) -> Workflow:
+        return self._instances.execute_workflow(template)

@@ -5,7 +5,7 @@ class ActionStatus(Enum):
     IN_PROGRESS = auto()
     COMPLETED = auto()
     ERRORED = auto()
-    AWAITING_LABWARE = auto()
+    AWAITING_LABWARES = auto()
 
 class MethodStatus(Enum):
     CREATED = auto()
@@ -18,5 +18,6 @@ class LabwareThreadStatus(Enum):
     CREATED = auto()
     IN_PROGRESS = auto()
     COMPLETED = auto()
+    AWAITING_CO_THREADS = auto()
 
 
