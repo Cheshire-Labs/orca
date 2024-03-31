@@ -291,7 +291,7 @@ methods:
         actions:
             - bravo-384-head:
                 command: run
-                inputs: [plate-1, buffer-b-reservoir]
+                inputs: [plate-1]
                 deck-setup:
                     1: buffer-b-reservoir
                     9: plate-1
