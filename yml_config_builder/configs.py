@@ -13,6 +13,10 @@ class ConfigModel(BaseModel):
             return {}
         return model_extra
 
+class ScriptConfig(ConfigModel):
+    model_config = ConfigDict(extra='allow')
+    source: str
+
 class MethodActionConfig(ConfigModel):
     model_config = ConfigDict(extra='allow')
     resource: Optional[str] = None
@@ -81,7 +85,7 @@ class SystemConfig(ConfigModel):
     resources: Dict[str, Union[ResourceConfig, ResourcePoolConfig]]
     methods: Dict[str, MethodConfig]
     workflows: Dict[str, WorkflowConfig]
-    scripts: Dict[str, Any] = {}
+    scripts: Dict[str, ScriptConfig] = {}
 
     @root_validator(pre=True)
     def check_resource_type(cls, values: Dict[str, Any]):
