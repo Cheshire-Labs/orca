@@ -145,11 +145,11 @@ class System(IResourceRegistry, ILabwareRegistry, ILabwareTemplateRegistry, IWor
     def add_workflow(self, workflow: Workflow) -> None:
         self._instances.add_workflow(workflow)
 
-    def get_labware_thread(self, name: str) -> LabwareThread:
-        return self._instances.get_labware_thread(name)
+    def get_thread(self, name: str) -> LabwareThread:
+        return self._instances.get_thread(name)
 
-    def add_labware_thread(self, labware_thread: LabwareThread) -> None:
-        self._instances.add_labware_thread(labware_thread)
+    def add_thread(self, labware_thread: LabwareThread) -> None:
+        self._instances.add_thread(labware_thread)
 
     def get_method(self, name: str) -> Method:
         return self._instances.get_method(name)
@@ -166,5 +166,5 @@ class System(IResourceRegistry, ILabwareRegistry, ILabwareTemplateRegistry, IWor
     def create_thread_instance(self, template: ThreadTemplate) -> LabwareThread:
         return self._instances.create_thread_instance(template)
     
-    def create_workflow_instance(self, template: WorkflowTemplate) -> Workflow:
-        return self._instances.create_workflow_instance(template)
+    def execute_workflow(self, template: WorkflowTemplate) -> Workflow:
+        return self._instances.execute_workflow(template)

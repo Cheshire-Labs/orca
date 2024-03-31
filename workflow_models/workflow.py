@@ -59,7 +59,7 @@ class Method(IActionObserver):
     @property
     def status(self) -> MethodStatus:
         return self._status
-    
+
     @property
     def _status(self) -> MethodStatus:
         return self.__status
@@ -84,9 +84,7 @@ class Method(IActionObserver):
         
         self._status = MethodStatus.IN_PROGRESS
         if len(self._steps) == 0:
-            
-            self._status = MethodStatus.COMPLETED
-            raise ValueError("No more steps to execute")
+            raise ValueError("No steps to resolve")
         
         else:
             dynamic_action = self._steps.pop(0)
@@ -105,7 +103,7 @@ class Method(IActionObserver):
 
 
 
-class LabwareThread:
+class LabwareThread(IMethodObserver):
 
     def __init__(self, name: str, labware: Labware, start_location: Location, end_location: Location, system_map: SystemMap) -> None:
         self._name: str = name
@@ -144,6 +142,10 @@ class LabwareThread:
     @property
     def pending_methods(self) -> List[Method]:
         return [method for method in self._method_sequence if not method.has_completed()]
+    
+    @property
+    def current_method(self) -> Method | None:
+        return self._current_method
 
     def has_completed(self) -> bool:
         return self._status == LabwareThreadStatus.COMPLETED
@@ -157,31 +159,28 @@ class LabwareThread:
     def execute_next_action(self) -> None:
         if self.has_completed():
             return
-
-        if not self._current_method or self._current_method.has_completed():
-            # if there are no more methods to execute, send the labware to the end location
-            if len(self.pending_methods) > 0:
-                self._current_method = self.pending_methods.pop(0)
-            else:
+        self._status = LabwareThreadStatus.IN_PROGRESS
+        if self._current_method is None or self._current_method.has_completed():
+            if len(self.pending_methods) == 0:
                 self._send_labware_to_location(self._end_location)
                 self._status = LabwareThreadStatus.COMPLETED
                 return
-            
-        self._status = LabwareThreadStatus.IN_PROGRESS
+            self._current_method = self.pending_methods.pop(0)
+            self._current_method.add_observer(self)
+
         next_action = self._current_method.resolve_next_action(self.current_location, self._system_map)
-       
-        missing_labware = next_action.get_missing_labware()
-        if self.labware in missing_labware:
+
+        if self.labware not in next_action.resource.loaded_labware:
             self._send_labware_to_location(next_action.location)
-            missing_labware = next_action.get_missing_labware()
 
         # if action has all the labware, execute or set as waiting
-        if len(missing_labware) == 0:
+        if len(next_action.get_missing_labware()) == 0:
+            print(f"Method {self._current_method.name} - EXECUTING ACTION @ {next_action.location.teachpoint_name}")
             next_action.execute()
         else:
             self._status = LabwareThreadStatus.AWAITING_CO_THREADS
 
-                
+
     def _send_labware_to_location(self, location: Location) -> None:
         if self._current_location == location:
             return
@@ -195,6 +194,11 @@ class LabwareThread:
             move_action.execute()
             self._current_location = target_location
 
+    def method_notify(self, event: str, method: Method) -> None:
+        if event == MethodStatus.COMPLETED.name:
+            self._current_method = None
+
+            
  
 class Workflow:
 

@@ -42,7 +42,6 @@ class LocationAction(BaseAction):
             raise ValueError(f"Missing labware: {self.get_missing_labware()}")
 
 
-
         # TODO: DELETE DELETE DELETE
         for Labware in self.resource.loaded_labware:
             print("LOADED LABWARE: ", Labware.name)

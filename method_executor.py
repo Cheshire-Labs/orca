@@ -11,6 +11,7 @@ class MethodExecutor:
     def __init__(self, 
                  template: MethodTemplate, 
                  labware_reg: ILabwareRegistry, 
+                 thread_manager: ThreadManager,
                  labware_start_mapping: Dict[str, Location], 
                  labware_end_mapping: Dict[str, Location],
                  system_map: SystemMap, 
@@ -21,8 +22,7 @@ class MethodExecutor:
         self._start_mapping = labware_start_mapping
         self._end_mappping = labware_end_mapping
         self._system_map = system_map
-        self._thread_manager = ThreadManager()
-
+        self._thread_manager = thread_manager
         self._validate_labware_location_mappings()
         labware_dict = self._create_input_labware_instance(selected_any_labware)
         self._create_labware_threads(labware_dict)

@@ -5,11 +5,11 @@ from workflow_models.workflow_templates import ThreadTemplate, MethodTemplate, W
 
 class IThreadRegistry(ABC):
     @abstractmethod
-    def get_labware_thread(self, name: str) -> LabwareThread:
+    def get_thread(self, name: str) -> LabwareThread:
         raise NotImplementedError
 
     @abstractmethod
-    def add_labware_thread(self, labware_thread: LabwareThread) -> None:
+    def add_thread(self, labware_thread: LabwareThread) -> None:
         raise NotImplementedError
 
     @abstractmethod
@@ -27,7 +27,7 @@ class IWorkflowRegistry(ABC):
         raise NotImplementedError
     
     @abstractmethod
-    def create_workflow_instance(self, template: WorkflowTemplate) -> Workflow:
+    def execute_workflow(self, template: WorkflowTemplate) -> Workflow:
         raise NotImplementedError
     
 class IMethodRegistry(ABC):

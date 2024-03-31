@@ -18,7 +18,10 @@ class Orca:
         except KeyError:
             raise LookupError(f"Workflow {workflow_name} is not defined with then System.  Make sure it is included in the config file and the config file loaded correctly.")
         workflow_template = system.get_workflow_template(workflow_name)
-        executer = WorkflowExecuter(workflow_template, system, system)
+        
+
+        # TODO: Fix the internal get on system for the thread manager
+        executer = WorkflowExecuter(workflow_template, system, system, system._instances.thread_manager)
         executer.execute()
 
     @staticmethod
