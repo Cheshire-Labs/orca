@@ -432,9 +432,10 @@ workflows:
            
 
 ## SCRIPT EXAMPLES
-scripts:
-    spawn-384-tips-script:
-        source: spawn_384_tips.py:Spawn384TipsScript
+scripting:
+    scripts:
+        spawn-384-tips-script:
+            source: examples/smc_assay/spawn_384_tips.py:Spawn384TipsScript
 
     # get-positions: 
     #     source: get-positions.py:get-positions(${0}, ${1})
