@@ -78,21 +78,13 @@ class ThreadFactory:
         labware_instance = template.labware_template.create_instance()
         self._labware_registry.add_labware(labware_instance)
 
-        # Build the method sequence
-
-        # TODO: below code comment-disabled 03/30/2024 - relocate the execution of methods
-
-        # method_seq: List[Method] = []
-        # for method_resolver in template.method_resolvers:
-        #     method = method_resolver.get_instance(self._labware_registry)
-        #     method_seq.append(method)
-
         # create the thread
         thread = LabwareThread(labware_instance.name,
                                 labware_instance,
                                 template.start_location,
                                 template.end_location,
-                                self._system_map)
+                                self._system_map,
+                                template.observers)
 
         return thread
 

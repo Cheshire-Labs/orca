@@ -4,7 +4,7 @@ from typing import List
 from workflow_models.status_enums import ActionStatus
 
 class IActionObserver:
-    def action_notify(self, event: str, action: 'BaseAction') -> None:
+    def action_notify(self, event: ActionStatus, action: 'BaseAction') -> None:
         pass
 
 class IAction(ABC):
@@ -32,7 +32,7 @@ class BaseAction(IAction, ABC):
     def _status(self, status: ActionStatus) -> None:
         self.__status = status
         for observer in self._observers:
-            observer.action_notify(self.__status.name, self)
+            observer.action_notify(self.__status, self)
 
     def execute(self) -> None:
         if self._status == ActionStatus.COMPLETED:

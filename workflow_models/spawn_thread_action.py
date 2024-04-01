@@ -16,9 +16,9 @@ class SpawnThreadAction(IMethodObserver):
         thread = self._thread_registry.create_thread_instance(self._template)
         self._has_executed = True
 
-    def method_notify(self, event: str, method: Method) -> None:
+    def method_notify(self, event: MethodStatus, method: Method) -> None:
         if self._has_executed:
             return
-        if event == MethodStatus.IN_PROGRESS.name:
+        if event == MethodStatus.IN_PROGRESS:
             self._template.set_wrapped_method(method)
             self.execute()

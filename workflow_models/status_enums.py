@@ -15,6 +15,7 @@ class MethodStatus(Enum):
     COMPLETED = auto()
 
 class LabwareThreadStatus(Enum):
+    UNCREATED = auto()
     CREATED = auto()
     IN_PROGRESS = auto()
     COMPLETED = auto()

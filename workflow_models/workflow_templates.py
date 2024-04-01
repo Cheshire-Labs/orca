@@ -9,7 +9,7 @@ from resource_models.resource_pool import EquipmentResourcePool
 
 from system.labware_registry_interfaces import ILabwareRegistry
 from workflow_models.location_action import DynamicResourceAction
-from workflow_models.workflow import IMethodObserver, Method
+from workflow_models.workflow import IMethodObserver, IThreadObserver, Method
 
 
 class MethodActionTemplate:
@@ -143,12 +143,13 @@ class JunctionMethodTemplate(IMethodTemplate):
 
 class ThreadTemplate:
 
-    def __init__(self, labware_template: LabwareTemplate, start: Location, end: Location) -> None:
+    def __init__(self, labware_template: LabwareTemplate, start: Location, end: Location, observers: List[IThreadObserver] = []) -> None:
         self._labware_template: LabwareTemplate = labware_template
         self._start: Location = start
         self._end: Location = end
         self._methods: List[IMethodTemplate] = []
         self._wrapped_method: Method | None = None
+        self._observers: List[IThreadObserver] = observers
 
     @property
     def name(self) -> str:
@@ -169,6 +170,10 @@ class ThreadTemplate:
     @property
     def method_resolvers(self) -> List[IMethodTemplate]:
         return self._methods
+    
+    @property
+    def observers(self) -> List[IThreadObserver]:
+        return self._observers
     
     def set_wrapped_method(self, wrapped_method: Method) -> None:
         self._wrapped_method

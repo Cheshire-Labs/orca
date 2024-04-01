@@ -7,14 +7,8 @@ from pathlib import Path
 from system.system import ISystem
 from workflow_models.status_enums import LabwareThreadStatus
 from workflow_models.workflow import LabwareThread
+from workflow_models.workflow import IThreadObserver
 
-
-
-
-class IThreadObserver(ABC):
-    @abstractmethod
-    def thread_notify(self, event: LabwareThreadStatus, thread: LabwareThread) -> None:
-        raise NotImplementedError
 
 class ThreadScript(IThreadObserver, ABC):
 

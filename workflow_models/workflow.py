@@ -12,36 +12,17 @@ from workflow_models.status_enums import ActionStatus, MethodStatus, LabwareThre
 
 
 
-# class IMethod(ABC, IActionObserver):
 
-#     @property
-#     @abstractmethod
-#     def name(self) -> str:
-#         raise NotImplementedError
+class IThreadObserver(ABC):
+    @abstractmethod
+    def thread_notify(self, event: LabwareThreadStatus, thread: LabwareThread) -> None:
+        raise NotImplementedError
     
-#     @abstractmethod
-#     def append_step(self, step: DynamicResourceAction) -> None:
-#         raise NotImplementedError
-    
-#     @abstractmethod
-#     def has_completed(self) -> bool:
-#         raise NotImplementedError
-
-#     @abstractmethod
-#     def resolve_next_action(self, reference_point: Location, system_map: SystemMap) -> LocationAction:
-#         raise NotImplementedError
-    
-#     @abstractmethod
-#     def action_notify(self, event: str, action: BaseAction) -> None:
-#         raise NotImplementedError
-   
-
-
-# TODO: Recently added, decide to keep or scrap
 class IMethodObserver(ABC):
     @abstractmethod
-    def method_notify(self, event: str, method: Method) -> None:
+    def method_notify(self, event: MethodStatus, method: Method) -> None:
         raise NotImplementedError
+
     
 class Method(IActionObserver):
 
@@ -70,7 +51,7 @@ class Method(IActionObserver):
             return
         self.__status = status
         for observer in self._observers:
-            observer.method_notify(self._status.name, self)
+            observer.method_notify(self._status, self)
     
     def append_step(self, step: DynamicResourceAction) -> None:
         self._steps.append(step)
@@ -92,8 +73,8 @@ class Method(IActionObserver):
             self._current_step.add_observer(self)
             return self._current_step
 
-    def action_notify(self, event: str, action: BaseAction) -> None:
-        if event == ActionStatus.COMPLETED.name:
+    def action_notify(self, event: ActionStatus, action: BaseAction) -> None:
+        if event == ActionStatus.COMPLETED:
             self._current_step = None
             if len(self._steps) == 0:
                 self._status = MethodStatus.COMPLETED
@@ -103,27 +84,47 @@ class Method(IActionObserver):
 
 
 
+
+
 class LabwareThread(IMethodObserver):
 
-    def __init__(self, name: str, labware: Labware, start_location: Location, end_location: Location, system_map: SystemMap) -> None:
+    def __init__(self, 
+                 name: str, 
+                 labware: Labware, 
+                 start_location: Location, 
+                 end_location: Location, 
+                 system_map: SystemMap, 
+                 observers: List[IThreadObserver] = []) -> None:
         self._name: str = name
         self._labware: Labware = labware
         self._start_location: Location = start_location
-        self._current_location: Location = self._start_location
         self._end_location: Location = end_location
         self._system_map: SystemMap = system_map
         self._method_sequence: List[Method] = []
         self._current_method: Method | None = None
-        self._status: LabwareThreadStatus = LabwareThreadStatus.CREATED
+        self.__status: LabwareThreadStatus = LabwareThreadStatus.UNCREATED
+        self._observers: List[IThreadObserver] = observers
+        self._status = LabwareThreadStatus.CREATED
+        # set current_location is after self._status assignment to accommodate scripts changing start location
+        # TODO: source of truth needs to be changed to a labware manager
+        self._current_location: Location = self._start_location 
+        
 
 
     @property
     def name(self) -> str:
         return self._name 
+    
     @property
     def start_location(self) -> Location:
         return self._start_location
     
+    @start_location.setter
+    def start_location(self, location: Location) -> None:
+        if self.status == LabwareThreadStatus.IN_PROGRESS:
+            raise ValueError("Cannot set start location.  Thread is already in progress.")
+        self._start_location = location
+
     @property
     def end_location(self) -> Location:
         return self._end_location
@@ -134,6 +135,22 @@ class LabwareThread(IMethodObserver):
     @property
     def current_location(self) -> Location:
         return self._current_location
+    
+    @property
+    def status(self) -> LabwareThreadStatus:
+        return self._status
+
+    @property
+    def _status(self) -> LabwareThreadStatus:
+        return self.__status
+
+    @_status.setter
+    def _status(self, status: LabwareThreadStatus) -> None:
+        if self.__status == status:
+            return
+        self.__status = status
+        for observer in self._observers:
+            observer.thread_notify(self._status, self)
 
     @property
     def labware(self) -> Labware:
@@ -151,7 +168,7 @@ class LabwareThread(IMethodObserver):
         return self._status == LabwareThreadStatus.COMPLETED
 
     def initialize_labware(self) -> None:
-        self._start_location.set_labware(self._labware)
+        self._start_location.initialize_labware(self._labware)
 
     def append_method_sequence(self, method: Method) -> None:
         self._method_sequence.append(method)
@@ -193,8 +210,11 @@ class LabwareThread(IMethodObserver):
             move_action.set_labware(self.labware)
             move_action.execute()
             self._current_location = target_location
+    
+    def add_observer(self, observer: IThreadObserver) -> None:
+        self._observers.append(observer)
 
-    def method_notify(self, event: str, method: Method) -> None:
+    def method_notify(self, event: MethodStatus, method: Method) -> None:
         if event == MethodStatus.COMPLETED.name:
             self._current_method = None
 

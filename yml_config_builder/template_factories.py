@@ -1,4 +1,5 @@
 
+import os
 from typing import Dict, List, Optional, Tuple, Union
 
 from resource_models.base_resource import Equipment
@@ -14,6 +15,7 @@ from system.system_map import ILocationRegistry, IResourceLocator, SystemMap
 from system.registries import TemplateRegistry
 from system.template_registry_interfaces import IThreadTemplateRegistry, IMethodTemplateRegistry, IWorkflowTemplateRegistry
 from workflow_models.spawn_thread_action import SpawnThreadAction
+from workflow_models.workflow import IThreadObserver
 from yml_config_builder.configs import LabwareConfig, LabwareThreadConfig, MethodActionConfig, MethodConfig, ResourceConfig, ResourcePoolConfig, SystemConfig, ThreadStepConfig, WorkflowConfig
 from yml_config_builder.resource_factory import ResourceFactory, ResourcePoolFactory
 from resource_models.resource_pool import EquipmentResourcePool
@@ -94,13 +96,15 @@ class ThreadTemplateFactory:
                 method_temp_reg: IMethodTemplateRegistry, 
                 labware_thread_temp_reg: IThreadTemplateRegistry, 
                 thread_reg: IThreadRegistry,
-                resource_locator: IResourceLocator) -> None:
+                resource_locator: IResourceLocator,
+                script_reg: IScriptRegistry) -> None:
         self._labware_temp_reg: ILabwareTemplateRegistry = labware_temp_reg
         self._location_reg: ILocationRegistry = location_reg
         self._method_temp_reg: IMethodTemplateRegistry = method_temp_reg
         self._thread_temp_reg: IThreadTemplateRegistry = labware_thread_temp_reg
         self._thread_reg: IThreadRegistry = thread_reg
         self._resource_locator: IResourceLocator = resource_locator
+        self._script_reg: IScriptRegistry = script_reg
 
     def get_template(self, 
                 name: str, 
@@ -109,8 +113,11 @@ class ThreadTemplateFactory:
             labware = self._get_labware_template(config)
             start_location = self._get_location(self._location_reg, config.start)                                            
             end_location = self._get_location(self._location_reg, config.end)
-            # make labware thread
-            labware_thread = ThreadTemplate(labware_template=labware, start=start_location, end=end_location)
+            observers: List[IThreadObserver] = [self._script_reg.get_script(script_name) for script_name in config.scripts]
+            labware_thread = ThreadTemplate(labware, 
+                                            start_location, 
+                                            end_location, 
+                                            observers)
         except KeyError as e:
             raise KeyError(f"Error building labware thread {name}") from e
         return labware_thread
@@ -197,9 +204,10 @@ class ConfigToSystemBuilder:
         self._config = config
     
     def _build_scripts(self, script_reg: IScriptRegistry) -> None:
+        base_dir = self._config.scripting.base_dir
         for script_name, script_config in self._config.scripting.scripts.items():
             filepath, class_name = script_config.source.split(":")
-            script = script_reg.create_script(filepath, class_name)
+            script = script_reg.create_script(os.path.join(base_dir, filepath), class_name)
             script_reg.add_script(script_name, script)
     
     def _build_resources(self, resource_reg: IResourceRegistry) -> None:
@@ -272,18 +280,19 @@ class ConfigToSystemBuilder:
         instance_registry = InstanceRegistry(labware_registry, system_map)
         system_info = SystemInfo(self._config.system.name, self._config.system.version, self._config.system.description, self._config.model_extra)
         system = System(system_info, system_map, resource_reg, template_registry, labware_registry, instance_registry)
-        
+        scripting_factory = ScriptFactory(system)
+        script_reg = ScriptRegistry(scripting_factory)
         # TODO: Move factories out
         method_template_factory = MethodTemplateFactory(resource_reg, labware_registry)
         thread_template_factory = ThreadTemplateFactory(labware_registry, 
-                                                           system_map, 
-                                                           template_registry, 
-                                                           template_registry, 
-                                                           instance_registry, 
-                                                           system_map)
+                                                        system_map, 
+                                                        template_registry, 
+                                                        template_registry, 
+                                                        instance_registry, 
+                                                        system_map,
+                                                        script_reg)
         workflow_template_factory = WorkflowTemplateFactory(thread_template_factory, template_registry)
-        scripting_factory = ScriptFactory(system)
-        script_reg = ScriptRegistry(scripting_factory)
+
         self._build_scripts(script_reg)
         self._build_resources(resource_reg)
         self._build_locations(resource_reg, system_map)
