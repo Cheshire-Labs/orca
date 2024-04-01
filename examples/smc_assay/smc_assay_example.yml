@@ -3,7 +3,7 @@ system:
     version: "0.0.1"
     description: "SMC Assay Example"
 
-labwares: &labwares
+labwares:
     sample-plate:
         type: "Matrix 96 Well"
     plate-1:
