@@ -1,4 +1,5 @@
 
+import os
 from typing import Any, Dict, Optional, List, Union, Literal
 from pydantic import BaseModel, ConfigDict, Field, root_validator
 
@@ -13,9 +14,15 @@ class ConfigModel(BaseModel):
             return {}
         return model_extra
 
+
 class ScriptConfig(ConfigModel):
     model_config = ConfigDict(extra='allow')
     source: str
+
+class ScriptBaseConfig(ConfigModel):
+    model_config = ConfigDict(extra='allow')
+    base_dir: str = Field(alias='base-dir', default=os.getcwd())
+    scripts: Dict[str, ScriptConfig] = Field(default={})
 
 class MethodActionConfig(ConfigModel):
     model_config = ConfigDict(extra='allow')
@@ -85,7 +92,7 @@ class SystemConfig(ConfigModel):
     resources: Dict[str, Union[ResourceConfig, ResourcePoolConfig]]
     methods: Dict[str, MethodConfig]
     workflows: Dict[str, WorkflowConfig]
-    scripts: Dict[str, ScriptConfig] = {}
+    scripting: ScriptBaseConfig = Field(default={})
 
     @root_validator(pre=True)
     def check_resource_type(cls, values: Dict[str, Any]):
