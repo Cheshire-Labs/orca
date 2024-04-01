@@ -433,10 +433,13 @@ workflows:
 
 ## SCRIPT EXAMPLES
 scripting:
+    base-dir: examples/smc_assay
     scripts:
         spawn-384-tips-script:
-            source: examples/smc_assay/spawn_384_tips.py:Spawn384TipsScript
-
+            source: spawn_384_tips.py:Spawn384TipsScript
+        spawn-final-plate-script:
+            source: spawn_final_plate.py:SpawnFinalPlateScript
+            
     # get-positions: 
     #     source: get-positions.py:get-positions(${0}, ${1})
 
