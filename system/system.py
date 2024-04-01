@@ -53,7 +53,13 @@ class ISystem(IResourceRegistry,
               ABC):
     pass
 class System(ISystem):
-    def __init__(self, info: SystemInfo, system_map: SystemMap, resource_registry: IResourceRegistry, template_registry: TemplateRegistry, labware_registry: LabwareRegistry, instance_registry: InstanceRegistry) -> None:
+    def __init__(self, 
+                 info: SystemInfo, 
+                 system_map: SystemMap, 
+                 resource_registry: IResourceRegistry, 
+                 template_registry: TemplateRegistry, 
+                 labware_registry: LabwareRegistry, 
+                 instance_registry: InstanceRegistry) -> None:
         self._info = info
         self._resources = resource_registry
         self._system_map = system_map
