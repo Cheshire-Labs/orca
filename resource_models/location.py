@@ -21,18 +21,23 @@ class Location(LabwarePlaceable, ABC):
         self._resource: LabwarePlaceable = resource if resource else PlatePad(teachpoint_name)
         self._options: Dict[str, Any] = {}
         self._observers: List[ILocationObeserver] = []
+    
+    @property
+    def name(self) -> str:
+        return self._teachpoint_name
                               
     @property
     def teachpoint_name(self) -> str:
+        # TODO: this is redundant to name, these should be refactored into one or differentiated
         return self._teachpoint_name
 
     @property
     def labware(self) -> Optional[Labware]:
         return self._resource.labware
     
-    def set_labware(self, labware: Labware) -> None:
+    def initialize_labware(self, labware: Labware) -> None:
         # TODO: this will need to be restricted to only initilaizing the labware
-        self._resource.set_labware(labware)
+        self._resource.initialize_labware(labware)
 
     @property
     def is_available(self) -> bool:

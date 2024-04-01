@@ -15,8 +15,7 @@ class PlatePad(BaseResource, LabwarePlaceable):
     def labware(self) -> Optional[Labware]:
         return self._labware
     
-    def set_labware(self, labware: Labware) -> None:
-        # TODO: this will need to be restricted to only initilaizing the labware
+    def initialize_labware(self, labware: Labware) -> None:
         self._labware = labware
 
     def initialize(self) -> None:
