@@ -324,8 +324,6 @@ methods:
                 protocol: combine-plates.pro
         
     transfer-eluate:
-        scripts:
-            pre-execution: "transfer-eluate.py"
         actions:
             - bravo-384-head:
                 command: run
