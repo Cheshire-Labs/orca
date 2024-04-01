@@ -4,6 +4,7 @@ from typing import Dict, List, Optional, Tuple, Union
 from resource_models.base_resource import Equipment
 from resource_models.labware import AnyLabwareTemplate, LabwareTemplate
 from resource_models.location import Location
+from scripting.scripting import IScriptRegistry, ScriptFactory, ScriptRegistry
 from system.labware_registry_interfaces import ILabwareTemplateRegistry
 from system.registry_interfaces import IThreadRegistry
 from system.registries import InstanceRegistry, LabwareRegistry
@@ -190,10 +191,17 @@ class WorkflowTemplateFactory:
                 workflow.add_thread(thread_template, is_start=True)
         return workflow
 
+
 class ConfigToSystemBuilder:
     def __init__(self, config: SystemConfig) -> None:
         self._config = config
-
+    
+    def _build_scripts(self, script_reg: IScriptRegistry) -> None:
+        for script_name, script_config in self._config.scripting.scripts.items():
+            filepath, class_name = script_config.source.split(":")
+            script = script_reg.create_script(filepath, class_name)
+            script_reg.add_script(script_name, script)
+    
     def _build_resources(self, resource_reg: IResourceRegistry) -> None:
         resource_pool_configs: Dict[str, ResourcePoolConfig] = {}
 
@@ -274,6 +282,9 @@ class ConfigToSystemBuilder:
                                                            instance_registry, 
                                                            system_map)
         workflow_template_factory = WorkflowTemplateFactory(thread_template_factory, template_registry)
+        scripting_factory = ScriptFactory(system)
+        script_reg = ScriptRegistry(scripting_factory)
+        self._build_scripts(script_reg)
         self._build_resources(resource_reg)
         self._build_locations(resource_reg, system_map)
         self._build_labware_templates(labware_registry)

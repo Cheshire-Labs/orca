@@ -1,3 +1,4 @@
+from abc import ABC
 from typing import Dict, List
 from resource_models.location import Location
 from resource_models.resource_pool import EquipmentResourcePool
@@ -39,8 +40,19 @@ class SystemInfo:
         return self._model_extra
     
 
-
-class System(IResourceRegistry, ILabwareRegistry, ILabwareTemplateRegistry, IWorkflowTemplateRegistry, IMethodTemplateRegistry, IThreadTemplateRegistry, ILocationRegistry, IWorkflowRegistry, IThreadRegistry, IMethodRegistry):
+class ISystem(IResourceRegistry, 
+              ILabwareRegistry, 
+              ILabwareTemplateRegistry, 
+              IWorkflowTemplateRegistry, 
+              IMethodTemplateRegistry, 
+              IThreadTemplateRegistry, 
+              ILocationRegistry, 
+              IWorkflowRegistry, 
+              IThreadRegistry, 
+              IMethodRegistry, 
+              ABC):
+    pass
+class System(ISystem):
     def __init__(self, info: SystemInfo, system_map: SystemMap, resource_registry: IResourceRegistry, template_registry: TemplateRegistry, labware_registry: LabwareRegistry, instance_registry: InstanceRegistry) -> None:
         self._info = info
         self._resources = resource_registry

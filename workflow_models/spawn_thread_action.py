@@ -1,4 +1,3 @@
-from system.labware_registry_interfaces import ILabwareRegistry
 from system.registry_interfaces import IThreadRegistry
 from workflow_models.status_enums import MethodStatus
 from workflow_models.workflow import IMethodObserver, Method

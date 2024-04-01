@@ -8,7 +8,7 @@ from workflow_models.workflow import LabwareThread, Method, Workflow
 from workflow_models.workflow_templates import ThreadTemplate, MethodTemplate, WorkflowTemplate
 
 
-from typing import List, Dict, Union
+from typing import List, Dict
 
 
 class LabwareRegistry(ILabwareRegistry, ILabwareTemplateRegistry):
