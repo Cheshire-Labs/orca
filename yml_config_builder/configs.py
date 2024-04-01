@@ -48,7 +48,7 @@ class LabwareThreadConfig(ConfigModel):
     start: str
     end: str
     type: Literal['start', 'wrapper']
-    scripts: List[str] = []
+    scripts: List[str] = Field([])
     steps: List[Union[str, ThreadStepConfig]]
 
 
