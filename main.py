@@ -1,16 +1,21 @@
 import argparse
+import asyncio
 from typing import Dict, Optional
 from method_executor import MethodExecutor
+from resource_models.labware import LabwareTemplate
 from resource_models.location import Location
 from workflow_executor import WorkflowExecuter
+from workflow_models.workflow_templates import MethodTemplate
 from yml_config_builder.config_file import ConfigFile
 import json
 
 class Orca:
     @staticmethod
     def run_workflow(config_file: str, workflow_name: Optional[str] = None):
+        loop: asyncio.AbstractEventLoop | None = asyncio.get_event_loop()
         config = ConfigFile(config_file)
         system = config.get_system()
+        
         if workflow_name is None:
             raise ValueError("workflow is None.  Workflow must be a string")
         try:
@@ -19,9 +24,10 @@ class Orca:
             raise LookupError(f"Workflow {workflow_name} is not defined with then System.  Make sure it is included in the config file and the config file loaded correctly.")
         workflow_template = system.get_workflow_template(workflow_name)
         
-
-        # TODO: Fix the internal get on system for the thread manager
-        executer = WorkflowExecuter(workflow_template, system, system, system._instances.thread_manager)
+        executer = WorkflowExecuter(workflow_template, 
+                                    system, 
+                                    system, 
+                                    system)
         executer.execute()
 
     @staticmethod
@@ -40,28 +46,28 @@ class Orca:
             raise ValueError("end_map is None.  End_map must be a string")
         
         def labware_location_hook(d: Dict[str, str]):
-
+            conversion: Dict[LabwareTemplate, Location] = {}
             for key, value in d.items():
                 try:
-                    system.get_labware_template(key)
+                    template = system.get_labware_template(key)
                 except KeyError:
                     raise ValueError(f"Labware {key} is not defined in the system")
                 try:
                     location = system.get_location(value)
                 except KeyError:
                     raise ValueError(f"Location {value} is not defined in the system")
-            return {key: system.get_location(value) for key, value in d.items()}
+                conversion[template] = location
+            return conversion
 
-        start_map: Dict[str, Location] = json.loads(start_map_json, object_hook=labware_location_hook)
-        end_map: Dict[str, Location] = json.loads(end_map_json, object_hook=labware_location_hook)
+        start_map: Dict[LabwareTemplate, Location] = json.loads(start_map_json, object_hook=labware_location_hook)
+        end_map: Dict[LabwareTemplate, Location] = json.loads(end_map_json, object_hook=labware_location_hook)
 
         method_template = system.get_method_template(method_name)
         executer = MethodExecutor(method_template,
-                                system, 
-                                   system._instances.thread_manager,
-                                   start_map, 
-                                   end_map, 
-                                   system.system_map)
+                                 start_map, 
+                                 end_map,
+                                 system,
+                                 system)
         executer.execute()
 
     @staticmethod
@@ -117,8 +123,8 @@ if __name__ == '__main__':
     #          method_name="incubate-2hrs",
     #          start_map_json=json.dumps({"plate-1": "pad_1"}),
     #          end_map_json=json.dumps({"plate-1": "pad_3"}))
-    # Orca.run_method(config_file="examples\\smc_assay\\smc_assay_example.yml",
-    #                 method_name="add-detection-antibody",
-    #                 start_map_json=json.dumps({"plate-1": "pad_1", "tips-96": "pad_3"}),
-    #                 end_map_json=json.dumps({"plate-1": "pad_6", "tips-96": "pad_2"}))
-    Orca.run_workflow(config_file="examples\\smc_assay\\smc_assay_example.yml", workflow_name="smc-assay")
+    Orca.run_method(config_file="examples\\smc_assay\\smc_assay_example.yml",
+                    method_name="add-detection-antibody",
+                    start_map_json=json.dumps({"plate-1": "pad_1", "tips-96": "pad_3"}),
+                    end_map_json=json.dumps({"plate-1": "pad_6", "tips-96": "pad_2"}))
+    # Orca.run_workflow(config_file="examples\\smc_assay\\smc_assay_example.yml", workflow_name="smc-assay")

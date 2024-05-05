@@ -1,35 +1,29 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
 import itertools
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from resource_models.base_resource import IResource, LabwarePlaceable
-from resource_models.location import ILocationObeserver, Location
+from resource_models.labware import Labware
+from resource_models.location import IResourceLocationObserver, Location
 import networkx as nx
 import matplotlib.pyplot as plt
 
+from resource_models.plate_pad import PlatePad
 from resource_models.transporter_resource import TransporterResource
 from system.resource_registry import IResourceRegistry
 from system.resource_registry import IResourceRegistryObesrver
 
-
-
 class IResourceLocator(ABC):
     def get_resource_location(self, resource_name: str) -> Location:
         raise NotImplementedError
-    
+
 class IRouteBuilder(ABC):
     
         def get_shortest_available_path(self, source: str, target: str) -> List[str]:
             raise NotImplementedError
         
-        def get_shortest_any_path(self, source: str, target: str) -> List[str]:
-            raise NotImplementedError
-        
-        def get_all_shortest_available_paths(self, source: str, target: str) -> List[List[str]]:
-            raise NotImplementedError
-        
-        def get_all_shortest_any_paths(self, source: str, target: str) -> List[List[str]]:
-            raise NotImplementedError
+        # def get_all_shortest_available_paths(self, source: str, target: str) -> List[List[str]]:
+        #     raise NotImplementedError
         
         def get_distance(self, source: str, target: str) -> float:
             raise NotImplementedError
@@ -43,7 +37,7 @@ class IRouteBuilder(ABC):
         def has_any_route(self, source: str, target: str) -> bool:
             raise NotImplementedError
         
-        def get_blocking_locations(self, source: str, target: str) -> List[Location]:
+        def _get_blocking_locations(self, source: str, target: str) -> List[Location]:
             raise NotImplementedError
         
         def get_all_blocking_locations(self, source: str, target: str) -> List[Location]:
@@ -81,6 +75,9 @@ class _NetworkXHandler:
     def get_all_shortest_paths(self, source: str, target: str) -> List[List[str]]:
         return list(nx.all_shortest_paths(self._graph, source, target, weight='weight')) # type: ignore
 
+    def get_all_simple_paths(self, source: str, target: str) -> List[List[str]]:
+        return list(nx.all_simple_paths(self._graph, source, target)) # type: ignore
+
     def get_subgraph(self, nodes: List[str]) -> _NetworkXHandler:
         return _NetworkXHandler(nx.subgraph(self._graph, nodes)) # type: ignore
     
@@ -98,7 +95,8 @@ class _NetworkXHandler:
         return nx.shortest_path_length(self._graph, source, target, weight='weight') # type: ignore
 
     def draw(self) -> None:
-        nx.draw(self._graph, with_labels=True) # type: ignore
+        pos = nx.spring_layout(self._graph) # type: ignore
+        nx.draw(self._graph, pos=pos, with_labels=True) # type: ignore
         plt.show() # type: ignore
 
     def __getitem__(self, key: str) -> Dict[str, Any]:
@@ -106,6 +104,11 @@ class _NetworkXHandler:
 
 
 class ILocationRegistry(ABC):
+    @property
+    @abstractmethod
+    def locations(self) -> List[Location]:
+        raise NotImplementedError
+    
     @abstractmethod
     def get_location(self, name: str) -> Location:
         raise NotImplementedError
@@ -115,7 +118,7 @@ class ILocationRegistry(ABC):
         raise NotImplementedError
     
 
-class SystemMap(ILocationRegistry, IRouteBuilder, IResourceLocator, ILocationObeserver, IResourceRegistryObesrver):
+class SystemMap(ILocationRegistry, IRouteBuilder, IResourceLocator, IResourceLocationObserver, IResourceRegistryObesrver):
 
     def __init__(self, resource_registry: IResourceRegistry) -> None:
         self._graph: _NetworkXHandler = _NetworkXHandler()
@@ -124,6 +127,10 @@ class SystemMap(ILocationRegistry, IRouteBuilder, IResourceLocator, ILocationObe
         for transporter in self._resource_registry.transporters:
             self.add_transporter(transporter)
         self._resource_registry.add_observer(self)
+
+    @property
+    def locations(self) -> List[Location]:
+        return [nodedata["location"] for _, nodedata in self._graph.get_nodes().items()]
 
     def get_location(self, name: str) -> Location:
         return self._graph.get_node_data(name)["location"]
@@ -143,6 +150,12 @@ class SystemMap(ILocationRegistry, IRouteBuilder, IResourceLocator, ILocationObe
                 return self._equipment_map[resource_name]
             except KeyError:
                 raise ValueError(f"Resource {resource_name} does not exist")
+        
+    def get_distance(self, source: str, target: str) -> float:
+        return self._graph.get_distance(source, target)
+    
+    def get_transporter_between(self, source: str, target: str) -> TransporterResource:
+        return self._graph.get_edge_data(source, target)["transporter"]
 
     def add_edge(self, start: str, end: str, transporter: TransporterResource, weight: float = 5.0) -> None:
         if start not in self._graph.get_nodes():
@@ -154,66 +167,53 @@ class SystemMap(ILocationRegistry, IRouteBuilder, IResourceLocator, ILocationObe
     def set_edge_weight(self, start: str, end: str, weight: float) -> None:
         self._graph[start][end]['weight'] = weight
 
-    def has_available_route(self, source: str, target: str) -> bool:
-        available_graph = self._graph.get_subgraph([name for name, _ in self._get_available_locations().items()])
+    def has_available_route(self, labware: Labware, source: str, target: str) -> bool:
+        available_graph = self._get_available_graph([source])
         return available_graph.has_path(source, target)
     
     def has_any_route(self, source: str, target: str) -> bool:
         return self._graph.has_path(source, target)
-    
-    def get_blocking_locations(self, source: str, target: str) -> List[Location]:
-        # TODO: add input validations of source and target entered
-        blocking_locs: List[Location] = []
-        for location_name in self.get_shortest_any_path(source, target):
-            location: Location = self._graph.get_node_data(location_name)["location"]
-            if not location.is_available:
-                blocking_locs.append(location)
-        return blocking_locs
-    
-    def get_all_blocking_locations(self, source: str, target: str) -> List[Location]:
-        blocking_locs: List[Location] = []
-        for path in self.get_all_shortest_any_paths(source, target):
-            for location_name in path:
-                location: Location = self._graph.get_node_data(location_name)["location"]
-                if not location.is_available:
-                    blocking_locs.append(location)
-        return blocking_locs
-    
-    def get_shortest_available_path(self, source: str, target: str) -> List[str]:
-        # build a subgraph of available nodes, except for the source as that's where the labware being moved is
-        subgraph_nodes = [source]
-        subgraph_nodes.extend([name for name, _ in self._get_available_locations().items()])
-        available_graph = self._graph.get_subgraph(subgraph_nodes)
-        return available_graph.get_shortest_path(source, target)
-    
-    def get_shortest_any_path(self, source: str, target: str) -> List[str]:
-        return self._graph.get_shortest_path(source, target)
-    
+        
     def get_all_shortest_available_paths(self, source: str, target: str) -> List[List[str]]:
-        available_graph = self._graph.get_subgraph([name for name, _ in self._get_available_locations().items()])
+        available_graph = self._get_available_graph([source])
         return available_graph.get_all_shortest_paths(source, target)
     
     def get_all_shortest_any_paths(self, source: str, target: str) -> List[List[str]]:
         return self._graph.get_all_shortest_paths(source, target)
+
+    def get_shortest_paths_to_deadlock_resolution(self, source: str) -> List[List[str]]:
+        paths = []
+        for name, data in self._graph.get_nodes().items():
+            if isinstance(data["location"].resource, PlatePad) and name != source:
+                paths.extend(self.get_all_shortest_any_paths(source, name)) #type: ignore
+            
+        return paths
     
-    def get_distance(self, source: str, target: str) -> float:
-        return self._graph.get_distance(source, target)
-    
-    def get_transporter_between(self, source: str, target: str) -> TransporterResource:
-        return self._graph.get_edge_data(source, target)["transporter"]
+    def _get_blocking_locations(self, source: str, target: str) -> List[Location]:
+        # TODO: add input validations of source and target entered
+        unique_stop = {stop for path in self.get_all_shortest_any_paths(source, target) for stop in path}
+        blocking_locs: Set[Location] = set()
+        for location_name in unique_stop:
+            if location_name == source:
+                continue
+            location: Location = self._graph.get_node_data(location_name)["location"]
+            if location is not None:
+                blocking_locs.add(location)
+        return list(blocking_locs)
+
+    def _get_blocking_transporter(self, labware: Labware, source: str, target: str) -> List[TransporterResource]:
+        blocking_transporters: Set[TransporterResource] = set()
+        for path in self.get_all_shortest_any_paths(source, target):
+            for i in range(len(path) - 1):
+                edge = self._graph.get_edge_data(path[i], path[i + 1])
+                transporter: TransporterResource = edge["transporter"]
+                if transporter.labware is not None:
+                    blocking_transporters.add(transporter)
+        return list(blocking_transporters)
     
     def draw(self) -> None:
         self._graph.draw()
         
-
-    def _get_available_locations(self) -> Dict[str, Dict[str, Any]]:
-        nodes = {}
-        for node, nodedata in self._graph.get_nodes().items():
-            location: Location = nodedata["location"]
-            if location.is_available:
-                nodes[node] = nodedata
-        return nodes
-
     def add_transporter(self, transporter: TransporterResource) -> None:
         taught_locations = transporter.get_taught_positions()
         # add teachpoints as locations if they don't exist and connect them as an edge
@@ -238,3 +238,25 @@ class SystemMap(ILocationRegistry, IRouteBuilder, IResourceLocator, ILocationObe
         if event == "resource_set":
             if isinstance(resource, LabwarePlaceable):
                 self._equipment_map[resource.name] = location
+
+    def _get_available_graph(self, include_nodes: List[str] = []) -> _NetworkXHandler:
+        subgraph = self._graph.get_subgraph([name for name, _ in self._get_available_locations(include_nodes).items()])
+        available_edges: List[Tuple[str, str, Dict[str, Any]]] = []
+        for edge in subgraph.get_all_edges():
+            source, target, data = edge
+            transporter: TransporterResource = data["transporter"]
+            if transporter.labware is None:
+                available_edges.append(edge)
+        available_graph = _NetworkXHandler()
+        [available_graph.add_node(name, nodedata["location"]) for name, nodedata in subgraph.get_nodes().items()]
+        [available_graph.add_edge(source, target, data["transporter"]) for source, target, data in available_edges]
+        return available_graph
+
+
+    def _get_available_locations(self, include_nodes: List[str] = []) -> Dict[str, Dict[str, Any]]:
+        nodes = {}
+        for node, nodedata in self._graph.get_nodes().items():
+            location: Location = nodedata["location"]
+            if node in include_nodes or location.labware is None:
+                nodes[node] = nodedata
+        return nodes

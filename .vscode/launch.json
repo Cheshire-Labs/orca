@@ -10,7 +10,8 @@
             "request": "launch",
             "program": "C:/Users/miike/source/repos/cheshire-orca/main.py",
             "console": "integratedTerminal",
-            "justMyCode": true
+            "justMyCode": true,
+            "subProcess": true
         }
     ]
 }

@@ -1,5 +1,7 @@
+import asyncio
 import subprocess
 
+import time
 from typing import Any, Dict, List, Optional
 from resource_models.location import Location
 from resource_models.resource_extras.teachpoints import Teachpoint
@@ -28,19 +30,18 @@ class PlaceHolderNonLabwareResource(BaseResource):
     def set_init_options(self, init_options: Dict[str, Any]) -> None:
         self._init_options = init_options
 
-    def initialize(self) -> None:
+    async def initialize(self) -> None:
         self._is_initialized = True
 
-class PlaceHolderResource(Equipment, LabwarePlaceable):
-    def __init__(self, name: str, mocking_type: Optional[str] = None):
+class PlaceHolderResource(Equipment):
+    def __init__(self, name: str, mocking_type: Optional[str] = None, sim_time: float = 0.2):
         super().__init__(name)
         self._mocking_type = mocking_type
         self._stage_labware: Optional[Labware] = None
         self._loaded_labware: List[Labware] = []
+        self._sim_time = sim_time
 
-    @property
-    def is_available(self) -> bool:
-        return self._stage_labware is None
+
 
     @property
     def labware(self) -> Optional[Labware]:
@@ -56,81 +57,103 @@ class PlaceHolderResource(Equipment, LabwarePlaceable):
         else:
             self._loaded_labware.append(labware)
 
-    def initialize(self) -> None:
+    async def initialize(self) -> None:
         print(f"Initializing MockResource")
         print(f"Name: {self._name}")
         print(f"Type: {self._mocking_type}")
         print(f"Mock Initialized")
         self._is_initialized = True
 
-    def prepare_for_place(self, labware: Labware) -> None:
+    async def prepare_for_place(self, labware: Labware) -> None:
         if self._stage_labware is not None:
             raise ValueError(f"{self} - Stage already contains labware: {self._stage_labware}.  Unable to place {labware}")
         self._is_running = True
         print(f"{self._name} open plate door")
         self._is_running = False
 
-    def prepare_for_pick(self, labware: Labware) -> None:
+    async def prepare_for_pick(self, labware: Labware) -> None:
         if self._stage_labware == labware:
             return
         else:
             self._is_running = True
-            self.unload_labware(labware)
+            await self.unload_labware(labware)
             self._is_running = False
 
-    def unload_labware(self, labware: Labware) -> None:
+    async def unload_labware(self, labware: Labware) -> None:
         if labware not in self._loaded_labware:
             raise ValueError(f"{self} - Labware {labware} not found in loaded labwares")
         if self._stage_labware is not None:
             raise ValueError(f"{self} - Stage already contains labware: {self._stage_labware}.  Unable to unload {labware}")
+        
         self._loaded_labware.remove(labware)
+        print(f"{self} - labware {labware} unloading...")
+        self._sleep()
         print(f"{self} - labware {labware} unloaded")
         self._stage_labware = labware
 
-    def notify_picked(self, labware: Labware) -> None:
+    async def notify_picked(self, labware: Labware) -> None:
         if self._stage_labware != labware:
             raise ValueError(f"{self} - An error has ocurred.  The labware {labware} notified as picked does not match the previously staged labware. "
                               "The wrong labware may have been picked.")
+
         self._stage_labware = None
     
-    def notify_placed(self, labware: Labware) -> None:
+    async def notify_placed(self, labware: Labware) -> None:
         if self._stage_labware is not None:
             raise ValueError(f"{self} - An error has ocurred.  The labware {labware} notified as placed was placed with labware {self._stage_labware} already on the stage.  "
                              "A crash may have occurred.")
         self._stage_labware = labware
         print(f"{self} - labware {labware} received on stage")
-        self.load_labware(labware)
+        await self.load_labware(labware)
 
-    def load_labware(self, labware: Labware) -> None:
+    async def load_labware(self, labware: Labware) -> None:
         if self._stage_labware != labware:
             raise ValueError(f"{self} - Stage labware {self._stage_labware} does not match labware {labware} to load")
         self._stage_labware = None
+        
         self._loaded_labware.append(labware)
+        print(f"{self} - labware {labware} loading...")
+        self._sleep()
         print(f"{self} - labware {labware} loaded")
 
     def is_running(self) -> bool:
         return self._is_running
 
-    def execute(self) -> None:
+    async def execute(self) -> None:
         if self._command is None:
             raise ValueError(f"{self} - No command to execute")
         self._is_running = True
+        
         print(f"{self} - execute - {self._command}")
+        print(f"{self} - {self._command} executing...")
+        self._sleep()
+        print(f"{self} - {self._command} executed")
         self._command = None
         self._options = {}
         self._is_running = False
 
+    def _sleep(self) -> None:
+        time.sleep(self._sim_time)
+
+class StoragePlaceHolderResource(PlaceHolderResource):
+    def can_accept(self, labware: Labware) -> bool:
+        if self._stage_labware is not None:
+            return False
+        return False
+    
+
 class PlaceHolderRoboticArm(TransporterResource):
-    def __init__(self, name: str, mocking_type: Optional[str] = None) -> None:
+    def __init__(self, name: str, mocking_type: Optional[str] = None, sim_time: float = 0.2) -> None:
         super().__init__(name)
         self._name = name
         self._mocking_type = mocking_type
         self._plate_type: Optional[str] = None
         self._positions: List[str] = []
         self._command: Optional[str] = None
-        
+        self._sim_time = sim_time
+        self._lock = asyncio.Lock()
 
-    def initialize(self) -> None:
+    async def initialize(self) -> None:
         print(f"Initializing MockResource")
         print(f"Name: {self._name}")
         print(f"Type: {self._mocking_type}")
@@ -142,23 +165,30 @@ class PlaceHolderRoboticArm(TransporterResource):
         self._load_taught_positions()
 
 
-    def pick(self, location: Location) -> None:
-        self._validate_position(location.teachpoint_name)
-        if self._labware is not None:
-            raise ValueError(f"{self} already contains labware: {self._labware}")
-        if location.labware is None:
-            raise ValueError(f"{location} does not contain labware")
-        print(f"{self._name} pick {location.labware} from {location}")
-        self._labware = location.labware
+    async def pick(self, location: Location) -> None:
+        async with self._lock:
+            self._validate_position(location.teachpoint_name)
+            if self._labware is not None:
+                raise ValueError(f"{self} already contains labware: {self._labware}")
+            if location.labware is None:
+                raise ValueError(f"{location} does not contain labware")
+            print(f"{self._name} pick {location.labware} from {location}: picking...")
+            self._sleep()
+            print(f"{self._name} pick {location.labware} from {location}: picked")
+            self._labware = location.labware
     
-    def place(self, location: Location) -> None:
-        self._validate_position(location.teachpoint_name)
-        if self._labware is None:
-            raise ValueError(f"{self} does not contain labware")
-        if location.labware is not None:
-            raise ValueError(f"{location} already contains labware")
-        print(f"{self._name} place {self._labware} to {location}")
-        self._labware = None
+    async def place(self, location: Location) -> None:
+        async with self._lock:
+            self._validate_position(location.teachpoint_name)
+            if self._labware is None:
+                raise ValueError(f"{self} does not contain labware")
+            if location.labware is not None:
+                raise ValueError(f"{location} already contains labware")
+            print(f"{self._name} place {self._labware} to {location}: placing...")
+            self._sleep()
+            print(f"{self._name} place {self._labware} to {location}: placed")
+            
+            self._labware = None
 
     def _validate_position(self, position: str) -> None:
         if position not in self._positions:
@@ -178,30 +208,34 @@ class PlaceHolderRoboticArm(TransporterResource):
             else:
                 raise ValueError(f"Positions configuration for {self._name} is not recognized.  Must be a filepath string or list of strings naming the teachpoints")
     
+    def _sleep(self) -> None:
+        time.sleep(self._sim_time)
 
 class VenusProtocol(BaseResource, LabwarePlaceable):
     def __init__(self, name: str):
         super().__init__(name)
+        
         self._default_exe_path = r"C:\Program Files (x86)\HAMILTON\Bin\HxRun.exe"
         self._locked = False
+        raise NotImplementedError()
 
-    def initialize(self) -> None:
+    async def initialize(self) -> None:
         # add a simple hamilton initialization script here
 
         raise NotImplementedError()
 
-    def prepare_for_place(self, labware: Labware) -> None:
+    async def prepare_for_place(self, labware: Labware) -> None:
         print("Move carriage to load position")
         self._locked = True
 
-    def prepare_for_pick(self, labware: Labware) -> None:
+    async def prepare_for_pick(self, labware: Labware) -> None:
         print("Move carriage to unload position")
         self._locked = True
 
-    def notify_picked(self, labware: Labware) -> None:
+    async def notify_picked(self, labware: Labware) -> None:
         self._locked = False
 
-    def notify_placed(self, labware: Labware) -> None:
+    async def notify_placed(self, labware: Labware) -> None:
         self._locked = False
 
     def set_command(self, command: str) -> None:
@@ -213,7 +247,7 @@ class VenusProtocol(BaseResource, LabwarePlaceable):
     def is_running(self) -> bool:
         return self._is_running
 
-    def execute(self) -> None:
+    async def execute(self) -> None:
         if self._command == 'EXECUTE':
             self._execute_protocol()
         else:

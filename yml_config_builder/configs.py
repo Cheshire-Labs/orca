@@ -29,7 +29,7 @@ class MethodActionConfig(ConfigModel):
     resource: Optional[str] = None
     command: str
     inputs: List[str] = []
-    outputs: List[str] = []
+    outputs: List[str] | None = None
 
 class MethodConfig(ConfigModel):
     model_config = ConfigDict(extra='allow')

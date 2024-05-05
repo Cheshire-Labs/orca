@@ -7,7 +7,6 @@ class PlatePad(BaseResource, LabwarePlaceable):
 
     def __init__(self, name: str) -> None:
         super().__init__(name)
-        self._can_resolve_deadlock = True
         self._is_initialized = False
         self._labware: Optional[Labware] = None
 
@@ -18,21 +17,21 @@ class PlatePad(BaseResource, LabwarePlaceable):
     def initialize_labware(self, labware: Labware) -> None:
         self._labware = labware
 
-    def initialize(self) -> None:
+    async def initialize(self) -> None:
         self._is_initialized = True
     
-    def notify_picked(self, labware: Labware) -> None:
-        print(f"Labware {labware} picked from plate pad {self}")
+    async def notify_picked(self, labware: Labware) -> None:
+        # print(f"Labware {labware} picked from plate pad {self}")
         self._labware = None
     
-    def notify_placed(self, labware: Labware) -> None:
-        print(f"Labware {labware} recieved on plate pad {self}")
+    async def notify_placed(self, labware: Labware) -> None:
+        # print(f"Labware {labware} recieved on plate pad {self}")
         self._labware = labware
-
-    def prepare_for_pick(self, labware: Labware) -> None:
+        
+    async def prepare_for_pick(self, labware: Labware) -> None:
         if self._labware != labware:
             raise ValueError(f"Labware {labware} not found on plate pad {self}")
     
-    def prepare_for_place(self, labware: Labware) -> None:
+    async def prepare_for_place(self, labware: Labware) -> None:
         if self._labware != None:
-            raise ValueError(f"Labware {self._labware} already on plate pad {self}")
+            raise ValueError(f"Trying to place Labware {labware}, but Labware {self._labware} already on plate pad {self}")

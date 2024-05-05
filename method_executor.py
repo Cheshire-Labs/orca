@@ -1,72 +1,65 @@
-from typing import Dict, Optional
-from resource_models.labware import AnyLabware, Labware, LabwareTemplate
+from typing import Dict
+from resource_models.labware import LabwareTemplate
 from resource_models.location import Location
-from system.registries import ThreadManager
-from system.registry_interfaces import IThreadManager
-from system.system_map import SystemMap
 from system.labware_registry_interfaces import ILabwareRegistry
-from workflow_models.workflow import LabwareThread
-from workflow_models.workflow_templates import MethodTemplate
+from system.registry_interfaces import IThreadManager
+from workflow_models.spawn_thread_action import SpawnThreadAction
+from workflow_models.workflow_templates import JunctionMethodTemplate, MethodTemplate, ThreadTemplate
 
 class MethodExecutor:
     def __init__(self, 
                  template: MethodTemplate, 
-                 labware_reg: ILabwareRegistry, 
+                 labware_start_mapping: Dict[LabwareTemplate, Location], 
+                 labware_end_mapping: Dict[LabwareTemplate, Location],
                  thread_manager: IThreadManager,
-                 labware_start_mapping: Dict[str, Location], 
-                 labware_end_mapping: Dict[str, Location],
-                 system_map: SystemMap, 
-                 selected_any_labware: Optional[LabwareTemplate] = None) -> None:
+                 labware_registry: ILabwareRegistry) -> None: 
+        self._method_template = template
 
-        self._template = template
-        self._labware_registry = labware_reg
+        # TODO:  Obviously an atrocious fix here to remove any spawn thread actions from the method observers
+        # TODO: needs to be replaced after refactoring the registry to make a distinction between 
+        # stand alone method template definitonss and method templates defined as part of workflows
+        replacement_observers = [o for o in self._method_template._method_observers if not isinstance(o, SpawnThreadAction)]
+        self._method_template._method_observers = replacement_observers
+
         self._start_mapping = labware_start_mapping
-        self._end_mappping = labware_end_mapping
-        self._system_map = system_map
+        self._end_mapping = labware_end_mapping
         self._thread_manager = thread_manager
+        self._labware_registry = labware_registry
         self._validate_labware_location_mappings()
-        labware_dict = self._create_input_labware_instance(selected_any_labware)
-        self._create_labware_threads(labware_dict)
-        self._method = self._template.get_instance(self._labware_registry)
+        self._create_labware_threads()
 
     def _validate_labware_location_mappings(self) -> None:
-        # validate that each labware in the expected inputs is in the start_map
-        for labware_template in self._template.inputs:
-            if labware_template.name not in self._start_mapping:
+        # simple check that the AnyLabware wildcard is satisfied
+        if len(self._start_mapping) != len(self._method_template.inputs):
+            raise ValueError(f"Number of labware in the start_map does not match the number of expected inputs")
+    
+        if len(self._end_mapping) != len(self._method_template.outputs):
+            raise ValueError(f"Number of labware in the end_map does not match the number of expected outputs")
+        
+        # validate that each concrete labware template is in the maps
+        for labware_template in self._method_template.inputs:
+            if isinstance(labware_template, LabwareTemplate) and labware_template not in self._start_mapping.keys():
                 raise ValueError(f"Labware {labware_template.name} is expected as an input but its starting location is not in the start_map")
         
-        # validate that each labware in the expected outputs is in the end_map
-        for labware_template in self._template.outputs:
-            if labware_template.name not in self._end_mappping:
+        for labware_template in self._method_template.outputs:
+            if isinstance(labware_template, LabwareTemplate) and labware_template not in self._end_mapping.keys():
                 raise ValueError(f"Labware {labware_template.name} is expected as an output but its ending location is not in the end_map")
-    
-    def _create_input_labware_instance(self, selected_any_labware: Optional[LabwareTemplate] = None) -> Dict[str, Labware]:
-        labware_mapping = {}
-        for labware_template in self._template.inputs:
-            # TODO: re-examine the logic for this $any labware wildcard once the workflow executor is written
-            labware = labware_template.create_instance()
-            if isinstance(labware, AnyLabware):
-                if selected_any_labware is None:
-                    raise ValueError(f"Labware is of type AnyLabware, the selected_any_labware parameter must be provided.")
-                labware = selected_any_labware.create_instance()
-            else:
-                self._labware_registry.add_labware(labware)
-            labware_mapping[labware_template.name] = labware
-        return labware_mapping
 
-    def _create_labware_threads(self, labware_mapping: Dict[str, Labware]) -> None:
-        for labware_template in self._template.inputs:
-            labware = labware_mapping[labware_template.name]
-            thread = LabwareThread(labware.name,
-                                    labware,
-                                    self._start_mapping[labware.name],
-                                    self._end_mappping[labware.name],
-                                    self._system_map)
-            thread.initialize_labware()
-            self._thread_manager.add_thread(thread)
+    def _create_labware_threads(self) -> None:
+        # TODO: mappings won't work here for labwares that end or start within a method action
+        method = self._method_template.get_instance(self._labware_registry)
+        
+        for idx, labware_template in enumerate(self._start_mapping.keys()):
+            thread_template = ThreadTemplate(labware_template, 
+                                             self._start_mapping[labware_template],
+                                             self._end_mapping[labware_template])
+            thread_template.add_method(JunctionMethodTemplate())
+            thread_template.set_wrapped_method(method)
+            thread = self._thread_manager.create_thread_instance(thread_template)
+            
 
     def execute(self):
-        self._thread_manager.execute()
+        self._thread_manager.execute_all_threads()
 
 
 

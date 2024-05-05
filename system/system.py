@@ -6,8 +6,9 @@ from resource_models.transporter_resource import TransporterResource
 from resource_models.base_resource import Equipment, IResource
 
 from resource_models.labware import Labware, LabwareTemplate
+from system.thread_manager import ThreadManager
 from system.labware_registry_interfaces import ILabwareRegistry, ILabwareTemplateRegistry
-from system.registry_interfaces import IThreadRegistry, IMethodRegistry, IWorkflowRegistry
+from system.registry_interfaces import IThreadManager, IThreadRegistry, IMethodRegistry, IWorkflowRegistry
 from system.resource_registry import IResourceRegistry, IResourceRegistryObesrver
 from system.system_map import ILocationRegistry, SystemMap
 from system.registries import InstanceRegistry, LabwareRegistry, TemplateRegistry
@@ -48,10 +49,11 @@ class ISystem(IResourceRegistry,
               IThreadTemplateRegistry, 
               ILocationRegistry, 
               IWorkflowRegistry, 
-              IThreadRegistry, 
               IMethodRegistry, 
+              IThreadManager,
               ABC):
     pass
+
 class System(ISystem):
     def __init__(self, 
                  info: SystemInfo, 
@@ -59,13 +61,16 @@ class System(ISystem):
                  resource_registry: IResourceRegistry, 
                  template_registry: TemplateRegistry, 
                  labware_registry: LabwareRegistry, 
-                 instance_registry: InstanceRegistry) -> None:
+                 instance_registry: InstanceRegistry,
+                 thread_manager: ThreadManager) -> None:
         self._info = info
         self._resources = resource_registry
         self._system_map = system_map
         self._templates = template_registry
         self._labwares = labware_registry
         self._instances = instance_registry
+        self._thread_manager = thread_manager
+
 
     @property
     def name(self) -> str:
@@ -83,6 +88,10 @@ class System(ISystem):
     def system_map(self) -> SystemMap:
         return self._system_map
     
+    @property
+    def locations(self) -> List[Location]:
+        return self._system_map.locations
+
     @property
     def labwares(self) -> List[Labware]:
         return self._labwares.labwares
@@ -103,6 +112,10 @@ class System(ISystem):
     def resource_pools(self) -> List[EquipmentResourcePool]:
         return self._resources.resource_pools
     
+    @property
+    def threads(self) -> List[LabwareThread]:
+        return self._instances.threads
+
     def get_resource(self, name: str) -> IResource:
         return self._resources.get_resource(name)
 
@@ -163,8 +176,11 @@ class System(ISystem):
     def add_workflow(self, workflow: Workflow) -> None:
         self._instances.add_workflow(workflow)
 
-    def get_thread(self, name: str) -> LabwareThread:
-        return self._instances.get_thread(name)
+    def get_thread(self, id: str) -> LabwareThread:
+        return self._instances.get_thread(id)
+    
+    def get_thread_by_labware(self, labware_id: str) -> LabwareThread:
+        return self._instances.get_thread_by_labware(labware_id)
 
     def add_thread(self, labware_thread: LabwareThread) -> None:
         self._instances.add_thread(labware_thread)
@@ -186,3 +202,6 @@ class System(ISystem):
     
     def execute_workflow(self, template: WorkflowTemplate) -> Workflow:
         return self._instances.execute_workflow(template)
+    
+    def execute_all_threads(self) -> None:
+        return self._thread_manager.execute_all_threads()

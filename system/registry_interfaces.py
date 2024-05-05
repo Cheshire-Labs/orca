@@ -1,11 +1,21 @@
 from abc import ABC, abstractmethod
+from typing import List
 
 from workflow_models.workflow import LabwareThread, Method, Workflow
 from workflow_models.workflow_templates import ThreadTemplate, MethodTemplate, WorkflowTemplate
 
 class IThreadRegistry(ABC):
+    @property
     @abstractmethod
-    def get_thread(self, name: str) -> LabwareThread:
+    def threads(self) -> List[LabwareThread]:
+        raise NotImplementedError
+    
+    @abstractmethod
+    def get_thread(self, id: str) -> LabwareThread:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_thread_by_labware(self, labware_id: str) -> LabwareThread:
         raise NotImplementedError
 
     @abstractmethod
@@ -44,12 +54,9 @@ class IMethodRegistry(ABC):
         raise NotImplementedError
 
 
-class IThreadManager(ABC):
-    @abstractmethod
-    def add_thread(self, thread: LabwareThread) -> None:
-        raise NotImplementedError
+class IThreadManager(IThreadRegistry, ABC):
     
     @abstractmethod
-    def execute(self) -> None:
+    def execute_all_threads(self) -> None:
         raise NotImplementedError
 

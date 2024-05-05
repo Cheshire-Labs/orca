@@ -1,5 +1,5 @@
 from typing import List
-from resource_models.drivers import PlaceHolderNonLabwareResource, PlaceHolderResource, PlaceHolderRoboticArm
+from resource_models.drivers import PlaceHolderNonLabwareResource, PlaceHolderResource, PlaceHolderRoboticArm, StoragePlaceHolderResource
 from resource_models.base_resource import BaseResource, Equipment
 
 from resource_models.resource_pool import EquipmentResourcePool
@@ -49,7 +49,7 @@ class ResourceFactory:
         elif res_type == 'shaker':
             resource = PlaceHolderResource(resource_name, "Shaker")
         elif res_type == 'waste':
-            resource = PlaceHolderResource(resource_name, "Waste")
+            resource = StoragePlaceHolderResource(resource_name, "Waste")
         elif res_type == 'delidder':
             resource = PlaceHolderResource(resource_name, "Delidder")
         elif res_type == 'serial-switch':

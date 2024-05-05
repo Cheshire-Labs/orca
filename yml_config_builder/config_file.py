@@ -2,7 +2,6 @@ from system.system import System
 from yml_config_builder.configs import SystemConfig
 from yml_config_builder.template_factories import ConfigToSystemBuilder
 
-
 import yaml
 
 

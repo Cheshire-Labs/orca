@@ -1,4 +1,4 @@
-from typing import Any, List
+from typing import List
 from resource_models.base_resource import Equipment
 from resource_models.location import Location
 

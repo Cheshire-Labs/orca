@@ -5,7 +5,6 @@ import importlib.util
 import sys
 from pathlib import Path
 from system.system import ISystem
-from workflow_models.status_enums import LabwareThreadStatus
 from workflow_models.workflow import LabwareThread
 from workflow_models.workflow import IThreadObserver
 
@@ -21,7 +20,7 @@ class ThreadScript(IThreadObserver, ABC):
         return self._system
 
     @abstractmethod
-    def thread_notify(self, event: LabwareThreadStatus, thread: LabwareThread) -> None:
+    def thread_notify(self, event: str, thread: LabwareThread) -> None:
         raise NotImplementedError
 
 class IScriptRegistry(ABC):

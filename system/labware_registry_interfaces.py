@@ -1,6 +1,5 @@
 from resource_models.labware import Labware, LabwareTemplate
 
-
 from abc import ABC, abstractmethod
 from typing import List
 

@@ -11,16 +11,22 @@ from resource_models.plate_pad import PlatePad
 from typing import List
 
 
-class ILocationObeserver(ABC):
+
+class IResourceLocationObserver(ABC):
     def location_notify(self, event: str, location: "Location", resource: LabwarePlaceable) -> None:
         pass
 
-class Location(LabwarePlaceable, ABC):
+class ILabwareLocationObserver(ABC):
+    def notify_labware_location_change(self, event: str, location: "Location", labware: Labware) -> None:
+        pass
+
+class Location(LabwarePlaceable):
     def __init__(self, teachpoint_name: str, resource: Optional[LabwarePlaceable] = None) -> None:
         self._teachpoint_name = teachpoint_name
         self._resource: LabwarePlaceable = resource if resource else PlatePad(teachpoint_name)
         self._options: Dict[str, Any] = {}
-        self._observers: List[ILocationObeserver] = []
+        self._resource_observers: List[IResourceLocationObserver] = []
+        self._labware_observers: List[ILabwareLocationObserver] = []
     
     @property
     def name(self) -> str:
@@ -40,37 +46,46 @@ class Location(LabwarePlaceable, ABC):
         self._resource.initialize_labware(labware)
 
     @property
-    def is_available(self) -> bool:
-        return self._resource.labware is None
-
-    @property
     def resource(self) -> LabwarePlaceable:
         return self._resource
     
     @resource.setter
     def resource(self, resource: LabwarePlaceable) -> None:
         self._resource = resource
-        for obeserver in self._observers:
+        for obeserver in self._resource_observers:
             obeserver.location_notify("resource_set", self, resource)
-
+    
     def set_options(self, options: Dict[str, Any]) -> None:
         self._options = options
 
-    def prepare_for_place(self, labware: Labware) -> None:
-        self._resource.prepare_for_place(labware)
+    async def prepare_for_place(self, labware: Labware) -> None:
+        await self._resource.prepare_for_place(labware)
 
-    def prepare_for_pick(self, labware: Labware) -> None:
-        self._resource.prepare_for_pick(labware)
+    async def prepare_for_pick(self, labware: Labware) -> None:
+        await self._resource.prepare_for_pick(labware)
 
-    def notify_picked(self, labware: Labware) -> None:
-        self._resource.notify_picked(labware)
+    async def notify_picked(self, labware: Labware) -> None:
+        await self._resource.notify_picked(labware)
+        for observer in self._labware_observers:
+            observer.notify_labware_location_change("picked", self, labware)
     
-    def notify_placed(self, labware: Labware) -> None:
-        self._resource.notify_placed(labware)
+    async def notify_placed(self, labware: Labware) -> None:
+        await self._resource.notify_placed(labware)
+        for observer in self._labware_observers:
+            observer.notify_labware_location_change("placed", self, labware)
 
     def __str__(self) -> str:
         return f"Location: {self._teachpoint_name}"
     
-    def add_observer(self, observer: ILocationObeserver) -> None:
-        self._observers.append(observer)
+    def add_observer(self, observer: IResourceLocationObserver | ILabwareLocationObserver) -> None:
+        if isinstance(observer, ILabwareLocationObserver):
+            if observer in self._labware_observers:
+                return
+            self._labware_observers.append(observer)
+        elif isinstance(observer, IResourceLocationObserver):
+            if observer in self._resource_observers:
+                return
+            self._resource_observers.append(observer)
+        else:
+            raise NotImplementedError(f"Observer type {type(observer)} not supported")
     

@@ -6,9 +6,12 @@ from resource_models.base_resource import Equipment
 from resource_models.labware import AnyLabwareTemplate, LabwareTemplate
 from resource_models.location import Location
 from scripting.scripting import IScriptRegistry, ScriptFactory, ScriptRegistry
+from system.move_handler import MoveHandler
+from system.thread_manager import ThreadManager
 from system.labware_registry_interfaces import ILabwareTemplateRegistry
 from system.registry_interfaces import IThreadRegistry
 from system.registries import InstanceRegistry, LabwareRegistry
+from system.reservation_manager import ReservationManager
 from system.resource_registry import IResourceRegistry, ResourceRegistry
 from system.system import System, SystemInfo
 from system.system_map import ILocationRegistry, IResourceLocator, SystemMap
@@ -65,7 +68,10 @@ class MethodActionConfigToTemplate:
                     raise LookupError(f"The input labware name '{input}' in method actions is not recognized as a defined labware.  Input must be a recognized labware or keyword")
                 inputs.append(labware_template)
         # Get the output labware templates
-        outputs = [self._labware_temp_reg.get_labware_template(name) for name in config.outputs]
+        if config.outputs is None:
+            outputs: List[Union[LabwareTemplate, AnyLabwareTemplate]] = inputs
+        else:
+            outputs = [self._labware_temp_reg.get_labware_template(name) for name in config.outputs]
         
         return MethodActionTemplate(resource,
                                     config.command,
@@ -97,6 +103,7 @@ class ThreadTemplateFactory:
                 labware_thread_temp_reg: IThreadTemplateRegistry, 
                 thread_reg: IThreadRegistry,
                 resource_locator: IResourceLocator,
+                thread_manager: ThreadManager,
                 script_reg: IScriptRegistry) -> None:
         self._labware_temp_reg: ILabwareTemplateRegistry = labware_temp_reg
         self._location_reg: ILocationRegistry = location_reg
@@ -104,6 +111,7 @@ class ThreadTemplateFactory:
         self._thread_temp_reg: IThreadTemplateRegistry = labware_thread_temp_reg
         self._thread_reg: IThreadRegistry = thread_reg
         self._resource_locator: IResourceLocator = resource_locator
+        self._thread_manager: ThreadManager = thread_manager
         self._script_reg: IScriptRegistry = script_reg
 
     def get_template(self, 
@@ -166,7 +174,7 @@ class ThreadTemplateFactory:
             if step_config.spawn:
                 for thread_name in step_config.spawn:
                     thread_template = self._thread_temp_reg.get_labware_thread_template(thread_name)
-                    spawn_action = SpawnThreadAction(self._thread_reg, thread_template)
+                    spawn_action = SpawnThreadAction(self._thread_reg, self._thread_manager, thread_template)
                     method.add_method_observer(spawn_action)
         return method
 
@@ -277,11 +285,16 @@ class ConfigToSystemBuilder:
         system_map = SystemMap(resource_reg)
         template_registry = TemplateRegistry()
         labware_registry = LabwareRegistry()
-        instance_registry = InstanceRegistry(labware_registry, system_map)
+        reservation_manager = ReservationManager(system_map) 
+        move_handler = MoveHandler(reservation_manager, labware_registry, system_map)
+        instance_registry = InstanceRegistry(labware_registry, move_handler, reservation_manager, system_map)
+        thread_manager = ThreadManager(instance_registry, system_map, move_handler)
         system_info = SystemInfo(self._config.system.name, self._config.system.version, self._config.system.description, self._config.model_extra)
-        system = System(system_info, system_map, resource_reg, template_registry, labware_registry, instance_registry)
+        system = System(system_info, system_map, resource_reg, template_registry, labware_registry, instance_registry, thread_manager)
         scripting_factory = ScriptFactory(system)
         script_reg = ScriptRegistry(scripting_factory)
+        
+
         # TODO: Move factories out
         method_template_factory = MethodTemplateFactory(resource_reg, labware_registry)
         thread_template_factory = ThreadTemplateFactory(labware_registry, 
@@ -290,6 +303,7 @@ class ConfigToSystemBuilder:
                                                         template_registry, 
                                                         instance_registry, 
                                                         system_map,
+                                                        thread_manager,
                                                         script_reg)
         workflow_template_factory = WorkflowTemplateFactory(thread_template_factory, template_registry)
 

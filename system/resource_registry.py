@@ -6,7 +6,6 @@ from resource_models.transporter_resource import TransporterResource
 
 from typing import Dict, List
 
-
 class IResourceRegistryObesrver(ABC):
     @abstractmethod
     def resource_registry_notify(self, event: str, resource: IResource) -> None:

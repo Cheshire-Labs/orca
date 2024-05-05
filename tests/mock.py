@@ -12,24 +12,24 @@ class MockEquipmentResource(PlaceHolderResource):
         self._on_unload_labware: Callable[[Labware], None] = lambda x: None
         self._on_execute: Callable[[str], None] = lambda x: None
 
-    def initialize(self) -> None:
-        super().initialize()
+    async def initialize(self) -> None:
+        await super().initialize()
         self._on_intialize(self._init_options)
     
-    def load_labware(self, labware: Labware) -> None:
-        super().load_labware(labware)
+    async def load_labware(self, labware: Labware) -> None:
+        await super().load_labware(labware)
         self._on_load_labware(labware)
         
 
-    def unload_labware(self, labware: Labware) -> None:
-        super().unload_labware(labware)
+    async def unload_labware(self, labware: Labware) -> None:
+        await super().unload_labware(labware)
         self._on_unload_labware(labware)
 
-    def execute(self) -> None:
+    async def execute(self) -> None:
         if self._command is None:
             raise ValueError(f"{self} - No command to execute")
         command = self._command
-        super().execute()
+        await super().execute()
         self._on_execute(command)
 
 
@@ -39,18 +39,18 @@ class MockRoboticArm(PlaceHolderRoboticArm):
         self._on_pick: Callable[[Labware, Location], None] = lambda x, y: None
         self._on_place: Callable[[Labware, Location], None] = lambda x, y: None
 
-    def pick(self, location: Location) -> None:
-        super().pick(location)
+    async def pick(self, location: Location) -> None:
+        await super().pick(location)
         if self._labware is None: 
             raise ValueError(f"{self} does not contain labware.  Base class pick method did not raise error")
         self._on_pick(self._labware, location)
         
     
-    def place(self, location: Location) -> None:
+    async def place(self, location: Location) -> None:
         if self._labware is None:
             raise ValueError(f"{self} does not contain labware to place")
         labware = self._labware
-        super().place(location)
+        await super().place(location)
         self._on_place(labware, location)
         
 

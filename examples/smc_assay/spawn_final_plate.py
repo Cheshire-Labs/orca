@@ -9,8 +9,8 @@ class SpawnFinalPlateScript(ThreadScript):
         super().__init__(system)
         self._transfer_count = 0
 
-    def thread_notify(self, event: LabwareThreadStatus, thread: LabwareThread) -> None:
-        if event == LabwareThreadStatus.CREATED:
+    def thread_notify(self, event: str, thread: LabwareThread) -> None:
+        if event == LabwareThreadStatus.CREATED.name.upper():
             if self._transfer_count % 4 != 0:
                 thread.start_location = self.system.get_location(thread.end_location.name)
             self._transfer_count += 1

@@ -4,11 +4,11 @@ from typing import Any, Dict, List, Optional, Set, Union
 from resource_models.base_resource import Equipment
 from resource_models.location import Location
 
-from resource_models.labware import AnyLabware, AnyLabwareTemplate, Labware, LabwareTemplate
+from resource_models.labware import AnyLabwareTemplate, LabwareTemplate
 from resource_models.resource_pool import EquipmentResourcePool
 
 from system.labware_registry_interfaces import ILabwareRegistry
-from workflow_models.location_action import DynamicResourceAction
+from workflow_models.dynamic_resource_action import DynamicResourceAction
 from workflow_models.workflow import IMethodObserver, IThreadObserver, Method
 
 
@@ -16,7 +16,7 @@ class MethodActionTemplate:
     def __init__(self, resource: Equipment | EquipmentResourcePool,
                  command: str,
                  inputs: List[Union[LabwareTemplate, AnyLabwareTemplate]],
-                 outputs: Optional[List[LabwareTemplate]] = None,
+                 outputs: Optional[List[Union[LabwareTemplate, AnyLabwareTemplate]]] = None,
                  options: Optional[Dict[str, Any]] = None):
         if isinstance(resource, Equipment):
             self._resource_pool: EquipmentResourcePool = EquipmentResourcePool(resource.name, [resource])
@@ -25,7 +25,7 @@ class MethodActionTemplate:
         self._command = command
         self._options: Dict[str, Any] = {} if options is None else options
         self._inputs: List[Union[LabwareTemplate, AnyLabwareTemplate]] = inputs
-        self._outputs: List[LabwareTemplate] = outputs if outputs is not None else []
+        self._outputs: List[Union[LabwareTemplate, AnyLabwareTemplate]] = outputs if outputs is not None else []
 
     @property
     def resource_pool(self) -> EquipmentResourcePool:
@@ -36,7 +36,7 @@ class MethodActionTemplate:
         return self._inputs
     
     @property
-    def outputs(self) -> List[LabwareTemplate]:
+    def outputs(self) -> List[Union[LabwareTemplate, AnyLabwareTemplate]]:
         return self._outputs
 
     @property
@@ -97,8 +97,8 @@ class MethodTemplate(IMethodTemplate):
         return list(inputs)
     
     @property
-    def outputs(self) -> List[LabwareTemplate]:
-        outputs: Set[LabwareTemplate] = set()
+    def outputs(self) -> List[Union[LabwareTemplate, AnyLabwareTemplate]]:
+        outputs: Set[Union[LabwareTemplate, AnyLabwareTemplate]] = set()
         for action in self._actions:
             outputs.update(action.outputs)
         return list(outputs)
@@ -132,15 +132,6 @@ class JunctionMethodTemplate(IMethodTemplate):
             raise NotImplementedError("Method has not been set")
         return self._method
     
-# TODO:  Commented, doesn't seem to be used
-# class MethodFactory:
-#     def __init__(self, labware_registry: ILabwareRegistry) -> None:
-#         self._labware_registry: ILabwareRegistry = labware_registry
-
-#     def create_instance(self, template: IMethodTemplate) -> Method:
-#         method = template.get_instance(self._labware_registry)
-#         return method
-
 class ThreadTemplate:
 
     def __init__(self, labware_template: LabwareTemplate, start: Location, end: Location, observers: List[IThreadObserver] = []) -> None:
@@ -208,17 +199,3 @@ class WorkflowTemplate:
         self._threads[thread.name] = thread
         if is_start:
             self._start_threads[thread.name] = thread
-
-    # def create_system_instance(self) -> System:
-
-    #     system = System(name=self._name,
-    #                   description=self._description,
-    #                   version=self._version,
-    #                   options=self._options,
-    #                   resources=self._resources,
-    #                   locations=self._locations)
-    #     # workflow_builders = {name: WorkflowBuilder(template, system) for name, template in self._workflows.items()}
-    #     # workflows = {name: builder.create_instance() for name, builder in workflow_builders.items()}
-        
-    #     # system.workflows = workflows
-    #     return system
