@@ -13,7 +13,6 @@ class Orca:
     def run_workflow(config_file: str, 
                      workflow_name: Optional[str] = None, 
                      options: Dict[str, Any] = {}):
-        loop: asyncio.AbstractEventLoop | None = asyncio.get_event_loop()
         config = ConfigFile(config_file)
         config.set_command_line_options(options)
         system = config.get_system()
