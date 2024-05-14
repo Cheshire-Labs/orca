@@ -1,5 +1,5 @@
 import re
-from typing import Any, Callable, Dict, Generic, List, Optional, TypeVar, Union
+from typing import Any, Dict, Generic, List, Optional, TypeVar, Union
 from config_interfaces import ISystemOptionsConfig, ISystemConfig, ISystemSettingsConfig, ILabwareConfig, IVariablesConfig, ILocationConfig, IResourceConfig, IResourcePoolConfig, IWorkflowConfig, ILabwareThreadConfig, IThreadStepConfig, IMethodConfig, IMethodActionConfig, IScriptBaseConfig, IScriptConfig
 from yml_config_builder.configs import SystemOptionsConfig, ConfigModel, LabwareConfig, LabwareThreadConfig, LocationConfig, MethodActionConfig, MethodConfig, ResourceConfig, ResourcePoolConfig, ScriptBaseConfig, ScriptConfig, SystemConfig, SystemSettingsConfig, ThreadStepConfig, VariablesConfig, WorkflowConfig
 from yml_config_builder.variable_resolution import VariablesRegistry
@@ -15,30 +15,6 @@ class DynamicBaseConfig(Generic[T]):
 
     def get_dynamic(self, value: Any) -> Any:
         return self._registry.get(value)
-
-    # def __getattribute__(self, name: str) -> Any:
-    #     if name in ["_config", "_registry"]:
-    #         return super().__getattribute__(name)
-    #     if hasattr(self._config, name):
-    #         value = self._config.__getattribute__(name)
-    #     elif hasattr(self._config, "model_extra") and hasattr(self._config.model_extra, name):
-    #         value = self._config.model_extra[name]
-    #     else:
-    #         raise ValueError(f"Variable {name} not found")
-    #     value = self._registry.get(value)
-    #     if isinstance(value, ConfigModel):
-    #         return DynamicBaseConfig(value, self._registry)
-    #     return value
-    
-# registry = VariablesRegistry()
-
-# def dynamic_property(registry: VariablesRegistry) -> Callable[[Any], Any]:
-#     def decorator(prop: Callable[[Any], Any]) -> property:
-#         def wrapper(prop2: Callable[[Any], Any]) -> Any:
-#             return prop.__get__
-#         #  return DynamicBaseConfig(config, registry)
-#         return wrapper
-#     return decorator
 
 class DynamicSystemOptionsConfig(DynamicBaseConfig[SystemOptionsConfig], ISystemOptionsConfig):
     pass
