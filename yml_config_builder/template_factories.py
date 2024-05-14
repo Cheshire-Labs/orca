@@ -2,6 +2,7 @@
 import os
 from typing import Dict, List, Optional, Tuple, Union
 
+from config_interfaces import ILabwareConfig, ILabwareThreadConfig, IMethodActionConfig, IMethodConfig, IResourceConfig, IResourcePoolConfig, ISystemConfig, IThreadStepConfig, IWorkflowConfig
 from resource_models.base_resource import Equipment
 from resource_models.labware import AnyLabwareTemplate, LabwareTemplate
 from resource_models.location import Location
@@ -19,7 +20,6 @@ from system.registries import TemplateRegistry
 from system.template_registry_interfaces import IThreadTemplateRegistry, IMethodTemplateRegistry, IWorkflowTemplateRegistry
 from workflow_models.spawn_thread_action import SpawnThreadAction
 from workflow_models.workflow import IThreadObserver
-from yml_config_builder.configs import LabwareConfig, LabwareThreadConfig, MethodActionConfig, MethodConfig, ResourceConfig, ResourcePoolConfig, SystemConfig, ThreadStepConfig, WorkflowConfig
 from yml_config_builder.resource_factory import ResourceFactory, ResourcePoolFactory
 from resource_models.resource_pool import EquipmentResourcePool
 from resource_models.transporter_resource import TransporterResource
@@ -29,8 +29,8 @@ from yml_config_builder.special_yml_parsing import get_dynamic_yaml_keys, is_dyn
 
 class LabwareConfigToTemplateAdapter:
 
-    def get_template(self, name: str, config: LabwareConfig) -> LabwareTemplate:
-        labware = LabwareTemplate(name, config.type, config.model_extra)
+    def get_template(self, name: str, config: ILabwareConfig) -> LabwareTemplate:
+        labware = LabwareTemplate(name, config.type, config.options)
         return labware
 
 class MethodActionConfigToTemplate:
@@ -38,7 +38,7 @@ class MethodActionConfigToTemplate:
         self._resource_reg: IResourceRegistry = resource_reg
         self._labware_temp_reg: ILabwareTemplateRegistry = labware_temp_reg
 
-    def get_template(self, name: str, config: MethodActionConfig)  -> MethodActionTemplate:
+    def get_template(self, name: str, config: IMethodActionConfig)  -> MethodActionTemplate:
         # Get the resource name
         resource_name = config.resource
         if resource_name is None:
@@ -77,14 +77,14 @@ class MethodActionConfigToTemplate:
                                     config.command,
                                     inputs,
                                     outputs, 
-                                    config.model_extra)
+                                    config.options)
 
 class MethodTemplateFactory:
     def __init__(self, resource_reg: IResourceRegistry, labware_template_reg: ILabwareTemplateRegistry) -> None:
         self._template_builder = MethodActionConfigToTemplate(resource_reg, labware_template_reg)
 
-    def get_template(self, name: str, config: MethodConfig, ) -> MethodTemplate:
-        method = MethodTemplate(name, config.model_extra)
+    def get_template(self, name: str, config: IMethodConfig) -> MethodTemplate:
+        method = MethodTemplate(name, config.options)
         
         for action_item in config.actions:
             for action_name, action_config in action_item.items():
@@ -116,7 +116,7 @@ class ThreadTemplateFactory:
 
     def get_template(self, 
                 name: str, 
-                config: LabwareThreadConfig) -> ThreadTemplate:
+                config: ILabwareThreadConfig) -> ThreadTemplate:
         try:
             labware = self._get_labware_template(config)
             start_location = self._get_location(self._location_reg, config.start)                                            
@@ -131,7 +131,7 @@ class ThreadTemplateFactory:
         return labware_thread
 
     def _get_labware_template(self,
-                            config: LabwareThreadConfig) -> LabwareTemplate:
+                            config: ILabwareThreadConfig) -> LabwareTemplate:
         try:
             return self._labware_temp_reg.get_labware_template(config.labware)
         except KeyError as e:
@@ -146,21 +146,21 @@ class ThreadTemplateFactory:
             except KeyError:
                  raise KeyError(f"Start/end location {location_name} which is not in the system locations or system resources")
     
-    def apply_methods(self, thread_template: ThreadTemplate, config: LabwareThreadConfig) -> None:
+    def apply_methods(self, thread_template: ThreadTemplate, config: ILabwareThreadConfig) -> None:
         for step in config.steps:
             if isinstance(step, str):
                 method_name = step
                 method_resolver = self._get_method_resolver(method_name)
                 thread_template.add_method(method_resolver)
 
-            elif isinstance(step, ThreadStepConfig):
+            elif isinstance(step, IThreadStepConfig):
                 method_resolver = self._get_method_resolver(step.method, step)
                 thread_template.add_method(method_resolver)
             else:
                 raise ValueError(f"Labware Thread {thread_template.name} has an invalid step type {step}.  Steps must be a string or a ThreadStepConfig")
 
 
-    def _get_method_resolver(self, method_name: str, step_config: Optional[ThreadStepConfig] = None) -> IMethodTemplate:
+    def _get_method_resolver(self, method_name: str, step_config: Optional[IThreadStepConfig] = None) -> IMethodTemplate:
         if is_dynamic_yaml(method_name):
             input_index = [int(key) for key in get_dynamic_yaml_keys(method_name)]
             shared_method = JunctionMethodTemplate()
@@ -185,10 +185,10 @@ class WorkflowTemplateFactory:
         self._thread_temp_reg: IThreadTemplateRegistry = thread_temp_reg
         self._thread_template_factory = thread_template_factory
 
-    def get_template(self, name: str, config: WorkflowConfig) -> WorkflowTemplate:
+    def get_template(self, name: str, config: IWorkflowConfig) -> WorkflowTemplate:
         workflow = WorkflowTemplate(name)
         
-        thread_templates: List[Tuple[ThreadTemplate, LabwareThreadConfig]] = []
+        thread_templates: List[Tuple[ThreadTemplate, ILabwareThreadConfig]] = []
         # initialize thread templates
         for thread_name, thread_config in config.threads.items():
             thread_template = self._thread_template_factory.get_template(thread_name, thread_config)
@@ -208,7 +208,7 @@ class WorkflowTemplateFactory:
 
 
 class ConfigToSystemBuilder:
-    def __init__(self, config: SystemConfig) -> None:
+    def __init__(self, config: ISystemConfig) -> None:
         self._config = config
     
     def _build_scripts(self, script_reg: IScriptRegistry) -> None:
@@ -219,14 +219,14 @@ class ConfigToSystemBuilder:
             script_reg.add_script(script_name, script)
     
     def _build_resources(self, resource_reg: IResourceRegistry) -> None:
-        resource_pool_configs: Dict[str, ResourcePoolConfig] = {}
+        resource_pool_configs: Dict[str, IResourcePoolConfig] = {}
 
         # build resources from resource defs in config, defer resource pool creation
         for name, resource_config in self._config.resources.items():
-            if resource_config.type == "pool" and isinstance(resource_config, ResourcePoolConfig):
+            if resource_config.type == "pool" and isinstance(resource_config, IResourcePoolConfig):
                 resource_pool_configs[name] = resource_config
                 continue
-            elif isinstance(resource_config, ResourceConfig):
+            elif isinstance(resource_config, IResourceConfig):
                 resource_reg.add_resource(ResourceFactory().create(name, resource_config))
             else:
                 raise ValueError(f"Resource {name} has an invalid type {resource_config.type}")
@@ -240,7 +240,7 @@ class ConfigToSystemBuilder:
         # build locations from location defs in config
         for location_name, location_config in self._config.locations.items():
             location = Location(location_config.teachpoint_name)
-            location.set_options(location_config.model_extra)  
+            location.set_options(location_config.options)  
             system_map.add_location(location)
         
         for res in resource_registry.resources:
@@ -251,7 +251,7 @@ class ConfigToSystemBuilder:
                 # set resource to each location
                 # if the plate-pad is not set in the resource definition, then use the resource name
                 resource_config = self._config.resources[res.name]
-                if not isinstance(resource_config, ResourceConfig):
+                if not isinstance(resource_config, IResourceConfig):
                     raise ValueError(f"Resource {res.name} has an invalid type {resource_config.type}")
                 if resource_config.plate_pad is not None:
                     location_name = resource_config.plate_pad
@@ -289,7 +289,7 @@ class ConfigToSystemBuilder:
         move_handler = MoveHandler(reservation_manager, labware_registry, system_map)
         instance_registry = InstanceRegistry(labware_registry, move_handler, reservation_manager, system_map)
         thread_manager = ThreadManager(instance_registry, system_map, move_handler)
-        system_info = SystemInfo(self._config.system.name, self._config.system.version, self._config.system.description, self._config.model_extra)
+        system_info = SystemInfo(self._config.system.name, self._config.system.version, self._config.system.description, self._config.options)
         system = System(system_info, system_map, resource_reg, template_registry, labware_registry, instance_registry, thread_manager)
         scripting_factory = ScriptFactory(system)
         script_reg = ScriptRegistry(scripting_factory)

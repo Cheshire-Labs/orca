@@ -1,17 +1,17 @@
 from typing import List
+from config_interfaces import IResourceConfig, IResourcePoolConfig
 from resource_models.drivers import PlaceHolderNonLabwareResource, PlaceHolderResource, PlaceHolderRoboticArm, StoragePlaceHolderResource
 from resource_models.base_resource import BaseResource, Equipment
 
 from resource_models.resource_pool import EquipmentResourcePool
 from system.resource_registry import IResourceRegistry
-from yml_config_builder.configs import ResourceConfig, ResourcePoolConfig
 
 
 
 
 class ResourceFactory:
 
-    def create(self, resource_name: str, resource_config: ResourceConfig) -> BaseResource:
+    def create(self, resource_name: str, resource_config: IResourceConfig) -> BaseResource:
         resource: BaseResource
         res_type = resource_config.type
         if res_type == 'ml-star':
@@ -58,14 +58,14 @@ class ResourceFactory:
             resource = PlaceHolderNonLabwareResource(resource_name, "Switch")
         else:
             raise ValueError(f"Unknown resource type: {res_type}")
-        resource.set_init_options(resource_config.model_extra)
+        resource.set_init_options(resource_config.options)
         return resource
     
 class ResourcePoolFactory:
     def __init__(self, resource_reg: IResourceRegistry) -> None:
         self._resource_reg = resource_reg
 
-    def create(self, pool_name: str, pool_config: ResourcePoolConfig) -> EquipmentResourcePool:
+    def create(self, pool_name: str, pool_config: IResourcePoolConfig) -> EquipmentResourcePool:
         res_type = pool_config.type
         if res_type != 'pool':
             raise ValueError(f"Resource pool {pool_name} type set as {res_type} instead of 'pool'")

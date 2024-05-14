@@ -13,8 +13,14 @@ class ConfigModel(BaseModel):
         if model_extra is None:
             return {}
         return model_extra
+    
+class SystemOptionsConfig(ConfigModel):
+    model_config = ConfigDict(extra='allow')
+    stage: str = 'dev'
 
-
+class VariablesConfig(ConfigModel):
+    model_config = ConfigDict(extra='allow')
+    
 class ScriptConfig(ConfigModel):
     model_config = ConfigDict(extra='allow')
     source: str
@@ -86,8 +92,9 @@ class WorkflowConfig(ConfigModel):
 class SystemConfig(ConfigModel):
     model_config = ConfigDict(extra='allow')
     system: SystemSettingsConfig
+    options: SystemOptionsConfig = SystemOptionsConfig()
     labwares: Dict[str, LabwareConfig]
-    config: Dict[str, Any] = {}
+    config: VariablesConfig
     locations: Dict[str, LocationConfig] = {}
     resources: Dict[str, Union[ResourceConfig, ResourcePoolConfig]]
     methods: Dict[str, MethodConfig]

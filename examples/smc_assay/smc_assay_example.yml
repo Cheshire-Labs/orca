@@ -110,13 +110,13 @@ resources:
         ip: 192.168.1.121
         plate-pad: stacker_1
         init:
-            labware: ${sample-plate.type}
+            labware: ${labwares:sample-plate.type}
     stacker-sample-end:
         type: vstack
         ip: 192.168.1.122
         plate-pad: stacker_2
         init:
-            labware: ${sample-plate.type}
+            labware: ${labwares:sample-plate.type}
     stacker-plate-1-start:
         type: vstack
         ip: 192.168.1.123
@@ -128,25 +128,25 @@ resources:
         ip: 192.168.1.124
         plate-pad: stacker_4
         init:
-            labware: ${final-plate.type}
+            labware: ${labwares:final-plate.type}
     stacker-96-tips:
         type: vstack
         ip: 192.168.1.125
         plate-pad: stacker_5
         init:
-            labware: ${tips-96.type}
+            labware: ${labwares:tips-96.type}
     stacker-384-tips-start:
         type: vstack
         ip: 192.168.1.126
         plate-pad: stacker_6
         init:
-            labware: ${tips-384.type}
+            labware: ${labwares:tips-384.type}
     stacker-384-tips-end:
         type: vstack
         ip: 192.168.1.127
         plate-pad: stacker_7
         init:
-            labware: ${tips-384.type}
+            labware: ${labwares:tips-384.type}
 
 ## SHAKERS
     shaker-1:
@@ -247,7 +247,7 @@ methods:
         - shaker-collection:
             command: shake
             inputs: [plate-1]
-            shake-time: ${config.{param}.bead-incubation-time}
+            shake-time: ${config:${opt:stage}.bead-incubation-time}
 
     post-capture-wash:
       actions:
@@ -271,7 +271,7 @@ methods:
         - shaker-collection:
             command: shake
             inputs: [plate-1]
-            shake-time: ${config.{param}.post-detection-incubate-time}
+            shake-time: ${config:${opt:stage}.post-detection-incubate-time}
 
     pre-transfer-wash:
       actions:
@@ -302,7 +302,7 @@ methods:
             - shaker-1:
                 command: shake
                 inputs: [plate-1]
-                shake-time: ${config.{param}.post-detection-settle-time}
+                shake-time: ${config:${opt:stage}.post-detection-settle-time}
 
     add-buffer-d:
         actions:
