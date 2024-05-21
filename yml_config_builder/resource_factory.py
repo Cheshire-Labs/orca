@@ -1,9 +1,10 @@
 from typing import List
 from config_interfaces import IResourceConfig, IResourcePoolConfig
-from resource_models.drivers import PlaceHolderNonLabwareResource, PlaceHolderResource, PlaceHolderRoboticArm, StoragePlaceHolderResource
-from resource_models.base_resource import BaseResource, Equipment
+from resource_models.drivers import SimulationBaseDriver, SimulationDriver, SimulationRoboticArm, VenusProtocolDriver
+from resource_models.base_resource import Equipment, IEquipment, LabwareLoadableEquipment
 
 from resource_models.resource_pool import EquipmentResourcePool
+from resource_models.transporter_resource import TransporterEquipment
 from system.resource_registry import IResourceRegistry
 
 
@@ -11,51 +12,53 @@ from system.resource_registry import IResourceRegistry
 
 class ResourceFactory:
 
-    def create(self, resource_name: str, resource_config: IResourceConfig) -> BaseResource:
-        resource: BaseResource
+    def create(self, resource_name: str, resource_config: IResourceConfig) -> IEquipment:
+        resource: IEquipment
         res_type = resource_config.type
         if res_type == 'ml-star':
-            resource = PlaceHolderResource(resource_name, mocking_type="Hamilton MLSTAR")
+            resource = LabwareLoadableEquipment(resource_name, SimulationDriver("Hamilton MLSTAR", "Hamilton MLSTAR"))
+        elif res_type == 'venus':
+            resource = LabwareLoadableEquipment(resource_name, VenusProtocolDriver("Venus"))
         elif res_type == 'acell':
-            resource = PlaceHolderRoboticArm(resource_name, "ACell")
+            resource = TransporterEquipment(resource_name, SimulationRoboticArm(resource_name, "ACell"))
         elif res_type == 'mock-robot':
-            resource = PlaceHolderRoboticArm(resource_name, "Precision Flex")
+            resource = TransporterEquipment(resource_name, SimulationRoboticArm(resource_name, "Precision Flex"))
         elif res_type == 'ddr':
-            resource = PlaceHolderRoboticArm(resource_name, "DDR")
+            resource = TransporterEquipment(resource_name, SimulationRoboticArm(resource_name, "DDR"))
         elif res_type == 'translator':
-            resource = PlaceHolderRoboticArm(resource_name, "Translator")
+            resource = TransporterEquipment(resource_name, SimulationRoboticArm(resource_name, "Translator"))
         elif res_type == 'cwash':
-            resource = PlaceHolderResource(resource_name, "CWash")
+            resource = LabwareLoadableEquipment(resource_name, SimulationDriver("CWash", "CWash"))
         elif res_type == 'mantis':
-            resource = PlaceHolderResource(resource_name, "Mantis")
+            resource = LabwareLoadableEquipment(resource_name, SimulationDriver("Mantis", "Mantis"))
         elif res_type == 'analytic-jena':
-            resource = PlaceHolderResource(resource_name, "Analytic Jena")
+            resource = LabwareLoadableEquipment(resource_name, SimulationDriver("Analytic Jena", "Analytic Jena"))
         elif res_type == 'tapestation-4200':
-            resource = PlaceHolderResource(resource_name,"Tapestation 4200")
+            resource = LabwareLoadableEquipment(resource_name,SimulationDriver("Tapestation 4200", "Tapestation 4200"))
         elif res_type == 'biotek':
-            resource = PlaceHolderResource(resource_name, "Biotek")
+            resource = LabwareLoadableEquipment(resource_name, SimulationDriver("Biotek", "Biotek"))
         elif res_type == 'bravo':
-            resource = PlaceHolderResource(resource_name, "Bravo")
+            resource = LabwareLoadableEquipment(resource_name, SimulationDriver("Bravo", "Bravo"))
         elif res_type == 'plateloc':
-            resource = PlaceHolderResource(resource_name, "Plateloc")
+            resource = LabwareLoadableEquipment(resource_name, SimulationDriver("Plateloc", "Plateloc"))
         elif res_type == 'vspin':
-            resource = PlaceHolderResource(resource_name, "VSpin")
+            resource = LabwareLoadableEquipment(resource_name, SimulationDriver("VSpin", "VSpin"))
         elif res_type == 'agilent-hotel':
-            resource = PlaceHolderResource(resource_name, "Agilent Hotel")
+            resource = LabwareLoadableEquipment(resource_name, SimulationDriver("Agilent Hotel", "Agilent Hotel"))
         elif res_type == 'smc-pro':
-            resource = PlaceHolderResource(resource_name, "SMC Pro")
+            resource = LabwareLoadableEquipment(resource_name, SimulationDriver("SMC Pro", "SMC Pro"))
         elif res_type == 'vstack':
-            resource = PlaceHolderResource(resource_name, "VStack")
+            resource = LabwareLoadableEquipment(resource_name, SimulationDriver("VStack", "VStack"))
         elif res_type == 'shaker':
-            resource = PlaceHolderResource(resource_name, "Shaker")
+            resource = LabwareLoadableEquipment(resource_name, SimulationDriver("Shaker", "Shaker"))
         elif res_type == 'waste':
-            resource = StoragePlaceHolderResource(resource_name, "Waste")
+            resource = LabwareLoadableEquipment(resource_name, SimulationDriver("Waste", "Waste"))
         elif res_type == 'delidder':
-            resource = PlaceHolderResource(resource_name, "Delidder")
+            resource = LabwareLoadableEquipment(resource_name, SimulationDriver("Delidder", "Delidder"))
         elif res_type == 'serial-switch':
-            resource = PlaceHolderNonLabwareResource(resource_name, "Serial Switch")
+            resource = Equipment(resource_name, SimulationBaseDriver("Serial Switch", "Serial Switch"))
         elif res_type == 'switch':
-            resource = PlaceHolderNonLabwareResource(resource_name, "Switch")
+            resource = Equipment(resource_name, SimulationBaseDriver("Switch", "Switch"))
         else:
             raise ValueError(f"Unknown resource type: {res_type}")
         resource.set_init_options(resource_config.options)

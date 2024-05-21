@@ -1,5 +1,5 @@
 from typing import Optional, Dict, Any, Callable, List
-from resource_models.drivers import PlaceHolderResource, PlaceHolderRoboticArm
+from resource_models.drivers import PlaceHolderResource, SimulationRoboticArm
 from resource_models.location import Location
 from resource_models.labware import Labware
 
@@ -33,7 +33,7 @@ class MockEquipmentResource(PlaceHolderResource):
         self._on_execute(command)
 
 
-class MockRoboticArm(PlaceHolderRoboticArm):
+class MockRoboticArm(SimulationRoboticArm):
     def __init__(self, name: str, mocking_type: Optional[str] = None) -> None:
         super().__init__(name, mocking_type)
         self._on_pick: Callable[[Labware, Location], None] = lambda x, y: None

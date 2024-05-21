@@ -1,46 +1,47 @@
 import asyncio
+from resource_models.base_resource import Equipment
+from resource_models.drivers import ITransporterDriver
 from resource_models.location import Location
-from resource_models.base_resource import BaseResource
-from abc import abstractmethod
 from typing import List, Optional
 from resource_models.labware import Labware
 
 
-class TransporterResource(BaseResource):
-    def __init__(self, name: str):
-        super().__init__(name)
-        self.__labware: Optional[Labware] = None
-        self.wait_on_available = asyncio.Event()
+class TransporterEquipment(Equipment):
+    def __init__(self, name: str, driver: ITransporterDriver):
+        super().__init__(name, driver)
+        self._driver: ITransporterDriver = driver
+        self._labware: Optional[Labware] = None
+        self._lock = asyncio.Lock()
 
     @property
     def labware(self) -> Optional[Labware]:
         return self._labware
     
-    @property
-    def _labware(self) -> Optional[Labware]:
-        return self.__labware
-    
-    @_labware.setter
-    def _labware(self, labware: Optional[Labware]) -> None:
-        if labware is None:
-            self.wait_on_available.set()
-        else:
-            self.wait_on_available.clear()
-        self.__labware = labware
-    
-
-     
-    @abstractmethod
     async def pick(self, location: Location) -> None:
-        raise NotImplementedError
+        async with self._lock:
+            if self._labware is not None:
+                raise ValueError(f"{self} already contains labware: {self._labware}")
+            if location.labware is None:
+                raise ValueError(f"{location} does not contain labware")
+            print(f"{self._name} pick {location.labware} from {location}: picking...")
+            await self._driver.pick(location.teachpoint_name, location.labware.labware_type)
+            print(f"{self._name} pick {location.labware} from {location}: picked")
+            self._labware = location.labware
 
-    @abstractmethod
     async def place(self, location: Location) -> None:
-        raise NotImplementedError
+        async with self._lock:
+            if self._labware is None:
+                raise ValueError(f"{self} does not contain labware")
+            if location.labware is not None:
+                raise ValueError(f"{location} already contains labware")
+            print(f"{self._name} place {self._labware} to {location}: placing...")
+            await self._driver.place(location.teachpoint_name, self._labware.labware_type)
+            print(f"{self._name} place {self._labware} to {location}: placed")
+            
+            self._labware = None
 
-    @abstractmethod
     def get_taught_positions(self) -> List[str]:
-        raise NotImplementedError
+        return self._driver.get_taught_positions()
     
     def __str__(self) -> str:
         return f"Transporter: {self._name}"

@@ -1,7 +1,8 @@
 from abc import ABC, abstractmethod
-from resource_models.base_resource import Equipment, IResource
+import asyncio
+from resource_models.base_resource import Equipment, IInitializableResource, IResource
 from resource_models.resource_pool import EquipmentResourcePool
-from resource_models.transporter_resource import TransporterResource
+from resource_models.transporter_resource import TransporterEquipment
 
 
 from typing import Dict, List
@@ -38,11 +39,11 @@ class IResourceRegistry(ABC):
 
     @property
     @abstractmethod
-    def transporters(self) -> List[TransporterResource]:
+    def transporters(self) -> List[TransporterEquipment]:
         raise NotImplementedError
 
     @abstractmethod
-    def get_transporter(self, name: str) -> TransporterResource:
+    def get_transporter(self, name: str) -> TransporterEquipment:
         raise NotImplementedError
 
     @property
@@ -61,6 +62,10 @@ class IResourceRegistry(ABC):
     @abstractmethod
     def add_observer(self, observer: IResourceRegistryObesrver) -> None:
         raise NotImplementedError
+    
+    @abstractmethod
+    def initialize_all(self) -> None:
+        raise NotImplementedError
 
 
 class ResourceRegistry(IResourceRegistry):
@@ -78,8 +83,8 @@ class ResourceRegistry(IResourceRegistry):
         return [r for r in self._resources.values() if isinstance(r, Equipment)]
 
     @property
-    def transporters(self) -> List[TransporterResource]:
-        return [r for r in self._resources.values() if isinstance(r, TransporterResource)]
+    def transporters(self) -> List[TransporterEquipment]:
+        return [r for r in self._resources.values() if isinstance(r, TransporterEquipment)]
 
     @property
     def resource_pools(self) -> List[EquipmentResourcePool]:
@@ -94,9 +99,9 @@ class ResourceRegistry(IResourceRegistry):
             raise ValueError(f"Resource {name} is not an Equipment resource")
         return resource
 
-    def get_transporter(self, name: str) -> TransporterResource:
+    def get_transporter(self, name: str) -> TransporterEquipment:
         resource = self.get_resource(name)
-        if not isinstance(resource, TransporterResource):
+        if not isinstance(resource, TransporterEquipment):
             raise ValueError(f"Resource {name} is not an Equipment resource")
         return resource
 
@@ -118,3 +123,6 @@ class ResourceRegistry(IResourceRegistry):
 
     def add_observer(self, observer: IResourceRegistryObesrver) -> None:
         self._observers.append(observer)
+
+    def initialize_all(self) -> None:
+        asyncio.gather(*[r.initialize() for r in self._resources.values() if isinstance(r, IInitializableResource)])

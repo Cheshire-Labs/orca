@@ -1,17 +1,17 @@
 from resource_models.labware import Labware
 from resource_models.location import Location
-from resource_models.transporter_resource import TransporterResource
+from resource_models.transporter_resource import TransporterEquipment
 
 
 from typing import Iterator, List
 
 
 class RouteStep:
-    def __init__(self, labware: Labware, source: Location, target: Location, transporter: TransporterResource) -> None:
+    def __init__(self, labware: Labware, source: Location, target: Location, transporter: TransporterEquipment) -> None:
         self.labware: Labware = labware 
         self.source: Location = source
         self.target: Location = target
-        self.transporter: TransporterResource = transporter
+        self.transporter: TransporterEquipment = transporter
         self.target_loc_reservation_id: str | None = None
 
     def __str__(self) -> str:
@@ -22,7 +22,7 @@ class Route:
         self._steps: List[RouteStep] = []
         self._labware: Labware = labware
 
-    def add_step(self, source: Location, target: Location, transporter: TransporterResource) -> None:
+    def add_step(self, source: Location, target: Location, transporter: TransporterEquipment) -> None:
         """Add a new step to the route."""
         step = RouteStep(self._labware, source, target, transporter)
         self._steps.append(step)

@@ -1,7 +1,7 @@
 from typing import Optional
 
 from typing import Any, Dict
-from resource_models.base_resource import LabwarePlaceable
+from resource_models.base_resource import ILabwarePlaceable
 from resource_models.labware import Labware
 
 
@@ -13,17 +13,17 @@ from typing import List
 
 
 class IResourceLocationObserver(ABC):
-    def location_notify(self, event: str, location: "Location", resource: LabwarePlaceable) -> None:
+    def location_notify(self, event: str, location: "Location", resource: ILabwarePlaceable) -> None:
         pass
 
 class ILabwareLocationObserver(ABC):
     def notify_labware_location_change(self, event: str, location: "Location", labware: Labware) -> None:
         pass
 
-class Location(LabwarePlaceable):
-    def __init__(self, teachpoint_name: str, resource: Optional[LabwarePlaceable] = None) -> None:
+class Location(ILabwarePlaceable):
+    def __init__(self, teachpoint_name: str, resource: Optional[ILabwarePlaceable] = None) -> None:
         self._teachpoint_name = teachpoint_name
-        self._resource: LabwarePlaceable = resource if resource else PlatePad(teachpoint_name)
+        self._resource: ILabwarePlaceable = resource if resource else PlatePad(teachpoint_name)
         self._options: Dict[str, Any] = {}
         self._resource_observers: List[IResourceLocationObserver] = []
         self._labware_observers: List[ILabwareLocationObserver] = []
@@ -46,11 +46,11 @@ class Location(LabwarePlaceable):
         self._resource.initialize_labware(labware)
 
     @property
-    def resource(self) -> LabwarePlaceable:
+    def resource(self) -> ILabwarePlaceable:
         return self._resource
     
     @resource.setter
-    def resource(self, resource: LabwarePlaceable) -> None:
+    def resource(self, resource: ILabwarePlaceable) -> None:
         self._resource = resource
         for obeserver in self._resource_observers:
             obeserver.location_notify("resource_set", self, resource)

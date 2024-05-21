@@ -1,7 +1,8 @@
 import argparse
 import asyncio
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Coroutine, Dict, List, Optional
 from method_executor import MethodExecutor
+from resource_models.base_resource import IInitializableResource
 from resource_models.labware import LabwareTemplate
 from resource_models.location import Location
 from workflow_executor import WorkflowExecuter
@@ -29,6 +30,7 @@ class Orca:
                                     system, 
                                     system, 
                                     system)
+        system.initialize_all()
         executer.execute()
 
     @staticmethod
@@ -74,6 +76,7 @@ class Orca:
                                  end_map,
                                  system,
                                  system)
+        system.initialize_all()
         executer.execute()
 
     @staticmethod
@@ -81,8 +84,22 @@ class Orca:
         raise NotImplementedError()
     
     @staticmethod
-    def init():
-        raise NotImplementedError()
+    def init(config_file: str, 
+            resource_list: Optional[List[str]] = None, 
+            options: Dict[str, Any] = {}):
+        config = ConfigFile(config_file)
+        config.set_command_line_options(options)
+        system = config.get_system()
+        if resource_list is None:
+            system.initialize_all()
+        else:
+            init_fxns: List[Callable[[], Coroutine[Any, Any, None]]] = []
+            for resource_name in resource_list:
+                resource = system.get_resource(resource_name)
+                if isinstance(resource, IInitializableResource):
+                    init_fxns.append(resource.initialize)
+            asyncio.gather(*[f() for f in init_fxns])
+        
 
 def main():
     parser = argparse.ArgumentParser(description="Lab Automation Orchestrator")
@@ -105,6 +122,7 @@ def main():
     # INIT
     init_parser = subparsers.add_parser("init", help="Initialize the lab instruments")
     init_parser.add_argument("--config", help="Configuration file")
+    init_parser.add_argument("--resources", help="List of resources to initialize.  All others will be excluded.")
 
     # CHECK
     check_parser = subparsers.add_parser("check", help="Check syntax errors within the configuration")

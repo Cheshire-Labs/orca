@@ -2,7 +2,7 @@ from abc import ABC
 from typing import Dict, List
 from resource_models.location import Location
 from resource_models.resource_pool import EquipmentResourcePool
-from resource_models.transporter_resource import TransporterResource
+from resource_models.transporter_resource import TransporterEquipment
 from resource_models.base_resource import Equipment, IResource
 
 from resource_models.labware import Labware, LabwareTemplate
@@ -105,7 +105,7 @@ class System(ISystem):
         return self._resources.equipments
     
     @property
-    def transporters(self) -> List[TransporterResource]:
+    def transporters(self) -> List[TransporterEquipment]:
         return self._resources.transporters
     
     @property
@@ -122,7 +122,7 @@ class System(ISystem):
     def get_equipment(self, name: str) -> Equipment:
         return self._resources.get_equipment(name)
 
-    def get_transporter(self, name: str) -> TransporterResource:
+    def get_transporter(self, name: str) -> TransporterEquipment:
         return self._resources.get_transporter(name)
 
     def get_resource_pool(self, name: str) -> EquipmentResourcePool:
@@ -205,3 +205,6 @@ class System(ISystem):
     
     def execute_all_threads(self) -> None:
         return self._thread_manager.execute_all_threads()
+    
+    def initialize_all(self) -> None:
+        return self._resources.initialize_all()

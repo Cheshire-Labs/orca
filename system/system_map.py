@@ -2,14 +2,14 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 import itertools
 from typing import Any, Dict, List, Optional, Set, Tuple
-from resource_models.base_resource import IResource, LabwarePlaceable
+from resource_models.base_resource import IResource, ILabwarePlaceable
 from resource_models.labware import Labware
 from resource_models.location import IResourceLocationObserver, Location
 import networkx as nx
 import matplotlib.pyplot as plt
 
 from resource_models.plate_pad import PlatePad
-from resource_models.transporter_resource import TransporterResource
+from resource_models.transporter_resource import TransporterEquipment
 from system.resource_registry import IResourceRegistry
 from system.resource_registry import IResourceRegistryObesrver
 
@@ -28,7 +28,7 @@ class IRouteBuilder(ABC):
         def get_distance(self, source: str, target: str) -> float:
             raise NotImplementedError
         
-        def get_transporter_between(self, source: str, target: str) -> TransporterResource:
+        def get_transporter_between(self, source: str, target: str) -> TransporterEquipment:
             raise NotImplementedError
         
         def has_available_route(self, source: str, target: str) -> bool:
@@ -56,7 +56,7 @@ class _NetworkXHandler:
     def add_node(self, name: str, location: Location) -> None:
         self._graph.add_node(name, location=location) # type: ignore
     
-    def add_edge(self, start: str, end: str, transporter: TransporterResource, weight: float = 1.0) -> None:
+    def add_edge(self, start: str, end: str, transporter: TransporterEquipment, weight: float = 1.0) -> None:
         self._graph.add_edge(start, end, weight=weight, transporter=transporter) # type: ignore
 
     def has_path(self, source: str, target: str) -> bool:
@@ -137,7 +137,7 @@ class SystemMap(ILocationRegistry, IRouteBuilder, IResourceLocator, IResourceLoc
 
     def add_location(self, location: Location) -> None:
         self._graph.add_node(location.teachpoint_name, location=location)
-        if isinstance(location.resource, LabwarePlaceable):
+        if isinstance(location.resource, ILabwarePlaceable):
             self._equipment_map[location.resource.name] = location
         location.add_observer(self)
 
@@ -154,10 +154,10 @@ class SystemMap(ILocationRegistry, IRouteBuilder, IResourceLocator, IResourceLoc
     def get_distance(self, source: str, target: str) -> float:
         return self._graph.get_distance(source, target)
     
-    def get_transporter_between(self, source: str, target: str) -> TransporterResource:
+    def get_transporter_between(self, source: str, target: str) -> TransporterEquipment:
         return self._graph.get_edge_data(source, target)["transporter"]
 
-    def add_edge(self, start: str, end: str, transporter: TransporterResource, weight: float = 5.0) -> None:
+    def add_edge(self, start: str, end: str, transporter: TransporterEquipment, weight: float = 5.0) -> None:
         if start not in self._graph.get_nodes():
             raise ValueError(f"Node {start} does not exist")
         if end not in self._graph.get_nodes():
@@ -201,12 +201,12 @@ class SystemMap(ILocationRegistry, IRouteBuilder, IResourceLocator, IResourceLoc
                 blocking_locs.add(location)
         return list(blocking_locs)
 
-    def _get_blocking_transporter(self, labware: Labware, source: str, target: str) -> List[TransporterResource]:
-        blocking_transporters: Set[TransporterResource] = set()
+    def _get_blocking_transporter(self, labware: Labware, source: str, target: str) -> List[TransporterEquipment]:
+        blocking_transporters: Set[TransporterEquipment] = set()
         for path in self.get_all_shortest_any_paths(source, target):
             for i in range(len(path) - 1):
                 edge = self._graph.get_edge_data(path[i], path[i + 1])
-                transporter: TransporterResource = edge["transporter"]
+                transporter: TransporterEquipment = edge["transporter"]
                 if transporter.labware is not None:
                     blocking_transporters.add(transporter)
         return list(blocking_transporters)
@@ -214,7 +214,7 @@ class SystemMap(ILocationRegistry, IRouteBuilder, IResourceLocator, IResourceLoc
     def draw(self) -> None:
         self._graph.draw()
         
-    def add_transporter(self, transporter: TransporterResource) -> None:
+    def add_transporter(self, transporter: TransporterEquipment) -> None:
         taught_locations = transporter.get_taught_positions()
         # add teachpoints as locations if they don't exist and connect them as an edge
         for edge in itertools.combinations(taught_locations, 2):
@@ -231,12 +231,12 @@ class SystemMap(ILocationRegistry, IRouteBuilder, IResourceLocator, IResourceLoc
 
     def resource_registry_notify(self, event: str, resource: IResource) -> None:
         if event == "resource_added":
-            if isinstance(resource, TransporterResource):
+            if isinstance(resource, TransporterEquipment):
                 self.add_transporter(resource)
 
     def location_notify(self, event: str, location: Location, resource: IResource) -> None:
         if event == "resource_set":
-            if isinstance(resource, LabwarePlaceable):
+            if isinstance(resource, ILabwarePlaceable):
                 self._equipment_map[resource.name] = location
 
     def _get_available_graph(self, include_nodes: List[str] = []) -> _NetworkXHandler:
@@ -244,7 +244,7 @@ class SystemMap(ILocationRegistry, IRouteBuilder, IResourceLocator, IResourceLoc
         available_edges: List[Tuple[str, str, Dict[str, Any]]] = []
         for edge in subgraph.get_all_edges():
             source, target, data = edge
-            transporter: TransporterResource = data["transporter"]
+            transporter: TransporterEquipment = data["transporter"]
             if transporter.labware is None:
                 available_edges.append(edge)
         available_graph = _NetworkXHandler()

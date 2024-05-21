@@ -3,7 +3,7 @@ import os
 from typing import Dict, List, Optional, Tuple, Union
 
 from config_interfaces import ILabwareConfig, ILabwareThreadConfig, IMethodActionConfig, IMethodConfig, IResourceConfig, IResourcePoolConfig, ISystemConfig, IThreadStepConfig, IWorkflowConfig
-from resource_models.base_resource import Equipment
+from resource_models.base_resource import Equipment, LabwareLoadableEquipment
 from resource_models.labware import AnyLabwareTemplate, LabwareTemplate
 from resource_models.location import Location
 from scripting.scripting import IScriptRegistry, ScriptFactory, ScriptRegistry
@@ -22,7 +22,7 @@ from workflow_models.spawn_thread_action import SpawnThreadAction
 from workflow_models.workflow import IThreadObserver
 from yml_config_builder.resource_factory import ResourceFactory, ResourcePoolFactory
 from resource_models.resource_pool import EquipmentResourcePool
-from resource_models.transporter_resource import TransporterResource
+from resource_models.transporter_resource import TransporterEquipment
 from workflow_models.workflow_templates import IMethodTemplate, JunctionMethodTemplate, ThreadTemplate, MethodActionTemplate, MethodTemplate, WorkflowTemplate
 from yml_config_builder.special_yml_parsing import get_dynamic_yaml_keys, is_dynamic_yaml
 
@@ -245,9 +245,9 @@ class ConfigToSystemBuilder:
         
         for res in resource_registry.resources:
             # skip resources like newtowrk switches, etc that don't have plate pad locations
-            if isinstance(res, Equipment) \
+            if isinstance(res, LabwareLoadableEquipment) \
                 and not isinstance(res, EquipmentResourcePool) \
-                and not isinstance(res, TransporterResource):
+                and not isinstance(res, TransporterEquipment):
                 # set resource to each location
                 # if the plate-pad is not set in the resource definition, then use the resource name
                 resource_config = self._config.resources[res.name]

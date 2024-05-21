@@ -3,10 +3,10 @@ import asyncio
 from typing import Any, Callable, Dict, List, Union, cast
 import uuid
 
-from resource_models.base_resource import Equipment
+from resource_models.base_resource import LabwareLoadableEquipment
 from resource_models.labware import AnyLabwareTemplate, Labware, LabwareTemplate
 from resource_models.location import Location
-from resource_models.transporter_resource import TransporterResource
+from resource_models.transporter_resource import TransporterEquipment
 from system.labware_registry_interfaces import ILabwareRegistry
 from system.reservation_manager import IReservationManager, LocationReservation
 from system.system_map import SystemMap
@@ -141,8 +141,8 @@ class LocationAction(BaseAction):
                  assigned_labware_manager: AssignedLabwareManager,
                  options: Dict[str, Any] = {}) -> None:
         super().__init__()   
-        if location.resource is None or not isinstance(location.resource, Equipment):
-            raise ValueError(f"Location {location} does not have an Equipment resource")
+        if location.resource is None or not isinstance(location.resource, LabwareLoadableEquipment):
+            raise ValueError(f"Location {location} does not have an {type(LabwareLoadableEquipment)} resource")
         self._location = location
         self._command: str = command
         self._options: Dict[str, Any] = options
@@ -151,8 +151,8 @@ class LocationAction(BaseAction):
         self._reservation: LocationReservation = LocationReservation(location, None)
 
     @property
-    def resource(self) -> Equipment:
-        return cast(Equipment, self._location.resource)
+    def resource(self) -> LabwareLoadableEquipment:
+        return cast(LabwareLoadableEquipment, self._location.resource)
 
     @property
     def location(self) -> Location:
@@ -186,9 +186,7 @@ class LocationAction(BaseAction):
 
         # Execute the action
         if self.resource is not None:
-            self.resource.set_command(self._command)
-            self.resource.set_command_options(self._options)
-            await self.resource.execute()
+            await self.resource.execute(self._command, self._options)
 
     def get_missing_input_labware(self) -> List[Labware]:
         loaded_labwares = self.resource.loaded_labware[:]
@@ -232,12 +230,12 @@ class MoveAction(BaseAction):
                  labware: Labware,
                  source: Location,
                  target: Location,
-                 transporter: TransporterResource) -> None:
+                 transporter: TransporterEquipment) -> None:
         super().__init__()
         self._labware = labware
         self._source = source
         self._target = target
-        self._transporter: TransporterResource = transporter
+        self._transporter: TransporterEquipment = transporter
         self._reservation = LocationReservation(self._target, labware)
         self._release_reservation_on_place = True
         self._status = ActionStatus.AWAITING_MOVE_RESERVATION
@@ -251,7 +249,7 @@ class MoveAction(BaseAction):
         return self._target
     
     @property
-    def transporter(self) -> TransporterResource:
+    def transporter(self) -> TransporterEquipment:
         return self._transporter
     
     @property
