@@ -1,10 +1,10 @@
 from typing import Optional, Dict, Any, Callable, List
-from resource_models.drivers import PlaceHolderResource, SimulationRoboticArm
+from drivers.drivers import SimulationDriver, SimulationRoboticArm
 from resource_models.location import Location
 from resource_models.labware import Labware
 
 
-class MockEquipmentResource(PlaceHolderResource):
+class MockEquipmentResource(SimulationDriver):
     def __init__(self, name: str, mocking_type: Optional[str] = None):
         super().__init__(name, mocking_type)
         self._on_intialize: Callable[[Dict[str, Any]], None] = lambda x: None

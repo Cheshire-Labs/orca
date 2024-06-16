@@ -4,3 +4,4 @@ venv
 **/~*.tmp
 __pycache__
 .VSCodeCounter/*
+*.egg-info

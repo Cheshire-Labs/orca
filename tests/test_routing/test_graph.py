@@ -8,7 +8,7 @@ from system.system_map import SystemMap
 from tests.mock import MockEquipmentResource, MockRoboticArm
 from workflow_models.action import LocationAction
 from workflow_models.dynamic_resource_action import DynamicResourceAction
-from workflow_models.workflow import LabwareThread, Method
+from workflow_models.labware_thread import LabwareThread, Method
 
 import networkx as nx
 

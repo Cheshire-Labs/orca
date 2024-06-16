@@ -1,7 +1,7 @@
 
 import pytest
 from resource_models.location import Location
-from resource_models.plate_pad import PlatePad
+from drivers.plate_pad import PlatePad
 
 from system.system_map import SystemMap
 from tests.mock import MockEquipmentResource, MockRoboticArm
