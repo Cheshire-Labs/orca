@@ -72,3 +72,4 @@ webencodings==0.5.1
 wsproto==1.2.0
 yarg==0.1.9
 types-setuptools
+types-PyYAML==6.0.12

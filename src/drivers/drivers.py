@@ -1,5 +1,6 @@
 
 import time
+import logging
 from typing import Any, Dict, List, Optional
 from drivers.driver_interfaces import IDriver, ILabwarePlaceableDriver
 from drivers.transporter_interfaces import ITransporterDriver
@@ -34,11 +35,11 @@ class SimulationBaseDriver(IDriver):
         self._is_initialized = True
 
     async def execute(self, command: str, options: Dict[str, Any]) -> None:
-        print(f"{self._name} executing command: {command}")
+        logging.info(f"{self._name} executing command: {command}")
         if len(options.keys()) > 0:
-            print(f"Options: {options}")
+            logging.info(f"Options: {options}")
         self._sleep()
-        print(f"{self._name} executed command: {command}")
+        logging.info(f"{self._name} executed command: {command}")
 
     def _sleep(self) -> None:
         self._is_running = True
@@ -49,24 +50,24 @@ class SimulationBaseDriver(IDriver):
 class SimulationDriver(SimulationBaseDriver, ILabwarePlaceableDriver):      
 
     async def prepare_for_pick(self, labware_name: str, labware_type: str, barcode: Optional[str] = None, alias: Optional[str] = None) -> None:
-        print(f"Driver: {self._name} preparing for pick...")
+        logging.info(f"Driver: {self._name} preparing for pick...")
         self._sleep()
-        print(f"Driver: {self._name} prepared for pick")
+        logging.info(f"Driver: {self._name} prepared for pick")
 
     async def prepare_for_place(self, labware_name: str, labware_type: str, barcode: Optional[str] = None, alias: Optional[str] = None) -> None:
-        print(f"Driver: {self._name} preparing for place...")
+        logging.info(f"Driver: {self._name} preparing for place...")
         self._sleep()
-        print(f"Driver: {self._name} prepared for place")
+        logging.info(f"Driver: {self._name} prepared for place")
 
     async def notify_picked(self, labware_name: str, labware_type: str, barcode: Optional[str] = None, alias: Optional[str] = None) -> None:
-        print(f"Driver: {self._name} notified picked...")
+        logging.info(f"Driver: {self._name} notified picked...")
         self._sleep()
-        print(f"Driver: {self._name} notified picked")
+        logging.info(f"Driver: {self._name} notified picked")
 
     async def notify_placed(self, labware_name: str, labware_type: str, barcode: Optional[str] = None, alias: Optional[str] = None) -> None:
-        print(f"Driver: {self._name} notified placed...")
+        logging.info(f"Driver: {self._name} notified placed...")
         self._sleep()
-        print(f"Driver: {self._name} notified placed")
+        logging.info(f"Driver: {self._name} notified placed")
 
 
 class SimulationRoboticArm(SimulationBaseDriver, ITransporterDriver):
@@ -84,15 +85,15 @@ class SimulationRoboticArm(SimulationBaseDriver, ITransporterDriver):
     
     async def pick(self, position_name: str, labware_type: str) -> None:
         self._validate_position(position_name)
-        print(f"Driver: {self._name} picking from {position_name}, labware type: {labware_type} picking...")
+        logging.info(f"Driver: {self._name} picking from {position_name}, labware type: {labware_type} picking...")
         self._sleep()
-        print(f"Driver: {self._name} picked from {position_name}, labware type: {labware_type} picked")
+        logging.info(f"Driver: {self._name} picked from {position_name}, labware type: {labware_type} picked")
     
     async def place(self, position_name: str, labware_type: str) -> None:
         self._validate_position(position_name)
-        print(f"Driver: {self._name} placing to {position_name}, labware type: {labware_type} placing...")
+        logging.info(f"Driver: {self._name} placing to {position_name}, labware type: {labware_type} placing...")
         self._sleep()
-        print(f"Driver: {self._name} placed to {position_name}, labware type: {labware_type} placed")
+        logging.info(f"Driver: {self._name} placed to {position_name}, labware type: {labware_type} placed")
 
     def _validate_position(self, position_name: str) -> None:
         if position_name not in self._positions:

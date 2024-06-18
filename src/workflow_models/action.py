@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 import asyncio
+import logging
 from typing import Any, Callable, Dict, List, Union, cast
 import uuid
 
@@ -182,7 +183,7 @@ class LocationAction(BaseAction):
         self.is_executing.set()
         # TODO: DELETE DELETE DELETE
         for Labware in self.resource.loaded_labware:
-            print("LOADED LABWARE: ", Labware.name)
+            logging.debug(f"LOADED LABWARE: {Labware.name}")
 
         # Execute the action
         if self.resource is not None:

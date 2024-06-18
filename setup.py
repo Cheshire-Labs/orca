@@ -10,6 +10,8 @@ setup(
     packages=find_packages(where='src'),
     install_requires=read_requirements(),
     package_dir={'': 'src'},
+    include_package_data=True,
+    package_data={'': ['py.typed']},
     author='Cheshire Labs',
     author_email='support@cheshirelabs.io',
     description='Laboratory Automation Framework',

@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 import asyncio
+import logging
 from typing import Dict, List
 from system.labware_registry_interfaces import ILabwareRegistry
 from system.move_handler import MoveHandler
@@ -150,11 +151,11 @@ class ThreadManager(IThreadManager):
         while not self.has_completed():
 
             for thread in self.active_threads:
-                print(f"Thread {thread.name} - {thread.status}")
+                logging.info(f"Thread {thread.name} - {thread.status}")
                 if thread in self.unstarted_threads:
                     task = self._loop.create_task(thread.start())
                 await asyncio.sleep(0.2)
-        print("All threads have completed execution.")
+        logging.info("All threads have completed execution.")
 
 class ThreadManagerFactory:
     @staticmethod

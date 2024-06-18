@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
+import logging
 from drivers.driver_interfaces import IDriver
 from drivers.driver_interfaces import ILabwarePlaceableDriver
 from resource_models.labware import Labware
@@ -100,18 +101,18 @@ class Equipment(IEquipment):
         self._driver.set_init_options(init_options)
     
     async def initialize(self) -> None:
-        print(f"Initializing...")
-        print(f"Name: {self._name}")
+        logging.info(f"Initializing...")
+        logging.info(f"Name: {self._name}")
         await self._driver.initialize()
-        print(f"Initialized")
+        logging.info(f"Initialized")
 
     async def execute(self, command: str, options: Dict[str, Any]) -> None:
         if command is None:
             raise ValueError(f"{self} - No command to execute")
-        print(f"{self} - execute - {command}")
-        print(f"{self} - {command} executing...")
+        logging.info(f"{self} - execute - {command}")
+        logging.info(f"{self} - {command} executing...")
         await self._driver.execute(command, options)
-        print(f"{self} - {command} executed")
+        logging.info(f"{self} - {command} executed")
 
 
 
@@ -174,14 +175,14 @@ class LabwareLoadableEquipment(Equipment, ILabwarePlaceable):
     async def prepare_for_place(self, labware: Labware) -> None:
         if self._labware_reg.stage is not None:
             raise ValueError(f"{self} - Stage already contains labware: {self._labware_reg.stage}.  Unable to place {labware}")
-        print(f"{self} - preparing for place of {labware}")
+        logging.info(f"{self} - preparing for place of {labware}")
         await self._driver.prepare_for_place(labware.name, labware.labware_type)
 
     async def prepare_for_pick(self, labware: Labware) -> None:
         if self._labware_reg.stage == labware:
             return
         else:
-            print(f"{self} - preparing for pick of {labware}")
+            logging.info(f"{self} - preparing for pick of {labware}")
             await self._driver.prepare_for_pick(labware.name, labware.labware_type)
             self._labware_reg.unload_labware_to_stage(labware)
 
@@ -189,7 +190,7 @@ class LabwareLoadableEquipment(Equipment, ILabwarePlaceable):
         if self._labware_reg.stage != labware:
             raise ValueError(f"{self} - An error has ocurred.  The labware {labware} notified as picked does not match the previously staged labware. "
                               "The wrong labware may have been picked.")
-        print(f"{self} - labware {labware} picked from stage")
+        logging.info(f"{self} - labware {labware} picked from stage")
         self._labware_reg.set_stage(None)
         await self._driver.notify_picked(labware.name, labware.labware_type)
     
@@ -198,7 +199,7 @@ class LabwareLoadableEquipment(Equipment, ILabwarePlaceable):
             raise ValueError(f"{self} - An error has ocurred.  The labware {labware} notified as placed was placed with labware {self._labware_reg.stage} already on the stage.  "
                              "A crash may have occurred.")
         self._labware_reg.set_stage(labware)
-        print(f"{self} - labware {labware} received on stage")
+        logging.info(f"{self} - labware {labware} received on stage")
         await self._driver.notify_placed(labware.name, labware.labware_type)
         self._labware_reg.load_labware_from_stage(labware)
 

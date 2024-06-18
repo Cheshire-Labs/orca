@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 import asyncio
+import logging
 from typing import Callable, List
 import uuid
 from resource_models.location import Location
@@ -301,7 +302,7 @@ class LabwareThread(IMethodObserver):
 
     async def _handle_deadlock(self) -> None:
         assert self._move_action is not None
-        print(f"Thread {self.name} - Deadlock detected")
+        logging.info(f"Thread {self.name} - Deadlock detected")
         old_target = self._move_action.target
         self._move_action = await self._move_handler.handle_deadlock(self._move_action)
-        print(f"Thread {self.name} - Deadlock resolved - reroute target {old_target.name} to {self._move_action.target.name}")
+        logging.info(f"Thread {self.name} - Deadlock resolved - reroute target {old_target.name} to {self._move_action.target.name}")

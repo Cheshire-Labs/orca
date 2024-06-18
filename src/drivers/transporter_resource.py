@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from resource_models.base_resource import Equipment
 from drivers.transporter_interfaces import ITransporterDriver
 from resource_models.location import Location
@@ -23,9 +24,9 @@ class TransporterEquipment(Equipment):
                 raise ValueError(f"{self} already contains labware: {self._labware}")
             if location.labware is None:
                 raise ValueError(f"{location} does not contain labware")
-            print(f"{self._name} pick {location.labware} from {location}: picking...")
+            logging.info(f"{self._name} pick {location.labware} from {location}: picking...")
             await self._driver.pick(location.teachpoint_name, location.labware.labware_type)
-            print(f"{self._name} pick {location.labware} from {location}: picked")
+            logging.info(f"{self._name} pick {location.labware} from {location}: picked")
             self._labware = location.labware
 
     async def place(self, location: Location) -> None:
@@ -34,9 +35,9 @@ class TransporterEquipment(Equipment):
                 raise ValueError(f"{self} does not contain labware")
             if location.labware is not None:
                 raise ValueError(f"{location} already contains labware")
-            print(f"{self._name} place {self._labware} to {location}: placing...")
+            logging.info(f"{self._name} place {self._labware} to {location}: placing...")
             await self._driver.place(location.teachpoint_name, self._labware.labware_type)
-            print(f"{self._name} place {self._labware} to {location}: placed")
+            logging.info(f"{self._name} place {self._labware} to {location}: placed")
             
             self._labware = None
 

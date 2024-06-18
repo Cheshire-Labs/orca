@@ -9,16 +9,17 @@ from yml_config_builder.config_file import ConfigFile
 import asyncio
 from typing import Any, Callable, Coroutine, Dict, List, Optional
 
-
 class OrcaCore:
-    def __init__(self, yml_content: str, options: Dict[str, Any] = {}):
+    def __init__(self, 
+                 yml_content: str, 
+                 options: Dict[str, Any] = {}) -> None:
         self._config = ConfigFile(yml_content)
         self._config.set_command_line_options(options)
         self._system: ISystem = self._config.get_system()
 
     async def initialize(self,
                    resource_list: Optional[List[str]] = None,
-                   options: Dict[str, Any] = {}):
+                   options: Dict[str, Any] = {}) -> None:
         if resource_list is None:
             await self._system.initialize_all()
         else:
@@ -79,6 +80,7 @@ class OrcaCore:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(handlers=[logging.StreamHandler()], level=logging.DEBUG)
     config_file =  r"C:\Users\miike\source\repos\orca\orca-core\examples\smc_assay\smc_assay_example.yml"
     workflow_name = "smc-assay"
     with open(config_file, "r") as f:

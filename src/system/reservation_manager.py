@@ -1,8 +1,9 @@
 
 import asyncio
+import logging
 from typing import Dict, List, Optional
 import uuid
-import networkx as nx
+import networkx as nx # type: ignore
 from resource_models.labware import Labware
 from resource_models.location import ILabwareLocationObserver, Location
 from system.system_map import ILocationRegistry
@@ -91,7 +92,7 @@ class ReservationManager(IReservationManager, IAvailabilityManager, ILabwareLoca
         self._location_reservations[location_name] = request
         request.set_location(self._location_reg.get_location(location_name))
         request.completed.set()
-        print(f"Thread {request.labware} - Reservation {request.id} granted for {location_name}")
+        logging.info(f"Thread {request.labware} - Reservation {request.id} granted for {location_name}")
 
     def _process_next_request(self, location_name: str) -> None:
         queue = self._location_queues.setdefault(location_name, [])
@@ -109,7 +110,7 @@ class ReservationManager(IReservationManager, IAvailabilityManager, ILabwareLoca
         queue = self._location_queues.setdefault(location_name, [])
         if request not in queue:
             queue.append(request)
-            print(f"Thread {request.labware} - Reservation {request.id} waiting for availability at {location_name}")
+            logging.info(f"Thread {request.labware} - Reservation {request.id} waiting for availability at {location_name}")
     
     def can_reserve(self, location_name: str) -> bool:
         return location_name not in self._location_reservations.keys() and self._location_reg.get_location(location_name).labware is None
@@ -117,7 +118,7 @@ class ReservationManager(IReservationManager, IAvailabilityManager, ILabwareLoca
     def release_reservation(self, location_name: str) -> None:
         if location_name in self._location_reservations.keys():
             reservation = self._location_reservations[location_name]
-            print(f"Releasing reservation {reservation.id} for {location_name}")
+            logging.info(f"Releasing reservation {reservation.id} for {location_name}")
             del self._location_reservations[location_name]
             self._process_next_request(location_name)
             
@@ -128,7 +129,7 @@ class ReservationManager(IReservationManager, IAvailabilityManager, ILabwareLoca
                 self._process_next_request(location.name)
 
     def _handle_deadlock(self, request: LocationReservation):
-        print("Deadlock detected")
+        logging.info("Deadlock detected")
         request.deadlocked.set()
         request.completed.set()
 
