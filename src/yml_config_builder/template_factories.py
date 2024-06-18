@@ -209,6 +209,7 @@ class WorkflowTemplateFactory:
 class ConfigToSystemBuilder:
     def __init__(self, config: ISystemConfig) -> None:
         self._config = config
+        self._scripting_registry: Optional[IScriptRegistry] = None
     
     def _build_scripts(self, script_reg: IScriptRegistry) -> None:
         base_dir = self._config.scripting.base_dir
@@ -279,6 +280,9 @@ class ConfigToSystemBuilder:
             workflow_template = workflow_template_factory.get_template(workflow_name, workflow_config,)
             workflow_temp_reg.add_workflow_template(workflow_template)
 
+    def set_script_registry(self, script_reg: IScriptRegistry) -> None:
+        self._scripting_registry = script_reg
+        
     def get_system(self) -> System:
         resource_reg = ResourceRegistry()
         system_map = SystemMap(resource_reg)
@@ -290,11 +294,13 @@ class ConfigToSystemBuilder:
         workflow_registry = WorkflowRegistry(thread_manager, labware_registry, system_map)
         system_info = SystemInfo(self._config.system.name, self._config.system.version, self._config.system.description, self._config.options)
         system = System(system_info, system_map, resource_reg, template_registry, labware_registry, thread_manager, workflow_registry)
-        scripting_factory = ScriptFactory(system)
-        script_reg = ScriptRegistry(scripting_factory)
-        
 
+        
         # TODO: Move factories out
+        if self._scripting_registry is None:
+            scripting_factory = ScriptFactory()
+            self._scripting_registry = ScriptRegistry(scripting_factory)
+        self._scripting_registry.set_system(system)
         method_template_factory = MethodTemplateFactory(resource_reg, labware_registry)
         thread_template_factory = ThreadTemplateFactory(labware_registry, 
                                                         system_map, 
@@ -302,10 +308,10 @@ class ConfigToSystemBuilder:
                                                         template_registry, 
                                                         system_map,
                                                         thread_manager,
-                                                        script_reg)
+                                                        self._scripting_registry)
         workflow_template_factory = WorkflowTemplateFactory(thread_template_factory, template_registry)
 
-        self._build_scripts(script_reg)
+        self._build_scripts(self._scripting_registry)
         self._build_resources(resource_reg)
         self._build_locations(resource_reg, system_map)
         self._build_labware_templates(labware_registry)

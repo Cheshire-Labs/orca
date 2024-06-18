@@ -1,4 +1,5 @@
-from typing import Any, Dict
+from typing import Any, Dict, Optional
+from scripting.scripting import IScriptRegistry
 from system.system import System
 from yml_config_builder.configs import SystemConfig, SystemOptionsConfig
 from yml_config_builder.dynamic_config import DynamicSystemConfig
@@ -15,6 +16,7 @@ class ConfigFile:
         self._system_config = SystemConfig.model_validate(self._yml)
         self._variable_registry = self._get_variable_registry(self._system_config)
         self._config = DynamicSystemConfig(self._system_config, self._variable_registry)
+        self._scripting_registry: Optional[IScriptRegistry] = None
 
     def _get_variable_registry(self, system_config: SystemConfig) -> VariablesRegistry:
         registry = VariablesRegistry()
@@ -29,5 +31,11 @@ class ConfigFile:
         self._system_config.options.stage = options.get("stage", "prod")
         self._variable_registry.add_config("opt", self._system_config.options)
 
+    def set_script_registry(self, script_reg: IScriptRegistry) -> None:
+        self._scripting_registry = script_reg
+
     def get_system(self) -> System:
-        return ConfigToSystemBuilder(self._config).get_system()
+        builder = ConfigToSystemBuilder(self._config)
+        if self._scripting_registry is not None:
+            builder.set_script_registry(self._scripting_registry)
+        return builder.get_system()

@@ -25,6 +25,10 @@ class ThreadScript(IThreadObserver, ABC):
 
 class IScriptRegistry(ABC):
     @abstractmethod
+    def set_system(self, system: ISystem) -> None:
+        raise NotImplementedError
+        
+    @abstractmethod
     def get_script(self, script_name: str) -> ThreadScript:
         raise NotImplementedError
 
@@ -37,7 +41,8 @@ class IScriptRegistry(ABC):
         raise NotImplementedError
 
 class ScriptFactory:
-    def __init__(self, system: ISystem) -> None:
+
+    def set_system(self, system: ISystem) -> None:
         self._system = system
 
     def create_script(self, filepath: str, class_name: str) -> ThreadScript:
@@ -65,6 +70,9 @@ class ScriptRegistry(IScriptRegistry):
     def __init__(self, script_factory: ScriptFactory) -> None:
         self._factory = script_factory
         self._scripts: Dict[str, ThreadScript] = {}
+
+    def set_system(self, system: ISystem) -> None:
+        self._factory.set_system(system)
 
     def get_script(self, script_name: str) -> ThreadScript:
         return self._scripts[script_name]

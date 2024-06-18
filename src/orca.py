@@ -1,3 +1,5 @@
+import logging
+from scripting.scripting import IScriptRegistry
 from system.method_executor import MethodExecutor
 from resource_models.base_resource import IInitializableResource
 from resource_models.labware import LabwareTemplate
@@ -12,8 +14,11 @@ from typing import Any, Callable, Coroutine, Dict, List, Optional
 class OrcaCore:
     def __init__(self, 
                  yml_content: str, 
-                 options: Dict[str, Any] = {}) -> None:
+                 options: Dict[str, Any] = {},
+                 scripting_registry: Optional[IScriptRegistry] = None) -> None:
         self._config = ConfigFile(yml_content)
+        if scripting_registry is not None:
+            self._config.set_script_registry(scripting_registry)
         self._config.set_command_line_options(options)
         self._system: ISystem = self._config.get_system()
 
