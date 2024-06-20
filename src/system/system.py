@@ -1,4 +1,4 @@
-from abc import ABC
+from abc import ABC, abstractmethod
 from typing import Dict, List
 from resource_models.location import Location
 from resource_models.resource_pool import EquipmentResourcePool
@@ -17,14 +17,39 @@ from workflow_models.workflow import Workflow
 from workflow_models.workflow_templates import ThreadTemplate, MethodTemplate, WorkflowTemplate
 from system.thread_manager import IThreadManager
 
+class ISystemInfo(ABC):
+    @property
+    @abstractmethod
+    def id(self) -> str:
+        raise NotImplementedError
+    
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        raise NotImplementedError
+    
+    @property
+    @abstractmethod
+    def version(self) -> str:
+        raise NotImplementedError
+    
+    @property
+    @abstractmethod
+    def description(self) -> str:
+        raise NotImplementedError
 
-class SystemInfo:
+class SystemInfo(ISystemInfo):
     def __init__(self, name: str, version: str, description: str, model_extra: Dict[str, str]) -> None:
+        self._id = str(uuid.uuid4())
         self._name = name
         self._version = version
         self._description = description
         self._model_extra = model_extra
-
+    
+    @property
+    def id(self) -> str:
+        return self._id
+    
     @property
     def name(self) -> str:
         return self._name
@@ -42,7 +67,8 @@ class SystemInfo:
         return self._model_extra
     
 
-class ISystem(IResourceRegistry, 
+class ISystem(ISystemInfo,
+              IResourceRegistry, 
               ILabwareRegistry, 
               ILabwareTemplateRegistry, 
               IWorkflowTemplateRegistry, 
@@ -52,7 +78,11 @@ class ISystem(IResourceRegistry,
               IWorkflowRegistry, 
               IThreadManager,
               ABC):
-    pass
+
+    @property
+    @abstractmethod
+    def system_map(self) -> SystemMap:
+        return self.system.system_map
 
 class System(ISystem):
     def __init__(self, 
@@ -71,7 +101,11 @@ class System(ISystem):
         self._workflow_registry = workflow_registry
         self._thread_manager = thread_manager
 
+    @property
+    def id(self) -> str:
+        return self._info.id
 
+        
     @property
     def name(self) -> str:
         return self._info.name
