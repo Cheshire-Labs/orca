@@ -15,6 +15,19 @@ class IInitializableDriver(ABC):
     async def initialize(self) -> None:
         raise NotImplementedError
 
+    @property
+    @abstractmethod
+    def is_connected(self) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def connect(self) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def disconnect(self) -> None:
+        raise NotImplementedError
+
 
 class IDriver(IInitializableDriver, ABC):
     @property

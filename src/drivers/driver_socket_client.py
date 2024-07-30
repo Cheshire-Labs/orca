@@ -18,6 +18,10 @@ class SocketClient:
     async def connect(self) -> None:
         await self.sio.connect(self.uri)
 
+    @property
+    def is_connected(self) -> bool:
+        return self.sio.connected
+
     async def disconnect(self):
         await self.sio.disconnect()
 
@@ -33,6 +37,12 @@ class RemoteDriverClient(IDriver):
         self._uri: str | None = None
         self._sio: SocketClient | None = None
         self._init_options: Dict[str, Any] = {}
+
+    @property
+    def is_connected(self) -> bool:
+        if self._sio is None:
+            return False
+        return self._sio.is_connected
 
     async def connect(self) -> None:
         ip = self._init_options["ip"] or "localhost"

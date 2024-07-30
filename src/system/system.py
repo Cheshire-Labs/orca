@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import Dict, List
+import uuid
 from resource_models.location import Location
 from resource_models.resource_pool import EquipmentResourcePool
 from drivers.transporter_resource import TransporterEquipment

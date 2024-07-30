@@ -9,7 +9,13 @@ from workflow_models.labware_thread import LabwareThread
 from workflow_models.labware_thread import IThreadObserver
 
 
-class ThreadScript(IThreadObserver, ABC):
+class IThreadScript(IThreadObserver, ABC):
+    @abstractmethod
+    def thread_notify(self, event: str, thread: LabwareThread) -> None:
+        raise NotImplementedError
+    
+
+class ThreadScript(IThreadScript, ABC):
 
     def __init__(self, system: ISystem) -> None:
         super().__init__()
@@ -40,6 +46,14 @@ class IScriptRegistry(ABC):
     def create_script(self, filepath: str, class_name: str) -> ThreadScript:
         raise NotImplementedError
 
+class IScriptFactory(ABC):
+    
+    def create_script(self, filepath: str, class_name: str) -> ThreadScript:
+        raise NotImplementedError
+
+    def set_system(self, system: ISystem) -> None:
+        raise NotImplementedError
+
 class ScriptFactory:
 
     def set_system(self, system: ISystem) -> None:
@@ -66,8 +80,10 @@ class ScriptFactory:
         script_instance: ThreadScript = ScriptClass(self._system)
         return script_instance
 
+
+
 class ScriptRegistry(IScriptRegistry):
-    def __init__(self, script_factory: ScriptFactory) -> None:
+    def __init__(self, script_factory: IScriptFactory) -> None:
         self._factory = script_factory
         self._scripts: Dict[str, ThreadScript] = {}
 

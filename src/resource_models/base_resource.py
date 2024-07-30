@@ -21,6 +21,7 @@ class IResource(ABC):
 class IInitializableResource(IResource, ABC):
     
     @property
+    @abstractmethod
     def is_initialized(self) -> bool:
         raise NotImplementedError
     
@@ -30,6 +31,19 @@ class IInitializableResource(IResource, ABC):
     
     @abstractmethod
     async def initialize(self) -> None:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def is_connected(self) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def connect(self) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def disconnect(self) -> None:
         raise NotImplementedError
 
 class IEquipment(IInitializableResource, ABC):
@@ -113,6 +127,20 @@ class Equipment(IEquipment):
         logging.info(f"{self} - {command} executing...")
         await self._driver.execute(command, options)
         logging.info(f"{self} - {command} executed")
+
+    @property
+    def is_connected(self) -> bool:
+        return self._driver.is_connected
+
+    async def connect(self) -> None:
+        logging.info(f"{self} - Connecting...")
+        await self._driver.connect()
+        logging.info(f"{self} - Connected")
+
+    async def disconnect(self) -> None:
+        logging.info(f"{self} - Disconnecting...")
+        await self._driver.disconnect()
+        logging.info(f"{self} - Disconnected")
 
 
 

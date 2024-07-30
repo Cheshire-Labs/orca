@@ -13,6 +13,7 @@ class SimulationBaseDriver(IDriver):
         self._init_options: Dict[str, Any] = {}
         self._is_initialized: bool = False
         self._is_running: bool = False
+        self._connected: bool = False
         self._sim_time = sim_time
 
     @property
@@ -26,6 +27,16 @@ class SimulationBaseDriver(IDriver):
     @property
     def is_running(self) -> bool:
         return self._is_running
+    
+    @property
+    def is_connected(self) -> bool:
+        return self._connected
+
+    async def connect(self) -> None:
+        self._connected = True
+
+    async def disconnect(self) -> None:
+        self._connected = False
     
     def set_init_options(self, init_options: Dict[str, Any]) -> None:
         self._init_options = init_options
@@ -138,6 +149,16 @@ class NullPlatePadDriver(ILabwarePlaceableDriver):
     
     async def initialize(self) -> None:
         self._is_initialized = True
+
+    @property 
+    def is_connected(self) -> bool:
+        return True
+
+    async def connect(self) -> None:
+        pass
+        
+    async def disconnect(self) -> None:
+        pass
     
     async def prepare_for_pick(self, labware_name: str, labware_type: str, barcode: Optional[str] = None, alias: Optional[str] = None) -> None:
         pass
