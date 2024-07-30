@@ -1,4 +1,6 @@
+from typing import Any, Callable, Coroutine, Dict, List, Optional
 import logging
+import asyncio
 from scripting.scripting import IScriptRegistry
 from system.method_executor import MethodExecutor
 from resource_models.base_resource import IInitializableResource
@@ -6,21 +8,30 @@ from resource_models.labware import LabwareTemplate
 from resource_models.location import Location
 from system.system import ISystem
 from yml_config_builder.config_file import ConfigFile
+from yml_config_builder.template_factories import ConfigToSystemBuilder
+from yml_config_builder.resource_factory import IResourceFactory
 
 
-import asyncio
-from typing import Any, Callable, Coroutine, Dict, List, Optional
+
 
 class OrcaCore:
     def __init__(self, 
                  yml_content: str, 
                  options: Dict[str, Any] = {},
-                 scripting_registry: Optional[IScriptRegistry] = None) -> None:
+                 scripting_registry: Optional[IScriptRegistry] = None,
+                 resource_factory: Optional[IResourceFactory] = None) -> None:
         self._config = ConfigFile(yml_content)
-        if scripting_registry is not None:
-            self._config.set_script_registry(scripting_registry)
         self._config.set_command_line_options(options)
-        self._system: ISystem = self._config.get_system()
+        builder = ConfigToSystemBuilder()
+        if scripting_registry is not None:
+            builder.set_script_registry(scripting_registry)
+        if resource_factory is not None:
+            builder.set_resource_factory(resource_factory)
+        self._system: ISystem = self._config.get_system(builder)
+
+    @property
+    def system(self) -> ISystem:
+        return self._system
 
     async def initialize(self,
                    resource_list: Optional[List[str]] = None,

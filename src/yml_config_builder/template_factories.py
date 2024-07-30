@@ -21,7 +21,7 @@ from system.registries import TemplateRegistry
 from system.template_registry_interfaces import IThreadTemplateRegistry, IMethodTemplateRegistry, IWorkflowTemplateRegistry
 from workflow_models.spawn_thread_action import SpawnThreadAction
 from workflow_models.labware_thread import IThreadObserver
-from yml_config_builder.resource_factory import ResourceFactory, ResourcePoolFactory
+from yml_config_builder.resource_factory import IResourceFactory, ResourceFactory, ResourcePoolFactory
 from resource_models.resource_pool import EquipmentResourcePool
 from drivers.transporter_resource import TransporterEquipment
 from workflow_models.workflow_templates import IMethodTemplate, JunctionMethodTemplate, ThreadTemplate, MethodActionTemplate, MethodTemplate, WorkflowTemplate
@@ -207,83 +207,24 @@ class WorkflowTemplateFactory:
 
 
 class ConfigToSystemBuilder:
-    def __init__(self, config: ISystemConfig) -> None:
-        self._config = config
+    def __init__(self) -> None:
+        self._config: Optional[ISystemConfig] = None
         self._scripting_registry: Optional[IScriptRegistry] = None
-    
-    def _build_scripts(self, script_reg: IScriptRegistry) -> None:
-        base_dir = self._config.scripting.base_dir
-        for script_name, script_config in self._config.scripting.scripts.items():
-            filepath, class_name = script_config.source.split(":")
-            script = script_reg.create_script(os.path.join(base_dir, filepath), class_name)
-            script_reg.add_script(script_name, script)
-    
-    def _build_resources(self, resource_reg: IResourceRegistry) -> None:
-        resource_pool_configs: Dict[str, IResourcePoolConfig] = {}
+        self._resource_factory: IResourceFactory = ResourceFactory()
 
-        # build resources from resource defs in config, defer resource pool creation
-        for name, resource_config in self._config.resources.items():
-            if resource_config.type == "pool" and isinstance(resource_config, IResourcePoolConfig):
-                resource_pool_configs[name] = resource_config
-                continue
-            elif isinstance(resource_config, IResourceConfig):
-                resource_reg.add_resource(ResourceFactory().create(name, resource_config))
-            else:
-                raise ValueError(f"Resource {name} has an invalid type {resource_config.type}")
-            
-        # build resource pools
-        for name, resource_config in resource_pool_configs.items():
-            pool = ResourcePoolFactory(resource_reg).create(name, resource_config)
-            resource_reg.add_resource_pool(pool)
-
-    def _build_locations(self, resource_registry: IResourceRegistry, system_map: SystemMap) -> None:
-        # build locations from location defs in config
-        for location_name, location_config in self._config.locations.items():
-            location = Location(location_config.teachpoint_name)
-            location.set_options(location_config.options)  
-            system_map.add_location(location)
+    def set_config(self, config: ISystemConfig) -> None:
+        self._config = config
         
-        for res in resource_registry.resources:
-            # skip resources like newtowrk switches, etc that don't have plate pad locations
-            if isinstance(res, LabwareLoadableEquipment) \
-                and not isinstance(res, EquipmentResourcePool) \
-                and not isinstance(res, TransporterEquipment):
-                # set resource to each location
-                # if the plate-pad is not set in the resource definition, then use the resource name
-                resource_config = self._config.resources[res.name]
-                if not isinstance(resource_config, IResourceConfig):
-                    raise ValueError(f"Resource {res.name} has an invalid type {resource_config.type}")
-                if resource_config.plate_pad is not None:
-                    location_name = resource_config.plate_pad
-                else:
-                    location_name = res.name
-
-                try:
-                    location = system_map.get_location(location_name)
-                except KeyError:
-                    raise LookupError(f"Location {location_name} referenced in resource {res.name} is not recognized.  Locations must be defined by the transporting resource.")
-                location.resource = res
-
-    def _build_labware_templates(self, labware_temp_reg: ILabwareTemplateRegistry) -> None:
-        adapter = LabwareConfigToTemplateAdapter()
-        for labware_name, labware_config in self._config.labwares.items():
-            labware_template = adapter.get_template(labware_name, labware_config)
-            labware_temp_reg.add_labware_template(labware_template)
-
-    def _build_method_templates(self, method_template_factory: MethodTemplateFactory, method_temp_Reg: IMethodTemplateRegistry) -> None:
-        for method_name, method_config in self._config.methods.items():
-            method_template = method_template_factory.get_template(method_name, method_config)
-            method_temp_Reg.add_method_template( method_template)
-
-    def _build_workflow_templates(self, workflow_template_factory: WorkflowTemplateFactory, workflow_temp_reg: IWorkflowTemplateRegistry) -> None:
-        for workflow_name, workflow_config in self._config.workflows.items():
-            workflow_template = workflow_template_factory.get_template(workflow_name, workflow_config,)
-            workflow_temp_reg.add_workflow_template(workflow_template)
-
     def set_script_registry(self, script_reg: IScriptRegistry) -> None:
         self._scripting_registry = script_reg
+
+    def set_resource_factory(self, resource_factory: IResourceFactory) -> None:
+        self._resource_factory = resource_factory
         
     def get_system(self) -> System:
+        if self._config is None:
+            raise ValueError("Config is not set.  You must set the config before building the system")
+        
         resource_reg = ResourceRegistry()
         system_map = SystemMap(resource_reg)
         template_registry = TemplateRegistry()
@@ -311,12 +252,83 @@ class ConfigToSystemBuilder:
                                                         self._scripting_registry)
         workflow_template_factory = WorkflowTemplateFactory(thread_template_factory, template_registry)
 
-        self._build_scripts(self._scripting_registry)
-        self._build_resources(resource_reg)
-        self._build_locations(resource_reg, system_map)
-        self._build_labware_templates(labware_registry)
-        self._build_method_templates(method_template_factory, template_registry)
-        self._build_workflow_templates( workflow_template_factory, template_registry)
+        self._build_scripts(self._config, self._scripting_registry)
+        self._build_resources(self._config, resource_reg)
+        self._build_locations(self._config, resource_reg, system_map)
+        self._build_labware_templates(self._config, labware_registry)
+        self._build_method_templates(self._config, method_template_factory, template_registry)
+        self._build_workflow_templates(self._config, workflow_template_factory, template_registry)
         return system
+    
+    def _build_scripts(self, config: ISystemConfig, script_reg: IScriptRegistry) -> None:
+        base_dir = config.scripting.base_dir
+        for script_name, script_config in config.scripting.scripts.items():
+            filepath, class_name = script_config.source.split(":")
+            script = script_reg.create_script(os.path.join(base_dir, filepath), class_name)
+            script_reg.add_script(script_name, script)
+    
+    def _build_resources(self, config: ISystemConfig, resource_reg: IResourceRegistry) -> None:
+        resource_pool_configs: Dict[str, IResourcePoolConfig] = {}
+
+        # build resources from resource defs in config, defer resource pool creation
+        for name, resource_config in config.resources.items():
+            if resource_config.type == "pool" and isinstance(resource_config, IResourcePoolConfig):
+                resource_pool_configs[name] = resource_config
+                continue
+            elif isinstance(resource_config, IResourceConfig):
+                resource_reg.add_resource(self._resource_factory.create(name, resource_config))
+            else:
+                raise ValueError(f"Resource {name} has an invalid type {resource_config.type}")
+            
+        # build resource pools
+        for name, resource_config in resource_pool_configs.items():
+            pool = ResourcePoolFactory(resource_reg).create(name, resource_config)
+            resource_reg.add_resource_pool(pool)
+
+    def _build_locations(self, config: ISystemConfig, resource_registry: IResourceRegistry, system_map: SystemMap) -> None:
+        # build locations from location defs in config
+        for location_name, location_config in config.locations.items():
+            location = Location(location_config.teachpoint_name)
+            location.set_options(location_config.options)  
+            system_map.add_location(location)
+        
+        for res in resource_registry.resources:
+            # skip resources like newtowrk switches, etc that don't have plate pad locations
+            if isinstance(res, LabwareLoadableEquipment) \
+                and not isinstance(res, EquipmentResourcePool) \
+                and not isinstance(res, TransporterEquipment):
+                # set resource to each location
+                # if the plate-pad is not set in the resource definition, then use the resource name
+                resource_config = config.resources[res.name]
+                if not isinstance(resource_config, IResourceConfig):
+                    raise ValueError(f"Resource {res.name} has an invalid type {resource_config.type}")
+                if resource_config.plate_pad is not None:
+                    location_name = resource_config.plate_pad
+                else:
+                    location_name = res.name
+
+                try:
+                    location = system_map.get_location(location_name)
+                except KeyError:
+                    raise LookupError(f"Location {location_name} referenced in resource {res.name} is not recognized.  Locations must be defined by the transporting resource.")
+                location.resource = res
+
+    def _build_labware_templates(self, config: ISystemConfig, labware_temp_reg: ILabwareTemplateRegistry) -> None:
+        adapter = LabwareConfigToTemplateAdapter()
+        for labware_name, labware_config in config.labwares.items():
+            labware_template = adapter.get_template(labware_name, labware_config)
+            labware_temp_reg.add_labware_template(labware_template)
+
+    def _build_method_templates(self, config: ISystemConfig, method_template_factory: MethodTemplateFactory, method_temp_Reg: IMethodTemplateRegistry) -> None:
+        for method_name, method_config in config.methods.items():
+            method_template = method_template_factory.get_template(method_name, method_config)
+            method_temp_Reg.add_method_template( method_template)
+
+    def _build_workflow_templates(self, config: ISystemConfig, workflow_template_factory: WorkflowTemplateFactory, workflow_temp_reg: IWorkflowTemplateRegistry) -> None:
+        for workflow_name, workflow_config in config.workflows.items():
+            workflow_template = workflow_template_factory.get_template(workflow_name, workflow_config,)
+            workflow_temp_reg.add_workflow_template(workflow_template)
+
+
 
         

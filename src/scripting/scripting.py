@@ -54,7 +54,7 @@ class IScriptFactory(ABC):
     def set_system(self, system: ISystem) -> None:
         raise NotImplementedError
 
-class ScriptFactory:
+class ScriptFactory(IScriptFactory):
 
     def set_system(self, system: ISystem) -> None:
         self._system = system
