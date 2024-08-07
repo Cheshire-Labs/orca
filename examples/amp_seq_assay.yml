@@ -1,3 +1,8 @@
+system:
+  name: "amp-seq-system"
+  version: "0.0.1"
+  description: "Amp Seq System Example"
+
 labwares:
   - gdna-plate:
       labware-type: "Corning 96 Well"
@@ -40,6 +45,7 @@ methods:
         - mantis:
             input: pcr1-plate
             protocol: gdna-normalization.pro
+
   - pcr1:
       actions:
         - hamilton-vantage:
@@ -48,6 +54,7 @@ methods:
         - thermocycler:
             input: pcr1-plate
             protocol: pcr1.pro
+
   - pcr1-cleanup:
       actions:
         - hamilton-vantage:
@@ -59,7 +66,6 @@ methods:
         - hamilton-vantage:
             input: [pcr1-plate, pcr1-product-plate]
             protocol: dna-transfer.pro
-  - pcr1-quantification:
 
   - pcr2:
       actions:
@@ -69,6 +75,7 @@ methods:
         - thermocycler:
             input: pcr2-plate
             protocol: pcr2.pro
+
   - pcr2-cleanup:
       actions:
         - hamilton-vantage:
@@ -80,6 +87,7 @@ methods:
         - hamilton-vantage:
             input: [pcr2-plate, pcr2-product-plate]
             protocol: dna-transfer.pro
+
   - quantization:
       actions:
         - hamilton-vantage:
@@ -88,3 +96,12 @@ methods:
         - tapestation:
             input: quant-plate
             protocol: quantization.pro
+
+workflows:
+    workflow-1:
+        - gdna-normalization
+        - pcr1
+        - pcr1-cleanup
+        - pcr2
+        - pcr2-cleanup
+        - quantization
