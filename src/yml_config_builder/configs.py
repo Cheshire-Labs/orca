@@ -1,7 +1,7 @@
 
 import os
 from typing import Any, Dict, Optional, List, Union, Literal
-from pydantic import BaseModel, ConfigDict, Field, root_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ConfigModel(BaseModel):
@@ -102,7 +102,7 @@ class SystemConfig(ConfigModel):
     workflows: Dict[str, WorkflowConfig]
     scripting: ScriptBaseConfig = Field(default={})
 
-    @root_validator(pre=True)
+    @model_validator(mode='before')
     def check_resource_type(cls, values: Dict[str, Any]):
         resources = values.get('resources', {})
         for key, resource in resources.items():

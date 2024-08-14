@@ -1,24 +1,9 @@
-import pytest
 import asyncio
 
-from typing import Dict, List
-# import conftest # type: ignore
-from resource_models.labware import Labware, LabwareTemplate
-from resource_models.resource_pool import EquipmentResourcePool
-from system.method_executor import MethodExecutor
-from system.move_handler import MoveHandler
-from system.registries import LabwareRegistry
-from system.reservation_manager import ReservationManager
-from system.resource_registry import ResourceRegistry
+from resource_models.labware import Labware
 from system.system_map import SystemMap
-from tests.mock import MockEquipmentResource, MockRoboticArm
-from workflow_models.action import LocationAction
-from workflow_models.dynamic_resource_action import DynamicResourceAction
-from workflow_models.labware_thread import LabwareThread, Method
 
-import networkx as nx # type: ignore
 
-    
 class TestSystemGraph:
     
     def test_get_shortest_path(self, system_map: SystemMap):

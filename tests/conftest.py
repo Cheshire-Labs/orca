@@ -1,13 +1,9 @@
-
-from drivers.drivers import SimulationRoboticArmDriver
-from drivers.transporter_resource import TransporterEquipment
 import pytest
-from resource_models.location import Location
-from drivers.plate_pad import PlatePad
 
+from drivers.transporter_resource import TransporterEquipment
 from system.registries import LabwareRegistry
 from system.resource_registry import ResourceRegistry
-from system.system_map import ILocationRegistry, SystemMap
+from system.system_map import SystemMap
 from tests.mock import MockEquipmentResource, MockRoboticArm
 
 
@@ -54,26 +50,4 @@ def system_map(resource_registry: ResourceRegistry,
                shaker1: MockEquipmentResource, 
                ham1: MockEquipmentResource) -> SystemMap:
     graph = SystemMap(resource_registry)
-
-    # create Locations
-    # for location in robot2.get_taught_positions() + robot1.get_taught_positions():
-    #     graph.add_location(Location(location))
-    #     graph.add_location(Location("stacker1"))
-    
-    # graph.locations["stacker1"].resource = stacker1
-    # graph.locations["shaker1"].resource = shaker1
-    # graph.locations["ham1"].resource = ham1
-
-    # robot2 -> [loc3, loc4, loc5, ham1]
-    # robot1 -> [loc1, loc2, loc3, stacker1, shaker1]
-    # loc3 is the connecting location
-
-
-    # for robot in [robot1, robot2]:
-    #     for location1 in robot.get_taught_positions():
-    #         for location2 in robot.get_taught_positions():
-    #             if location1 == location2:
-    #                 continue
-    #             graph.add_edge(location1, location2, robot)
-
     return graph
