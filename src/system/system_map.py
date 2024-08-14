@@ -17,35 +17,6 @@ class IResourceLocator(ABC):
     def get_resource_location(self, resource_name: str) -> Location:
         raise NotImplementedError
 
-class IRouteBuilder(ABC):
-    
-        def get_shortest_available_path(self, source: str, target: str) -> List[str]:
-            raise NotImplementedError
-        
-        # def get_all_shortest_available_paths(self, source: str, target: str) -> List[List[str]]:
-        #     raise NotImplementedError
-        
-        def get_distance(self, source: str, target: str) -> float:
-            raise NotImplementedError
-        
-        def get_transporter_between(self, source: str, target: str) -> TransporterEquipment:
-            raise NotImplementedError
-        
-        def has_available_route(self, source: str, target: str) -> bool:
-            raise NotImplementedError
-        
-        def has_any_route(self, source: str, target: str) -> bool:
-            raise NotImplementedError
-        
-        def _get_blocking_locations(self, source: str, target: str) -> List[Location]:
-            raise NotImplementedError
-        
-        def get_all_blocking_locations(self, source: str, target: str) -> List[Location]:
-            raise NotImplementedError
-        
-        def draw(self) -> None:
-            raise NotImplementedError
-
 class _NetworkXHandler:
     
     def __init__(self, graph: Optional[nx.DiGraph] = None) -> None: # type: ignore
@@ -118,7 +89,7 @@ class ILocationRegistry(ABC):
         raise NotImplementedError
     
 
-class SystemMap(ILocationRegistry, IRouteBuilder, IResourceLocator, IResourceLocationObserver, IResourceRegistryObesrver):
+class SystemMap(ILocationRegistry, IResourceLocator, IResourceLocationObserver, IResourceRegistryObesrver):
 
     def __init__(self, resource_registry: IResourceRegistry) -> None:
         self._graph: _NetworkXHandler = _NetworkXHandler()
