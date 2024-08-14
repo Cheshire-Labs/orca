@@ -138,7 +138,7 @@ class SystemMap(ILocationRegistry, IResourceLocator, IResourceLocationObserver, 
     def set_edge_weight(self, start: str, end: str, weight: float) -> None:
         self._graph[start][end]['weight'] = weight
 
-    def has_available_route(self, labware: Labware, source: str, target: str) -> bool:
+    def has_available_route(self, source: str, target: str) -> bool:
         available_graph = self._get_available_graph([source])
         return available_graph.has_path(source, target)
     
