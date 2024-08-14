@@ -97,3 +97,5 @@ class TestConfigWrapper:
         config = MockConfig.model_validate({"test": "${config:test.plate-name}"})
         adapter = DynamicMockClass(config, registry)
         assert adapter.test == "test-plate-1"
+
+    

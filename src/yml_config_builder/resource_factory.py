@@ -2,7 +2,7 @@ from typing import List
 from abc import ABC, abstractmethod
 from config_interfaces import IResourceConfig, IResourcePoolConfig
 from drivers.driver_socket_client import RemoteLabwarePlaceableDriverClient
-from drivers.drivers import SimulationBaseDriver, SimulationDriver, SimulationRoboticArm
+from drivers.drivers import SimulationBaseDriver, SimulationDriver, SimulationRoboticArmDriver
 from resource_models.base_resource import Equipment, IEquipment, LabwareLoadableEquipment
 
 from resource_models.resource_pool import EquipmentResourcePool
@@ -19,10 +19,10 @@ class ResourceFactory(IResourceFactory):
         self._resource_map = {
             'ml-star': lambda name, config: LabwareLoadableEquipment(name, SimulationDriver("Hamilton MLSTAR", "Hamilton MLSTAR")),
             'venus': self.create_venus,
-            'acell': lambda name, config: TransporterEquipment(name, SimulationRoboticArm(name, "ACell")),
-            'mock-robot': lambda name, config: TransporterEquipment(name, SimulationRoboticArm(name, "Precision Flex")),
-            'ddr': lambda name, config: TransporterEquipment(name, SimulationRoboticArm(name, "DDR")),
-            'translator': lambda name, config: TransporterEquipment(name, SimulationRoboticArm(name, "Translator")),
+            'acell': lambda name, config: TransporterEquipment(name, SimulationRoboticArmDriver(name, "ACell")),
+            'mock-robot': lambda name, config: TransporterEquipment(name, SimulationRoboticArmDriver(name, "Precision Flex")),
+            'ddr': lambda name, config: TransporterEquipment(name, SimulationRoboticArmDriver(name, "DDR")),
+            'translator': lambda name, config: TransporterEquipment(name, SimulationRoboticArmDriver(name, "Translator")),
             'cwash': lambda name, config: LabwareLoadableEquipment(name, SimulationDriver("CWash", "CWash")),
             'mantis': lambda name, config: LabwareLoadableEquipment(name, SimulationDriver("Mantis", "Mantis")),
             'analytic-jena': lambda name, config: LabwareLoadableEquipment(name, SimulationDriver("Analytic Jena", "Analytic Jena")),

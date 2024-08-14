@@ -81,7 +81,7 @@ class SimulationDriver(SimulationBaseDriver, ILabwarePlaceableDriver):
         logging.info(f"Driver: {self._name} notified placed")
 
 
-class SimulationRoboticArm(SimulationBaseDriver, ITransporterDriver):
+class SimulationRoboticArmDriver(SimulationBaseDriver, ITransporterDriver):
     def __init__(self, name: str, mocking_type: Optional[str] = None, sim_time: float = 0.2) -> None:
         super().__init__(name, mocking_type, sim_time)
         self._positions: List[str] = []

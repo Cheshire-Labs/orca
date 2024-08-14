@@ -1,41 +1,51 @@
 from typing import Optional, Dict, Any, Callable, List
-from drivers.drivers import SimulationDriver, SimulationRoboticArm
+from drivers.drivers import SimulationDriver, SimulationRoboticArmDriver
+from drivers.transporter_resource import TransporterEquipment
+from resource_models.base_resource import LabwareLoadableEquipment
 from resource_models.location import Location
 from resource_models.labware import Labware
 
 
-class MockEquipmentResource(SimulationDriver):
+class MockEquipmentResource(LabwareLoadableEquipment):
     def __init__(self, name: str, mocking_type: Optional[str] = None):
-        super().__init__(name, mocking_type)
-        self._on_intialize: Callable[[Dict[str, Any]], None] = lambda x: None
-        self._on_load_labware: Callable[[Labware], None] = lambda x: None
-        self._on_unload_labware: Callable[[Labware], None] = lambda x: None
+        super().__init__(name, SimulationDriver(name, mocking_type))
+        self._on_intialize: Callable[[], None] = lambda: None
+        self._on_prepare_for_place: Callable[[Labware], None] = lambda x: None
+        self._on_prepare_for_pick: Callable[[Labware], None] = lambda x: None
+        self._on_notify_picked: Callable[[Labware], None] = lambda x: None
+        self._on_notify_placed: Callable[[Labware], None] = lambda x: None
         self._on_execute: Callable[[str], None] = lambda x: None
 
     async def initialize(self) -> None:
         await super().initialize()
-        self._on_intialize(self._init_options)
-    
-    async def load_labware(self, labware: Labware) -> None:
-        await super().load_labware(labware)
-        self._on_load_labware(labware)
+        self._on_intialize()
+
+    async def prepare_for_place(self, labware: Labware) -> None:
+        await super().prepare_for_place(labware)
+        self._on_prepare_for_place(labware)
         
+    async def prepare_for_pick(self, labware: Labware) -> None:
+        await super().prepare_for_pick(labware)
+        self._on_prepare_for_pick(labware)
+        
+    async def notify_picked(self, labware: Labware) -> None:
+        await super().notify_picked(labware)
+        self._on_notify_picked(labware)
+            
+    async def notify_placed(self, labware: Labware) -> None:
+        await super().notify_placed(labware)
+        self._on_notify_placed(labware)
 
-    async def unload_labware(self, labware: Labware) -> None:
-        await super().unload_labware(labware)
-        self._on_unload_labware(labware)
-
-    async def execute(self) -> None:
-        if self._command is None:
-            raise ValueError(f"{self} - No command to execute")
-        command = self._command
-        await super().execute()
+    async def execute(self, command: str, options: Dict[str, Any]) -> None:
+        await super().execute(command, options)
         self._on_execute(command)
 
 
-class MockRoboticArm(SimulationRoboticArm):
-    def __init__(self, name: str, mocking_type: Optional[str] = None) -> None:
-        super().__init__(name, mocking_type)
+class MockRoboticArm(TransporterEquipment):
+    def __init__(self, name: str, mocking_type: Optional[str] = None, positions: List[str] = []) -> None:
+        driver = SimulationRoboticArmDriver(name, mocking_type)
+        driver.set_init_options({"positions": positions})
+        super().__init__(name, driver)
         self._on_pick: Callable[[Labware, Location], None] = lambda x, y: None
         self._on_place: Callable[[Labware, Location], None] = lambda x, y: None
 
@@ -52,8 +62,4 @@ class MockRoboticArm(SimulationRoboticArm):
         labware = self._labware
         await super().place(location)
         self._on_place(labware, location)
-        
-
-    def set_taught_positions(self, positions: List[str]) -> None:
-        self._positions = positions
 

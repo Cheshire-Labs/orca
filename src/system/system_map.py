@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from resource_models.base_resource import IResource, ILabwarePlaceable
 from resource_models.labware import Labware
 from resource_models.location import IResourceLocationObserver, Location
-import networkx as nx
+import networkx as nx # type: ignore
 import matplotlib.pyplot as plt
 
 from drivers.plate_pad import PlatePad
