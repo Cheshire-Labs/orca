@@ -44,13 +44,14 @@ Cheshire Labs is currently looking for laboratories interested in using Orca.  P
 - [Need More?](#need-more)
 - [Contact](#contact)
 
-# ⚙️ How It Works
+<h1 id="how-it-works">⚙️ How It Works</h1>
 
 Orca simplifies the orchestration of complex lab automation workflows through a YAML configuration file. In this file, users define labware, resources, system options, methods, and workflows. The configuration file supports the integration of custom scripts, allowing users to tailor their workflows to specific needs. Variables in the format ${module:object.property} can be used to deploy different configurations depending on the context of the deployment.
 
 Orca is currently operated via the command line to allow external systems to drive the scheduler. Users can choose to run entire workflows or individual methods as needed, offering flexibility to adapt to changing lab environments.
 
-# 🚀 Features
+<h1 id="features">🚀 Features</h1>
+
 - 💡 **Git Friendly**
     
     You own your workflow, and it integrates seamlessly into your local git repo like any other code
@@ -92,11 +93,11 @@ Orca is currently operated via the command line to allow external systems to dri
     No scheduler software fits every need. Orca offers powerful Python scripting to ensure your workflows perform as required.
 
 
-# 💾 Installation
+<h1 id="installation">💾 Installation</h1>
 
  🚧 Installation is still in the process of being streamlined.  For now, just download the code to run.  Drivers need to be placed in the drivers folder and manually connected.  Driver installation will be streamlined soon.  Thank you for your patience.
 
-# 🧰 Usage 
+<h1 id="usage">🧰 Usage</h1> 
 
 ### Basic Overview
 
@@ -121,7 +122,7 @@ run-method --method add-detection-antibody --start-map '{"plate-1": "pad-1", "ti
 ```
 ---
 ---
-# ⌨️ Command Line Commands
+<h1 id="command-line-commands">⌨️ Command Line Commands</h1>
 
 
 ## Deploy a Workflow
@@ -297,7 +298,7 @@ quit
 ---
 ---
 
-# 📋 Define Your Configuration File
+<h1 id="define-your-configuration-file">📋 Define Your Configuration File</h1>
 ## Configuration File Overview
 
 The Orca configuration file is a YAML file used to define various elements of your lab automation system.  It is the backbone of Orca, used to define everything in your system.
@@ -645,7 +646,7 @@ This approach eliminates duplicate code, allowing engineers to make changes in o
 Coming Soon...
 
 
-## 🤝 Contributing
+<h1 id="contributing">🤝 Contributing</h1>
 
 Thank you for your interest in contributing!
 
@@ -653,7 +654,7 @@ Please read over the [contributing documentation](./CONTRIBUTING).
 
 Please Note: Cheshire Labs follows an open core business model, offering Orca under a dual license structure. To align with this model and the AGPL license, contributors will need to submit a contributor license agreement.
 
-## 📜 License 
+<h1 id="license">📜 License</h1> 
 
 This project is released to under [AGPLv3 license](./LICENSE).  
 
@@ -661,7 +662,7 @@ Plugins and drivers are considered derivatives of this project.
 
 To obtain a a different license [contact Cheshire Labs](#contact).
 
-## ⭐ Need More?
+<h1 id="need-more">⭐ Need More?</h1>
 
 Please [contact Cheshire Labs](#contact) if you're looking for:
 - More Features
@@ -671,7 +672,7 @@ Please [contact Cheshire Labs](#contact) if you're looking for:
 - Help Setting Up Your System 
 - Custom Scripting
 
-## ☎️ Contact
+<h1 id="contact">☎️ Contact</h1>
 
 [Cheshire Labs Contact](https://cheshirelabs.io/contact/)
 
