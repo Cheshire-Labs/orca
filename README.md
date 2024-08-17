@@ -56,49 +56,49 @@ Orca is currently operated via the command line to allow external systems to dri
 
 <h1 id="features">🚀 Features</h1>
 
-- 💡 **Git Friendly**
+💡 **Git Friendly**
     
-    You own your workflow, and it integrates seamlessly into your local git repo like any other code
+You own your workflow, and it integrates seamlessly into your local git repo like any other code
 
-- 💡 **Diff Friendly**
+💡 **Diff Friendly**
 
-    Easily track changes with clear, diff-able workflows, making it simple to see what has changed since the last run.
+Easily track changes with clear, diff-able workflows, making it simple to see what has changed since the last run.
 
-- 💡 **Configurable Environments**
+💡 **Configurable Environments**
 
-    Deploy an environment to load a collection of variables across your entire workflow.  This helps to set things like shake times to 0 during testing and resetting them for production.
+Deploy an environment to load a collection of variables across your entire workflow.  This helps to set things like shake times to 0 during testing and resetting them for production.
 
-- 💡 **Resource Pools**
+💡 **Resource Pools**
     
-    Define a collection of resources from which Orca can dynamically select to execute actions within your workflow.
+Define a collection of resources from which Orca can dynamically select to execute actions within your workflow.
 
-- 💡 **Clear workflows**
+**Clear workflows**
     
-    Name and list your methods as they appear in your protocol, and reorder them with a simple copy and paste.
+Name and list your methods as they appear in your protocol, and reorder them with a simple copy and paste.
 
-- 💡 **LLM Compatible**
+💡 **LLM Compatible**
 
-    Your configuration file is clear enough that your favorite large language model can understand what going on and help you design your workflow.
+Your configuration file is clear enough that your favorite large language model can understand what going on and help you design your workflow.
 
-- 💡 **Quickly Change Labware Start and End Locations**
+💡 **Quickly Change Labware Start and End Locations**
     
-    Avoid reloading your plate store. Change the start point to a nearby plate pad and relaunch quickly.
+Avoid reloading your plate store. Change the start point to a nearby plate pad and relaunch quickly.
 
-- 💡 **Easily Swap Methods**
+💡 **Easily Swap Methods**
 
-    Adapt to changing requirements by quickly swapping one method for another.
+Adapt to changing requirements by quickly swapping one method for another.
 
-- 💡 **Run an Entire Workflow**
+💡 **Run an Entire Workflow**
 
-    Execute the workflow from start to finish in a prod, dev, or any custom environment
+Execute the workflow from start to finish in a prod, dev, or any custom environment
 
-- 💡 **Run a Single Method** 
+💡 **Run a Single Method** 
 
-    No more copying and pasting parts of workflows. With Orca, you can run an entire workflow or test a single method to fix errors.
+No more copying and pasting parts of workflows. With Orca, you can run an entire workflow or test a single method to fix errors.
 
-- 💡 **Python Scripting**
+💡 **Python Scripting**
 
-    No scheduler software fits every need. Orca offers powerful Python scripting to ensure your workflows perform as required.
+No scheduler software fits every need. Orca offers powerful Python scripting to ensure your workflows perform as required.
 
 
 <h1 id="installation">💾 Installation</h1>
@@ -728,10 +728,10 @@ Currently there is only one script type available.
 **Type: [ThreadScript](./src/scripting/scripting.py)**
 
 - Methods:
-    - ```thread_notify(event:str, thread: LabwareThread) -> None``` - When a thread event occurs this method is called with a string describing the event and the LabwareThread object of the thread executing the event.
+    - ```thread_notify(self, event:str, thread: LabwareThread) -> None``` - When a thread event occurs this method is called with a string describing the event and the LabwareThread object of the thread executing the event.
 
 - Properties:
-    - ```system -> ISystem``` - The ISystem interface is passed to the script at initialization for access during the lifetime of the script.
+    - ```system(self) -> ISystem``` - The ISystem interface is passed to the script at initialization for access during the lifetime of the script.
 
 ## Drivers
 
@@ -739,7 +739,8 @@ Currently there is only one script type available.
 - [IInitializeableDriver(ABC)](./src/drivers/driver_interfaces.py) - Base class for drivers that can only be initialized.
 - [IDriver(IInitializeableDriver)](./src/drivers/driver_interfaces.py) - Base class for drivers that can execute commands.
 - [ILabwarePlaceableDriver(IDriver)](./src/drivers/driver_interfaces.py) - Equipment that may have labware placed at the equipment.
-- [ITransporterDriver(IDriver)](./src/drivers/transporter_interfaces.py) - Equipment capable of transporting labware items.  These are called when moving labware across methods using different resources.
+- [ITransporterDriver(IDriver)](./src/drivers/transporter_interfaces.py) - Equipment capable of transporting labware items.
+
 
 **Adding Drivers**
 
