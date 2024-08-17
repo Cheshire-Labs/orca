@@ -12,6 +12,8 @@ Orca is in it's early beta phases.  This code has only been tested with mocked d
 
 ⚠️ Connection to a driver running a live instrument is done at your own risk.  Please be careful of your personnel and equipment.
 
+⚠️ Currently, to stop Orca you need to terminate the program.  (Ctrl+C)
+
 ⚠️ Orca is licensed under [AGPLv3](#license).  
 
 Cheshire Labs is currently looking for laboratories interested in using Orca.  Please [contact Cheshire Labs](#contact) if you may be interested.
@@ -131,6 +133,31 @@ run-method --method add-detection-antibody --start-map '{"plate-1": "pad-1", "ti
 ---
 ---
 <h1 id="command-line-commands">⌨️ Command Line Commands</h1>
+
+## Starting the Shell
+
+**Explanation** 
+
+Orca is run from a shell interface.  This must be started before issuing commands.
+
+**Starting Orca**
+
+```bash
+python /path/to/orca.py
+```
+
+**Help**
+
+Type ```help``` or ```?``` by themselves to display available commands
+
+Otherwise, use ```<command> help``` or ```<command> ?``` to display help for a specific command
+
+**Example**
+
+```bash
+run-method help
+```
+
 
 
 ## Deploy a Workflow
@@ -278,13 +305,9 @@ Exit or quit the Orca shell
 
 **Command**
 
-```exit``` OR ```quit```
+```exit``` or ```quit```
 
 **Usage**
-
-```bash
-exit
-```
 
 ```bash
 quit
@@ -295,10 +318,6 @@ quit
 None
 
 **Example**
-
-```bash
-exit
-```
 
 ```bash
 quit
