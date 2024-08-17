@@ -1,6 +1,6 @@
 # 🐋 Orca: Lab Automation Scheduler
 
-**Welcome to Orca!**  
+### Welcome to Orca!  
 
 Orca is a laboratory automation scheduler designed from the ground up with development, testing, and integration in mind.
 
@@ -12,7 +12,7 @@ Orca is in it's early beta phases.  This code has only been tested with mocked d
 
 ⚠️ Connection to a driver running a live instrument is done at your own risk.  Please be careful of your personnel and equipment.
 
-⚠️ Orca is licensed under [AGPLv3](#license)
+⚠️ Orca is licensed under [AGPLv3](#license).  
 
 Cheshire Labs is currently looking for laboratories interested in using Orca.  Please [contact Cheshire Labs](#contact) if you may be interested.
 
@@ -38,7 +38,11 @@ Cheshire Labs is currently looking for laboratories interested in using Orca.  P
     - [Config Section](#config-section)
     - [Methods Section](#methods-setion)
     - [Workflows Section](#workflows-section)
-    - [scripting Section](#scripting-section)
+    - [Scripting Section](#scripting-section)
+- [Development](#development)
+    - [Scripting](#scripting)
+    - [Drivers](#drivers)
+    - [Plugins](#plugins)
 - [Contributing](#contributing)
 - [License](#license)
 - [Need More?](#need-more)
@@ -71,6 +75,10 @@ Orca is currently operated via the command line to allow external systems to dri
 - 💡 **Clear workflows**
     
     Name and list your methods as they appear in your protocol, and reorder them with a simple copy and paste.
+
+- 💡 **LLM Compatible**
+
+    Your configuration file is clear enough that your favorite large language model can understand what going on and help you design your workflow.
 
 - 💡 **Quickly Change Labware Start and End Locations**
     
@@ -299,6 +307,7 @@ quit
 ---
 
 <h1 id="define-your-configuration-file">📋 Define Your Configuration File</h1>
+
 ## Configuration File Overview
 
 The Orca configuration file is a YAML file used to define various elements of your lab automation system.  It is the backbone of Orca, used to define everything in your system.
@@ -445,9 +454,7 @@ Each environment is named and then acts as a dictionary lookup to find the value
     - ```<config-name>:``` - Environment Identifier.  This is passed to Orca later when deploying the system 
         - ```<variable-name>: <value>``` - The environment identifier is followed by a dictionary of lookup values.  Here you identify variable names to be referenced elsewhere in the configuration file.  The values maybe be string, int, float, list, or dictionary.
 
-**Example**
-
-Defintion Example
+**Defintion Example**
 ```yml
 config:
     prod: 
@@ -458,9 +465,9 @@ config:
         bead-incubation-time: 0
 ```
 
-Referencing Variables within the Workflow Example
+**Referencing Variables within the Workflow Example**
 
-Config File:
+_Config File:_
 ```yml
 methods:
     incubate-10-min: 
@@ -471,14 +478,14 @@ methods:
                 shake-time: ${config:${opt:stage}.shake-time}
 ```
 
-Example Explanation:
+**Example Explanation**
 
 When the configuration file is run with the command line option ```--stage prod```, the method will use the shake-time value from the “prod” configuration, which is 120. If the configuration file is run with the stage option ```--stage prod```, it will use the shake-time value from the “test” configuration, which is 0.
 
 The method looks up the configuration module, finds the stage option value, and retrieves the corresponding shake-time value. This allows for flexible and dynamic adjustment of parameters based on the specified deployment stage.
 
 
-Benefits:
+**Benefit**
 
 Use this when dry testing vs wet testing vs production to prevent having to adjust values for each deployment type.
 
@@ -636,15 +643,113 @@ When ```tips-96``` thread executes, it does the following:
 4. After completing method ```add-detection-antibody```, ```tips-96``` is then placed in the position ```waste-1```
     - Alternatively, another step could be added after the variable step ```${0}``` and it would complete that step before ending at position ```waste-1```
 
+**Benefit**
 
 This approach eliminates duplicate code, allowing engineers to make changes in one place and apply them reliably throughout the process. No more searching through methods to update every instance.
 
 
 
 ## Scripting Section
-🚧🚧🚧 
-Coming Soon...
 
+**Explanation**
+
+The scripting section maps scripts to an identifier to be used within your configuration file. 
+
+
+**Identifier**
+
+```scripting```
+
+**Structure**
+
+- ```scripting:```
+    - ```base-dir: <base-dir>``` - _(Optional)_ Defines the base directory to find scripts.  This directory is relative to where Orca is called from.  This is an issue that needs to be fixed.
+    - ```scripts: ``` - Defines a list of scripts
+        - ```<script-name>``` - Define name for your script.  This will be used to identifier your script.
+            - ```source: <script-filename>:<script-class-name>``` - Your script source needs to identify which file the script is in and the script's class name within that file.
+
+**Scripting Map Example**
+
+```yml
+scripting:
+    base-dir: examples/smc_assay
+    scripts:
+        spawn-384-tips-script:
+            source: spawn_384_tips.py:Spawn384TipsScript
+        spawn-final-plate-script:
+            source: spawn_final_plate.py:SpawnFinalPlateScript
+```
+
+**Scripting Reference Example**
+
+```yml
+workflows:
+    smc-assay:
+        threads:
+            # omitted code
+            tips-384:
+                type: wrapper
+                labware: tips-384
+                start: stacker-384-tips-start
+                end: stacker-384-tips-end
+                scripts: 
+                    - spawn-384-tips-script
+                steps:
+                    - delid
+                    - ${0}
+```
+
+**Scripting Reference Explanation**
+
+_In this case, the purpose of ```spawn-384-tips-script``` is to allow a 96-head to use every quadrant of a 384 tip box before retrieving a new tip box. The script keeps count of how many times the thread it's attached to has been called.  If the script has been called a multiple of 4 times, it does nothing.  Otherwise, it changes the workflows start location to be it's end location._
+
+Script ```spawn-384-tips-script``` maps to file ```examples/smc_assay/spawn_384_tips.py:Spawn384TipsScript```.  Class ```Spawn384TipsScript``` is retrieved and initialized by Orca.  This script is then attached to thread ```tips-384```.  When ```tips-384``` thread is spawned an event is sent to the ```Spawn384TipsScript``` script object and the internal code is executed.
+
+**More Information**
+
+For more information regarding scripting read the [Scripting Development](#dev-scripting) section.
+
+<h1 id="development">🔨 Development</h1>
+
+## Scripting
+
+Scripting is necessary in lab automation for situations involving fine control over the process.
+
+- Orca scripts are written in python.  
+- All scripts need must implement from one of the abstract base classes listed in script types below.
+- Multiple scripts can be included in a single file.
+- Scripts are referenced within the workflow configuration as described in [Scripting Section](#scripting-section)
+
+**Script Types**
+
+Currently there is only one script type available.
+- [ThreadScript](./src/scripting/scripting.py) - Attaches to a thread instance.  
+
+**Type: [ThreadScript](./src/scripting/scripting.py)**
+
+- Methods:
+    - ```thread_notify(event:str, thread: LabwareThread) -> None``` - When a thread event occurs this method is called with a string describing the event and the LabwareThread object of the thread executing the event.
+
+- Properties:
+    - ```system -> ISystem``` - The ISystem interface is passed to the script at initialization for access during the lifetime of the script.
+
+## Drivers
+
+**Driver Types**
+- [IInitializeableDriver(ABC)](./src/drivers/driver_interfaces.py) - Base class for drivers that can only be initialized.
+- [IDriver(IInitializeableDriver)](./src/drivers/driver_interfaces.py) - Base class for drivers that can execute commands.
+- [ILabwarePlaceableDriver(IDriver)](./src/drivers/driver_interfaces.py) - Equipment that may have labware placed at the equipment.
+- [ITransporterDriver(IDriver)](./src/drivers/transporter_interfaces.py) - Equipment capable of transporting labware items.  These are called when moving labware across methods using different resources.
+
+**Adding Drivers**
+
+Drivers must be manually added to the [ResourceFactory](./src/yml_config_builder/resource_factory.py)
+
+In the future, a ```driver``` command will be added to the command line to install and uninstall drivers.
+
+## Plugins
+
+🚧🚧🚧 Coming Soon...
 
 <h1 id="contributing">🤝 Contributing</h1>
 
@@ -658,9 +763,9 @@ Please Note: Cheshire Labs follows an open core business model, offering Orca un
 
 This project is released to under [AGPLv3 license](./LICENSE).  
 
-Plugins and drivers are considered derivatives of this project.
+Plugins, scripts, and drivers are considered derivatives of this project.
 
-To obtain a a different license [contact Cheshire Labs](#contact).
+To obtain an alternative license [contact Cheshire Labs](#contact).
 
 <h1 id="need-more">⭐ Need More?</h1>
 
