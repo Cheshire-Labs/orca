@@ -1,10 +1,12 @@
-
 import argparse
 import cmd
+import logging
+import shlex
 from typing import Dict
 
 from cli.local_shell import LocalOrcaShell
 from cli.shell_interface import IOrcaShell
+
 
 class OrcaCmdShell(cmd.Cmd):
     intro = "Welcome to the Orca Shell.  Type help or ? to list commands.\n"
@@ -18,7 +20,7 @@ class OrcaCmdShell(cmd.Cmd):
     def do_load(self, arg: str):
         """Load the configuration file"""
         try:
-            args = self._parsers["load"].parse_args(arg.split())
+            args = self._parsers["load"].parse_args(shlex.split(arg))
             print("Loading configuration file")
             self._orca_shell.load(args.config)
         except SystemExit as e:
@@ -30,7 +32,7 @@ class OrcaCmdShell(cmd.Cmd):
     def do_init(self, arg: str):
         """Initialize the lab instruments"""
         try:            
-            args = self._parsers["init"].parse_args(arg.split())
+            args = self._parsers["init"].parse_args(shlex.split(arg))
             print("Initializing lab instruments")
             self._orca_shell.init(args.config, args.resources)
         except SystemExit as e:
@@ -42,7 +44,7 @@ class OrcaCmdShell(cmd.Cmd):
     def do_run(self, arg: str):
         """Run the workflow"""
         try:
-            args = self._parsers["run"].parse_args(arg.split())
+            args = self._parsers["run"].parse_args(shlex.split(arg))
             print("Running workflow")
             self._orca_shell.run_workflow(args.workflow, args.config)
         except SystemExit as e:
@@ -54,7 +56,7 @@ class OrcaCmdShell(cmd.Cmd):
     def do_run_method(self, arg: str):
         """Run a specific method"""
         try:
-            args = self._parsers["run-method"].parse_args(arg.split())
+            args = self._parsers["run_method"].parse_args(shlex.split(arg))
             print("Running method")
             self._orca_shell.run_method(args.method, args.start_map, args.end_map, args.config)
         except SystemExit as e:
@@ -94,14 +96,14 @@ class OrcaCmdShell(cmd.Cmd):
         run_parser.add_argument("--config", help="Configuration file")
         parsers['run'] = run_parser
 
-        # Parser for the 'run-method' command
-        run_method_parser = argparse.ArgumentParser(prog='run-method', description="Run a specific method")
+        # Parser for the 'run_method' command
+        run_method_parser = argparse.ArgumentParser(prog='run_method', description="Run a specific method")
         run_method_parser.add_argument("--method", required=True, help="Method to be run")
         run_method_parser.add_argument("--start-map", required=True, help="JSON Dictionary of labware to start location mapping")
         run_method_parser.add_argument("--end-map", required=True, help="JSON Dictionary of labware to end location mapping")
         run_method_parser.add_argument("--stage", help="Development stage to be run")
         run_method_parser.add_argument("--config", help="Configuration file")
-        parsers['run-method'] = run_method_parser
+        parsers['run_method'] = run_method_parser
 
         return parsers
     
@@ -118,8 +120,8 @@ class OrcaCmdShell(cmd.Cmd):
         self._parsers['run'].print_help()
 
     def help_run_method(self):
-        """Show help for the run-method command"""
-        self._parsers['run-method'].print_help()
+        """Show help for the run_method command"""
+        self._parsers['run_method'].print_help()
 
     def do_help(self, arg: str):
         if arg:
@@ -138,5 +140,6 @@ class OrcaCmdShell(cmd.Cmd):
             print("\nType 'help <command>' to get help on a specific command.")
     
 if __name__ == "__main__":
+    logging.basicConfig(handlers=[logging.StreamHandler()], level=logging.DEBUG)
     OrcaCmdShell().cmdloop()
     # C:\Users\miike\source\repos\cheshire-orca\examples\smc_assay\smc_assay_example.yml
