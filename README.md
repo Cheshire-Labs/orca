@@ -4,24 +4,29 @@
 
 Orca is a laboratory automation scheduler designed from the ground up with development, testing, and integration in mind.
 
-# ⚠️ WARNING ⚠️
+<h1 id="warning"> ⚠️ WARNING ⚠️</h1>
 
 🚧🚧🚧 
 
-Orca is in it's early beta phases.  This code has only been tested with mocked drivers and has not been run on a live system.
+Orca is currently in it's early beta release with limited functionality and without integrated drivers.  ***This code has only been tested with mocked drivers and has not been run on a live system.*** 
 
-⚠️ Connection to a driver running a live instrument is done at your own risk.  Please be careful of your personnel and equipment.
+Despite its current limitations, Cheshire Labs sees value in releasing the software at this stage for the following reason:
+- It allows users to explore and experiment with Orca
+- It provides access for contributors and developers to build their own drivers
+- It enables developers to contribute enhancements and new features to the software
+- It enables Cheshire Labs to gather feedback and gauge industry interest to ensure Orca meets the needs of the lab automation sector
 
-⚠️ Currently, to stop Orca you need to terminate the program.  (Ctrl+C)
+⚠️ **Live System Usage**: Connecting Orca to a driver running a live instrument is done at your own risk.  Please exercise caution to protect your personnel and equipment.
 
-⚠️ Orca is licensed under [AGPLv3](#license).  
+⚠️ **Stopping Orca**: To stop Orca, you need to terminate the program.  (Ctrl+C) 
 
-Cheshire Labs is currently looking for laboratories interested in using Orca.  Please [contact Cheshire Labs](#contact) if you may be interested.
+Cheshire Labs is actively seeking laboratories interested in using Orca.  Please [contact Cheshire Labs](#contact) if you may be interested.
 
 # 📚 Table of Contents
 
 - [How it works](#how-it-works)
 - [Features](#features)
+- [Quick Start](#quick-start)
 - [Installation](#installation)
 - [Usage](#usage)
 - [Command Line Commands](#command-line-commands)
@@ -101,6 +106,28 @@ No more copying and pasting parts of workflows. With Orca, you can run an entire
 💡 **Python Scripting**
 
 No scheduler software fits every need. Orca offers powerful Python scripting to ensure your workflows perform as required.
+
+<h1 id="quick-start">⚡ Demo Quick Start</h1>
+
+
+To see a quick demo of how orca works:
+1. Be sure to read our [Warning](#warning) regarding Orca before running
+2. Review [Example Configuration File](./examples/smc_assay/smc_assay_example.yml)
+3. Review [Example Script File #1](./examples/smc_assay/spawn_384_tips.py) and [Example Script File #2](./examples/smc_assay/spawn_final_plate.py)
+4. Launch the Orca Shell
+    ```bash
+    python ./src/orca.py
+    ```
+5. Run the workflow (All drivers are currently simulated)
+    ```bash
+    run --workflow smc-assay --config ./examples/smc_assay/smc_assay_example.yml
+    ```
+6. Wait for the method to complete logging to the terminal.  This is a long, complicated method and will take almost 2 minutes to complete outputing a log.
+7. Try running just a portion of the workflow
+    ```bash
+    run_method --method add-detection-antibody --start-map {\"plate-1\":\"pad_1\",\"tips-96\":\"pad_2\"} --end-map {\"plate-1\":\"pad_4\",\"tips-96\":\"pad_5\"} --config examples/smc_assay/smc_assay_example.yml
+    ```
+
 
 
 <h1 id="installation">💾 Installation</h1>
@@ -183,7 +210,7 @@ run --workflow <workflow_name> [--config <path_to_config_file>] [--stage <develo
 
 * _--config <path_to_config_file>_
     
-    Specifies the path to the YAML configuration file. If not provided, the previously loaded configuration is used.
+    Specifies the path to the YAML configuration file. If not provided, the previously loaded configuration is used. Required if the config file has not already been loaded.
 
 * _--stage <development_stage>_
 
@@ -227,11 +254,11 @@ run_method --method <method_name> --start-map <start_map_json> --end-map <end_ma
 
 * _--config <path_to_config_file>_
 
-    Specifies the path to the YAML configuration file. If not provided, the previously loaded configuration is used.
+    Specifies the path to the YAML configuration file. If not provided, the previously loaded configuration is used.  Required if the config file as not already been loaded.
 
 * _--stage <development_stage>_
 
-    Specifies the development stage to be run (e.g., prod, dev). If not provided, dev is run.
+    Specifies the development stage to be run (e.g., prod, dev). Optional, if not provided, dev is run.
 
 
 **Example**
@@ -286,7 +313,7 @@ init [--config <path_to_config_file>] [--resources <resource_list>]
 * _--config <path_to_config_file>_ 
 
     Specifies the path to the YAML configuration file. If not provided, the previously loaded configuration is used.
-    
+
 * _--resources <resource_list>_ 
     
     A comma-separated JSON list of resources to initialize. If not provided, all resources are initialized.
