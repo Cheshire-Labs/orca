@@ -128,7 +128,7 @@ run --workflow smc-assay --config examples/smc_assay/smc_assay_example.yml
 
 3. OR instead of running an entire workflow, just run a single method.  To do this you must define where each plate used by the method will begin and end using JSON for a start-map and end-map
 ```bash
-run-method --method add-detection-antibody --start-map '{"plate-1": "pad-1", "tips-96": "pad-2"}' --end-map '{"plate-1": "pad-4", "tips-96": "pad-5"}' --config examples/smc_assay/smc_assay_example.yml
+run_method --method add-detection-antibody --start-map {\"plate-1\":\"pad_1\",\"tips-96\":\"pad_2\"} --end-map {\"plate-1\":\"pad_4\",\"tips-96\":\"pad_5\"} --config examples/smc_assay/smc_assay_example.yml
 ```
 ---
 ---
@@ -150,12 +150,12 @@ python /path/to/orca.py
 
 Type ```help``` or ```?``` by themselves to display available commands
 
-Otherwise, use ```<command> help``` or ```<command> ?``` to display help for a specific command
+Otherwise, use ```help <command>``` or ```? <command>``` to display help for a specific command
 
 **Example**
 
 ```bash
-run-method help
+help run_method 
 ```
 
 
@@ -203,12 +203,12 @@ Runs a single method defined within the configuration file
 
 **Command**
 
-```run-method```
+```run_method```
 
 **Usage**
 
 ```bash
-run-method --method <method_name> --start-map <start_map_json> --end-map <end_map_json> [--config <path_to_config_file>] [--stage <development_stage>]
+run_method --method <method_name> --start-map <start_map_json> --end-map <end_map_json> [--config <path_to_config_file>] [--stage <development_stage>]
 ```
 
 **Options**
@@ -236,7 +236,7 @@ run-method --method <method_name> --start-map <start_map_json> --end-map <end_ma
 
 **Example**
 ```bash
-run-method --method sample_method --start-map '{"plate-1": "pad-1", "final-plate": "pad-2"}' --end-map '{"plate-1": "pad-4", "final-plate": "pad-5"}' --config examples/smc_assay/smc_assay_example.yml
+run_method --method add-detection-antibody --start-map {\"plate-1\":\"pad_1\",\"tips-96\":\"pad_2\"} --end-map {\"plate-1\":\"pad_4\",\"tips-96\":\"pad_5\"} --config examples/smc_assay/smc_assay_example.yml
 ```
 
 ## Load Configuration File Only
@@ -286,6 +286,7 @@ init [--config <path_to_config_file>] [--resources <resource_list>]
 * _--config <path_to_config_file>_ 
 
     Specifies the path to the YAML configuration file. If not provided, the previously loaded configuration is used.
+    
 * _--resources <resource_list>_ 
     
     A comma-separated JSON list of resources to initialize. If not provided, all resources are initialized.
