@@ -1,9 +1,9 @@
 from typing import Optional, Dict, Any, Callable, List
-from drivers.drivers import SimulationDriver, SimulationRoboticArmDriver
-from drivers.transporter_resource import TransporterEquipment
-from resource_models.base_resource import LabwareLoadableEquipment
-from resource_models.location import Location
-from resource_models.labware import Labware
+from orca.drivers.drivers import SimulationDriver, SimulationRoboticArmDriver
+from orca.drivers.transporter_resource import TransporterEquipment
+from orca.resource_models.base_resource import LabwareLoadableEquipment
+from orca.resource_models.location import Location
+from orca.resource_models.labware import Labware
 
 
 class MockEquipmentResource(LabwareLoadableEquipment):

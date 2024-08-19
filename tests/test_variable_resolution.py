@@ -1,9 +1,9 @@
 import pytest
 import yaml
 
-from yml_config_builder.configs import SystemOptionsConfig, ConfigModel, VariablesConfig
-from yml_config_builder.dynamic_config import DynamicBaseConfig
-from yml_config_builder.variable_resolution import VariablesRegistry
+from orca.yml_config_builder.configs import SystemOptionsConfig, ConfigModel, VariablesConfig
+from orca.yml_config_builder.dynamic_config import DynamicBaseConfig
+from orca.yml_config_builder.variable_resolution import VariablesRegistry
 
 example_variable_config = r"""
 config:

@@ -1,7 +1,7 @@
 import asyncio
 
-from resource_models.labware import Labware
-from system.system_map import SystemMap
+from orca.resource_models.labware import Labware
+from orca.system.system_map import SystemMap
 
 
 class TestSystemGraph:
