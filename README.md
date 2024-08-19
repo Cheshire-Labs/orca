@@ -11,7 +11,7 @@ Orca is a laboratory automation scheduler designed from the ground up with devel
 Orca is currently in it's early beta release with limited functionality and without integrated drivers.  ***This code has only been tested with mocked drivers and has not been run on a live system.*** 
 
 Despite its current limitations, Cheshire Labs sees value in releasing the software at this stage for the following reason:
-- It allows users to explore and experiment with Orca
+- It allows users to explore and experiment with the advantages of Orca
 - It provides access for contributors and developers to build their own drivers
 - It enables developers to contribute enhancements and new features to the software
 - It enables Cheshire Labs to gather feedback and gauge industry interest to ensure Orca meets the needs of the lab automation sector
@@ -57,7 +57,9 @@ Cheshire Labs is actively seeking laboratories interested in using Orca.  Please
 
 <h1 id="how-it-works">⚙️ How It Works</h1>
 
-Orca simplifies the orchestration of complex lab automation workflows through a YAML configuration file. In this file, users define labware, resources, system options, methods, and workflows. The configuration file supports the integration of custom scripts, allowing users to tailor their workflows to specific needs. Variables in the format ${module:object.property} can be used to deploy different configurations depending on the context of the deployment.
+Orca simplifies complex lab automation workflows by allowing users to deploy their systems using just a configuration file. Streamline your automation setup like you would your cloud infrastructure.
+
+Your configuration file defines different aspects of your workflow, including: labware, resources, system options, methods, and workflows. The configuration file supports the integration of custom scripts, and variables can be used to deploy different configurations depending on the context of the deployment.
 
 Orca is currently operated via the command line to allow external systems to drive the scheduler. Users can choose to run entire workflows or individual methods as needed, offering flexibility to adapt to changing lab environments.
 
@@ -79,13 +81,13 @@ Deploy an environment to load a collection of variables across your entire workf
     
 Define a collection of resources from which Orca can dynamically select to execute actions within your workflow.
 
-**Clear workflows**
+💡 **Clear workflows**
     
-Name and list your methods as they appear in your protocol, and reorder them with a simple copy and paste.
+Name and list your methods as they appear in your protocol and reorder them with a simple copy and paste.
 
 💡 **LLM Compatible**
 
-Your configuration file is clear enough that your favorite large language model can understand what going on and help you design your workflow.
+Your configuration file is clear enough that your favorite large language model can understand what’s going on and help you design your workflow.
 
 💡 **Quickly Change Labware Start and End Locations**
     
@@ -366,7 +368,7 @@ The Orca configuration file is a YAML file used to define various elements of yo
 - ```config``` Defines deployable environments and associates a collection of variable values for that deployment
 - ```methods``` Specifies inidividual methods and the actions to be performed with those methods
 - ```workflows``` Defines workflows as a sequence of methods to be executed
-- ```scriptiong``` Maps custom scripts to be used within the workflows
+- ```scripting``` Maps custom scripts to be used within the workflows
 
 ### Example
 [Example SMC Assay Yml Configuration File](./examples/smc_assay/smc_assay_example.yml)
@@ -805,7 +807,8 @@ Thank you for your interest in contributing!
 
 Please read over the [contributing documentation](./CONTRIBUTING).
 
-Please Note: Cheshire Labs follows an open core business model, offering Orca under a dual license structure. To align with this model and the AGPL license, contributors will need to submit a contributor license agreement.
+Please Note: Cheshire Labs follows an open core business model, offering Orca under a dual license structure. To align with this model and the AGPL license, contributors need to submit a contributor license agreement.
+
 
 <h1 id="license">📜 License</h1> 
 
@@ -828,5 +831,7 @@ Please [contact Cheshire Labs](#contact) if you're looking for:
 <h1 id="contact">☎️ Contact</h1>
 
 [Cheshire Labs Contact](https://cheshirelabs.io/contact/)
+
+or contact a Cheshire Labs maintainer
 
 
