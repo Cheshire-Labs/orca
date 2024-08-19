@@ -2,28 +2,15 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Python Debugger: Current File with Arguments",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${file}",
-            "console": "integratedTerminal",
-            "args": [
-                "run_method",
-                "--method", "add-detection-antibody",
-                "--start-map", "{\"plate-1\":\"pad-1\",\"tips-96\":\"pad-2\"}",
-                "--end-map", "{\"plate-1\":\"pad-4\",\"tips-96\":\"pad-5\"}",
-                "--config", "examples/smc_assay/smc_assay_example.yml"
-            ]
-        },
-        {
             "name": "Python Debugger: Python File",
             "type": "debugpy",
             "request": "launch",
             "program": "${file}",
             "console": "integratedTerminal",
             "justMyCode": false,
+            "cwd": "${workspaceFolder}/src",
             "env": {
-                "PYTHONPATH": "${workspaceFolder}"
+                "PYTHONPATH": "${workspaceFolder}/src"
             }
         }
     ]
