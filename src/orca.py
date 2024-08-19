@@ -4,4 +4,8 @@ from cli.orca_cli import OrcaCmdShell
 
 
 logging.basicConfig(handlers=[logging.StreamHandler()], level=logging.DEBUG)
-OrcaCmdShell().cmdloop()
+def main():
+    OrcaCmdShell().cmdloop()
+
+if __name__ == "__main__":
+    main()

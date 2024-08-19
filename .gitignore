@@ -1,6 +1,7 @@
 .idea
 .mypy_cache
-venv
+.venv
+build
 **/~*.tmp
 __pycache__
 .VSCodeCounter/*

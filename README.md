@@ -134,7 +134,34 @@ To see a quick demo of how orca works:
 
 <h1 id="installation">💾 Installation</h1>
 
- 🚧 Installation is still in the process of being streamlined.  For now, just download the code to run.  Drivers need to be placed in the drivers folder and manually connected.  Driver installation will be streamlined soon.  Thank you for your patience.
+ 🚧 **Installation is still in the process of being streamlined.  It may be best to just download the code to run.**  Drivers need to be placed in the drivers folder and manually connected.  Driver installation will be streamlined soon.  Thank you for your patience.
+
+1. Create Python vitual environment (Optional)
+    ```bash
+    python -m venv orca-testing-env
+    orca-testing-env\Scripts\activate
+    ```
+2. Install via pip
+    ```bash
+    pip install git+https://github.com/cheshire-labs/orca.git@dev
+    ```
+
+3. Start Orca command shell
+    ```bash
+    orca
+    ```
+
+4. Exit Orca command shell
+    ```bash
+    exit
+    ```
+
+
+To uninstall:
+    
+```bash
+pip uninstall cheshire-orca
+```
 
 <h1 id="usage">🧰 Usage</h1> 
 
@@ -147,18 +174,25 @@ To see a quick demo of how orca works:
 ### Example
 To run the [Example Configuration File](./examples/smc_assay/smc_assay_example.yml)
 1. Using python launch the Orca command shell from your command line
-```bash
-python path/to/orca.py
-```
+
+- if installed:
+    ```bash
+    orca
+    ```
+
+- if not installed:
+    ```bash
+    python path/to/orca.py
+    ```
 2. Run the entire ```smc-assay``` workflow as defined under the [workflows](#workflows) section of the configuation file
-```bash
-run --workflow smc-assay --config examples/smc_assay/smc_assay_example.yml
-```
+    ```bash
+    run --workflow smc-assay --config examples/smc_assay/smc_assay_example.yml
+    ```
 
 3. OR instead of running an entire workflow, just run a single method.  To do this you must define where each plate used by the method will begin and end using JSON for a start-map and end-map
-```bash
-run_method --method add-detection-antibody --start-map {\"plate-1\":\"pad_1\",\"tips-96\":\"pad_2\"} --end-map {\"plate-1\":\"pad_4\",\"tips-96\":\"pad_5\"} --config examples/smc_assay/smc_assay_example.yml
-```
+    ```bash
+    run_method --method add-detection-antibody --start-map {\"plate-1\":\"pad_1\",\"tips-96\":\"pad_2\"} --end-map {\"plate-1\":\"pad_4\",\"tips-96\":\"pad_5\"} --config examples/smc_assay/smc_assay_example.yml
+    ```
 ---
 ---
 <h1 id="command-line-commands">⌨️ Command Line Commands</h1>
@@ -171,6 +205,11 @@ Orca is run from a shell interface.  This must be started before issuing command
 
 **Starting Orca**
 
+if installed:
+```bash
+orca
+```
+if not installed:
 ```bash
 python /path/to/orca.py
 ```
@@ -221,7 +260,7 @@ run --workflow <workflow_name> [--config <path_to_config_file>] [--stage <develo
 **Example** 
 
 ```bash
-run --workflow sample_workflow --config examples/smc_assay/smc_assay_example.yml
+run --workflow smc-assay --config examples/smc_assay/smc_assay_example.yml
 ```
 
 ## Deploy a Single Method
