@@ -9,9 +9,12 @@ import yaml
 
 from yml_config_builder.variable_resolution import VariablesRegistry
 
-# TODO: This class and ConfigToSystemBuilder are too intertwined
+# TODO: This class and ConfigToSystemBuilder are too intertwined - need to refactor
 class ConfigFile:
-    def __init__(self, yml_content: str) -> None:
+    def __init__(self, config_filepath: str) -> None:
+        self._config_filepath = config_filepath
+        with open( self._config_filepath, "r") as f:
+            yml_content = f.read()
         self._yml = yaml.load(yml_content, Loader=yaml.FullLoader)
         self._system_config = SystemConfig.model_validate(self._yml)
         self._variable_registry = self._get_variable_registry(self._system_config)
@@ -32,5 +35,6 @@ class ConfigFile:
 
     def get_system(self, builder: ConfigToSystemBuilder) -> System:
         builder.set_config(self._config)
+        builder.set_config_filepath(self._config_filepath)
 
         return builder.get_system()

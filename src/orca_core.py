@@ -16,11 +16,11 @@ from yml_config_builder.resource_factory import IResourceFactory
 
 class OrcaCore:
     def __init__(self, 
-                 yml_content: str, 
+                 config_filepath: str, 
                  options: Dict[str, Any] = {},
                  scripting_registry: Optional[IScriptRegistry] = None,
                  resource_factory: Optional[IResourceFactory] = None) -> None:
-        self._config = ConfigFile(yml_content)
+        self._config = ConfigFile(config_filepath)
         self._config.set_command_line_options(options)
         builder = ConfigToSystemBuilder()
         if scripting_registry is not None:
@@ -97,9 +97,9 @@ class OrcaCore:
 
 if __name__ == "__main__":
     logging.basicConfig(handlers=[logging.StreamHandler()], level=logging.DEBUG)
-    config_file =  r"C:\Users\miike\source\repos\orca\orca-core\examples\smc_assay\smc_assay_example.yml"
+    config_file_path =  r"C:\Users\miike\source\repos\orca\orca-core\examples\smc_assay\smc_assay_example.yml"
     workflow_name = "smc-assay"
-    with open(config_file, "r") as f:
+    with open(config_file_path, "r") as f:
         yml_content = f.read()
     orca = OrcaCore(yml_content)
     # asyncio.run(orca.initialize())
