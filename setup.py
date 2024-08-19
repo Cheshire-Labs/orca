@@ -24,7 +24,7 @@ setup(
     python_requires='>=3.10',
     entry_points={
         'console_scripts': [
-            'orca=orca.orca:main'
+            'orca=orca.orca_entry:main'
         ]
     }
 )
