@@ -13,9 +13,9 @@ setup(
     include_package_data=True,
     package_data={'': ['py.typed']},
     author='Cheshire Labs',
-    author_email='support@cheshirelabs.io',
+    author_email='michaeltsalmi@cheshirelabs.io',
     description='Laboratory Automation Framework',
-    url='https://github.com/cheshirelabs/orca_core',
+    url='https://github.com/Cheshire-Labs/orca',
     classifiers=[
         'Programming Language :: Python :: 3',
         'License :: Other/Proprietary License',
