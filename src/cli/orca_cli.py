@@ -1,6 +1,8 @@
 import argparse
 import cmd
 import logging
+import colorama
+
 import shlex
 from typing import Dict
 
@@ -13,6 +15,7 @@ class OrcaCmdShell(cmd.Cmd):
     prompt = "\033[31morca> \033[0m"
     
     def __init__(self) -> None:
+        colorama.init()
         super().__init__()
         self._orca_shell: IOrcaShell = LocalOrcaShell()
         self._parsers: Dict[str, argparse.ArgumentParser] = self._create_parsers()
