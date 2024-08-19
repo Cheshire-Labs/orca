@@ -1,7 +1,7 @@
-from scripting.scripting import ThreadScript
-from system.system import ISystem
-from workflow_models.status_enums import LabwareThreadStatus
-from workflow_models.labware_thread import LabwareThread
+from orca.scripting.scripting import ThreadScript
+from orca.system.system import ISystem
+from orca.workflow_models.status_enums import LabwareThreadStatus
+from orca.workflow_models.labware_thread import LabwareThread
 
 class Spawn384TipsScript(ThreadScript):
     def __init__(self, system: ISystem):

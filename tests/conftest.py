@@ -1,9 +1,9 @@
 import pytest
 
-from drivers.transporter_resource import TransporterEquipment
-from system.registries import LabwareRegistry
-from system.resource_registry import ResourceRegistry
-from system.system_map import SystemMap
+from orca.drivers.transporter_resource import TransporterEquipment
+from orca.system.registries import LabwareRegistry
+from orca.system.resource_registry import ResourceRegistry
+from orca.system.system_map import SystemMap
 from tests.mock import MockEquipmentResource, MockRoboticArm
 
 
