@@ -438,32 +438,3 @@ scripting:
         spawn-final-plate-script:
             source: spawn_final_plate.py:SpawnFinalPlateScript
             
-    # get-positions: 
-    #     source: get-positions.py:get-positions(${0}, ${1})
-
-    # worklist-iter: 
-    #     source: file-row-iterator("worklist.csv") 
-    #     mapping:
-    #         src: "source"
-    #         dest: "destination"
-    #         vol: "volume"
-    #         liq-class: "liquid_class_name"
-
-    # api-worklist-iter: 
-    #     source: http-get("http://api.com/worklist") 
-    #     mapping:
-    #         src: "source"
-    #         dest: "destination"
-    #         vol: "volume"
-
-    # id-iter: 
-    #     source: file-row-iterator("ids.txt") 
-    #     mapping:
-    #         id: "id"
-
-    # fed-api-worklist-iter: 
-    #     worklist-source: http-get("http://api.com/get-volume/{id-iter.id}") 
-    #     mapping:
-    #         src: "source"
-    #         dest: "destination"
-    #         vol: "volume"
