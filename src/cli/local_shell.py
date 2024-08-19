@@ -9,10 +9,8 @@ class LocalOrcaShell(IOrcaShell):
     def __init__(self) -> None:
         self._orca: Optional[OrcaCore] = None
 
-    def load(self, config_file: str):
-        with open(config_file, "r") as f:
-            yml_content = f.read()
-        self._orca = OrcaCore(yml_content)
+    def load(self, config_filepath: str):
+        self._orca = OrcaCore(config_filepath)
 
     def init(self,
             config_file: Optional[str] = None, 

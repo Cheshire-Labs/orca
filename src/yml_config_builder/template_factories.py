@@ -214,6 +214,9 @@ class ConfigToSystemBuilder:
 
     def set_config(self, config: ISystemConfig) -> None:
         self._config = config
+
+    def set_config_filepath(self, config_filepath: str) -> None:
+        self._config_filepath = config_filepath
         
     def set_script_registry(self, script_reg: IScriptRegistry) -> None:
         self._scripting_registry = script_reg
@@ -239,7 +242,7 @@ class ConfigToSystemBuilder:
         
         # TODO: Move factories out
         if self._scripting_registry is None:
-            scripting_factory = ScriptFactory()
+            scripting_factory = ScriptFactory(self._config_filepath)
             self._scripting_registry = ScriptRegistry(scripting_factory)
         self._scripting_registry.set_system(system)
         method_template_factory = MethodTemplateFactory(resource_reg, labware_registry)

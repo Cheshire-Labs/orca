@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 
+from importlib.machinery import ModuleSpec
 from typing import Dict
 import importlib.util
 import sys
@@ -56,16 +57,26 @@ class IScriptFactory(ABC):
 
 class ScriptFactory(IScriptFactory):
 
+    def __init__(self, configuration_file_dir: str) -> None:
+        self._configuration_file_dir: str = configuration_file_dir
+
     def set_system(self, system: ISystem) -> None:
         self._system = system
 
     def create_script(self, filepath: str, class_name: str) -> ThreadScript:
         # get just the filename without the extension
         module_name= Path(filepath).stem
-
+        
+        # try to get the spec from which Orca was called
+        # otherwise check the directory from which the configuration is located
         spec = importlib.util.spec_from_file_location(module_name, filepath)
         if spec is None:
-            raise ValueError(f"File {filepath} not found")
+            cwd_filepath = filepath
+            filepath = str(Path(self._configuration_file_dir) / Path(filepath))
+            spec = importlib.util.spec_from_file_location(module_name, filepath)
+            if spec is None:
+                raise ValueError(f"File {cwd_filepath} nor {filepath} found")
+
         module_type = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module_type
         if spec.loader is None:
@@ -79,9 +90,7 @@ class ScriptFactory(IScriptFactory):
             raise ValueError(f"Class {class_name} is not a subclass of ThreadScript")
         script_instance: ThreadScript = ScriptClass(self._system)
         return script_instance
-
-
-
+    
 class ScriptRegistry(IScriptRegistry):
     def __init__(self, script_factory: IScriptFactory) -> None:
         self._factory = script_factory
