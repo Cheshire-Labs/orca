@@ -65,25 +65,21 @@ Orca is currently operated via the command line to allow external systems to dri
 
 <h1 id="features">🚀 Features</h1>
 
-💡 **Git Friendly**
+💡 **Git & Diff Friendly**
     
-You own your workflow, and it integrates seamlessly into your local git repo like any other code
-
-💡 **Diff Friendly**
-
-Easily track changes with clear, diff-able workflows, making it simple to see what has changed since the last run.
+You own your workflow, and it integrates seamlessly into your local git repo like any other code. Easily track changes with clear, diff-able workflows, making it simple to see what has changed since the last run.
 
 💡 **Configurable Environments**
 
 Deploy an environment to load a collection of variables across your entire workflow.  This helps to set things like shake times to 0 during testing and resetting them for production.
 
+💡 **Modular Workflow Design**
+    
+Workflows are designed modularly by methods.  This allows you to easily swap methods, run entire workflows, or just run single methods within workflows.  Great for adaptability & testing!
+
 💡 **Resource Pools**
     
 Define a collection of resources from which Orca can dynamically select to execute actions within your workflow.
-
-💡 **Clear workflows**
-    
-Name and list your methods as they appear in your protocol and reorder them with a simple copy and paste.
 
 💡 **LLM Compatible**
 
@@ -92,18 +88,6 @@ Your configuration file is clear enough that your favorite large language model 
 💡 **Quickly Change Labware Start and End Locations**
     
 Avoid reloading your plate store. Change the start point to a nearby plate pad and relaunch quickly.
-
-💡 **Easily Swap Methods**
-
-Adapt to changing requirements by quickly swapping one method for another.
-
-💡 **Run an Entire Workflow**
-
-Execute the workflow from start to finish in a prod, dev, or any custom environment
-
-💡 **Run a Single Method** 
-
-No more copying and pasting parts of workflows. With Orca, you can run an entire workflow or test a single method to fix errors.
 
 💡 **Python Scripting**
 
