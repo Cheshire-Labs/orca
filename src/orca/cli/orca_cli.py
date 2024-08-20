@@ -1,6 +1,7 @@
 import argparse
 import cmd
 import logging
+import traceback
 import colorama
 
 import shlex
@@ -28,9 +29,10 @@ class OrcaCmdShell(cmd.Cmd):
             self._orca_shell.load(args.config)
         except SystemExit as e:
             print(f"Argument parsing error: {e}")
-            self._parsers["init"].print_help()
+            self._parsers["load"].print_help()
         except Exception as e:
             print(f"Error: {e}")
+            traceback.print_exc()
 
     def do_init(self, arg: str):
         """Initialize the lab instruments"""
@@ -43,6 +45,7 @@ class OrcaCmdShell(cmd.Cmd):
             self._parsers["init"].print_help()
         except Exception as e:
             print(f"Error: {e}")
+            traceback.print_exc()
 
     def do_run(self, arg: str):
         """Run the workflow"""
@@ -52,9 +55,10 @@ class OrcaCmdShell(cmd.Cmd):
             self._orca_shell.run_workflow(args.workflow, args.config)
         except SystemExit as e:
             print(f"Argument parsing error: {e}")
-            self._parsers["init"].print_help()
+            self._parsers["run"].print_help()
         except Exception as e:
             print(f"Error: {e}")
+            traceback.print_exc()
 
     def do_run_method(self, arg: str):
         """Run a specific method"""
@@ -63,10 +67,13 @@ class OrcaCmdShell(cmd.Cmd):
             print("Running method")
             self._orca_shell.run_method(args.method, args.start_map, args.end_map, args.config)
         except SystemExit as e:
+            
             print(f"Argument parsing error: {e}")
-            self._parsers["init"].print_help()
+             
+            self._parsers["run_method"].print_help()
         except Exception as e:
             print(f"Error: {e}")
+            traceback.print_exc()
 
     def do_exit(self, arg: str):
         """Exit the shell"""
