@@ -120,23 +120,28 @@ No scheduler software fits every need. Orca offers powerful Python scripting to 
 ### Demo
 To see a quick demo of how orca works:
 1. Be sure to read our [Warning](#warning) regarding Orca before running
-2. Review [Example Configuration File](./examples/smc_assay/smc_assay_example.yml)
-3. Review [Example Script File #1](./examples/smc_assay/spawn_384_tips.py) and [Example Script File #2](./examples/smc_assay/spawn_final_plate.py)
-4. Download the [Examples Directory](./examples/)
-5. Install Orca
+2. Review Example Files:
+    - [Example Configuration File](./examples/smc_assay/smc_assay_example.yml) - Example Small Molecule Counting (SMC) Assay
+    - [Example Spawn384TipsScript File](./examples/smc_assay/spawn_384_tips.py) - Scripting to get a new 384 tip box after all quadrants are used
+    - [Example SpawnFinalPlateScript File](./examples/smc_assay/spawn_final_plate.py) - Scripting to get a new final plate after all quandrants are used
+3. Download the [Examples Directory](./examples/) -> [Download Link](https://download-directory.github.io/?url=https%3A%2F%2Fgithub.com%2FCheshire-Labs%2Forca%2Ftree%2Fdev%2Fexamples) (Via https://download-directory.github.io/)
+4. Unzip the directory
+5. Open your command line
+6. Install Orca
     ```bash
     pip install git+https://github.com/cheshire-labs/orca.git@dev
     ```
 
-6. Open your command line
+
 7. Launch the Orca Shell by typing the following into your command line
     ```bash
     orca
     ```
-8. Run the example ```smc-assay``` workflow as defined under the [workflows](#workflows) section of the configuation file (All drivers are currently simulated)
+8. Run the example ```smc-assay``` workflow as defined under the [workflows](#workflows) section of the configuation file (All drivers are currently simulated).
     ```bash
     run --workflow smc-assay --config <path>/examples/smc_assay/smc_assay_example.yml
     ```
+    _Note: Be sure to use forward slashes ```/``` in the filepath_
 9. Wait for the method to complete logging to the terminal.  This is a long, complicated method and will take almost 2 minutes to complete the log output.
 
 10. Try running just a portion of the workflow, by selecting ```add-detection-antibody``` to run.  To do this you must define where each plate used by the method will begin and end using JSON for a start-map and end-map.
@@ -166,7 +171,7 @@ To see a quick demo of how orca works:
         pip install git+https://github.com/cheshire-labs/orca.git@dev
         ```
 
-    - Install locally
+    - Download/Clone repo and install locally
         ```
         pip install -e <orca-root-directory>
         ```
