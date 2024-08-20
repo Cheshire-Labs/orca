@@ -111,40 +111,65 @@ No scheduler software fits every need. Orca offers powerful Python scripting to 
 
 <h1 id="quick-start">⚡ Demo Quick Start</h1>
 
+### Basic Overview
 
+1. [Define your configuration file](#define-your-configuration-file)
+2. Launch Orca command shell
+3. Run your entire workflow or run a single method
+
+### Demo
 To see a quick demo of how orca works:
 1. Be sure to read our [Warning](#warning) regarding Orca before running
 2. Review [Example Configuration File](./examples/smc_assay/smc_assay_example.yml)
 3. Review [Example Script File #1](./examples/smc_assay/spawn_384_tips.py) and [Example Script File #2](./examples/smc_assay/spawn_final_plate.py)
-4. Launch the Orca Shell
+4. Download the [Examples Directory](./examples/)
+5. Install Orca
     ```bash
-    python ./src/orca.py
+    pip install git+https://github.com/cheshire-labs/orca.git@dev
     ```
-5. Run the workflow (All drivers are currently simulated)
+
+6. Open your command line
+7. Launch the Orca Shell by typing the following into your command line
     ```bash
-    run --workflow smc-assay --config ./examples/smc_assay/smc_assay_example.yml
+    orca
     ```
-6. Wait for the method to complete logging to the terminal.  This is a long, complicated method and will take almost 2 minutes to complete outputing a log.
-7. Try running just a portion of the workflow
+8. Run the example ```smc-assay``` workflow as defined under the [workflows](#workflows) section of the configuation file (All drivers are currently simulated)
     ```bash
-    run_method --method add-detection-antibody --start-map {\"plate-1\":\"pad_1\",\"tips-96\":\"pad_2\"} --end-map {\"plate-1\":\"pad_4\",\"tips-96\":\"pad_5\"} --config examples/smc_assay/smc_assay_example.yml
+    run --workflow smc-assay --config <path>/examples/smc_assay/smc_assay_example.yml
+    ```
+9. Wait for the method to complete logging to the terminal.  This is a long, complicated method and will take almost 2 minutes to complete the log output.
+
+10. Try running just a portion of the workflow, by selecting ```add-detection-antibody``` to run.  To do this you must define where each plate used by the method will begin and end using JSON for a start-map and end-map.
+    ```bash
+    run_method --method add-detection-antibody --start-map {\"plate-1\":\"pad_1\",\"tips-96\":\"pad_2\"} --end-map {\"plate-1\":\"pad_4\",\"tips-96\":\"pad_5\"} --config <path>/examples/smc_assay/smc_assay_example.yml
+    ```
+
+11. Exit Orca
+    ```bash
+    exit
     ```
 
 
 
 <h1 id="installation">💾 Installation</h1>
 
- 🚧 **Installation is still in the process of being streamlined.  It may be best to just download the code to run.**  Drivers need to be placed in the drivers folder and manually connected.  Driver installation will be streamlined soon.  Thank you for your patience.
+ 🚧 **Installation is still in the process of being streamlined.**  Drivers need to be placed in the drivers folder and manually connected.  Driver installation will be streamlined soon.  Thank you for your patience.
 
 1. Create Python vitual environment (Optional)
     ```bash
-    python -m venv orca-testing-env
-    orca-testing-env\Scripts\activate
+    python -m venv <env-name>
+    <env-name>\Scripts\activate
     ```
 2. Install via pip
-    ```bash
-    pip install git+https://github.com/cheshire-labs/orca.git@dev
-    ```
+    - Install from github
+        ```bash
+        pip install git+https://github.com/cheshire-labs/orca.git@dev
+        ```
+
+    - Install locally
+        ```
+        pip install -e <orca-root-directory>
+        ```
 
 3. Start Orca command shell
     ```bash
@@ -175,23 +200,23 @@ pip uninstall cheshire-orca
 To run the [Example Configuration File](./examples/smc_assay/smc_assay_example.yml)
 1. Using python launch the Orca command shell from your command line
 
-- if installed:
     ```bash
     orca
     ```
 
-- if not installed:
-    ```bash
-    python path/to/orca.py
-    ```
 2. Run the entire ```smc-assay``` workflow as defined under the [workflows](#workflows) section of the configuation file
     ```bash
-    run --workflow smc-assay --config examples/smc_assay/smc_assay_example.yml
+    run --workflow smc-assay --config <path>/examples/smc_assay/smc_assay_example.yml
     ```
 
 3. OR instead of running an entire workflow, just run a single method.  To do this you must define where each plate used by the method will begin and end using JSON for a start-map and end-map
     ```bash
-    run_method --method add-detection-antibody --start-map {\"plate-1\":\"pad_1\",\"tips-96\":\"pad_2\"} --end-map {\"plate-1\":\"pad_4\",\"tips-96\":\"pad_5\"} --config examples/smc_assay/smc_assay_example.yml
+    run_method --method add-detection-antibody --start-map {\"plate-1\":\"pad_1\",\"tips-96\":\"pad_2\"} --end-map {\"plate-1\":\"pad_4\",\"tips-96\":\"pad_5\"} --config <path>/examples/smc_assay/smc_assay_example.yml
+    ```
+
+4. Exit Shell
+    ```bash
+    exit
     ```
 ---
 ---
@@ -205,14 +230,11 @@ Orca is run from a shell interface.  This must be started before issuing command
 
 **Starting Orca**
 
-if installed:
+Start the Orca shell:
 ```bash
 orca
 ```
-if not installed:
-```bash
-python /path/to/orca.py
-```
+
 
 **Help**
 
@@ -260,7 +282,7 @@ run --workflow <workflow_name> [--config <path_to_config_file>] [--stage <develo
 **Example** 
 
 ```bash
-run --workflow smc-assay --config examples/smc_assay/smc_assay_example.yml
+run --workflow smc-assay --config <path>/examples/smc_assay/smc_assay_example.yml
 ```
 
 ## Deploy a Single Method
@@ -304,7 +326,7 @@ run_method --method <method_name> --start-map <start_map_json> --end-map <end_ma
 
 **Example**
 ```bash
-run_method --method add-detection-antibody --start-map {\"plate-1\":\"pad_1\",\"tips-96\":\"pad_2\"} --end-map {\"plate-1\":\"pad_4\",\"tips-96\":\"pad_5\"} --config examples/smc_assay/smc_assay_example.yml
+run_method --method add-detection-antibody --start-map {\"plate-1\":\"pad_1\",\"tips-96\":\"pad_2\"} --end-map {\"plate-1\":\"pad_4\",\"tips-96\":\"pad_5\"} --config <path>/examples/smc_assay/smc_assay_example.yml
 ```
 
 ## Load Configuration File Only
@@ -331,7 +353,7 @@ load --config <path_to_config_file>
 **Example**
 
 ```bash
-load --config examples/smc_assay/smc_assay_example.yml
+load --config <path>/examples/smc_assay/smc_assay_example.yml
 ```
 
 ## Initialize System Only
@@ -362,7 +384,7 @@ init [--config <path_to_config_file>] [--resources <resource_list>]
 **Example**
 
 ```bash
-init --config examples/smc_assay/smc_assay_example.yml --resources [resource1, resource2]
+init --config <path>/examples/smc_assay/smc_assay_example.yml --resources [resource1, resource2]
 ```
 
 ## Exit
@@ -754,7 +776,7 @@ The scripting section maps scripts to an identifier to be used within your confi
     - ```base-dir: <base-dir>``` - _(Optional)_ Defines the base directory to find scripts.  This directory is relative to where Orca is called from.  This is an issue that needs to be fixed.
     - ```scripts: ``` - Defines a list of scripts
         - ```<script-name>``` - Define name for your script.  This will be used to identifier your script.
-            - ```source: <script-filename>:<script-class-name>``` - Your script source needs to identify which file the script is in and the script's class name within that file.
+            - ```source: <script-filename>:<script-class-name>``` - Your script source needs to identify which file the script is in and the script's class name within that file.  Orca first searched the current working directory for the scripting file, if it's not found, it then searches the configuration file's directory.
 
 **Scripting Map Example**
 
@@ -791,7 +813,7 @@ workflows:
 
 _In this case, the purpose of ```spawn-384-tips-script``` is to allow a 96-head to use every quadrant of a 384 tip box before retrieving a new tip box. The script keeps count of how many times the thread it's attached to has been called.  If the script has been called a multiple of 4 times, it does nothing.  Otherwise, it changes the workflows start location to be it's end location._
 
-Script ```spawn-384-tips-script``` maps to file ```examples/smc_assay/spawn_384_tips.py:Spawn384TipsScript```.  Class ```Spawn384TipsScript``` is retrieved and initialized by Orca.  This script is then attached to thread ```tips-384```.  When ```tips-384``` thread is spawned an event is sent to the ```Spawn384TipsScript``` script object and the internal code is executed.
+Script ```spawn-384-tips-script``` maps to file ```<current-working-directory>/examples/smc_assay/spawn_384_tips.py:Spawn384TipsScript```.  Class ```Spawn384TipsScript``` is retrieved and initialized by Orca.  This script is then attached to thread ```tips-384```.  When ```tips-384``` thread is spawned an event is sent to the ```Spawn384TipsScript``` script object and the internal code is executed.
 
 **More Information**
 
