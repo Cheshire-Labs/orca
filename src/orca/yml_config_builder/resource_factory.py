@@ -1,8 +1,9 @@
-from typing import List
+from typing import Callable, Dict, List
 from abc import ABC, abstractmethod
 from orca.config_interfaces import IResourceConfig, IResourcePoolConfig
 from orca.drivers.driver_socket_client import RemoteLabwarePlaceableDriverClient
 from orca.drivers.drivers import SimulationBaseDriver, SimulationDriver, SimulationRoboticArmDriver
+from orca.helper import FilepathReconciler
 from orca.resource_models.base_resource import Equipment, IEquipment, LabwareLoadableEquipment
 
 from orca.resource_models.resource_pool import EquipmentResourcePool
@@ -15,14 +16,14 @@ class IResourceFactory(ABC):
         raise NotImplementedError
     
 class ResourceFactory(IResourceFactory):
-    def __init__(self):
-        self._resource_map = {
+    def __init__(self, filepath_reconciler: FilepathReconciler) -> None:
+        self._resource_map: Dict[str, Callable[[str, IResourceConfig], IEquipment]] = {
             'ml-star': lambda name, config: LabwareLoadableEquipment(name, SimulationDriver("Hamilton MLSTAR", "Hamilton MLSTAR")),
             'venus': self.create_venus,
-            'acell': lambda name, config: TransporterEquipment(name, SimulationRoboticArmDriver(name, "ACell")),
-            'mock-robot': lambda name, config: TransporterEquipment(name, SimulationRoboticArmDriver(name, "Precision Flex")),
-            'ddr': lambda name, config: TransporterEquipment(name, SimulationRoboticArmDriver(name, "DDR")),
-            'translator': lambda name, config: TransporterEquipment(name, SimulationRoboticArmDriver(name, "Translator")),
+            'acell': lambda name, config: TransporterEquipment(name, SimulationRoboticArmDriver(name, filepath_reconciler, "ACell")),
+            'mock-robot': lambda name, config: TransporterEquipment(name, SimulationRoboticArmDriver(name, filepath_reconciler, "Precision Flex" )),
+            'ddr': lambda name, config: TransporterEquipment(name, SimulationRoboticArmDriver(name, filepath_reconciler, "DDR")),
+            'translator': lambda name, config: TransporterEquipment(name, SimulationRoboticArmDriver(name, filepath_reconciler, "Translator")),
             'cwash': lambda name, config: LabwareLoadableEquipment(name, SimulationDriver("CWash", "CWash")),
             'mantis': lambda name, config: LabwareLoadableEquipment(name, SimulationDriver("Mantis", "Mantis")),
             'analytic-jena': lambda name, config: LabwareLoadableEquipment(name, SimulationDriver("Analytic Jena", "Analytic Jena")),
@@ -41,7 +42,7 @@ class ResourceFactory(IResourceFactory):
             'switch': lambda name, config: Equipment(name, SimulationBaseDriver("Switch", "Switch"))
         }
 
-    def create_venus(self, resource_name, resource_config):
+    def create_venus(self, resource_name: str, resource_config: IResourceConfig) -> IEquipment:
         if resource_config.sim:
             return LabwareLoadableEquipment(resource_name, SimulationDriver("Venus", "Venus"))
         else:

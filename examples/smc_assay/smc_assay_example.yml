@@ -83,26 +83,26 @@ resources:
     ddr-1:
         type: ddr
         ip: 192.168.1.125
-        positions: examples\\smc_assay\\ddr1.xml
+        positions: ddr1.xml
 
     ddr-2:
         type: ddr
         ip: 192.168.1.126
-        positions: examples\\smc_assay\\ddr2.xml
+        positions: ddr2.xml
     ddr-3:
         type: ddr
         ip: 192.168.1.127
-        positions: examples\\smc_assay\\ddr3.xml
+        positions: ddr3.xml
 
     translator-1:
         type: translator
         com: "COM5"
-        positions: examples\\smc_assay\\translator1.xml
+        positions: translator1.xml
         
     translater-2:
         type: translator
         com: "COM6"
-        positions: examples\\smc_assay\\translator2.xml
+        positions: translator2.xml
 
 ## STACKERS
     stacker-sample-start:
@@ -431,7 +431,6 @@ workflows:
 
 ## SCRIPT EXAMPLES
 scripting:
-    base-dir: examples/smc_assay
     scripts:
         spawn-384-tips-script:
             source: spawn_384_tips.py:Spawn384TipsScript

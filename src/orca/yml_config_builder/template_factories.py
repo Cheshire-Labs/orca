@@ -3,6 +3,7 @@ import os
 from typing import Dict, List, Optional, Tuple, Union
 
 from orca.config_interfaces import ILabwareConfig, ILabwareThreadConfig, IMethodActionConfig, IMethodConfig, IResourceConfig, IResourcePoolConfig, ISystemConfig, IThreadStepConfig, IWorkflowConfig
+from orca.helper import FilepathReconciler
 from orca.resource_models.base_resource import Equipment, LabwareLoadableEquipment
 from orca.resource_models.labware import AnyLabwareTemplate, LabwareTemplate
 from orca.resource_models.location import Location
@@ -210,7 +211,7 @@ class ConfigToSystemBuilder:
     def __init__(self) -> None:
         self._config: Optional[ISystemConfig] = None
         self._scripting_registry: Optional[IScriptRegistry] = None
-        self._resource_factory: IResourceFactory = ResourceFactory()
+        self._resource_factory: Optional[IResourceFactory] = None
 
     def set_config(self, config: ISystemConfig) -> None:
         self._config = config
@@ -242,7 +243,10 @@ class ConfigToSystemBuilder:
         
         # TODO: Move factories out
         if self._scripting_registry is None:
-            scripting_factory = ScriptFactory(self._config_filepath)
+            absolute_path = os.path.abspath(self._config_filepath)
+            directory_path = os.path.dirname(absolute_path)
+            file_reconciler = FilepathReconciler(directory_path)
+            scripting_factory = ScriptFactory(self._config.scripting, file_reconciler)
             self._scripting_registry = ScriptRegistry(scripting_factory)
         self._scripting_registry.set_system(system)
         method_template_factory = MethodTemplateFactory(resource_reg, labware_registry)
@@ -264,13 +268,14 @@ class ConfigToSystemBuilder:
         return system
     
     def _build_scripts(self, config: ISystemConfig, script_reg: IScriptRegistry) -> None:
-        base_dir = config.scripting.base_dir
         for script_name, script_config in config.scripting.scripts.items():
             filepath, class_name = script_config.source.split(":")
-            script = script_reg.create_script(os.path.join(base_dir, filepath), class_name)
+            script = script_reg.create_script(filepath, class_name)
             script_reg.add_script(script_name, script)
     
     def _build_resources(self, config: ISystemConfig, resource_reg: IResourceRegistry) -> None:
+        if self._resource_factory is None:
+            raise ValueError("Resource factory is not set.  You must set the resource factory before building resources")
         resource_pool_configs: Dict[str, IResourcePoolConfig] = {}
 
         # build resources from resource defs in config, defer resource pool creation
