@@ -1,10 +1,13 @@
 from abc import ABC, abstractmethod
 
 from importlib.machinery import ModuleSpec
+import os
 from typing import Dict
 import importlib.util
 import sys
 from pathlib import Path
+from orca.config_interfaces import IScriptBaseConfig
+from orca.helper import FilepathReconciler
 from orca.system.system import ISystem
 from orca.workflow_models.labware_thread import LabwareThread
 from orca.workflow_models.labware_thread import IThreadObserver
@@ -57,25 +60,23 @@ class IScriptFactory(ABC):
 
 class ScriptFactory(IScriptFactory):
 
-    def __init__(self, configuration_file_dir: str) -> None:
-        self._configuration_file_dir: str = configuration_file_dir
+    def __init__(self, scripting_config: IScriptBaseConfig, filepath_reconciler: FilepathReconciler) -> None:
+        self._scripting_config: IScriptBaseConfig = scripting_config
+        self._filepath_reconciler = filepath_reconciler
+        self._filepath_reconciler.set_base_dir(self._scripting_config.base_dir)
 
     def set_system(self, system: ISystem) -> None:
         self._system = system
 
     def create_script(self, filepath: str, class_name: str) -> ThreadScript:
+        filepath = self._filepath_reconciler.reconcile_filepath(filepath)     
+
         # get just the filename without the extension
         module_name= Path(filepath).stem
         
-        # try to get the spec from which Orca was called
-        # otherwise check the directory from which the configuration is located
         spec = importlib.util.spec_from_file_location(module_name, filepath)
         if spec is None:
-            cwd_filepath = filepath
-            filepath = str(Path(self._configuration_file_dir) / Path(filepath))
-            spec = importlib.util.spec_from_file_location(module_name, filepath)
-            if spec is None:
-                raise ValueError(f"File {cwd_filepath} nor {filepath} found")
+                raise ValueError(f"spec not found for {filepath}")
 
         module_type = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module_type
@@ -90,6 +91,9 @@ class ScriptFactory(IScriptFactory):
             raise ValueError(f"Class {class_name} is not a subclass of ThreadScript")
         script_instance: ThreadScript = ScriptClass(self._system)
         return script_instance
+    
+
+
     
 class ScriptRegistry(IScriptRegistry):
     def __init__(self, script_factory: IScriptFactory) -> None:

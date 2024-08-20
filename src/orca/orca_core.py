@@ -1,6 +1,8 @@
+import os
 from typing import Any, Callable, Coroutine, Dict, List, Optional
 import logging
 import asyncio
+from orca.helper import FilepathReconciler
 from orca.scripting.scripting import IScriptRegistry
 from orca.system.method_executor import MethodExecutor
 from orca.resource_models.base_resource import IInitializableResource
@@ -9,7 +11,7 @@ from orca.resource_models.location import Location
 from orca.system.system import ISystem
 from orca.yml_config_builder.config_file import ConfigFile
 from orca.yml_config_builder.template_factories import ConfigToSystemBuilder
-from orca.yml_config_builder.resource_factory import IResourceFactory
+from orca.yml_config_builder.resource_factory import IResourceFactory, ResourceFactory
 
 
 
@@ -25,8 +27,12 @@ class OrcaCore:
         builder = ConfigToSystemBuilder()
         if scripting_registry is not None:
             builder.set_script_registry(scripting_registry)
-        if resource_factory is not None:
-            builder.set_resource_factory(resource_factory)
+        if resource_factory is None:
+            absolute_path = os.path.abspath(config_filepath)
+            directory_path = os.path.dirname(absolute_path)
+            filepath_reconciler = FilepathReconciler(directory_path)
+            resource_factory = ResourceFactory(filepath_reconciler)
+        builder.set_resource_factory(resource_factory)
         self._system: ISystem = self._config.get_system(builder)
 
     @property

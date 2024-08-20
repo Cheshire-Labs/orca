@@ -4,6 +4,7 @@ import logging
 from typing import Any, Dict, List, Optional
 from orca.drivers.driver_interfaces import IDriver, ILabwarePlaceableDriver
 from orca.drivers.transporter_interfaces import ITransporterDriver
+from orca.helper import FilepathReconciler
 from orca.resource_models.resource_extras.teachpoints import Teachpoint
 
 class SimulationBaseDriver(IDriver):
@@ -82,8 +83,9 @@ class SimulationDriver(SimulationBaseDriver, ILabwarePlaceableDriver):
 
 
 class SimulationRoboticArmDriver(SimulationBaseDriver, ITransporterDriver):
-    def __init__(self, name: str, mocking_type: Optional[str] = None, sim_time: float = 0.2) -> None:
+    def __init__(self, name: str, filepath_reconciler: FilepathReconciler,  mocking_type: Optional[str] = None, sim_time: float = 0.2) -> None:
         super().__init__(name, mocking_type, sim_time)
+        self._filepath_reconciler = filepath_reconciler
         self._positions: List[str] = []
 
     def set_init_options(self, init_options: Dict[str, Any]) -> None:
@@ -119,7 +121,8 @@ class SimulationRoboticArmDriver(SimulationBaseDriver, ITransporterDriver):
             if isinstance(positions_config, list):
                 self._positions = positions_config
             elif isinstance(positions_config, str):
-                self._positions = [t.name for t in Teachpoint.load_teachpoints_from_file(positions_config)]
+                positions_filepath = self._filepath_reconciler.reconcile_filepath(positions_config)
+                self._positions = [t.name for t in Teachpoint.load_teachpoints_from_file(positions_filepath)]
             else:
                 raise ValueError(f"Positions configuration for {self._name} is not recognized.  Must be a filepath string or list of strings naming the teachpoints")
 

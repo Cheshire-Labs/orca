@@ -27,7 +27,7 @@ class ScriptConfig(ConfigModel):
 
 class ScriptBaseConfig(ConfigModel):
     model_config = ConfigDict(extra='allow')
-    base_dir: str = Field(alias='base-dir', default=os.getcwd())
+    base_dir: str = Field(alias='base-dir', default='')
     scripts: Dict[str, ScriptConfig] = Field(default={})
 
 class MethodActionConfig(ConfigModel):
