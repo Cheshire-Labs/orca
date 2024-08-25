@@ -83,7 +83,7 @@ class ISystem(ISystemInfo,
     @property
     @abstractmethod
     def system_map(self) -> SystemMap:
-        return self.system.system_map
+        raise NotImplementedError
 
 class System(ISystem):
     def __init__(self, 
