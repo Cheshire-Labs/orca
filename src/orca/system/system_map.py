@@ -219,8 +219,10 @@ class SystemMap(ILocationRegistry, IResourceLocator, IResourceLocationObserver, 
             if transporter.labware is None:
                 available_edges.append(edge)
         available_graph = _NetworkXHandler()
-        [available_graph.add_node(name, nodedata["location"]) for name, nodedata in subgraph.get_nodes().items()]
-        [available_graph.add_edge(source, target, data["transporter"]) for source, target, data in available_edges]
+        for name, nodedata in subgraph.get_nodes().items(): 
+            available_graph.add_node(name, nodedata["location"])
+        for source, target, data in available_edges:
+            available_graph.add_edge(source, target, data["transporter"]) 
         return available_graph
 
 
