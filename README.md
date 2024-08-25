@@ -20,7 +20,7 @@ Despite its current limitations, Cheshire Labs sees value in releasing the softw
 
 ⚠️ **Stopping Orca**: To stop Orca, you need to terminate the program.  (Ctrl+C) 
 
-Cheshire Labs is actively seeking laboratories interested in using Orca.  Please [contact Cheshire Labs](#contact) if you may be interested.
+Cheshire Labs is actively seeking laboratories interested in using Orca.  Please [contact Cheshire Labs](https://cheshirelabs.io/contact/) if you may be interested.
 
 # 📚 Table of Contents
 
@@ -437,8 +437,8 @@ Defines the overall system configuration
 **Structure**
 - ```system:```
     - ```name: <name>``` - The name of the system
-    - ```version: <version>``` - The version of the configuration
-    - ```description: <description>``` - A breif description of the system
+    - ```version: <version>``` - The version of Orca to use
+    - ```description: <description>``` - A brief description of the system
 
 **Example**
 
@@ -675,7 +675,9 @@ Defines the sequence of methods tho be executed on a labware item as proceeeds t
         - ```threads:```
             - ```<thread-name>:``` - Thread identifier 
                 - ```labware: <labware-name>``` - Name of the labware.  This identifier must be defined in the labware section.
-                - ```type: <type>``` - Thread type.  Current values inclde: _start, wrapper_.  A _start_ thread begins execution as soon as the workflow starts.  _Wrapper_ is a special type of thread.  These threads are called by another thread.  When 
+                - ```type: <type>``` - Thread type.  Current values include: _start, wrapper_.      
+                    - _start_ threads begin execution as soon as the workflow starts. 
+                    -  _wrapper_ threads are spawned by another thread when they're included in the ```spawn``` property described below.
                 - ```start: <start-location>``` - The starting location Orca can find the labware at when the thread begins execution.
                 - ```end: <end-location>``` - The ending location Orca should place the labware once workflow execution has completed.
                 - ```scripts: <scripts-list>``` - _(Optional)_ A list of ordered scripts to be executed when the thread begins execution.
@@ -815,7 +817,7 @@ For more information regarding scripting read the [Scripting Development](#dev-s
 Scripting is necessary in lab automation for situations involving fine control over the process.
 
 - Orca scripts are written in python.  
-- All scripts need must implement from one of the abstract base classes listed in script types below.
+- All scripts must implement from one of the abstract base classes listed in script types below.
 - Multiple scripts can be included in a single file.
 - Scripts are referenced within the workflow configuration as described in [Scripting Section](#scripting-section)
 
@@ -866,11 +868,11 @@ This project is released to under [AGPLv3 license](./LICENSE).
 
 Plugins, scripts, and drivers are considered derivatives of this project.
 
-To obtain an alternative license [contact Cheshire Labs](#contact).
+To obtain an alternative license [contact Cheshire Labs](https://cheshirelabs.io/contact/).
 
 <h1 id="need-more">⭐ Need More?</h1>
 
-Please [contact Cheshire Labs](#contact) if you're looking for:
+Please [contact Cheshire Labs](https://cheshirelabs.io/contact/t) if you're looking for:
 - More Features
 - A Graphical Interface
 - Driver Development
