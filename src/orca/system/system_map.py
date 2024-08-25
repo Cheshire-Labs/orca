@@ -205,7 +205,7 @@ class SystemMap(ILocationRegistry, IResourceLocator, IResourceLocationObserver, 
             if isinstance(resource, TransporterEquipment):
                 self.add_transporter(resource)
 
-    def location_notify(self, event: str, location: Location, resource: IResource) -> None:
+    def location_notify(self, event: str, location: Location, resource: ILabwarePlaceable) -> None:
         if event == "resource_set":
             if isinstance(resource, ILabwarePlaceable):
                 self._equipment_map[resource.name] = location
