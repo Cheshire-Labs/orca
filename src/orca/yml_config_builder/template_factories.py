@@ -24,7 +24,7 @@ from orca.workflow_models.spawn_thread_action import SpawnThreadAction
 from orca.workflow_models.labware_thread import IThreadObserver
 from orca.yml_config_builder.resource_factory import IResourceFactory, ResourceFactory, ResourcePoolFactory
 from orca.resource_models.resource_pool import EquipmentResourcePool
-from orca.drivers.transporter_resource import TransporterEquipment
+from orca.resource_models.transporter_resource import TransporterEquipment
 from orca.workflow_models.workflow_templates import IMethodTemplate, JunctionMethodTemplate, ThreadTemplate, MethodActionTemplate, MethodTemplate, WorkflowTemplate
 from orca.yml_config_builder.special_yml_parsing import get_dynamic_yaml_keys, is_dynamic_yaml
 

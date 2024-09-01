@@ -8,8 +8,8 @@ from orca.resource_models.location import IResourceLocationObserver, Location
 import networkx as nx # type: ignore
 import matplotlib.pyplot as plt
 
-from orca.drivers.plate_pad import PlatePad
-from orca.drivers.transporter_resource import TransporterEquipment
+from orca.resource_models.plate_pad import PlatePad
+from orca.resource_models.transporter_resource import TransporterEquipment
 from orca.system.resource_registry import IResourceRegistry
 from orca.system.resource_registry import IResourceRegistryObesrver
 
