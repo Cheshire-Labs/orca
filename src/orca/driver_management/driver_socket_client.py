@@ -4,7 +4,7 @@ import logging
 from typing import Any, Dict, List, Optional
 from socketio.async_client import AsyncClient # type: ignore[import-untyped]
 
-from orca.drivers.driver_interfaces import IDriver, ILabwarePlaceableDriver
+from orca_driver_interface.driver_interfaces import IDriver, ILabwarePlaceableDriver
 
 
 class SocketClient:

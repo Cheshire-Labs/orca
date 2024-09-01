@@ -836,11 +836,13 @@ Currently there is only one script type available.
 
 ## Drivers
 
+***These drivers have now been moved to a new repo... more information to follow soon***
+
 **Driver Types**
-- [IInitializeableDriver(ABC)](./src/drivers/driver_interfaces.py) - Base class for drivers that can only be initialized.
-- [IDriver(IInitializeableDriver)](./src/drivers/driver_interfaces.py) - Base class for drivers that can execute commands.
-- [ILabwarePlaceableDriver(IDriver)](./src/drivers/driver_interfaces.py) - Equipment that may have labware placed at the equipment.
-- [ITransporterDriver(IDriver)](./src/drivers/transporter_interfaces.py) - Equipment capable of transporting labware items.
+- **IInitializeableDriver(ABC)** - Base class for drivers that can only be initialized.
+- **IDriver(IInitializeableDriver)** - Base class for drivers that can execute commands.
+- **ILabwarePlaceableDriver(IDriver)** - Equipment that may have labware placed at the equipment.
+- **ITransporterDriver(IDriver)** - Equipment capable of transporting labware items.
 
 
 **Adding Drivers**

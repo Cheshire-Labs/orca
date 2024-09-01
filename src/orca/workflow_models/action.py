@@ -7,7 +7,7 @@ import uuid
 from orca.resource_models.base_resource import LabwareLoadableEquipment
 from orca.resource_models.labware import AnyLabwareTemplate, Labware, LabwareTemplate
 from orca.resource_models.location import Location
-from orca.drivers.transporter_resource import TransporterEquipment
+from orca.resource_models.transporter_resource import TransporterEquipment
 from orca.system.labware_registry_interfaces import ILabwareRegistry
 from orca.system.reservation_manager import IReservationManager, LocationReservation
 from orca.system.system_map import SystemMap

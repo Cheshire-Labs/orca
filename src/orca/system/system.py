@@ -3,7 +3,7 @@ from typing import Dict, List
 import uuid
 from orca.resource_models.location import Location
 from orca.resource_models.resource_pool import EquipmentResourcePool
-from orca.drivers.transporter_resource import TransporterEquipment
+from orca.resource_models.transporter_resource import TransporterEquipment
 from orca.resource_models.base_resource import Equipment, IResource
 
 from orca.resource_models.labware import Labware, LabwareTemplate

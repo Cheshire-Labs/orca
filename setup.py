@@ -11,7 +11,10 @@ setup(
     install_requires=read_requirements(),
     package_dir={'': 'src'},
     include_package_data=True,
-    package_data={'': ['py.typed']},
+    package_data={
+        '': ['py.typed'],
+        'cheshire-orca': ['drivers/*']
+    },
     author='Cheshire Labs',
     author_email='michaeltsalmi@cheshirelabs.io',
     description='Laboratory Automation Framework',

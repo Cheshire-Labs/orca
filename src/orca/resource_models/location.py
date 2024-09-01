@@ -7,7 +7,7 @@ from orca.resource_models.labware import Labware
 
 from abc import ABC
 
-from orca.drivers.plate_pad import PlatePad
+from orca.resource_models.plate_pad import PlatePad
 from typing import List
 
 
