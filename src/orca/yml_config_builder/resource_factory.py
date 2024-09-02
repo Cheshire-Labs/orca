@@ -21,10 +21,11 @@ class IResourceFactory(ABC):
 class ResourceFactory(IResourceFactory):
     def __init__(self, driver_manager: IDriverManager, filepath_reconciler: FilepathReconciler) -> None:
         self._resource_map: Dict[str, Callable[[str, IResourceConfig], IEquipment]] = {
+            'mock-labware-loadable': lambda name, config: LabwareLoadableEquipment(name, SimulationLabwarePlaceableDriver("Mock Labware Loadable", "Mock Labware Loadable")),
+            'mock-robot': lambda name, config: TransporterEquipment(name, SimulationRoboticArmDriver(name, filepath_reconciler, "Mock Robot" )),
             'ml-star': lambda name, config: LabwareLoadableEquipment(name, SimulationLabwarePlaceableDriver("Hamilton MLSTAR", "Hamilton MLSTAR")),
             'venus': self.create_venus,
             'acell': lambda name, config: TransporterEquipment(name, SimulationRoboticArmDriver(name, filepath_reconciler, "ACell")),
-            'mock-robot': lambda name, config: TransporterEquipment(name, SimulationRoboticArmDriver(name, filepath_reconciler, "Precision Flex" )),
             'ddr': lambda name, config: TransporterEquipment(name, SimulationRoboticArmDriver(name, filepath_reconciler, "DDR")),
             'translator': lambda name, config: TransporterEquipment(name, SimulationRoboticArmDriver(name, filepath_reconciler, "Translator")),
             'cwash': lambda name, config: LabwareLoadableEquipment(name, SimulationLabwarePlaceableDriver("CWash", "CWash")),
