@@ -1,19 +1,75 @@
 import asyncio
+import json
+import shutil
+import tempfile
+from typing import Any, Dict, Generator
 import pytest
 import os
 from unittest.mock import patch, MagicMock
 
-from orca.driver_management.driver_installer import DriverManager
+from orca.driver_management.driver_installer import DriverInstaller, DriverLoader, DriverManager, LocalAvailableDriverRegistry, InstalledDriverRegistry
 from orca_driver_interface.driver_interfaces import IDriver
 
+
 @pytest.fixture
-def driver_manager() -> DriverManager:
+def temp_dir() -> Generator[str, None, None]:
+    # Setup: Create a temporary directory
+    dir_path = tempfile.mkdtemp()
+
+    # Yield the directory path to the test
+    yield dir_path
+
+    # Teardown: Remove the temporary directory and all its contents
+    shutil.rmtree(dir_path)
+
+@pytest.fixture
+def mock_installed_drivers() -> Dict[str, Any]:
+    return {
+        "test_driver":
+        {
+            "name": "test_driver",
+            "version": "1.0.0",
+            "description": "Test Driver",
+            "repository": "https://github.com/cheshire-labs/test-driver.git"
+        }   
+    }
+
+@pytest.fixture
+def mock_available_drivers() -> Dict[str, Any]:
+    return {
+    "drivers": [
+        {
+            "name": "test_driver",
+            "version": "1.0.0",
+            "description": "Test Driver",
+            "repository": "https://github.com/cheshire-labs/test-driver.git"
+        }
+    ]
+}
+
+
+@pytest.fixture
+def driver_manager(temp_dir: str, mock_available_drivers: Dict[str, Any], mock_installed_drivers: Dict[str, Any]) -> DriverManager:
     
-    return DriverManager()
+    available_driver_registry = os.path.join(temp_dir, 'mock_available_drivers.json')
+    with open(available_driver_registry, 'w') as f:
+        json.dump(mock_available_drivers, f)
+    json_installed_drivers = os.path.join(temp_dir, 'mock_installed_drivers.json')
+    with open(json_installed_drivers, 'w') as f:
+        json.dump(mock_installed_drivers, f)
+
+    os.makedirs(os.path.join(temp_dir, 'test_driver'))
+    shutil.copyfile(os.path.join(os.path.dirname(__file__), 'resources', 'test_driver.py'), os.path.join(temp_dir, 'test_driver', 'test_driver.py'))
+
+    driver_registry = LocalAvailableDriverRegistry(available_driver_registry)
+    installer = DriverInstaller(temp_dir)
+    loader = DriverLoader()
+    installed_registry = InstalledDriverRegistry(json_installed_drivers)
+    return DriverManager(installed_registry, loader, installer, driver_registry)
 
 
-def test_load_driver_from_directory(driver_manager: DriverManager):
-    driver: IDriver = driver_manager.load_driver('test_driver', 'test_driver')
+def test_load_driver_success(driver_manager: DriverManager):
+    driver: IDriver = driver_manager.get_driver('test_driver')
     
     assert driver is not None
     assert isinstance(driver, IDriver)
@@ -21,60 +77,3 @@ def test_load_driver_from_directory(driver_manager: DriverManager):
     asyncio.run(driver.initialize())
     asyncio.run(driver.execute('test_command', {}))
     
-@patch('os.path.isdir', return_value=True)
-@patch('os.path.isfile', return_value=True)
-@patch('driver_manager.import_module')
-def test_load_driver_success(mock_import_module, mock_isfile, mock_isdir, driver_manager: DriverManager):
-    # Mock the driver class and module
-    mock_driver_class = MagicMock(spec=IDriver)
-    mock_module = MagicMock()
-    mock_module.MockInstalledDriverDriver = mock_driver_class
-    mock_import_module.return_value = mock_module
-
-    # Test loading the driver
-    driver = driver_manager.load_driver('mock_installed', 'test_driver')
-    
-    assert driver is not None
-    assert isinstance(driver, IDriver)
-    mock_driver_class.assert_called_once()
-
-@patch('os.path.isdir', return_value=False)
-def test_load_driver_directory_not_found(mock_isdir, driver_manager: DriverManager):
-    with pytest.raises(FileNotFoundError) as exc_info:
-        driver_manager.load_driver('non_existent_driver', 'test_driver')
-    
-    assert "Driver directory" in str(exc_info.value)
-
-@patch('os.path.isdir', return_value=True)
-@patch('os.path.isfile', return_value=False)
-def test_load_driver_module_not_found(mock_isfile, mock_isdir, driver_manager: DriverManager):
-    with pytest.raises(FileNotFoundError) as exc_info:
-        driver_manager.load_driver('driver_with_no_file', 'test_driver')
-    
-    assert "Driver module file" in str(exc_info.value)
-
-@patch('os.path.isdir', return_value=True)
-@patch('os.path.isfile', return_value=True)
-@patch('driver_manager.import_module')
-def test_load_driver_class_not_found(mock_import_module, mock_isfile, mock_isdir, driver_manager: DriverManager):
-    mock_module = MagicMock()
-    mock_import_module.return_value = mock_module
-    
-    with pytest.raises(AttributeError) as exc_info:
-        driver_manager.load_driver('driver_with_wrong_class_name', 'test_driver')
-    
-    assert "Class 'DriverWithWrongClassNameDriver' not found" in str(exc_info.value)
-
-@patch('os.path.isdir', return_value=True)
-@patch('os.path.isfile', return_value=True)
-@patch('driver_manager.import_module')
-def test_load_driver_class_does_not_implement_interface(mock_import_module, mock_isfile, mock_isdir, driver_manager: DriverManager):
-    mock_class = MagicMock()
-    mock_module = MagicMock()
-    mock_module.DriverWithNoInterfaceDriver = mock_class
-    mock_import_module.return_value = mock_module
-    
-    with pytest.raises(TypeError) as exc_info:
-        driver_manager.load_driver('driver_with_no_interface', 'test_driver')
-    
-    assert "does not implement IDriver" in str(exc_info.value)

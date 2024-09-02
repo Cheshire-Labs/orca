@@ -17,34 +17,43 @@ def driver_manager():
 def resource_factory(driver_manager):
     return ResourceFactory(filepath_reconciler=MagicMock(), driver_manager=driver_manager)
 
-def test_create_with_labware_placeable_driver(resource_factory, driver_manager):
+def test_create_with_labware_placeable_driver(resource_factory: MagicMock, driver_manager: MagicMock):
     # Mock a LabwarePlaceableDriver
     mock_driver = MagicMock(spec=ILabwarePlaceableDriver)
-    driver_manager.load_driver.return_value = mock_driver
+    driver_manager.get_driver.return_value = mock_driver
 
     # Create a resource config for the mock driver
-    config = IResourceConfig(type='mock-robot', sim=False, options={})
-    equipment = resource_factory.create('MockRobot', config)
+    config = MagicMock(spec=IResourceConfig)
+    config.type = 'mock-labware-loadable'
+    config.sim = False
+    config.options = {}
+    equipment = resource_factory.create("Mock Labware Loadable", config)
 
     # Assertions
     assert equipment is not None
-    assert isinstance(equipment.driver, ILabwarePlaceableDriver)
+    assert isinstance(equipment._driver, ILabwarePlaceableDriver)
 
-def test_create_with_transporter_driver(resource_factory, driver_manager):
+def test_create_with_transporter_driver(resource_factory: MagicMock, driver_manager: MagicMock):
     # Mock a TransporterDriver
     mock_driver = MagicMock(spec=ITransporterDriver)
-    driver_manager.load_driver.return_value = mock_driver
+    driver_manager.get_driver.return_value = mock_driver
 
     # Create a resource config for the mock driver
-    config = IResourceConfig(type='ddr', sim=False, options={})
+    config = MagicMock(spec=IResourceConfig)
+    config.type = 'mock-robot'
+    config.sim = False
+    config.options = {}
     equipment = resource_factory.create('DDR', config)
 
     # Assertions
     assert equipment is not None
-    assert isinstance(equipment.driver, ITransporterDriver)
+    assert isinstance(equipment._driver, ITransporterDriver)
 
-def test_create_with_unknown_resource_type(resource_factory):
+def test_create_with_unknown_resource_type(resource_factory: MagicMock):
     # Test with an unknown resource type
-    config = IResourceConfig(type='unknown-type', sim=False, options={})
+    config = MagicMock(spec=IResourceConfig)
+    config.type = 'unknown-type'
+    config.sim = False
+    config.options = {}
     with pytest.raises(ValueError):
         resource_factory.create('UnknownResource', config)
