@@ -1,4 +1,4 @@
-from typing import Callable, Dict, List
+from typing import Any, Callable, Dict, List
 from abc import ABC, abstractmethod
 from orca.config_interfaces import IResourceConfig, IResourcePoolConfig
 from orca.driver_management.driver_installer import IDriverManager
@@ -12,6 +12,8 @@ from orca.resource_models.base_resource import Equipment, IEquipment, LabwareLoa
 from orca.resource_models.resource_pool import EquipmentResourcePool
 from orca.resource_models.transporter_resource import TransporterEquipment
 from orca.system.resource_registry import IResourceRegistry
+from orca_driver_interface.driver_interfaces import IDriver, ILabwarePlaceableDriver
+from orca_driver_interface.transporter_interfaces import ITransporterDriver
 
 class IResourceFactory(ABC):
     @abstractmethod
@@ -20,6 +22,7 @@ class IResourceFactory(ABC):
     
 class ResourceFactory(IResourceFactory):
     def __init__(self, driver_manager: IDriverManager, filepath_reconciler: FilepathReconciler) -> None:
+        self._driver_manager = driver_manager
         self._resource_map: Dict[str, Callable[[str, IResourceConfig], IEquipment]] = {
             'mock-labware-loadable': lambda name, config: LabwareLoadableEquipment(name, SimulationLabwarePlaceableDriver("Mock Labware Loadable", "Mock Labware Loadable")),
             'mock-robot': lambda name, config: TransporterEquipment(name, SimulationRoboticArmDriver(name, filepath_reconciler, "Mock Robot" )),
@@ -53,12 +56,39 @@ class ResourceFactory(IResourceFactory):
             return LabwareLoadableEquipment(resource_name, RemoteLabwarePlaceableDriverClient("venus"))
 
     def create(self, resource_name: str, resource_config: IResourceConfig) -> IEquipment:
+
+        # TODO:  Something needs to be done here to decide what the sim looks like for each of these different types of equipment
+
+        # TODO: inits for drivers should be paramterless
+
         res_type = resource_config.type
-        if res_type not in self._resource_map:
-            raise ValueError(f"Unknown resource type: {res_type}")
-        resource = self._resource_map[res_type](resource_name, resource_config)
-        resource.set_init_options(resource_config.options)
-        return resource
+        if resource_config.sim:
+            driver = self._get_similation_driver(res_type)
+        else:
+            driver = self._get_real_driver(res_type)
+        
+        if isinstance(driver, ILabwarePlaceableDriver):
+            equipment: IEquipment = LabwareLoadableEquipment(resource_name, driver)
+        elif isinstance(driver, ITransporterDriver):
+            equipment = TransporterEquipment(resource_name, driver)
+        else:
+            equipment = Equipment(resource_name, driver)
+        
+        equipment.set_init_options(resource_config.options)
+        return equipment
+    
+    def _get_similation_driver(self, res_type: str) -> IDriver:
+        simulation_drivers: Dict[str, Any] = {
+            'base': SimulationLabwarePlaceableDriver,
+            'transporter': SimulationRoboticArmDriver,
+            'non-labware': SimulationBaseDriver
+            # Add other simulation driver types as needed
+        }
+        simulation_driver = simulation_drivers.get(res_type, SimulationLabwarePlaceableDriver)
+        return simulation_driver()
+
+    def _get_real_driver(self, driver_name: str) -> IDriver:
+         return self._driver_manager.get_driver(driver_name)
     
 class ResourcePoolFactory:
     def __init__(self, resource_reg: IResourceRegistry) -> None:
