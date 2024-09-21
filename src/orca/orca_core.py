@@ -62,12 +62,7 @@ class OrcaCore:
         await self.initialize()
         await workflow.start()
         return workflow.id
-        # executer = WorkflowExecuter(workflow_template,
-        #                             self._system,
-        #                             self._system,
-        #                             self._system)
-        # self.initialize()
-        # executer.execute()
+
 
     async def run_method(self, method_name: str, start_map: Dict[str, str], end_map: Dict[str, str]) -> str:
         try:
