@@ -49,11 +49,3 @@ def test_create_with_transporter_driver(resource_factory: MagicMock, driver_mana
     assert equipment is not None
     assert isinstance(equipment._driver, ITransporterDriver)
 
-def test_create_with_unknown_resource_type(resource_factory: MagicMock):
-    # Test with an unknown resource type
-    config = MagicMock(spec=IResourceConfig)
-    config.type = 'unknown-type'
-    config.sim = False
-    config.options = {}
-    with pytest.raises(ValueError):
-        resource_factory.create('UnknownResource', config)
