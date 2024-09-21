@@ -2,6 +2,7 @@ import os
 from typing import Any, Callable, Coroutine, Dict, List, Optional
 import logging
 import asyncio
+from orca.driver_management.driver_installer import DriverInstaller, DriverLoader, DriverManager, InstalledDriverRegistry, LocalAvailableDriverRegistry
 from orca.helper import FilepathReconciler
 from orca.scripting.scripting import IScriptRegistry
 from orca.system.method_executor import MethodExecutor
@@ -31,7 +32,8 @@ class OrcaCore:
             absolute_path = os.path.abspath(config_filepath)
             directory_path = os.path.dirname(absolute_path)
             filepath_reconciler = FilepathReconciler(directory_path)
-            resource_factory = ResourceFactory(filepath_reconciler)
+            driver_manager = DriverManager(InstalledDriverRegistry("driver_management/drivers.json"), DriverLoader(), DriverInstaller(directory_path), LocalAvailableDriverRegistry(directory_path))
+            resource_factory = ResourceFactory(driver_manager, filepath_reconciler)
         builder.set_resource_factory(resource_factory)
         self._system: ISystem = self._config.get_system(builder)
 
