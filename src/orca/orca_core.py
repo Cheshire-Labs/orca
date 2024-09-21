@@ -2,7 +2,7 @@ import os
 from typing import Any, Callable, Coroutine, Dict, List, Optional
 import logging
 import asyncio
-from orca.driver_management.driver_installer import DriverInstaller, DriverLoader, DriverManager, InstalledDriverRegistry, LocalAvailableDriverRegistry
+from orca.driver_management.driver_installer import DriverInstaller, DriverLoader, DriverManager, InstalledDriverRegistry, LocalAvailableDriverRegistry, RemoteAvailableDriverRegistry
 from orca.helper import FilepathReconciler
 from orca.scripting.scripting import IScriptRegistry
 from orca.system.method_executor import MethodExecutor
@@ -22,7 +22,8 @@ class OrcaCore:
                  config_filepath: str, 
                  options: Dict[str, Any] = {},
                  scripting_registry: Optional[IScriptRegistry] = None,
-                 resource_factory: Optional[IResourceFactory] = None) -> None:
+                 resource_factory: Optional[IResourceFactory] = None,
+                 drivers_repo: str = "https://raw.githubusercontent.com/cheshire-labs/orca-drivers/master/drivers.json") -> None:
         self._config = ConfigFile(config_filepath)
         self._config.set_command_line_options(options)
         builder = ConfigToSystemBuilder()
@@ -32,7 +33,10 @@ class OrcaCore:
             absolute_path = os.path.abspath(config_filepath)
             directory_path = os.path.dirname(absolute_path)
             filepath_reconciler = FilepathReconciler(directory_path)
-            driver_manager = DriverManager(InstalledDriverRegistry("driver_management/drivers.json"), DriverLoader(), DriverInstaller(directory_path), LocalAvailableDriverRegistry(directory_path))
+            driver_manager = DriverManager(InstalledDriverRegistry("driver_management/drivers.json"),
+                                        DriverLoader(), 
+                                        DriverInstaller("driver_management/drivers/"), 
+                                        RemoteAvailableDriverRegistry(drivers_repo))
             resource_factory = ResourceFactory(driver_manager, filepath_reconciler)
         builder.set_resource_factory(resource_factory)
         self._system: ISystem = self._config.get_system(builder)
