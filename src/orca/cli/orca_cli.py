@@ -75,6 +75,32 @@ class OrcaCmdShell(cmd.Cmd):
             print(f"Error: {e}")
             traceback.print_exc()
 
+    def do_install_driver(self, arg: str):
+        """Install the driver"""
+        try:
+            args = self._parsers["install_driver"].parse_args(shlex.split(arg))
+            print("Installing driver")
+            self._orca_shell.install_driver(args.name, args.url, args.branch)
+        except SystemExit as e:
+            print(f"Argument parsing error: {e}")
+            self._parsers["install_driver"].print_help()
+        except Exception as e:
+            print(f"Error: {e}")
+            traceback.print_exc()
+
+    def do_uninstall_driver(self, arg: str):
+        """Uninstall the driver"""
+        try:
+            args = self._parsers["uninstall_driver"].parse_args(shlex.split(arg))
+            print("Uninstalling driver")
+            self._orca_shell.uninstall_driver(args.name)
+        except SystemExit as e:
+            print(f"Argument parsing error: {e}")
+            self._parsers["uninstall_driver"].print_help()
+        except Exception as e:
+            print(f"Error: {e}")
+            traceback.print_exc()
+
     def do_exit(self, arg: str):
         """Exit the shell"""
         print("Exiting Orca Shell")
@@ -114,6 +140,17 @@ class OrcaCmdShell(cmd.Cmd):
         run_method_parser.add_argument("--stage", help="Development stage to be run")
         run_method_parser.add_argument("--config", help="Configuration file")
         parsers['run_method'] = run_method_parser
+
+        # Parser for the 'install_driver' command
+        install_driver_parser = argparse.ArgumentParser(prog='install_driver', description="Install the driver")
+        install_driver_parser.add_argument("--name", required=True, help="Driver name")
+        install_driver_parser.add_argument("--url", help="URL to the driver's git repo")
+        install_driver_parser.add_argument("--branch", help="Driver branch")
+        parsers['install_driver'] = install_driver_parser
+
+        # Parser for the 'uninstall_driver' command
+        uninstall_driver_parser = argparse.ArgumentParser(prog='uninstall_driver', description="Uninstall the driver")
+        uninstall_driver_parser.add_argument("--name", required=True, help="Driver name")
 
         return parsers
     

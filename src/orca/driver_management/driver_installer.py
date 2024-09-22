@@ -65,7 +65,7 @@ class DriverInstaller:
         self._drivers_dir = drivers_dir
         os.makedirs(self._drivers_dir, exist_ok=True)
 
-    def download_and_extract_driver(self, driver_name: str, driver_repo_url: str, branch: str = 'master') -> str:
+    def download_and_extract_driver(self, driver_name: str, driver_repo_url: str, branch: str = 'main') -> str:
         zip_url = f"{driver_repo_url}/archive/refs/heads/{branch}.zip"
         zip_path = os.path.join(self._drivers_dir, driver_name + '.zip')
 
@@ -173,7 +173,7 @@ class IDriverManager(ABC):
     def get_driver(self, driver_name: str) -> IDriver:
         raise NotImplementedError
     
-    def install_custom_driver(self, driver_name: str, driver_repo_url: str, driver_repo_branch: str = 'master') -> None:
+    def install_driver(self, driver_name: str, driver_repo_url: Optional[str] = None, driver_repo_branch: Optional[str] = None) -> None:
         raise NotImplementedError
 
 class DriverManager(IDriverManager):
@@ -194,11 +194,15 @@ class DriverManager(IDriverManager):
             raise KeyError(f"Driver '{driver_name}' is not installed")
 
 
-    def install_custom_driver(self, driver_name: str, driver_repo_url: Optional[str] = None, driver_repo_branch: str = 'master') -> None:
+    def install_driver(self, driver_name: str, driver_repo_url: Optional[str] = None, driver_repo_branch: Optional[str] = None) -> None:
         if driver_repo_url is None:
             driver_info = self._driver_registry.get_driver_info(driver_name)
             driver_repo_url = driver_info.repository
-        self._driver_installer.download_and_extract_driver(driver_name, driver_repo_url, driver_repo_branch)
+        
+        if driver_repo_branch is not None:
+            self._driver_installer.download_and_extract_driver(driver_name, driver_repo_url, driver_repo_branch)
+        else:
+            self._driver_installer.download_and_extract_driver(driver_name, driver_repo_url)
 
     def uninstall_driver(self, driver_name: str) -> None:
         self._driver_installer.uninstall_driver(driver_name)
