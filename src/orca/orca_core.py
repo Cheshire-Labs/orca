@@ -2,7 +2,8 @@ import os
 from typing import Any, Callable, Coroutine, Dict, List, Optional
 import logging
 import asyncio
-from orca.driver_management.driver_installer import DriverInstaller, DriverLoader, DriverManager, InstalledDriverRegistry, LocalAvailableDriverRegistry, RemoteAvailableDriverRegistry
+
+from orca.driver_management.driver_installer import DriverInstaller, DriverLoader, DriverManager, InstalledDriverRegistry, RemoteAvailableDriverRegistry
 from orca.helper import FilepathReconciler
 from orca.scripting.scripting import IScriptRegistry
 from orca.system.method_executor import MethodExecutor
@@ -20,10 +21,11 @@ from orca.yml_config_builder.resource_factory import IResourceFactory, ResourceF
 class OrcaCore:
     def __init__(self, 
                  config_filepath: str, 
+                 driver_manager: DriverManager,
                  options: Dict[str, Any] = {},
                  scripting_registry: Optional[IScriptRegistry] = None,
                  resource_factory: Optional[IResourceFactory] = None,
-                 drivers_repo: str = "https://raw.githubusercontent.com/cheshire-labs/orca-drivers/master/drivers.json") -> None:
+                 ) -> None:
         self._config = ConfigFile(config_filepath)
         self._config.set_command_line_options(options)
         builder = ConfigToSystemBuilder()
@@ -33,10 +35,6 @@ class OrcaCore:
             absolute_path = os.path.abspath(config_filepath)
             directory_path = os.path.dirname(absolute_path)
             filepath_reconciler = FilepathReconciler(directory_path)
-            driver_manager = DriverManager(InstalledDriverRegistry("driver_management/drivers.json"),
-                                        DriverLoader(), 
-                                        DriverInstaller("driver_management/drivers/"), 
-                                        RemoteAvailableDriverRegistry(drivers_repo))
             resource_factory = ResourceFactory(driver_manager, filepath_reconciler)
         builder.set_resource_factory(resource_factory)
         self._system: ISystem = self._config.get_system(builder)
@@ -106,5 +104,11 @@ if __name__ == "__main__":
     logging.basicConfig(handlers=[logging.StreamHandler()], level=logging.DEBUG)
     config_file_path =  r"C:\Users\miike\source\repos\orca\orca-core\examples\smc_assay\smc_assay_example.yml"
     workflow_name = "smc-assay"
-    orca = OrcaCore(config_file_path)
+    available_drivers_registry: str = "https://raw.githubusercontent.com/Cheshire-Labs/orca-extensions/refs/heads/main/drivers.json"
+    driver_manager = DriverManager(
+            InstalledDriverRegistry("driver_management/drivers.json"),
+            DriverLoader(), 
+            DriverInstaller("driver_management/drivers/"), 
+            RemoteAvailableDriverRegistry(available_drivers_registry))
+    orca = OrcaCore(config_file_path, driver_manager)
     asyncio.run(orca.run_workflow(workflow_name))
