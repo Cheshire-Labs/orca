@@ -151,6 +151,7 @@ class OrcaCmdShell(cmd.Cmd):
         # Parser for the 'uninstall_driver' command
         uninstall_driver_parser = argparse.ArgumentParser(prog='uninstall_driver', description="Uninstall the driver")
         uninstall_driver_parser.add_argument("--name", required=True, help="Driver name")
+        parsers['uninstall_driver'] = uninstall_driver_parser
 
         return parsers
     
@@ -169,6 +170,14 @@ class OrcaCmdShell(cmd.Cmd):
     def help_run_method(self):
         """Show help for the run_method command"""
         self._parsers['run_method'].print_help()
+
+    def help_install_driver(self):
+        """Show help for the install_driver command"""
+        self._parsers['install_driver'].print_help()
+
+    def help_uninstall_driver(self):
+        """Show help for the uninstall_driver command"""
+        self._parsers['uninstall_driver'].print_help()
 
     def do_help(self, arg: str):
         if arg:
