@@ -20,8 +20,8 @@ setup(
     description='Laboratory Automation Framework',
     url='https://github.com/Cheshire-Labs/orca',
     classifiers=[
-        'Programming Language :: Python :: 3',
-        'License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)',
+        'Programming Language :: Python :: 3.10',
+        'License :: OSI Approved :: GNU Affero General Public License v3',
         'Operating System :: OS Independent',
     ],
     python_requires='>=3.10',
