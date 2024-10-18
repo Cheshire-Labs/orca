@@ -17,6 +17,7 @@ from orca.yml_config_builder.resource_factory import IResourceFactory, ResourceF
 
 
 
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 class OrcaCore:
     def __init__(self, 
@@ -108,7 +109,7 @@ if __name__ == "__main__":
     driver_manager = DriverManager(
             InstalledDriverRegistry("driver_management/drivers.json"),
             DriverLoader(), 
-            DriverInstaller("driver_management/drivers/"), 
+            DriverInstaller(), 
             RemoteAvailableDriverRegistry(available_drivers_registry))
     orca = OrcaCore(config_file_path, driver_manager)
     asyncio.run(orca.run_workflow(workflow_name))

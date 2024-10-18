@@ -80,7 +80,7 @@ class OrcaCmdShell(cmd.Cmd):
         try:
             args = self._parsers["install_driver"].parse_args(shlex.split(arg))
             print("Installing driver")
-            self._orca_shell.install_driver(args.name, args.url, args.branch)
+            self._orca_shell.install_driver(args.name, args.url)
         except SystemExit as e:
             print(f"Argument parsing error: {e}")
             self._parsers["install_driver"].print_help()
@@ -145,7 +145,6 @@ class OrcaCmdShell(cmd.Cmd):
         install_driver_parser = argparse.ArgumentParser(prog='install_driver', description="Install the driver")
         install_driver_parser.add_argument("--name", required=True, help="Driver name")
         install_driver_parser.add_argument("--url", help="URL to the driver's git repo")
-        install_driver_parser.add_argument("--branch", help="Driver branch")
         parsers['install_driver'] = install_driver_parser
 
         # Parser for the 'uninstall_driver' command

@@ -1,19 +1,21 @@
+import os
 from typing import Any, Dict, List, Optional
 import asyncio
 import json
 from orca.driver_management.driver_installer import DriverInstaller, DriverLoader, DriverManager, InstalledDriverRegistry, LocalAvailableDriverRegistry, RemoteAvailableDriverRegistry
-from orca.orca_core import OrcaCore
+from orca.orca_core import OrcaCore, PROJECT_ROOT
 
 from orca.cli.shell_interface import IOrcaShell
     
 class LocalOrcaShell(IOrcaShell):
     def __init__(self) -> None:
         self._orca: Optional[OrcaCore] = None
+        
         available_drivers_registry: str = "https://raw.githubusercontent.com/Cheshire-Labs/orca-extensions/refs/heads/main/drivers.json"
         self._driver_manager = DriverManager(
             InstalledDriverRegistry("driver_management/drivers.json"),
             DriverLoader(), 
-            DriverInstaller("driver_management/drivers/"), 
+            DriverInstaller(), 
             RemoteAvailableDriverRegistry(available_drivers_registry))
 
     def load(self, config_filepath: str):
@@ -55,9 +57,8 @@ class LocalOrcaShell(IOrcaShell):
 
     def install_driver(self, 
                        driver_name: str, 
-                       driver_repo_url: Optional[str] = None, 
-                       driver_repo_branch: Optional[str] = None) -> None:
-        self._driver_manager.install_driver(driver_name, driver_repo_url, driver_repo_branch)
+                       driver_repo_url: Optional[str] = None) -> None:
+        self._driver_manager.install_driver(driver_name, driver_repo_url)
 
     
     def uninstall_driver(self, driver_name: str) -> None:
