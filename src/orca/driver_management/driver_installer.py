@@ -1,12 +1,12 @@
 from abc import ABC
+import importlib
+import subprocess
 from dataclasses import dataclass
 import json
 import os
-import shutil
+import sys
 from typing import Any, Dict, Optional
 import requests
-from zipfile import ZipFile
-from importlib import import_module
 
 
 from orca_driver_interface.driver_interfaces import IDriver
@@ -14,9 +14,8 @@ from orca_driver_interface.driver_interfaces import IDriver
 @dataclass
 class DriverInfo:
     name: str
-    version: str
     description: str
-    repository: str
+    url: str
 
 
 class AvailableDriverRegistry(ABC):
@@ -26,7 +25,7 @@ class AvailableDriverRegistry(ABC):
     def get_driver_info(self, driver_name: str) -> DriverInfo:
         for driver in self._registry['drivers']:
             if driver['name'] == driver_name:
-                return driver
+                return  DriverInfo(**driver)
         raise Exception(f"Driver '{driver_name}' not found in the registry")
 
 
@@ -59,37 +58,177 @@ class RemoteAvailableDriverRegistry(AvailableDriverRegistry):
 
 class DriverInstaller:
     '''
-    Responsible for installing and uninstalling drivers.
+    Responsible for installing and uninstalling drivers using pip.
     '''
-    def __init__(self, drivers_dir: str) -> None:
-        self._drivers_dir = drivers_dir
-        os.makedirs(self._drivers_dir, exist_ok=True)
 
-    def download_and_extract_driver(self, driver_name: str, driver_repo_url: str, branch: str = 'main') -> str:
-        zip_url = f"{driver_repo_url}/archive/refs/heads/{branch}.zip"
-        zip_path = os.path.join(self._drivers_dir, driver_name + '.zip')
+    def install_driver(self, driver_name: str, driver_repo_url: str) -> None:
+        '''
+        Installs the driver using pip. 
+        If a driver_repo_url is provided, it installs directly from that repository.
+        Optionally, a specific version can be installed.
+        '''
+        try:
+            # Install from the given repository URL (e.g., GitHub)
+            install_command = [sys.executable, "-m", "pip", "install", f"git+{driver_repo_url}"]
 
-        # Download the zip file
-        with requests.get(zip_url, stream=True) as r:
-            if r.status_code != 200:
-                raise Exception(f"Failed to download the driver from {zip_url}")
-            with open(zip_path, 'wb') as f:
-                shutil.copyfileobj(r.raw, f)
+            # Run the pip install command
+            result = subprocess.check_call(install_command)
+            print(f"Driver '{driver_name}' installed successfully.")
 
-        # Extract the zip file
-        with ZipFile(zip_path, 'r') as zip_ref:
-            extract_path = os.path.join(self._drivers_dir, driver_name)
-            zip_ref.extractall(extract_path)
-
-        # Remove the zip file
-        os.remove(zip_path)
-        return extract_path
+        except subprocess.CalledProcessError as e:
+            print(f"Error occurred during installation of driver '{driver_name}': {e}")
+            print(f"Error Output: {e.stderr}")
 
     def uninstall_driver(self, driver_name: str) -> None:
-        driver_path = os.path.join(self._drivers_dir, driver_name)
-        if os.path.exists(driver_path):
-            shutil.rmtree(driver_path)
+        '''
+        Uninstalls the driver using pip.
+        '''
+        try:
+            uninstall_command = [sys.executable, "-m", "pip", "uninstall", "-y", driver_name]
+            subprocess.check_call(uninstall_command)
+            print(f"Driver '{driver_name}' uninstalled successfully.")
+        
+        except subprocess.CalledProcessError as e:
+            print(f"Failed to uninstall driver '{driver_name}': {e}")
+            raise
 
+
+class DriverLoader:
+    '''
+    Loads drivers that are installed via pip.
+    '''
+    def load_driver(self, driver_name: str) -> IDriver:
+        try:
+            # Assume the driver module is installed and available in the environment
+            # The driver name corresponds to the installed package/module name
+            module_name = f"{driver_name}.driver"  # Assuming all drivers have a `driver.py` entry point
+
+            # Import the driver module
+            driver_module = importlib.import_module(module_name)
+            
+            # Convert driver_name to CamelCase and append 'Driver' for the class name
+            class_name = ''.join(part.capitalize() for part in driver_name.split('_')) + 'Driver'
+
+            # Check if the class exists in the module
+            if not hasattr(driver_module, class_name):
+                raise AttributeError(f"Class '{class_name}' not found in module '{module_name}'. Ensure the class is correctly named and defined in the module.")
+            
+            driver_class = getattr(driver_module, class_name)
+            
+            # Ensure the class implements the IDriver interface
+            if not issubclass(driver_class, IDriver):
+                raise TypeError(f"Class '{class_name}' in module '{module_name}' does not implement IDriver.")
+            
+            driver = driver_class()
+
+            return driver
+        
+        except (ImportError, AttributeError, TypeError) as e:
+            print(f"Error loading driver '{driver_name}': {e}")
+            raise
+
+# class DriverInstaller:
+#     '''
+#     Responsible for installing and uninstalling drivers.
+#     '''
+#     def __init__(self, drivers_dir: str) -> None:
+#         self._drivers_dir = drivers_dir
+#         os.makedirs(self._drivers_dir, exist_ok=True)
+
+#     def download_and_extract_driver(self, driver_name: str, driver_repo_url: str, branch: str = 'main') -> str:
+#         zip_url = f"{driver_repo_url}/archive/refs/heads/{branch}.zip"
+#         zip_path = os.path.join(self._drivers_dir, driver_name + '.zip')
+
+#         # Download the zip file
+#         with requests.get(zip_url, stream=True) as r:
+#             if r.status_code != 200:
+#                 raise Exception(f"Failed to download the driver from {zip_url}")
+#             with open(zip_path, 'wb') as f:
+#                 shutil.copyfileobj(r.raw, f)
+
+#         # Extract the zip file
+#         with ZipFile(zip_path, 'r') as zip_ref:
+#             temp_extract_path = os.path.join(self._drivers_dir, driver_name + "_temp")
+#             zip_ref.extractall(temp_extract_path)
+
+#         # Identify the top-level folder (e.g., venus-driver-main)
+#         top_level_contents = os.listdir(temp_extract_path)
+#         if len(top_level_contents) != 1 or not os.path.isdir(os.path.join(temp_extract_path, top_level_contents[0])):
+#             raise Exception(f"Unexpected structure in the extracted archive from {zip_url}")
+
+#         top_level_folder = os.path.join(temp_extract_path, top_level_contents[0])
+
+#         # Move the contents of the top-level folder to the final driver directory
+#         final_driver_path = os.path.join(self._drivers_dir, driver_name)
+#         os.makedirs(final_driver_path, exist_ok=True)
+
+#         for item in os.listdir(top_level_folder):
+#             shutil.move(os.path.join(top_level_folder, item), final_driver_path)
+
+        
+#          # Cleanup
+#         shutil.rmtree(temp_extract_path)
+#         os.remove(zip_path)
+
+#         return final_driver_path
+
+#     def uninstall_driver(self, driver_name: str) -> None:
+#         driver_path = os.path.join(self._drivers_dir, driver_name)
+#         if os.path.exists(driver_path):
+#             shutil.rmtree(driver_path)
+
+
+
+
+
+
+
+# class DriverLoader:
+
+#     def __init__(self) -> None:
+#         self._drivers_dir = os.path.join(os.path.dirname(__file__), "drivers")  
+
+#     def load_driver(self, driver_name: str) -> IDriver:
+#         try:
+#             # Construct the directory path for the driver
+#             driver_dir = os.path.join(self._drivers_dir, driver_name)
+            
+#             # Check if the driver directory exists
+#             if not os.path.isdir(driver_dir):
+#                 raise FileNotFoundError(f"Driver directory '{driver_dir}' not found. Ensure the directory exists and follows the naming convention.")
+
+#             # Construct the module path for the driver
+#             module_name = f"orca.driver_management.drivers.{driver_name}.{driver_name}"
+            
+#             # Check if the driver module file exists
+#             module_file_path = os.path.join(driver_dir, f"{driver_name}.py")
+#             if not os.path.isfile(module_file_path):
+#                 raise FileNotFoundError(f"Driver module file '{module_file_path}' not found. Ensure the file exists and follows the naming convention.")
+
+#             # Import the driver module
+#             driver_module = import_module(module_name)
+            
+#             # Convert driver_name to CamelCase and append 'Driver' for the class name
+#             class_name = ''.join(part.capitalize() for part in driver_name.split('_')) + 'Driver'
+            
+#             # Check if the class exists in the module
+#             if not hasattr(driver_module, class_name):
+#                 raise AttributeError(f"Class '{class_name}' not found in module '{module_name}'. Ensure the class is correctly named and defined in the module.")
+            
+#             driver_class = getattr(driver_module, class_name)
+            
+#             # Ensure the class implements the IDriver interface
+#             if not issubclass(driver_class, IDriver):
+#                 raise TypeError(f"Class '{class_name}' in module '{module_name}' does not implement IDriver.")
+            
+#             driver = driver_class()
+
+#             return driver
+        
+#         except (FileNotFoundError, ImportError, AttributeError, TypeError) as e:
+#             print(f"Error loading driver '{driver_name}': {e}")
+#             raise   
+    
 class InstalledDriverRegistry:
     def __init__(self, installed_json: str) -> None:
         self._installed_file = installed_json
@@ -117,63 +256,11 @@ class InstalledDriverRegistry:
         if driver_name in self._installed_drivers:
             del self._installed_drivers[driver_name]
             self.save_installed_drivers()
-
-
-
-
-
-class DriverLoader:
-
-    def __init__(self) -> None:
-        self._drivers_dir = os.path.join(os.path.dirname(__file__), "drivers")  
-
-    def load_driver(self, driver_name: str) -> IDriver:
-        try:
-            # Construct the directory path for the driver
-            driver_dir = os.path.join(self._drivers_dir, driver_name)
-            
-            # Check if the driver directory exists
-            if not os.path.isdir(driver_dir):
-                raise FileNotFoundError(f"Driver directory '{driver_dir}' not found. Ensure the directory exists and follows the naming convention.")
-
-            # Construct the module path for the driver
-            module_name = f"orca.driver_management.drivers.{driver_name}.{driver_name}"
-            
-            # Check if the driver module file exists
-            module_file_path = os.path.join(driver_dir, f"{driver_name}.py")
-            if not os.path.isfile(module_file_path):
-                raise FileNotFoundError(f"Driver module file '{module_file_path}' not found. Ensure the file exists and follows the naming convention.")
-
-            # Import the driver module
-            driver_module = import_module(module_name)
-            
-            # Convert driver_name to CamelCase and append 'Driver' for the class name
-            class_name = ''.join(part.capitalize() for part in driver_name.split('_')) + 'Driver'
-            
-            # Check if the class exists in the module
-            if not hasattr(driver_module, class_name):
-                raise AttributeError(f"Class '{class_name}' not found in module '{module_name}'. Ensure the class is correctly named and defined in the module.")
-            
-            driver_class = getattr(driver_module, class_name)
-            
-            # Ensure the class implements the IDriver interface
-            if not issubclass(driver_class, IDriver):
-                raise TypeError(f"Class '{class_name}' in module '{module_name}' does not implement IDriver.")
-            
-            driver = driver_class()
-
-            return driver
-        
-        except (FileNotFoundError, ImportError, AttributeError, TypeError) as e:
-            print(f"Error loading driver '{driver_name}': {e}")
-            raise   
-    
-
 class IDriverManager(ABC):
     def get_driver(self, driver_name: str) -> IDriver:
         raise NotImplementedError
     
-    def install_driver(self, driver_name: str, driver_repo_url: Optional[str] = None, driver_repo_branch: Optional[str] = None) -> None:
+    def install_driver(self, driver_name: str, driver_repo_url: Optional[str]) -> None:
         raise NotImplementedError
 
 class DriverManager(IDriverManager):
@@ -194,15 +281,12 @@ class DriverManager(IDriverManager):
             raise KeyError(f"Driver '{driver_name}' is not installed")
 
 
-    def install_driver(self, driver_name: str, driver_repo_url: Optional[str] = None, driver_repo_branch: Optional[str] = None) -> None:
+    def install_driver(self, driver_name: str, driver_repo_url: Optional[str]) -> None:
         if driver_repo_url is None:
             driver_info = self._driver_registry.get_driver_info(driver_name)
-            driver_repo_url = driver_info.repository
+            driver_repo_url = driver_info.url
         
-        if driver_repo_branch is not None:
-            self._driver_installer.download_and_extract_driver(driver_name, driver_repo_url, driver_repo_branch)
-        else:
-            self._driver_installer.download_and_extract_driver(driver_name, driver_repo_url)
+        self._driver_installer.install_driver(driver_name, driver_repo_url)
 
     def uninstall_driver(self, driver_name: str) -> None:
         self._driver_installer.uninstall_driver(driver_name)

@@ -16,7 +16,7 @@ class IOrcaShell(ABC):
     def run_method(self, method_name: str, start_map_json: str, end_map_json: str, config_file: Optional[str] = None, options: Dict[str, str] = {}):
         raise NotImplementedError
     
-    def install_driver(self, driver_name: str, driver_repo_url: Optional[str] = None, driver_repo_branch: Optional[str] = None):
+    def install_driver(self, driver_name: str, driver_repo_url: Optional[str] = None):
         raise NotImplementedError
     
     def uninstall_driver(self, driver_name: str):
