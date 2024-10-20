@@ -28,9 +28,24 @@ def mock_installed_drivers() -> Dict[str, Any]:
         "test_driver":
         {
             "name": "test_driver",
-            "version": "1.0.0",
             "description": "Test Driver",
-            "repository": "https://github.com/cheshire-labs/test-driver.git"
+            "driverPath": "src.mock_driver.py",
+            "driverClass": "MockDriver",
+            "commands" : [
+                {
+                    "name": "test_command",
+                    "description": "Test Command",
+                    "parameters": [
+                        {
+                            "name": "param1",
+                            "description": "Test Parameter 1",
+                            "type": "string",
+                            "required": True
+                        }
+                    ]
+                }
+            ],
+            "return_type": "string"
         }   
     }
 
@@ -40,7 +55,6 @@ def mock_available_drivers() -> Dict[str, Any]:
     "drivers": [
         {
             "name": "test_driver",
-            "version": "1.0.0",
             "description": "Test Driver",
             "repository": "https://github.com/cheshire-labs/test-driver.git"
         }
@@ -60,11 +74,10 @@ def driver_manager(temp_dir: str, mock_available_drivers: Dict[str, Any], mock_i
 
     os.makedirs(os.path.join(temp_dir, 'test_driver'))
     shutil.copyfile(os.path.join(os.path.dirname(__file__), 'resources', 'test_driver.py'), os.path.join(temp_dir, 'test_driver', 'test_driver.py'))
-
-    driver_registry = LocalAvailableDriverRegistry(available_driver_registry)
-    installer = DriverInstaller(temp_dir)
-    loader = DriverLoader()
     installed_registry = InstalledDriverRegistry(json_installed_drivers)
+    installer = DriverInstaller(installed_registry)
+    loader = DriverLoader()
+    driver_registry = LocalAvailableDriverRegistry(available_driver_registry)
     return DriverManager(installed_registry, loader, installer, driver_registry)
 
 
