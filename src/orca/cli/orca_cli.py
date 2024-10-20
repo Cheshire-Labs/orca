@@ -101,6 +101,35 @@ class OrcaCmdShell(cmd.Cmd):
             print(f"Error: {e}")
             traceback.print_exc()
 
+    def do_list_installed_drivers(self, arg: str):
+        """List Installed drivers"""
+        try:
+            args = self._parsers["list_installed_drivers"].parse_args(shlex.split(arg))
+            print("Installed Drivers:")
+            for name in self._orca_shell.get_installed_drivers_info().items():
+                print(f"{name}")
+        except SystemExit as e:
+            print(f"Argument parsing error: {e}")
+            self._parsers["list_installed_drivers"].print_help()
+        except Exception as e:
+            print(f"Error: {e}")
+            traceback.print_exc()
+
+
+    def do_list_available_drivers(self, arg: str):
+        """List Available drivers"""
+        try:
+            args = self._parsers["list_available_drivers"].parse_args(shlex.split(arg))
+            print("Available Drivers:")
+            for name, info in self._orca_shell.get_available_drivers_info().items():
+                print(f"{name}")
+        except SystemExit as e:
+            print(f"Argument parsing error: {e}")
+            self._parsers["list_available_drivers"].print_help()
+        except Exception as e:
+            print(f"Error: {e}")
+            traceback.print_exc()
+
     def do_exit(self, arg: str):
         """Exit the shell"""
         print("Exiting Orca Shell")
@@ -152,6 +181,14 @@ class OrcaCmdShell(cmd.Cmd):
         uninstall_driver_parser.add_argument("--name", required=True, help="Driver name")
         parsers['uninstall_driver'] = uninstall_driver_parser
 
+        # Parser for the 'list_available_drivers' command
+        list_available_drivers_parser = argparse.ArgumentParser(prog='list_available_drivers', description="List available drivers")
+        parsers['list_available_drivers'] = list_available_drivers_parser
+
+        # Parser for the 'list_installed_drivers' command
+        list_installed_drivers_parser = argparse.ArgumentParser(prog='list_installed_drivers', description="List installed drivers")
+        parsers['list_installed_drivers'] = list_installed_drivers_parser
+
         return parsers
     
     def help_load(self):
@@ -177,6 +214,10 @@ class OrcaCmdShell(cmd.Cmd):
     def help_uninstall_driver(self):
         """Show help for the uninstall_driver command"""
         self._parsers['uninstall_driver'].print_help()
+
+    def help_list_available_drivers(self):
+        """Show help for the list_drivers command"""
+        self._parsers['list_available_drivers'].print_help()
 
     def do_help(self, arg: str):
         if arg:
