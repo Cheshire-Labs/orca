@@ -18,6 +18,7 @@ class CommandParamSchema(BaseModel):
     type: str = 'string'
     description: str = ''
     required: bool = False
+    default: Optional[Any] = None
     
 
 class CommandSchema(BaseModel):
@@ -31,8 +32,6 @@ class DriverInfo(BaseModel):
     driverPath: str  
     driverClass: str  
     description: str = ''
-    initParams: List[CommandParamSchema] = Field(default_factory=list)
-    commands: List[CommandSchema] = Field(default_factory=list)
 
 class InstalledDriverInfo(DriverInfo):
     packageName: str
