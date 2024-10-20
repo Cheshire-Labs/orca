@@ -31,6 +31,7 @@ class DriverInfo(BaseModel):
     driverPath: str  
     driverClass: str  
     description: str = ''
+    initParams: List[CommandParamSchema] = Field(default_factory=list)
     commands: List[CommandSchema] = Field(default_factory=list)
 
 class InstalledDriverInfo(DriverInfo):
