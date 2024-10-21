@@ -6,7 +6,7 @@ import json
 import os
 import sys
 import tomllib
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Type, TypeVar
 from urllib.parse import urlparse
 import requests
 
@@ -247,11 +247,13 @@ class DriverInstaller:
             raise
         self._installed_registry.remove_driver(driver_name)
 
+T = TypeVar('T', bound=IDriver)
+
 class DriverLoader:
     '''
     Loads drivers that are installed via pip.
     '''
-    def load_driver(self, driver_name: str, installed_registry: InstalledDriverRegistry) -> IDriver:
+    def load_driver(self, driver_name: str, installed_registry: InstalledDriverRegistry, driver_type: Type[T]) -> T:
         try:
             # Retrieve driver info from the installed registry
             if not installed_registry.is_driver_installed(driver_name):
@@ -263,7 +265,7 @@ class DriverLoader:
             driver_module = importlib.import_module(driver_info.driverPath)
             driver_class = getattr(driver_module, driver_info.driverClass)
 
-            if not issubclass(driver_class, IDriver):
+            if not issubclass(driver_class, driver_type):
                 raise TypeError(f"Class '{driver_info.driverClass}' does not implement IDriver.")
 
             return driver_class()
@@ -272,7 +274,7 @@ class DriverLoader:
             raise RuntimeError(f"Error loading driver '{driver_name}': {e}") from e
 
 class IDriverManager(ABC):
-    def get_driver(self, driver_name: str) -> IDriver:
+    def get_driver(self, driver_name: str, driver_type: Type[T]) -> T:
         raise NotImplementedError
 
     def install_driver(self, driver_name: str, driver_repo_url: Optional[str]) -> None:
@@ -289,9 +291,9 @@ class DriverManager(IDriverManager):
         self._driver_installer = driver_installer
         self._driver_registry = driver_registry
 
-    def get_driver(self, driver_name: str) -> IDriver:
+    def get_driver(self, driver_name: str, driver_type: Type[T]) -> T:
         if self._installed_registry.is_driver_installed(driver_name):
-            return self._driver_loader.load_driver(driver_name, self._installed_registry)
+            return self._driver_loader.load_driver(driver_name, self._installed_registry, driver_type)
         else:
             raise KeyError(f"Driver '{driver_name}' is not installed")
 
