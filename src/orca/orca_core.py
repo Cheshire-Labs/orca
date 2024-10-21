@@ -103,7 +103,7 @@ class OrcaCore:
 
 if __name__ == "__main__":
     logging.basicConfig(handlers=[logging.StreamHandler()], level=logging.DEBUG)
-    config_file_path =  r"C:\Users\miike\source\repos\orca\orca-core\examples\smc_assay\smc_assay_example.yml"
+    config_file_path =  r"C:\Users\miike\source\repos\orca\orca-core\examples\smc_assay\smc_assay_example.orca.yml"
     workflow_name = "smc-assay"
     available_drivers_registry: str = "https://raw.githubusercontent.com/Cheshire-Labs/orca-extensions/refs/heads/main/drivers.json"
     installed_registry = InstalledDriverRegistry("driver_manager/drivers.json")
