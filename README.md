@@ -105,7 +105,7 @@ No scheduler software fits every need. Orca offers powerful Python scripting to 
 To see a quick demo of how orca works:
 1. Be sure to read our [Warning](#warning) regarding Orca before running
 2. Review Example Files:
-    - [Example Configuration File](./examples/smc_assay/smc_assay_example.yml) - Example Small Molecule Counting (SMC) Assay
+    - [Example Configuration File](./examples/smc_assay/smc_assay_example.orca.yml) - Example Small Molecule Counting (SMC) Assay
     - [Example Spawn384TipsScript File](./examples/smc_assay/spawn_384_tips.py) - Scripting to get a new 384 tip box after all quadrants are used
     - [Example SpawnFinalPlateScript File](./examples/smc_assay/spawn_final_plate.py) - Scripting to get a new final plate after all quandrants are used
 3. Download the [Examples Directory](./examples/) -> [Download Link](https://download-directory.github.io/?url=https%3A%2F%2Fgithub.com%2FCheshire-Labs%2Forca%2Ftree%2Fdev%2Fexamples) (Via https://download-directory.github.io/)
@@ -123,14 +123,14 @@ To see a quick demo of how orca works:
     ```
 8. Run the example ```smc-assay``` workflow as defined under the [workflows](#workflows) section of the configuation file (All drivers are currently simulated).
     ```bash
-    run --workflow smc-assay --config <path>/examples/smc_assay/smc_assay_example.yml
+    run --workflow smc-assay --config <path>/examples/smc_assay/smc_assay_example.orca.yml
     ```
     _Note: Be sure to use forward slashes ```/``` in the filepath_
 9. Wait for the method to complete logging to the terminal.  This is a long, complicated method and will take almost 2 minutes to complete the log output.
 
 10. Try running just a portion of the workflow, by selecting ```add-detection-antibody``` to run.  To do this you must define where each plate used by the method will begin and end using JSON for a start-map and end-map.
     ```bash
-    run_method --method add-detection-antibody --start-map {\"plate-1\":\"pad_1\",\"tips-96\":\"pad_2\"} --end-map {\"plate-1\":\"pad_4\",\"tips-96\":\"pad_5\"} --config <path>/examples/smc_assay/smc_assay_example.yml
+    run_method --method add-detection-antibody --start-map {\"plate-1\":\"pad_1\",\"tips-96\":\"pad_2\"} --end-map {\"plate-1\":\"pad_4\",\"tips-96\":\"pad_5\"} --config <path>/examples/smc_assay/smc_assay_example.orca.yml
     ```
 
 11. Exit Orca
@@ -186,7 +186,7 @@ pip uninstall cheshire-orca
 3. Run your entire workflow or run a single method
 
 ### Example
-To run the [Example Configuration File](./examples/smc_assay/smc_assay_example.yml)
+To run the [Example Configuration File](./examples/smc_assay/smc_assay_example.orca.yml)
 1. Using python launch the Orca command shell from your command line
 
     ```bash
@@ -195,12 +195,12 @@ To run the [Example Configuration File](./examples/smc_assay/smc_assay_example.y
 
 2. Run the entire ```smc-assay``` workflow as defined under the [workflows](#workflows) section of the configuation file
     ```bash
-    run --workflow smc-assay --config <path>/examples/smc_assay/smc_assay_example.yml
+    run --workflow smc-assay --config <path>/examples/smc_assay/smc_assay_example.orca.yml
     ```
 
 3. OR instead of running an entire workflow, just run a single method.  To do this you must define where each plate used by the method will begin and end using JSON for a start-map and end-map
     ```bash
-    run_method --method add-detection-antibody --start-map {\"plate-1\":\"pad_1\",\"tips-96\":\"pad_2\"} --end-map {\"plate-1\":\"pad_4\",\"tips-96\":\"pad_5\"} --config <path>/examples/smc_assay/smc_assay_example.yml
+    run_method --method add-detection-antibody --start-map {\"plate-1\":\"pad_1\",\"tips-96\":\"pad_2\"} --end-map {\"plate-1\":\"pad_4\",\"tips-96\":\"pad_5\"} --config <path>/examples/smc_assay/smc_assay_example.orca.yml
     ```
 
 4. Exit Shell
@@ -271,7 +271,7 @@ run --workflow <workflow_name> [--config <path_to_config_file>] [--stage <develo
 **Example** 
 
 ```bash
-run --workflow smc-assay --config <path>/examples/smc_assay/smc_assay_example.yml
+run --workflow smc-assay --config <path>/examples/smc_assay/smc_assay_example.orca.yml
 ```
 
 ## Deploy a Single Method
@@ -315,7 +315,7 @@ run_method --method <method_name> --start-map <start_map_json> --end-map <end_ma
 
 **Example**
 ```bash
-run_method --method add-detection-antibody --start-map {\"plate-1\":\"pad_1\",\"tips-96\":\"pad_2\"} --end-map {\"plate-1\":\"pad_4\",\"tips-96\":\"pad_5\"} --config <path>/examples/smc_assay/smc_assay_example.yml
+run_method --method add-detection-antibody --start-map {\"plate-1\":\"pad_1\",\"tips-96\":\"pad_2\"} --end-map {\"plate-1\":\"pad_4\",\"tips-96\":\"pad_5\"} --config <path>/examples/smc_assay/smc_assay_example.orca.yml
 ```
 
 ## Load Configuration File Only
@@ -342,7 +342,7 @@ load --config <path_to_config_file>
 **Example**
 
 ```bash
-load --config <path>/examples/smc_assay/smc_assay_example.yml
+load --config <path>/examples/smc_assay/smc_assay_example.orca.yml
 ```
 
 ## Initialize System Only
@@ -373,7 +373,7 @@ init [--config <path_to_config_file>] [--resources <resource_list>]
 **Example**
 
 ```bash
-init --config <path>/examples/smc_assay/smc_assay_example.yml --resources [resource1, resource2]
+init --config <path>/examples/smc_assay/smc_assay_example.orca.yml --resources [resource1, resource2]
 ```
 
 ## Exit
@@ -421,7 +421,7 @@ The Orca configuration file is a YAML file used to define various elements of yo
 - ```scripting``` Maps custom scripts to be used within the workflows
 
 ### Example
-[Example SMC Assay Yml Configuration File](./examples/smc_assay/smc_assay_example.yml)
+[Example SMC Assay Yml Configuration File](./examples/smc_assay/smc_assay_example.orca.yml)
 
 ## System Section
 

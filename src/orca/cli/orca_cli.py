@@ -238,4 +238,4 @@ class OrcaCmdShell(cmd.Cmd):
 if __name__ == "__main__":
     logging.basicConfig(handlers=[logging.StreamHandler()], level=logging.DEBUG)
     OrcaCmdShell().cmdloop()
-    # C:\Users\miike\source\repos\cheshire-orca\examples\smc_assay\smc_assay_example.yml
+    # C:\Users\miike\source\repos\cheshire-orca\examples\smc_assay\smc_assay_example.orca.yml
