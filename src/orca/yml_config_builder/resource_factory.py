@@ -1,4 +1,4 @@
-from typing import Any, Callable, Dict, List, cast
+from typing import List, cast
 from abc import ABC, abstractmethod
 from orca.config_interfaces import IResourceConfig, IResourcePoolConfig
 from orca.driver_management.driver_installer import IDriverManager
@@ -23,34 +23,35 @@ class IResourceFactory(ABC):
 class ResourceFactory(IResourceFactory):
     def __init__(self, driver_manager: IDriverManager, filepath_reconciler: FilepathReconciler) -> None:
         self._driver_manager = driver_manager
+        self._filepath_reconciler = filepath_reconciler
 
 
-        self._resource_map: Dict[str, Callable[[str, IResourceConfig], IEquipment]] = {
-            'mock-labware-loadable': lambda name, config: LabwareLoadableEquipment(name, SimulationLabwarePlaceableDriver("Mock Labware Loadable", "Mock Labware Loadable")),
-            'mock-robot': lambda name, config: TransporterEquipment(name, SimulationRoboticArmDriver(name, filepath_reconciler, "Mock Robot" )),
-            'ml-star': lambda name, config: LabwareLoadableEquipment(name, SimulationLabwarePlaceableDriver("Hamilton MLSTAR", "Hamilton MLSTAR")),
-            'venus': lambda name, config: LabwareLoadableEquipment(name, cast(ILabwarePlaceableDriver, self._driver_manager.get_driver("venus"))),
-            'test': lambda name, config: LabwareLoadableEquipment(name, cast(ILabwarePlaceableDriver, self._driver_manager.get_driver('test-driver'))),
-            'acell': lambda name, config: TransporterEquipment(name, SimulationRoboticArmDriver(name, filepath_reconciler, "ACell")),
-            'ddr': lambda name, config: TransporterEquipment(name, SimulationRoboticArmDriver(name, filepath_reconciler, "DDR")),
-            'translator': lambda name, config: TransporterEquipment(name, SimulationRoboticArmDriver(name, filepath_reconciler, "Translator")),
-            'cwash': lambda name, config: LabwareLoadableEquipment(name, SimulationLabwarePlaceableDriver("CWash", "CWash")),
-            'mantis': lambda name, config: LabwareLoadableEquipment(name, SimulationLabwarePlaceableDriver("Mantis", "Mantis")),
-            'analytic-jena': lambda name, config: LabwareLoadableEquipment(name, SimulationLabwarePlaceableDriver("Analytic Jena", "Analytic Jena")),
-            'tapestation-4200': lambda name, config: LabwareLoadableEquipment(name, SimulationLabwarePlaceableDriver("Tapestation 4200", "Tapestation 4200")),
-            'biotek': lambda name, config: LabwareLoadableEquipment(name, SimulationLabwarePlaceableDriver("Biotek", "Biotek")),
-            'bravo': lambda name, config: LabwareLoadableEquipment(name, SimulationLabwarePlaceableDriver("Bravo", "Bravo")),
-            'plateloc': lambda name, config: LabwareLoadableEquipment(name, SimulationLabwarePlaceableDriver("Plateloc", "Plateloc")),
-            'vspin': lambda name, config: LabwareLoadableEquipment(name, SimulationLabwarePlaceableDriver("VSpin", "VSpin")),
-            'agilent-hotel': lambda name, config: LabwareLoadableEquipment(name, SimulationLabwarePlaceableDriver("Agilent Hotel", "Agilent Hotel")),
-            'smc-pro': lambda name, config: LabwareLoadableEquipment(name, SimulationLabwarePlaceableDriver("SMC Pro", "SMC Pro")),
-            'vstack': lambda name, config: LabwareLoadableEquipment(name, SimulationLabwarePlaceableDriver("VStack", "VStack")),
-            'shaker': lambda name, config: LabwareLoadableEquipment(name, SimulationLabwarePlaceableDriver("Shaker", "Shaker")),
-            'waste': lambda name, config: LabwareLoadableEquipment(name, SimulationLabwarePlaceableDriver("Waste", "Waste")),
-            'delidder': lambda name, config: LabwareLoadableEquipment(name, SimulationLabwarePlaceableDriver("Delidder", "Delidder")),
-            'serial-switch': lambda name, config: Equipment(name, SimulationBaseDriver("Serial Switch", "Serial Switch")),
-            'switch': lambda name, config: Equipment(name, SimulationBaseDriver("Switch", "Switch"))
-        }
+        # self._resource_map: Dict[str, Callable[[str, IResourceConfig], IEquipment]] = {
+        #     'mock-labware-loadable': lambda name, config: LabwareLoadableEquipment(name, SimulationLabwarePlaceableDriver("Mock Labware Loadable", "Mock Labware Loadable")),
+        #     'mock-robot': lambda name, config: TransporterEquipment(name, SimulationRoboticArmDriver(name, filepath_reconciler, "Mock Robot" )),
+        #     'ml-star': lambda name, config: LabwareLoadableEquipment(name, SimulationLabwarePlaceableDriver("Hamilton MLSTAR", "Hamilton MLSTAR")),
+        #     'venus': lambda name, config: LabwareLoadableEquipment(name, cast(ILabwarePlaceableDriver, self._driver_manager.get_driver("venus"))),
+        #     'test': lambda name, config: LabwareLoadableEquipment(name, cast(ILabwarePlaceableDriver, self._driver_manager.get_driver('test-driver'))),
+        #     'acell': lambda name, config: TransporterEquipment(name, SimulationRoboticArmDriver(name, filepath_reconciler, "ACell")),
+        #     'ddr': lambda name, config: TransporterEquipment(name, SimulationRoboticArmDriver(name, filepath_reconciler, "DDR")),
+        #     'translator': lambda name, config: TransporterEquipment(name, SimulationRoboticArmDriver(name, filepath_reconciler, "Translator")),
+        #     'cwash': lambda name, config: LabwareLoadableEquipment(name, SimulationLabwarePlaceableDriver("CWash", "CWash")),
+        #     'mantis': lambda name, config: LabwareLoadableEquipment(name, SimulationLabwarePlaceableDriver("Mantis", "Mantis")),
+        #     'analytic-jena': lambda name, config: LabwareLoadableEquipment(name, SimulationLabwarePlaceableDriver("Analytic Jena", "Analytic Jena")),
+        #     'tapestation-4200': lambda name, config: LabwareLoadableEquipment(name, SimulationLabwarePlaceableDriver("Tapestation 4200", "Tapestation 4200")),
+        #     'biotek': lambda name, config: LabwareLoadableEquipment(name, SimulationLabwarePlaceableDriver("Biotek", "Biotek")),
+        #     'bravo': lambda name, config: LabwareLoadableEquipment(name, SimulationLabwarePlaceableDriver("Bravo", "Bravo")),
+        #     'plateloc': lambda name, config: LabwareLoadableEquipment(name, SimulationLabwarePlaceableDriver("Plateloc", "Plateloc")),
+        #     'vspin': lambda name, config: LabwareLoadableEquipment(name, SimulationLabwarePlaceableDriver("VSpin", "VSpin")),
+        #     'agilent-hotel': lambda name, config: LabwareLoadableEquipment(name, SimulationLabwarePlaceableDriver("Agilent Hotel", "Agilent Hotel")),
+        #     'smc-pro': lambda name, config: LabwareLoadableEquipment(name, SimulationLabwarePlaceableDriver("SMC Pro", "SMC Pro")),
+        #     'vstack': lambda name, config: LabwareLoadableEquipment(name, SimulationLabwarePlaceableDriver("VStack", "VStack")),
+        #     'shaker': lambda name, config: LabwareLoadableEquipment(name, SimulationLabwarePlaceableDriver("Shaker", "Shaker")),
+        #     'waste': lambda name, config: LabwareLoadableEquipment(name, SimulationLabwarePlaceableDriver("Waste", "Waste")),
+        #     'delidder': lambda name, config: LabwareLoadableEquipment(name, SimulationLabwarePlaceableDriver("Delidder", "Delidder")),
+        #     'serial-switch': lambda name, config: Equipment(name, SimulationBaseDriver("Serial Switch", "Serial Switch")),
+        #     'switch': lambda name, config: Equipment(name, SimulationBaseDriver("Switch", "Switch"))
+        # }
 
     def create_venus(self, resource_name: str, resource_config: IResourceConfig) -> IEquipment:
         if resource_config.sim:
@@ -59,39 +60,44 @@ class ResourceFactory(IResourceFactory):
             return LabwareLoadableEquipment(resource_name, RemoteLabwarePlaceableDriverClient("venus"))
 
     def create(self, resource_name: str, resource_config: IResourceConfig) -> IEquipment:
-
-        # TODO:  Something needs to be done here to decide what the sim looks like for each of these different types of equipment
-
-        # TODO: inits for drivers should be paramterless
-
-        res_type = resource_config.type
+        driver_name = resource_config.type.lower()
+        
+        # Determine the driver base type
         if resource_config.sim:
-            driver = self._get_similation_driver(res_type)
+            driver_base_type = resource_config.base_type or self._get_driver_base_type(driver_name)
+            driver = self._get_similation_driver(resource_name, driver_base_type)
         else:
-            driver = self._get_real_driver(res_type)
+            driver_info = self._driver_manager.get_driver_info(driver_name)
+            driver_base_type = driver_info.type
+            driver = self._driver_manager.get_driver(driver_name)
         
-        if isinstance(driver, ILabwarePlaceableDriver):
-            equipment: IEquipment = LabwareLoadableEquipment(resource_name, driver)
-        elif isinstance(driver, ITransporterDriver):
-            equipment = TransporterEquipment(resource_name, driver)
-        else:
+        # Create the appropriate equipment based on the driver base type
+        if driver_base_type == "transporter":
+            equipment: IEquipment = TransporterEquipment(resource_name, cast(ITransporterDriver, driver))
+        elif driver_base_type == "non-labware":
             equipment = Equipment(resource_name, driver)
-        
+        else:
+            equipment = LabwareLoadableEquipment(resource_name, cast(ILabwarePlaceableDriver, driver))
+
         equipment.set_init_options(resource_config.options)
         return equipment
-    
-    def _get_similation_driver(self, res_type: str) -> IDriver:
-        simulation_drivers: Dict[str, Any] = {
-            'base': SimulationLabwarePlaceableDriver,
-            'transporter': SimulationRoboticArmDriver,
-            'non-labware': SimulationBaseDriver
-            # Add other simulation driver types as needed
-        }
-        simulation_driver = simulation_drivers.get(res_type, SimulationLabwarePlaceableDriver)
-        return simulation_driver()
 
-    def _get_real_driver(self, driver_name: str) -> IDriver:
-         return self._driver_manager.get_driver(driver_name)
+    def _get_driver_base_type(self, driver_name: str) -> str:
+        try:
+            driver_info = self._driver_manager.get_driver_info(driver_name)
+            return driver_info.type
+        except:
+            return "labwareable"
+    
+    def _get_similation_driver(self, name: str, res_type: str) -> IDriver:
+        if res_type == 'non-labware':
+            return SimulationBaseDriver(name,res_type)
+        elif res_type == 'transporter':
+            return SimulationRoboticArmDriver(name, self._filepath_reconciler, res_type)
+        else:
+            return SimulationLabwarePlaceableDriver(name, res_type)
+
+
     
 class ResourcePoolFactory:
     def __init__(self, resource_reg: IResourceRegistry) -> None:
