@@ -195,6 +195,11 @@ class IResourceConfig(ABC):
     
     @property
     @abstractmethod
+    def base_type(self) -> Optional[str]:
+        raise NotImplementedError
+    
+    @property
+    @abstractmethod
     def options(self) -> Dict[str, Any]:
         raise NotImplementedError
 
