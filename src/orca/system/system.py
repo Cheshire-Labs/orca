@@ -193,11 +193,17 @@ class System(ISystem):
     def add_labware_thread_template(self, thread: ThreadTemplate) -> None:
         self._templates.add_labware_thread_template(thread)
 
+    def get_method_template_names(self) -> List[str]:
+        return self._templates.get_method_template_names()
+
     def get_method_template(self, name: str) -> MethodTemplate:
         return self._templates.get_method_template(name)
     
     def add_method_template(self, method: MethodTemplate) -> None:
         self._templates.add_method_template(method)
+
+    def get_workflow_template_names(self) -> List[str]:
+        return self._templates.get_workflow_template_names()
 
     def get_workflow_template(self, name: str) -> WorkflowTemplate:
         return self._templates.get_workflow_template(name)

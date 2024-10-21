@@ -86,8 +86,14 @@ class TemplateRegistry(IThreadTemplateRegistry, IWorkflowTemplateRegistry, IMeth
     def get_labware_thread_template(self, name: str) -> ThreadTemplate:
         return self._labware_thread_templates[name]
 
+    def get_workflow_template_names(self) -> List[str]:
+        return [k for k in self._workflow_templates.keys()]
+
     def get_workflow_template(self, name: str) -> WorkflowTemplate:
         return self._workflow_templates[name]
+    
+    def get_method_template_names(self) -> List[str]:
+        return [k for k in self._method_templates.keys()]
     
     def get_method_template(self, name: str) -> MethodTemplate:
         return self._method_templates[name]
