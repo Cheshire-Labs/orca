@@ -94,35 +94,35 @@ resources:
         ip: 192.168.1.125
         positions: ddr1.xml
         sim: true
-        base-type: transpoter
+        base-type: transporter
 
     ddr-2:
         type: ddr
         ip: 192.168.1.126
         positions: ddr2.xml
         sim: true
-        base-type: transpoter
+        base-type: transporter
 
     ddr-3:
         type: ddr
         ip: 192.168.1.127
         positions: ddr3.xml
         sim: true
-        base-type: transpoter
+        base-type: transporter
 
     translator-1:
         type: translator
         com: "COM5"
         positions: translator1.xml
         sim: true
-        base-type: transpoter
+        base-type: transporter
         
     translater-2:
         type: translator
         com: "COM6"
         positions: translator2.xml
         sim: true
-        base-type: transpoter
+        base-type: transporter
 
 ## STACKERS
     stacker-sample-start:
@@ -258,11 +258,13 @@ resources:
         type: serial-switch
         ip: 192.168.0.1
         sim: true
+        base-type: non-labware
 
     splitter:
         type: switch
         ip: 192.168.0.2
         sim: true
+        base-type: non-labware
 
 ## RESOURCE POOLS
     shaker-collection:
