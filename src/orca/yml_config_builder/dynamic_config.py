@@ -192,6 +192,10 @@ class DynamicResourceConfig(DynamicBaseConfig[ResourceConfig], IResourceConfig):
         return self.get_dynamic(self._config.sim)
     
     @property
+    def base_type(self) -> Optional[str]:
+        return self.get_dynamic(self._config.base_type)
+    
+    @property
     def options(self) -> Dict[str, Any]:
         return {key: self.get_dynamic(value) for key, value in self._config.model_extra.items()}
 
