@@ -6,7 +6,7 @@ import json
 import os
 import sys
 import tomllib
-from typing import Any, Dict, List, Optional, Type, TypeVar
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 import requests
 
@@ -30,6 +30,7 @@ class DriverInfo(BaseModel):
     name: str
     driverPath: str  
     driverClass: str  
+    type: str = 'labwareable'
     description: str = ''
     initParams: List[CommandParamSchema] = Field(default_factory=list)
     commands: List[CommandSchema] = Field(default_factory=list)
@@ -278,6 +279,18 @@ class IDriverManager(ABC):
 
     def install_driver(self, driver_name: str, driver_repo_url: Optional[str]) -> None:
         raise NotImplementedError
+    
+    def get_driver_info(self, driver_name: str) -> InstalledDriverInfo:
+        raise NotImplementedError
+
+    def get_installed_drivers_info(self) -> Dict[str, InstalledDriverInfo]:
+        raise NotImplementedError
+
+    def get_available_drivers_info(self) -> Dict[str, DriverRegistryInfo]:
+       raise NotImplementedError
+
+    def uninstall_driver(self, driver_name: str) -> None:
+        raise NotImplementedError
 
 class DriverManager(IDriverManager):
     def __init__(self, 
@@ -295,6 +308,9 @@ class DriverManager(IDriverManager):
             return self._driver_loader.load_driver(driver_name, self._installed_registry)
         else:
             raise KeyError(f"Driver '{driver_name}' is not installed")
+        
+    def get_driver_info(self, driver_name: str) -> InstalledDriverInfo:
+        return self._installed_registry.installed_drivers[driver_name]
 
     def get_installed_drivers_info(self) -> Dict[str, InstalledDriverInfo]:
         return self._installed_registry.installed_drivers
