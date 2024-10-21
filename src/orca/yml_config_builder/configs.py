@@ -84,7 +84,7 @@ class ResourceConfig(ConfigModel):
     com: Optional[str] = None
     ip: Optional[str] = None
     sim: Optional[bool] = None
-    base_type: Optional[str] = None
+    base_type: Optional[str] = Field(None, alias='base-type')
     plate_pad: Optional[str] = Field(None, alias='plate-pad')
 
 class WorkflowConfig(ConfigModel):
