@@ -1,4 +1,4 @@
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, cast
 from abc import ABC, abstractmethod
 from orca.config_interfaces import IResourceConfig, IResourcePoolConfig
 from orca.driver_management.driver_installer import IDriverManager
@@ -23,11 +23,14 @@ class IResourceFactory(ABC):
 class ResourceFactory(IResourceFactory):
     def __init__(self, driver_manager: IDriverManager, filepath_reconciler: FilepathReconciler) -> None:
         self._driver_manager = driver_manager
+
+
         self._resource_map: Dict[str, Callable[[str, IResourceConfig], IEquipment]] = {
             'mock-labware-loadable': lambda name, config: LabwareLoadableEquipment(name, SimulationLabwarePlaceableDriver("Mock Labware Loadable", "Mock Labware Loadable")),
             'mock-robot': lambda name, config: TransporterEquipment(name, SimulationRoboticArmDriver(name, filepath_reconciler, "Mock Robot" )),
             'ml-star': lambda name, config: LabwareLoadableEquipment(name, SimulationLabwarePlaceableDriver("Hamilton MLSTAR", "Hamilton MLSTAR")),
-            'venus': self.create_venus,
+            'venus': lambda name, config: LabwareLoadableEquipment(name, cast(ILabwarePlaceableDriver, self._driver_manager.get_driver("venus"))),
+            'test': lambda name, config: LabwareLoadableEquipment(name, cast(ILabwarePlaceableDriver, self._driver_manager.get_driver('test-driver'))),
             'acell': lambda name, config: TransporterEquipment(name, SimulationRoboticArmDriver(name, filepath_reconciler, "ACell")),
             'ddr': lambda name, config: TransporterEquipment(name, SimulationRoboticArmDriver(name, filepath_reconciler, "DDR")),
             'translator': lambda name, config: TransporterEquipment(name, SimulationRoboticArmDriver(name, filepath_reconciler, "Translator")),
