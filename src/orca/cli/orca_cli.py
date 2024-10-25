@@ -74,6 +74,107 @@ class OrcaCmdShell(cmd.Cmd):
         except Exception as e:
             print(f"Error: {e}")
             traceback.print_exc()
+    
+    def do_list_workflow_recipes(self, arg: str):
+        """List available workflow recipes"""
+        try:
+            args = self._parsers["list_workflow_recipes"].parse_args(shlex.split(arg))
+            print("Available Workflow Recipes:")
+            for recipe in self._orca_shell.get_workflow_recipes():
+                print(f"{recipe}")
+        except SystemExit as e:
+            print(f"Argument parsing error: {e}")
+            self._parsers["list_workflow_recipes"].print_help()
+        except Exception as e:
+            print(f"Error: {e}")
+            traceback.print_exc()
+
+    def do_list_method_recipes(self, arg: str):
+        """List available method recipes"""
+        try:
+            args = self._parsers["list_method_recipes"].parse_args(shlex.split(arg))
+            print("Available Method Recipes:")
+            for recipe in self._orca_shell.get_method_recipes():
+                print(f"{recipe}")
+        except SystemExit as e:
+            print(f"Argument parsing error: {e}")
+            self._parsers["list_method_recipes"].print_help()
+        except Exception as e:
+            print(f"Error: {e}")
+            traceback.print_exc()
+
+    def do_list_locations(self, arg: str):
+        """List all locations"""
+        try:
+            args = self._parsers["list_locations"].parse_args(shlex.split(arg))
+            print("Locations:")
+            for location in self._orca_shell.get_locations():
+                print(f"{location}")
+        except SystemExit as e:
+            print(f"Argument parsing error: {e}")
+            self._parsers["list_locations"].print_help()
+        except Exception as e:
+            print(f"Error: {e}")
+            traceback.print_exc()
+
+    def do_list_resources(self, arg: str):
+        """List all resources"""
+        try:
+            args = self._parsers["list_resources"].parse_args(shlex.split(arg))
+            print("Resources:")
+            for resource in self._orca_shell.get_resources():
+                print(f"{resource}")
+        except SystemExit as e:
+            print(f"Argument parsing error: {e}")
+            self._parsers["list_resources"].print_help()
+        except Exception as e:
+            print(f"Error: {e}")
+            traceback.print_exc()
+
+    def do_list_equipments(self, arg: str):
+        """List all equipments"""
+        try:
+            args = self._parsers["list_equipments"].parse_args(shlex.split(arg))
+            print("Equipments:")
+            for equipment in self._orca_shell.get_equipments():
+                print(f"{equipment}")
+        except SystemExit as e:
+            print(f"Argument parsing error: {e}")
+            self._parsers["list_equipments"].print_help()
+        except Exception as e:
+            print(f"Error: {e}")
+            traceback.print_exc()
+
+    def do_list_transporters(self, arg: str):
+        """List all transporters"""
+        try:
+            args = self._parsers["list_transporters"].parse_args(shlex.split(arg))
+            print("Transporters:")
+            for transporter in self._orca_shell.get_transporters():
+                print(f"{transporter}")
+        except SystemExit as e:
+            print(f"Argument parsing error: {e}")
+            self._parsers["list_transporters"].print_help()
+        except Exception as e:
+            print(f"Error: {e}")
+            traceback.print_exc()
+
+    def do_set_logging(self, arg: str):
+        """Set logging destination"""
+        try:
+            args = self._parsers["set_logging"].parse_args(shlex.split(arg))
+            if args.file:
+                print(f"Setting logging destination to file: {args.file}")
+                self._orca_shell.set_logging_destination(args.file, args.level)
+            else:
+                print(f"Setting logging to default stream with level: {args.level}")
+                self._orca_shell.set_logging_destination(None, args.level)
+        except SystemExit as e:
+            print(f"Argument parsing error: {e}")
+            self._parsers["set_logging"].print_help()
+        except Exception as e:
+            print(f"Error: {e}")
+            traceback.print_exc()
 
     def do_install_driver(self, arg: str):
         """Install the driver"""
@@ -188,6 +289,36 @@ class OrcaCmdShell(cmd.Cmd):
         # Parser for the 'list_installed_drivers' command
         list_installed_drivers_parser = argparse.ArgumentParser(prog='list_installed_drivers', description="List installed drivers")
         parsers['list_installed_drivers'] = list_installed_drivers_parser
+
+        # Parser for 'list_workflow_recipes' command
+        list_workflow_parser = argparse.ArgumentParser(prog='list_workflow_recipes', description="List available workflow recipes")
+        parsers['list_workflow_recipes'] = list_workflow_parser
+
+        # Parser for 'list_method_recipes' command
+        list_method_parser = argparse.ArgumentParser(prog='list_method_recipes', description="List available method recipes")
+        parsers['list_method_recipes'] = list_method_parser
+
+        # Parser for 'list_locations' command
+        list_locations_parser = argparse.ArgumentParser(prog='list_locations', description="List all locations")
+        parsers['list_locations'] = list_locations_parser
+
+        # Parser for 'list_resources' command
+        list_resources_parser = argparse.ArgumentParser(prog='list_resources', description="List all resources")
+        parsers['list_resources'] = list_resources_parser
+
+        # Parser for 'list_equipments' command
+        list_equipments_parser = argparse.ArgumentParser(prog='list_equipments', description="List all equipments")
+        parsers['list_equipments'] = list_equipments_parser
+
+        # Parser for 'list_transporters' command
+        list_transporters_parser = argparse.ArgumentParser(prog='list_transporters', description="List all transporters")
+        parsers['list_transporters'] = list_transporters_parser
+
+        # Parser for 'set_logging' command
+        set_logging_parser = argparse.ArgumentParser(prog='set_logging', description="Set logging destination")
+        set_logging_parser.add_argument("--file", help="Set the logging destination to a file")
+        set_logging_parser.add_argument("--level", choices=["debug", "info", "warning", "error"], default="info", help="Logging level")
+        parsers['set_logging'] = set_logging_parser
 
         return parsers
     
