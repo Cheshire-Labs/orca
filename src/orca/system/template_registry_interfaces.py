@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from types import MappingProxyType
 from typing import List
 
 from orca.workflow_models.workflow_templates import ThreadTemplate, MethodTemplate, WorkflowTemplate
@@ -17,7 +18,7 @@ class IThreadTemplateRegistry(ABC):
 class IMethodTemplateRegistry(ABC):
 
     @abstractmethod
-    def get_method_template_names(self) -> List[str]:
+    def get_method_templates(self) -> MappingProxyType[str, MethodTemplate]:
         raise NotImplementedError
 
     @abstractmethod
@@ -32,7 +33,7 @@ class IMethodTemplateRegistry(ABC):
 class IWorkflowTemplateRegistry(ABC):
 
     @abstractmethod
-    def get_workflow_template_names(self) -> List[str]:
+    def get_workflow_templates(self) -> MappingProxyType[str, WorkflowTemplate]:
         raise NotImplementedError
 
     @abstractmethod

@@ -5,9 +5,11 @@ backcall==0.2.0
 beautifulsoup4==4.12.3
 bidict==0.23.1
 bleach==6.1.0
+blinker==1.8.2
 certifi==2024.6.2
 charset-normalizer==3.3.2
-cheshire-orca-interfaces @ git+https://github.com/Cheshire-Labs/orca-interfaces.git
+cheshire-orca-interfaces @ git+https://github.com/Cheshire-Labs/orca-interfaces.git@a54077c5170ea6367bbb50ebdaabd7b3c8cc2ddf
+click==8.1.7
 colorama==0.4.6
 contourpy==1.2.1
 cycler==0.12.1
@@ -16,11 +18,13 @@ defusedxml==0.7.1
 docopt==0.6.2
 executing==2.0.1
 fastjsonschema==2.20.0
+Flask==3.0.3
 fonttools==4.53.0
 h11==0.14.0
 idna==3.7
 iniconfig==2.0.0
 ipython==8.12.3
+itsdangerous==2.2.0
 jedi==0.19.1
 Jinja2==3.1.4
 jsonschema==4.22.0
@@ -50,7 +54,7 @@ prettytable==3.10.0
 prompt_toolkit==3.0.47
 pure-eval==0.2.2
 pydantic==2.9.2
-# pydantic_core==2.23.4
+pydantic_core==2.23.4
 Pygments==2.18.0
 pyparsing==3.1.2
 pytest==8.3.2
@@ -81,5 +85,6 @@ typing_extensions==4.12.2
 urllib3==2.2.1
 wcwidth==0.2.13
 webencodings==0.5.1
+Werkzeug==3.0.5
 wsproto==1.2.0
 yarg==0.1.9
