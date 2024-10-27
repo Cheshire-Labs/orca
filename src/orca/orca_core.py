@@ -1,5 +1,5 @@
 import os
-from typing import Any, Callable, Coroutine, Dict, List, Optional, Union
+from typing import Any, Callable, Coroutine, Dict, List, Literal, Optional, Union
 import logging
 import asyncio
 
@@ -105,7 +105,7 @@ class OrcaCore:
         return executer.id
        
 
-    def set_logging_destination(self, destination: Optional[Union[str, logging.Handler]] = None, logging_level: logging._Level = logging.INFO) -> None:
+    def set_logging_destination(self, destination: Optional[Union[str, logging.Handler]] = None, logging_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO") -> None:
         """Configure logging with the given destination. If None, defaults to StreamHandler."""
 
         logger = logging.getLogger()

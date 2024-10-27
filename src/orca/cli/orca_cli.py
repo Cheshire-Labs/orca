@@ -7,8 +7,7 @@ import colorama
 import shlex
 from typing import Dict
 
-from orca.cli.local_shell import LocalOrcaShell
-from orca.cli.shell_interface import IOrcaShell
+from orca.cli.orca_api import OrcaApi
 
 
 class OrcaCmdShell(cmd.Cmd):
@@ -18,7 +17,7 @@ class OrcaCmdShell(cmd.Cmd):
     def __init__(self) -> None:
         colorama.init()
         super().__init__()
-        self._orca_shell: IOrcaShell = LocalOrcaShell()
+        self._orca_shell: OrcaApi = OrcaApi()
         self._parsers: Dict[str, argparse.ArgumentParser] = self._create_parsers()
 
     def do_load(self, arg: str):

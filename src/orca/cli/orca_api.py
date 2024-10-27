@@ -1,14 +1,14 @@
-import os
+from types import MappingProxyType
 from typing import Any, Dict, List, Literal, Union, Optional
 import asyncio
 import json
 import logging
 from orca.driver_management.driver_installer import  DriverInstaller, DriverLoader, DriverManager, DriverRegistryInfo, InstalledDriverInfo, InstalledDriverRegistry, RemoteAvailableDriverRegistry
-from orca.orca_core import OrcaCore, PROJECT_ROOT
-
-from orca.cli.shell_interface import IOrcaShell
+from orca.orca_core import OrcaCore
+from orca.system.method_executor import MethodTemplate
+from orca.system.system import WorkflowTemplate
     
-class LocalOrcaShell(IOrcaShell):
+class OrcaApi:
 
     @property
     def _orca(self) -> OrcaCore:
@@ -59,11 +59,11 @@ class LocalOrcaShell(IOrcaShell):
         end_map = json.loads(end_map_json)
         asyncio.run(self._orca.run_method(method_name, start_map, end_map))
 
-    def get_workflow_recipes(self) -> List[str]:
-        return self._orca.system.get_workflow_template_names()
+    def get_workflow_recipes(self) -> MappingProxyType[str, WorkflowTemplate]:
+        return self._orca.system.get_workflow_templates()
     
-    def get_method_recipes(self) -> List[str]:
-        return self._orca.system.get_method_template_names()
+    def get_method_recipes(self) -> MappingProxyType[str, MethodTemplate]:
+        return self._orca.system.get_method_templates()
     
     def get_labware_recipes(self) -> List[str]:
         raise NotImplementedError
@@ -101,9 +101,6 @@ class LocalOrcaShell(IOrcaShell):
     def uninstall_driver(self, driver_name: str) -> None:
         self._driver_manager.uninstall_driver(driver_name)
 
-    def set_logging_destination(self, destination: Optional[Union[str, logging.Handler]] = None, logging_level: Literal['debug', 'info', 'warning', 'error'] = 'info') -> None:
+    def set_logging_destination(self, destination: Optional[Union[str, logging.Handler]] = None, logging_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO") -> None:
         self._orca.set_logging_destination(destination, logging_level)
-    
-        
-
     

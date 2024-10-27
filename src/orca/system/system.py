@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from types import MappingProxyType
 from typing import Dict, List
 import uuid
 from orca.resource_models.location import Location
@@ -193,8 +194,8 @@ class System(ISystem):
     def add_labware_thread_template(self, thread: ThreadTemplate) -> None:
         self._templates.add_labware_thread_template(thread)
 
-    def get_method_template_names(self) -> List[str]:
-        return self._templates.get_method_template_names()
+    def get_method_templates(self) -> MappingProxyType[str, MethodTemplate]:
+        return self._templates.get_method_templates()
 
     def get_method_template(self, name: str) -> MethodTemplate:
         return self._templates.get_method_template(name)
@@ -202,8 +203,8 @@ class System(ISystem):
     def add_method_template(self, method: MethodTemplate) -> None:
         self._templates.add_method_template(method)
 
-    def get_workflow_template_names(self) -> List[str]:
-        return self._templates.get_workflow_template_names()
+    def get_workflow_templates(self) -> MappingProxyType[str, WorkflowTemplate]:
+        return self._templates.get_workflow_templates()
 
     def get_workflow_template(self, name: str) -> WorkflowTemplate:
         return self._templates.get_workflow_template(name)
