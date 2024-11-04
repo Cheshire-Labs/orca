@@ -36,13 +36,8 @@ class SocketIOHandler(Handler):
             self._initialized = True
 
     def emit(self, record: LogRecord) -> None:
-        created = record.created
-        msecs = record.msecs
-        levelname = record.levelname
-        module = record.module
-        message = record.message
-        msg = f"{created}.{round(msecs):03} [{levelname:<5.5s}]  {module:<18s}  {message}"
-        socketio.emit('log_message', {'data': msg}, namespace='/logging')
+        """Emit a log record with SocketIO."""
+        socketio.emit('log_message', {'data': self.format(record)}, namespace='/logging')
 
 # WebSocket event to send logs
 @socketio.on('connect', '/logging')
@@ -79,7 +74,7 @@ def init() -> Response:
 def run_workflow() -> Response:
     data = request.get_json()
     workflow_name = data.get("workflow_name")
-    config_file = data.get("config_file")
+    config_file = data.get("config_file", None)
     options = data.get("options", {})
     workflow_id = orca_api.run_workflow(workflow_name=workflow_name, 
                                         config_file=config_file, 
@@ -92,7 +87,7 @@ def run_method() -> Response:
     method_name = data.get("method_name")
     start_map_json = data.get("start_map")
     end_map_json = data.get("end_map")
-    config_file = data.get("config_file")
+    config_file = data.get("config_file", None)
     options = data.get("options", {})
     method_id = orca_api.run_method(method_name=method_name, 
                                     start_map_json=start_map_json, 
