@@ -105,7 +105,8 @@ class OrcaCore:
         return executer.id
        
 
-    def set_logging_destination(self, destination: Optional[Union[str, logging.Handler]] = None, logging_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO") -> None:
+    @staticmethod
+    def set_logging_destination(destination: Optional[Union[str, logging.Handler]] = None, logging_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO") -> None:
         """Configure logging with the given destination. If None, defaults to StreamHandler."""
 
         logger = logging.getLogger()
