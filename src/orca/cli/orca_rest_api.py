@@ -1,12 +1,63 @@
+import asyncio
+from logging import Handler, LogRecord
+import threading
 from typing import List
+from flask_socketio import SocketIO, emit
 from flask import Flask, jsonify, request, Response
 from flask.helpers import abort
 from orca.cli.orca_api import  OrcaApi
 from orca.resource_models.labware import AnyLabwareTemplate, LabwareTemplate
 
+orca_api = OrcaApi()
+
 app = Flask(__name__)
 
-orca_api = OrcaApi()
+socketio = SocketIO(app, async_mode='threading')
+
+
+class SocketIOHandler(Handler):
+    """A logging handler that emits records with SocketIO."""
+    
+    _instance = None
+    _lock = threading.Lock()  # To ensure thread-safety
+
+    def __new__(cls, *args, **kwargs):
+        # Use double-checked locking to create a singleton instance
+        if not cls._instance:
+            with cls._lock:
+                if not cls._instance:
+                    cls._instance = super(SocketIOHandler, cls).__new__(cls)
+        return cls._instance
+
+    def __init__(self):
+        # Ensure __init__ is only called once
+        if not hasattr(self, '_initialized'):
+            super().__init__()
+            self._initialized = True
+
+    def emit(self, record: LogRecord) -> None:
+        created = record.created
+        msecs = record.msecs
+        levelname = record.levelname
+        module = record.module
+        message = record.message
+        msg = f"{created}.{round(msecs):03} [{levelname:<5.5s}]  {module:<18s}  {message}"
+        socketio.emit('log_message', {'data': msg}, namespace='/logging')
+
+# WebSocket event to send logs
+@socketio.on('connect', '/logging')
+def handle_connect():
+    print("Client connected")
+    socketio_logging: Handler = SocketIOHandler()
+    orca_api.set_logging_destination(socketio_logging, "INFO")
+    socketio.emit('log_message', {'data': 'Connected to Orca Server'})
+
+@socketio.on('disconnect', '/logging')
+def handle_disconnect():
+    print("Client disconnected")
+
+
+
 
 @app.route('/load', methods=['POST'])
 def load() -> Response:
@@ -172,4 +223,7 @@ def set_logging_destination() -> Response:
     return jsonify({"message": "Logging destination updated successfully."})
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5000, debug=True)
+    # app.run(host="127.0.0.1", port=5000, debug=True)
+    socketio.run(app, host="127.0.0.1", port=5000, debug=True, allow_unsafe_werkzeug=True)
+    # asyncio.run(socketio.run(logging_app, host="127.0.0.1", port=5001, debug=True, allow_unsafe_werkzeug=True))
+    
