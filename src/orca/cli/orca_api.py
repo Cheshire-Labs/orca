@@ -102,5 +102,5 @@ class OrcaApi:
         self._driver_manager.uninstall_driver(driver_name)
 
     def set_logging_destination(self, destination: Optional[Union[str, logging.Handler]] = None, logging_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO") -> None:
-        self._orca.set_logging_destination(destination, logging_level)
+        OrcaCore.set_logging_destination(destination, logging_level)
     
