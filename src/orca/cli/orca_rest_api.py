@@ -1,8 +1,9 @@
 import asyncio
+import json
 from logging import Handler, LogRecord
 import threading
 from typing import List
-from flask_socketio import SocketIO, emit
+from flask_socketio import SocketIO
 from flask import Flask, jsonify, request, Response
 from flask.helpers import abort
 from orca.cli.orca_api import  OrcaApi
@@ -99,8 +100,22 @@ def run_method() -> Response:
 @app.route('/get_workflow_recipes', methods=['GET'])
 def get_workflow_recipes() -> Response:
     recipes = orca_api.get_workflow_recipes()
-    recipe_names = [k for k in recipes.keys()]
-    return jsonify({"workflow_recipes": recipe_names})
+    dict_recipes = {}
+    for name, r in recipes.items():
+        thread_recipes = {}
+        for tr in r.thread_templates:
+            thread_recipes[tr.name] = {
+                "name": tr.name,
+                "start_location": tr.start_location.name,
+                "end_location": tr.end_location.name,
+                "labware_template": tr.labware_template.name
+            }
+        dict_recipes[name] = {
+            "name": r.name,
+            "thread_recipes": thread_recipes,
+        }
+
+    return jsonify({"workflow_recipes": dict_recipes})
 
 @app.route('/test', methods=['GET'])
 def test() -> Response:
@@ -109,8 +124,14 @@ def test() -> Response:
 @app.route('/get_method_recipes', methods=['GET'])
 def get_method_recipes() -> Response:
     recipes = orca_api.get_method_recipes()
-    recipe_names = [k for k in recipes.keys()]
-    return jsonify({"method_recipes": recipe_names})
+    dict_recipes = {}
+    for name, r in recipes.items():
+        dict_recipes[name] = {
+            "name": r.name,
+            "inputs": [labware.name for labware in r.inputs],
+            "outputs": [labware.name for labware in r.outputs]
+        }
+    return jsonify({"method_recipes": dict_recipes})
 
 
 @app.route('/get_method_recipe_input_labwares', methods=['GET'])
@@ -216,6 +237,17 @@ def set_logging_destination() -> Response:
     logging_level = data.get("logging_level", "info")
     orca_api.set_logging_destination(destination, logging_level)
     return jsonify({"message": "Logging destination updated successfully."})
+
+def shutdown_server():
+    func = request.environ.get('werkzeug.server.shutdown')
+    if func is None:
+        raise RuntimeError('Not running with the Werkzeug Server')
+    func()
+
+@app.route('/shutdown', methods=['GET'])
+def shutdown():
+    socketio.stop()
+    return 'Server shut down'
 
 if __name__ == "__main__":
     # app.run(host="127.0.0.1", port=5000, debug=True)
