@@ -247,6 +247,9 @@ class System(ISystem):
     
     async def start_all_threads(self) -> None:
         return await self._thread_manager.start_all_threads()
+
+    def stop_all_threads(self) -> None:
+        return self._thread_manager.stop_all_threads()
     
     async def initialize_all(self) -> None:
         return await self._resources.initialize_all()

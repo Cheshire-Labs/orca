@@ -86,6 +86,9 @@ class OrcaApi:
     def get_transporters(self) -> List[str]:
         return [r.name for r in self._orca.system.transporters]
     
+    def stop(self) -> None:
+        self._orca.stop()
+    
     def get_installed_drivers_info(self) -> Dict[str, InstalledDriverInfo]:
         return self._driver_manager.get_installed_drivers_info()
     
