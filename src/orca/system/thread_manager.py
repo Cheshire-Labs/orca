@@ -101,6 +101,10 @@ class IThreadManager(IThreadRegistry, ABC):
     @abstractmethod
     async def start_all_threads(self) -> None:
         raise NotImplementedError
+    
+    @abstractmethod
+    def stop_all_threads(self) -> None:
+        raise NotImplementedError
 
 
 class ThreadManager(IThreadManager):
@@ -145,6 +149,10 @@ class ThreadManager(IThreadManager):
         # # self._loop.set_debug(True)
         # self._loop.run_until_complete(self.async_execute())
         await self.async_execute()
+
+    def stop_all_threads(self) -> None:
+        for thread in self.threads:
+            thread.stop()
 
     async def async_execute(self) -> None:
         assert self._loop is not None

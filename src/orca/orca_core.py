@@ -103,6 +103,9 @@ class OrcaCore:
         await self.initialize()
         await executer.start()
         return executer.id
+
+    def stop(self) -> None:
+        self._system.stop_all_threads()
        
 
     @staticmethod

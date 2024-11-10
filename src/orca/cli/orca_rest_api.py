@@ -205,6 +205,11 @@ def get_transporters() -> Response:
     transporters = orca_api.get_transporters()
     return jsonify({"transporters": transporters})
 
+@app.route('/stop', methods=['POST'])
+def stop() -> Response:
+    orca_api.stop()
+    return jsonify({"message": "Orca stopped."})
+
 @app.route('/get_installed_drivers_info', methods=['GET'])
 def get_installed_drivers_info() -> Response:
     drivers = orca_api.get_installed_drivers_info()

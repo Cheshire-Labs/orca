@@ -132,6 +132,7 @@ class LabwareThread(IMethodObserver):
         self._previous_action: LocationAction | None = None
         self._assigned_action: LocationAction | None = None
         self._move_action: MoveAction | None = None
+        self._stop_event = asyncio.Event()
         
     @property
     def id(self) -> str:
@@ -225,11 +226,26 @@ class LabwareThread(IMethodObserver):
                 await self._handle_action_assignment()
 
             assert self._assigned_action is not None
-            while self.current_location != self._assigned_action.location:
+
+            # move to the assigned location
+            while self.current_location != self._assigned_action.location and not self._stop_event.is_set():
                 await self._handle_thread_move_assignment()
                 await asyncio.sleep(0.2)
+
+            if self._stop_event.is_set():
+                self._handle_thread_stop()
+                return
+            
             await self._handle_thread_at_assigned_location()
             await asyncio.sleep(0.2)
+
+    def stop(self) -> None:
+        self._status = LabwareThreadStatus.STOPPING
+        self._stop_event.set()
+        
+    def _handle_thread_stop(self) -> None:
+        self._stop_event.clear()
+        self._status = LabwareThreadStatus.STOPPED
         
 
     async def _handle_action_assignment(self) -> None:
