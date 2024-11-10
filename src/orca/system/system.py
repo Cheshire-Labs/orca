@@ -212,8 +212,8 @@ class System(ISystem):
     def add_workflow_template(self, workflow: WorkflowTemplate) -> None:
         self._templates.add_workflow_template(workflow)
 
-    def get_workflow(self, name: str) -> Workflow:
-        return self._workflow_registry.get_workflow(name)
+    def get_workflow(self, id: str) -> Workflow:
+        return self._workflow_registry.get_workflow(id)
     
     def add_workflow(self, workflow: Workflow) -> None:
         self._workflow_registry.add_workflow(workflow)
@@ -227,8 +227,8 @@ class System(ISystem):
     def add_thread(self, labware_thread: LabwareThread) -> None:
         self._thread_manager.add_thread(labware_thread)
 
-    def get_method(self, name: str) -> Method:
-        return self._workflow_registry.get_method(name)
+    def get_method(self, id: str) -> Method:
+        return self._workflow_registry.get_method(id)
     
     def add_method(self, method: Method) -> None:
         self._workflow_registry.add_method(method)

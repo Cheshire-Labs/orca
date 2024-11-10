@@ -20,6 +20,7 @@ from orca.yml_config_builder.resource_factory import IResourceFactory, ResourceF
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 class OrcaCore:
+
     def __init__(self, 
                  config_filepath: str, 
                  driver_manager: DriverManager,
@@ -28,8 +29,6 @@ class OrcaCore:
                  resource_factory: Optional[IResourceFactory] = None,
                  log_destination: Optional[Union[str, logging.Handler]] = None
                  ) -> None:
-        
-        # Set up logging with the initial destination
         self.set_logging_destination(log_destination)
         self._config = ConfigFile(config_filepath)
         self._config.set_command_line_options(options)
@@ -43,6 +42,7 @@ class OrcaCore:
             resource_factory = ResourceFactory(driver_manager, filepath_reconciler)
         builder.set_resource_factory(resource_factory)
         self._system: ISystem = self._config.get_system(builder)
+        self._method_executor_registry: Dict[str, MethodExecutor] = {}
 
     @property
     def system(self) -> ISystem:
@@ -61,17 +61,20 @@ class OrcaCore:
                     init_fxns.append(resource.initialize)
             await asyncio.gather(*[f() for f in init_fxns])
 
-    async def run_workflow(self, workflow_name: str) -> str:
+    def create_workflow_instance(self, workflow_name: str) -> str:
         workflow_template = self._system.get_workflow_template(workflow_name)
         workflow = self._system.create_workflow_instance(workflow_template)
+        self._system.add_workflow(workflow)
+        return workflow.id
 
+    async def run_workflow(self, workflow_id: str) -> None:
+        workflow = self._system.get_workflow(workflow_id)
         # TODO:  Add check to make sure system is initailized
         await self.initialize()
         await workflow.start()
-        return workflow.id
 
 
-    async def run_method(self, method_name: str, start_map: Dict[str, str], end_map: Dict[str, str]) -> str:
+    def create_method_instance(self, method_name: str, start_map: Dict[str, str], end_map: Dict[str, str]) -> str:
         try:
             method_template = self._system.get_method_template(method_name)
         except KeyError:
@@ -100,12 +103,19 @@ class OrcaCore:
                                  end_map_obj,
                                  self._system,
                                  self._system)
+        self._method_executor_registry[method_name] = executer
+        return executer.id
+    
+    async def run_method(self, method_id: str) -> None:
+        executer = self._method_executor_registry[method_id]
+        # TODO:  Add check to make sure system is initailized
         await self.initialize()
         await executer.start()
-        return executer.id
+        
 
     def stop(self) -> None:
-        self._system.stop_all_threads()
+        self._system.stop_all_threads()        
+
        
 
     @staticmethod
@@ -142,4 +152,5 @@ if __name__ == "__main__":
             DriverInstaller(installed_registry), 
             RemoteAvailableDriverRegistry(available_drivers_registry))
     orca = OrcaCore(config_file_path, driver_manager)
-    asyncio.run(orca.run_workflow(workflow_name))
+    workflow_id = orca.create_workflow_instance(workflow_name)
+    asyncio.run(orca.run_workflow(workflow_id))
