@@ -42,11 +42,14 @@ class OrcaApi:
     def run_workflow(self, 
                      workflow_name: str, 
                      config_file: Optional[str] = None, 
-                     options: Dict[str, Any] = {}):
+                     options: Dict[str, Any] = {}) -> str:
         if config_file is not None:
             self.load(config_file)
-        asyncio.run(self._orca.run_workflow(workflow_name))
-
+        instance_id = self._orca.create_workflow_instance(workflow_name)
+        asyncio.create_task(self._orca.run_workflow(instance_id))
+        return instance_id
+        
+    
     def run_method(self,
                    method_name: str, 
                    start_map_json: str, 
@@ -57,7 +60,9 @@ class OrcaApi:
             self.load(config_file)
         start_map = json.loads(start_map_json)
         end_map = json.loads(end_map_json)
-        asyncio.run(self._orca.run_method(method_name, start_map, end_map))
+        method_id = self._orca.create_method_instance(method_name, start_map, end_map)
+        asyncio.create_task(self._orca.run_method(method_id))
+        return method_id
 
     def get_workflow_recipes(self) -> MappingProxyType[str, WorkflowTemplate]:
         return self._orca.system.get_workflow_templates()

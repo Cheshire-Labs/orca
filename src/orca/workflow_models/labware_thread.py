@@ -43,11 +43,16 @@ class MethodObserver(IMethodObserver):
 class Method(IActionObserver):
 
     def __init__(self, name: str) -> None:
+        self._id = str(uuid.uuid4())
         self._name = name
         self._steps: List[DynamicResourceAction] = []
         self._current_action: LocationAction | None = None
         self.__status: MethodStatus = MethodStatus.CREATED
         self._observers: List[IMethodObserver] = []
+
+    @property
+    def id(self) -> str:
+        return self._id
 
     @property
     def name(self) -> str:
