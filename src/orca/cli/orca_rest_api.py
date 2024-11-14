@@ -1,10 +1,11 @@
 import logging
 from logging import Handler, LogRecord
-from typing import Any, Dict, List, cast
+from typing import Any, Dict, List, Optional, cast
 
 import socketio
+
+from orca.cli.socketio_mount import socketio_mount
 from fastapi import FastAPI, HTTPException
-from fastapi_socketio import SocketManager
 import asyncio
 
 from orca.cli.orca_api import  OrcaApi
@@ -13,30 +14,7 @@ import uvicorn
 
 orca_api: OrcaApi = OrcaApi()
 
-def socketio_mount(
-    app: FastAPI,
-    async_mode: str = "asgi",
-    mount_path: str = "/socket.io/",
-    socketio_path: str = "socket.io",
-    logger: bool = False,
-    engineio_logger: bool = False,
-    cors_allowed_origins="*",
-    **kwargs
-) -> socketio.AsyncServer:
-    """Mounts an async SocketIO app over an FastAPI app."""
 
-    sio = socketio.AsyncServer(async_mode=async_mode,
-                      cors_allowed_origins=cors_allowed_origins,
-                      logger=logger,
-                      engineio_logger=engineio_logger, **kwargs)
-
-    sio_app = socketio.ASGIApp(sio, socketio_path=socketio_path)
-
-    # mount
-    app.add_route(mount_path, route=sio_app, methods=["GET", "POST"]) # type: ignore
-    app.add_websocket_route(mount_path, sio_app) # type: ignore
-
-    return sio
 
 # sio: Any = socketio.AsyncServer(async_mode="asgi")
 # socket_app = socketio.ASGIApp(sio)
@@ -46,16 +24,51 @@ sio = socketio_mount(app)
 # socket_manager = SocketManager(app=app, cors_allowed_origins="*", logger=True, engineio_logger=True)
 
 class SocketIOHandler(Handler):
-    """A logging handler that emits records via SocketIO."""
+    """A logging handler that emits records via Socket.IO."""
 
-    async def emit(self, record: LogRecord) -> None:
-        """Emit a log record via SocketIO."""
+    def __init__(self, sio: socketio.AsyncServer):
+        super().__init__()
+        self.sio = sio
+
+    def emit(self, record: LogRecord) -> None:
+        """Emit a log record via Socket.IO."""
+        
         try:
-            await sio.emit('logMessage', {'data': self.format(record)})
+            message = {'data': self.format(record)}
+            # Use Socket.IO's built-in background task function
+            print(f"Sending log message: {message}")
+            self.sio.start_background_task(self._send_log_message, message)
         except Exception as e:
             print(f"Error sending log message: {e}")
 
+    async def _send_log_message(self, message: dict) -> None:
+        """Coroutine to send log message via Socket.IO."""
+        try:
+            await self.sio.emit('logMessage', message, namespace='/logging')
+        except Exception as e:
+            print(f"Failed to emit log message: {e}")
 
+# class SocketIOHandler(Handler):
+#     """A logging handler that emits records via SocketIO."""
+#     def __init__(self, sio: socketio.AsyncServer):
+#         super().__init__()
+#         self._sio = sio
+#         self.loop = asyncio.new_event_loop() 
+#         # self.loop = asyncio.get_event_loop()
+
+#     def emit(self, record):
+#         self.format(record)
+#         self.loop.create_task( self._async_emit(record.message))
+
+#     async def _async_emit(self, message):
+#         await self._sio.emit('logMessage', {'data': message}, namespace='/logging') # await my_async_write_function(message)
+
+#     def close(self) -> None:
+#         self.loop.run_until_complete(asyncio.gather(*asyncio.all_tasks(self.loop)))
+#         self.loop.close()
+
+
+socketio_handler = SocketIOHandler(sio)
 
 @sio.on('connect', namespace='/logging') # type: ignore
 async def handle_connect(sid, environ) -> None:
@@ -66,7 +79,7 @@ async def handle_connect(sid, environ) -> None:
 
 @sio.on('message', namespace='/logging') # type: ignore
 async def handle_test(sid, data) -> None:
-    await sio.emit('logMessage', {'data': 'Test response'}, namespace='/logging', room=sid)
+    await sio.emit('logMessage', {'data': 'Test response'}, namespace='/logging')
 
 @sio.on('disconnect', namespace='/logging') # type: ignore
 async def handle_disconnect(sid) -> None:
@@ -168,11 +181,8 @@ async def get_running_methods() -> Dict[str, Any]:
     return {"methods": running_methods}
 
 
-@app.get('/get_method_recipe_input_labwares')
-def get_method_recipe_input_labwares(data: Dict[str, Any]) -> Dict[str, Any]:
-    method_name = data.get('methodName')
-    if not method_name:
-        raise HTTPException(400, 'Method name is required')
+@app.get("/get_method_recipe_input_labwares/{method_name}")
+def get_method_recipe_input_labwares(method_name: str) -> Dict[str, Any]:
     method_recipe = orca_api.get_method_recipes()[method_name]
     labware_inputs: List[str] =  []
     any_count: int = 0
@@ -186,11 +196,8 @@ def get_method_recipe_input_labwares(data: Dict[str, Any]) -> Dict[str, Any]:
             raise TypeError(f"Labware {labware} is not a recognized labware template type")
     return {"inputLabwares": labware_inputs}
 
-@app.get('/get_method_recipe_output_labwares')
-def get_method_recipe_output_labwares(data: Dict[str, Any]) -> Dict[str, Any]:
-    method_name = data.get('methodName')
-    if not method_name:
-        raise HTTPException(status_code=400, detail="Method name is required.")
+@app.get("/get_method_recipe_output_labwares/{method_name}")
+def get_method_recipe_output_labwares(method_name: str) -> Dict[str, Any]:
     method_recipe = orca_api.get_method_recipes()[method_name]
     labware_outputs: List[str] =  []
     any_count: int = 0
@@ -246,20 +253,13 @@ async def get_available_drivers_info() -> Dict[str, Any]:
     drivers = orca_api.get_available_drivers_info()
     return {"availableDriversInfo": drivers}
 
-@app.post("/install_driver")
-async def install_driver(data: Dict[str, Any]) -> Dict[str, str]:
-    driver_name = data.get("driverName")
-    if driver_name is None:
-        raise HTTPException(status_code=400, detail="Driver name is required.")
-    driver_repo_url = data.get("driverRepoUrl")
-    orca_api.install_driver(driver_name, driver_repo_url)
+@app.get("/install_driver/{driver_name}")
+async def install_driver(driver_name: str, driverRepoUrl: Optional[str]) -> Dict[str, str]:
+    orca_api.install_driver(driver_name, driverRepoUrl)
     return {"message": f"Driver '{driver_name}' installed successfully."}
 
-@app.post("/uninstall_driver")
-async def uninstall_driver(data: Dict[str, Any]) -> Dict[str, str]:
-    driver_name = data.get("driverName")
-    if driver_name is None:
-        raise HTTPException(status_code=400, detail="Driver name is required.")
+@app.post("/uninstall_driver/{driver_name}")
+async def uninstall_driver(driver_name: str) -> Dict[str, str]:
     orca_api.uninstall_driver(driver_name)
     return {"message": f"Driver '{driver_name}' uninstalled successfully."}
 
@@ -276,9 +276,7 @@ async def stop_server() -> None:
     uvicorn_server.should_exit = True
 
 # Custom logging setup
-def setup_logging() -> None:
-    logging.basicConfig(level=logging.DEBUG)
-    logging.info("Logging setup complete")
+
 
 # Uvicorn server instance for graceful shutdown
 # uvicorn_server = uvicorn.Server(
@@ -291,6 +289,16 @@ def setup_logging() -> None:
 #     handler.setLevel(logging.DEBUG)
 #     handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
 #     logger.addHandler(handler)
+def setup_logging() -> None:
+    logger = logging.getLogger()
+    logger.setLevel(logging.DEBUG)
+
+    # Clear existing handlers to avoid duplicates
+    if not any(isinstance(h, type(socketio_handler)) for h in logger.handlers):
+        logger.handlers = []  # Remove all existing handlers
+        logger.addHandler(socketio_handler)
+        logger.addHandler(logging.StreamHandler())
+        print("SocketIOHandler registered with the logger")
 
 if __name__ == "__main__":
     setup_logging()
