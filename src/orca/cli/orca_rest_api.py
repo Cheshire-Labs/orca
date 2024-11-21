@@ -253,13 +253,20 @@ async def get_available_drivers_info() -> Dict[str, Any]:
     drivers = orca_api.get_available_drivers_info()
     return {"availableDriversInfo": drivers}
 
-@app.get("/install_driver/{driver_name}")
-async def install_driver(driver_name: str, driverRepoUrl: Optional[str]) -> Dict[str, str]:
-    orca_api.install_driver(driver_name, driverRepoUrl)
+@app.post("/install_driver/")
+async def install_driver(data: Dict[str, Any]) -> Dict[str, str]:
+    driver_name = data.get("driverName", None)
+    driver_repo_url = data.get("driverRepoUrl", None)
+    if driver_name is None:
+        raise HTTPException(status_code=400, detail="Driver name is required.")
+    orca_api.install_driver(driver_name, driver_repo_url)
     return {"message": f"Driver '{driver_name}' installed successfully."}
 
-@app.post("/uninstall_driver/{driver_name}")
-async def uninstall_driver(driver_name: str) -> Dict[str, str]:
+@app.post("/uninstall_driver")
+async def uninstall_driver(data: Dict[str, Any]) -> Dict[str, str]:
+    driver_name = data.get("driverName", None)
+    if driver_name is None:
+        raise HTTPException(status_code=400, detail="Driver name is required.")
     orca_api.uninstall_driver(driver_name)
     return {"message": f"Driver '{driver_name}' uninstalled successfully."}
 
