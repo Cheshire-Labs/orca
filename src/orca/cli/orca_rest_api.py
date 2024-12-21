@@ -5,7 +5,7 @@ from logging import Handler, LogRecord
 from typing import Any, Dict, List, Optional, cast
 
 from fastapi import FastAPI, HTTPException
-import socketio
+import socketio # type: ignore
 import uvicorn
 
 from orca.cli.socketio_mount import socketio_mount
@@ -329,7 +329,7 @@ class UvicornServer(uvicorn.Server):
     def stop(self):
         self.should_exit = True
         if self.thread:
-            self.thread.should_abort_immediately = True
+            self.thread.should_abort_immediately = True # type: ignore
             self.thread = None
 
 
