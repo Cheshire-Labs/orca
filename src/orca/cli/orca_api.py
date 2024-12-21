@@ -16,11 +16,11 @@ class OrcaApi:
             raise ValueError("An orca configuration file has not been initialized.  Please load a configuration file.")
         return self.__orca
     
-    def __init__(self) -> None:
+    def __init__(self, 
+                 available_drivers_registry: str = "https://raw.githubusercontent.com/Cheshire-Labs/orca-extensions/refs/heads/main/drivers.json", 
+                 installed_registry_filepath: str = "driver_manager/drivers.json") -> None:
         self.__orca: Optional[OrcaCore] = None
-        
-        available_drivers_registry: str = "https://raw.githubusercontent.com/Cheshire-Labs/orca-extensions/refs/heads/main/drivers.json"
-        installed_registry = InstalledDriverRegistry("driver_manager/drivers.json")
+        installed_registry = InstalledDriverRegistry(installed_registry_filepath)
         self._driver_manager = DriverManager(
             installed_registry,
             DriverLoader(), 
