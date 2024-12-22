@@ -1,14 +1,14 @@
 import asyncio
 import logging
 from orca.resource_models.base_resource import Equipment
-from orca.drivers.transporter_interfaces import ITransporterDriver
+from orca_driver_interface.transporter_interfaces import ITransporterDriver
 from orca.resource_models.location import Location
 from typing import List, Optional
 from orca.resource_models.labware import Labware
 
 
 class TransporterEquipment(Equipment):
-    def __init__(self, name: str, driver: ITransporterDriver):
+    def __init__(self, name: str, driver: ITransporterDriver) -> None:
         super().__init__(name, driver)
         self._driver: ITransporterDriver = driver
         self._labware: Optional[Labware] = None

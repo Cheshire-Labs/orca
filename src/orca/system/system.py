@@ -1,9 +1,10 @@
 from abc import ABC, abstractmethod
+from types import MappingProxyType
 from typing import Dict, List
 import uuid
 from orca.resource_models.location import Location
 from orca.resource_models.resource_pool import EquipmentResourcePool
-from orca.drivers.transporter_resource import TransporterEquipment
+from orca.resource_models.transporter_resource import TransporterEquipment
 from orca.resource_models.base_resource import Equipment, IResource
 
 from orca.resource_models.labware import Labware, LabwareTemplate
@@ -83,7 +84,7 @@ class ISystem(ISystemInfo,
     @property
     @abstractmethod
     def system_map(self) -> SystemMap:
-        return self.system.system_map
+        raise NotImplementedError
 
 class System(ISystem):
     def __init__(self, 
@@ -193,11 +194,17 @@ class System(ISystem):
     def add_labware_thread_template(self, thread: ThreadTemplate) -> None:
         self._templates.add_labware_thread_template(thread)
 
+    def get_method_templates(self) -> MappingProxyType[str, MethodTemplate]:
+        return self._templates.get_method_templates()
+
     def get_method_template(self, name: str) -> MethodTemplate:
         return self._templates.get_method_template(name)
     
     def add_method_template(self, method: MethodTemplate) -> None:
         self._templates.add_method_template(method)
+
+    def get_workflow_templates(self) -> MappingProxyType[str, WorkflowTemplate]:
+        return self._templates.get_workflow_templates()
 
     def get_workflow_template(self, name: str) -> WorkflowTemplate:
         return self._templates.get_workflow_template(name)
@@ -205,8 +212,8 @@ class System(ISystem):
     def add_workflow_template(self, workflow: WorkflowTemplate) -> None:
         self._templates.add_workflow_template(workflow)
 
-    def get_workflow(self, name: str) -> Workflow:
-        return self._workflow_registry.get_workflow(name)
+    def get_workflow(self, id: str) -> Workflow:
+        return self._workflow_registry.get_workflow(id)
     
     def add_workflow(self, workflow: Workflow) -> None:
         self._workflow_registry.add_workflow(workflow)
@@ -220,8 +227,8 @@ class System(ISystem):
     def add_thread(self, labware_thread: LabwareThread) -> None:
         self._thread_manager.add_thread(labware_thread)
 
-    def get_method(self, name: str) -> Method:
-        return self._workflow_registry.get_method(name)
+    def get_method(self, id: str) -> Method:
+        return self._workflow_registry.get_method(id)
     
     def add_method(self, method: Method) -> None:
         self._workflow_registry.add_method(method)
@@ -240,6 +247,9 @@ class System(ISystem):
     
     async def start_all_threads(self) -> None:
         return await self._thread_manager.start_all_threads()
+
+    def stop_all_threads(self) -> None:
+        return self._thread_manager.stop_all_threads()
     
     async def initialize_all(self) -> None:
         return await self._resources.initialize_all()

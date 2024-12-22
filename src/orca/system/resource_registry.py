@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 import asyncio
 from orca.resource_models.base_resource import Equipment, IInitializableResource, IResource
 from orca.resource_models.resource_pool import EquipmentResourcePool
-from orca.drivers.transporter_resource import TransporterEquipment
+from orca.resource_models.transporter_resource import TransporterEquipment
 
 
 from typing import Dict, List

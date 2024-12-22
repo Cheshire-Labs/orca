@@ -8,8 +8,8 @@ from orca.resource_models.location import IResourceLocationObserver, Location
 import networkx as nx # type: ignore
 import matplotlib.pyplot as plt
 
-from orca.drivers.plate_pad import PlatePad
-from orca.drivers.transporter_resource import TransporterEquipment
+from orca.resource_models.plate_pad import PlatePad
+from orca.resource_models.transporter_resource import TransporterEquipment
 from orca.system.resource_registry import IResourceRegistry
 from orca.system.resource_registry import IResourceRegistryObesrver
 
@@ -205,7 +205,7 @@ class SystemMap(ILocationRegistry, IResourceLocator, IResourceLocationObserver, 
             if isinstance(resource, TransporterEquipment):
                 self.add_transporter(resource)
 
-    def location_notify(self, event: str, location: Location, resource: IResource) -> None:
+    def location_notify(self, event: str, location: Location, resource: ILabwarePlaceable) -> None:
         if event == "resource_set":
             if isinstance(resource, ILabwarePlaceable):
                 self._equipment_map[resource.name] = location
@@ -219,8 +219,10 @@ class SystemMap(ILocationRegistry, IResourceLocator, IResourceLocationObserver, 
             if transporter.labware is None:
                 available_edges.append(edge)
         available_graph = _NetworkXHandler()
-        [available_graph.add_node(name, nodedata["location"]) for name, nodedata in subgraph.get_nodes().items()]
-        [available_graph.add_edge(source, target, data["transporter"]) for source, target, data in available_edges]
+        for name, nodedata in subgraph.get_nodes().items(): 
+            available_graph.add_node(name, nodedata["location"])
+        for source, target, data in available_edges:
+            available_graph.add_edge(source, target, data["transporter"]) 
         return available_graph
 
 
