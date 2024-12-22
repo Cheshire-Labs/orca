@@ -68,13 +68,10 @@ def driver_manager(temp_dir: str, mock_available_drivers: Dict[str, Any], mock_i
     available_driver_registry = os.path.join(temp_dir, 'mock_available_drivers.json')
     with open(available_driver_registry, 'w') as f:
         json.dump(mock_available_drivers, f)
-    json_installed_drivers = os.path.join(temp_dir, 'mock_installed_drivers.json')
-    with open(json_installed_drivers, 'w') as f:
-        json.dump(mock_installed_drivers, f)
 
     os.makedirs(os.path.join(temp_dir, 'test_driver'))
     shutil.copyfile(os.path.join(os.path.dirname(__file__), 'resources', 'test_driver.py'), os.path.join(temp_dir, 'test_driver', 'test_driver.py'))
-    installed_registry = InstalledDriverRegistry(json_installed_drivers)
+    installed_registry = InstalledDriverRegistry()
     installer = DriverInstaller(installed_registry)
     loader = DriverLoader()
     driver_registry = LocalAvailableDriverRegistry(available_driver_registry)
