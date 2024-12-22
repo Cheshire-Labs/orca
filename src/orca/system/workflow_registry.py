@@ -24,7 +24,7 @@ class WorkflowFactory:
 
 class IWorkflowRegistry(ABC):
     @abstractmethod
-    def get_workflow(self, name: str) -> Workflow:
+    def get_workflow(self, id: str) -> Workflow:
         raise NotImplementedError
 
     @abstractmethod
@@ -36,7 +36,7 @@ class IWorkflowRegistry(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_method(self, name: str) -> Method:
+    def get_method(self, id: str) -> Method:
         raise NotImplementedError
 
     @abstractmethod
@@ -54,24 +54,24 @@ class WorkflowRegistry(IWorkflowRegistry):
         self._workflows: Dict[str, Workflow] = {}
         self._methods: Dict[str, Method] = {}
 
-    def get_workflow(self, name: str) -> Workflow:
-        return self._workflows[name]
+    def get_workflow(self, id: str) -> Workflow:
+        return self._workflows[id]
     
     def add_workflow(self, workflow: Workflow) -> None:
-        if workflow.name in self._workflows.keys():
-            raise KeyError(f"Workflow {workflow.name} is already defined in the system.  Each workflow must have a unique name")
-        self._workflows[workflow.name] = workflow
+        if workflow.id in self._workflows.keys():
+            raise KeyError(f"Workflow {workflow.id} is already defined in the system.  Each workflow must have a unique id")
+        self._workflows[workflow.id] = workflow
     
     def create_workflow_instance(self, template: WorkflowTemplate) -> Workflow:
         return self._workflow_factory.create_instance(template)
     
-    def get_method(self, name: str) -> Method:
-        return self._methods[name]
+    def get_method(self, id: str) -> Method:
+        return self._methods[id]
     
     def add_method(self, method: Method) -> None:
-        if method.name in self._methods.keys():
-            raise KeyError(f"Method {method.name} is already defined in the system.  Each method must have a unique name")
-        self._methods[method.name] = method
+        if method.id in self._methods.keys():
+            raise KeyError(f"Method {method.id} is already defined in the system.  Each method must have a unique id")
+        self._methods[method.id] = method
 
     def create_method_instance(self, template: MethodTemplate) -> Method:
         # TODO: May need to delete this method and rexamine the design for method access

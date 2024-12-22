@@ -2,8 +2,8 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
 import logging
-from orca.drivers.driver_interfaces import IDriver
-from orca.drivers.driver_interfaces import ILabwarePlaceableDriver
+from orca_driver_interface.driver_interfaces import IDriver
+from orca_driver_interface.driver_interfaces import ILabwarePlaceableDriver
 from orca.resource_models.labware import Labware
 
 class ResourceUnavailableError(Exception):

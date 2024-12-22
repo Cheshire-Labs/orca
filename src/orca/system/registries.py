@@ -1,3 +1,4 @@
+from types import MappingProxyType
 from orca.resource_models.base_resource import IResource
 from orca.resource_models.location import Location
 from orca.system.labware_registry_interfaces import ILabwareRegistry, ILabwareTemplateRegistry
@@ -86,8 +87,14 @@ class TemplateRegistry(IThreadTemplateRegistry, IWorkflowTemplateRegistry, IMeth
     def get_labware_thread_template(self, name: str) -> ThreadTemplate:
         return self._labware_thread_templates[name]
 
+    def get_workflow_templates(self) -> MappingProxyType[str, WorkflowTemplate]:
+        return MappingProxyType(self._workflow_templates)
+
     def get_workflow_template(self, name: str) -> WorkflowTemplate:
         return self._workflow_templates[name]
+    
+    def get_method_templates(self) ->  MappingProxyType[str, MethodTemplate]:
+        return MappingProxyType(self._method_templates)
     
     def get_method_template(self, name: str) -> MethodTemplate:
         return self._method_templates[name]
