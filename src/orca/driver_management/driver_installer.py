@@ -1,17 +1,12 @@
 from abc import ABC
 import importlib
+import importlib.metadata
 import subprocess
 from pydantic import BaseModel, Field
 import json
 import os
 import sys
-# Conditional import for tomllib/tomli
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    import tomli as tomllib  # Alias tomli as tomllib for compatibility
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse
 import requests
 
 from orca_driver_interface.driver_interfaces import IDriver
@@ -105,48 +100,41 @@ class InstalledDriverRegistry:
     def installed_drivers(self) -> Dict[str, InstalledDriverInfo]:
         return self._installed_drivers
 
-    def __init__(self, installed_registry_filepath: str) -> None:
-        self._installed_registry_filepath = installed_registry_filepath
-        self._create_registry_if_not_exists()
-        self._installed_drivers: Dict[str, InstalledDriverInfo] = {}
-        self._load_installed_drivers()
-    
-    def _create_registry_if_not_exists(self) -> None:
-        directory = os.path.dirname(self._installed_registry_filepath)
-        if directory and not os.path.exists(directory):
-            os.makedirs(directory)
-
-        if not os.path.exists(self._installed_registry_filepath):
-            with open(self._installed_registry_filepath, 'w') as file:
-                json.dump({}, file)
+    def __init__(self) -> None:
+        self._prefix = "cl-orca-driver-"
+        self.refresh()
     
     def get_installed_driver_info(self, driver_name: str) -> InstalledDriverInfo:
         return self.installed_drivers[driver_name]
 
-    def save_installed_drivers(self) -> None:
-        json_dump: Dict[str, Any] = {name: info.model_dump() for name, info in self._installed_drivers.items()}
-        with open(self._installed_registry_filepath, 'w') as file:
-            json.dump(json_dump, file, indent=2)
-
     def is_driver_installed(self, driver_name: str) -> bool:
         return driver_name in self._installed_drivers
+    
+    def refresh(self) -> None:
+        self._installed_drivers: Dict[str, InstalledDriverInfo] = {}
+        self._discover_installed_drivers()
 
-    def add_driver(self, driver_name: str, driver_info: InstalledDriverInfo) -> None:
-        self._installed_drivers[driver_name] = driver_info
-        self.save_installed_drivers()
+    def _discover_installed_drivers(self) -> None:
+        for dist in importlib.metadata.distributions():
+            if dist.metadata["Name"].startswith(self._prefix):
+                driver_name = dist.metadata["Name"].replace(self._prefix, "")
+                
+                # get the driver info file
+                driver_info_path = str(dist.locate_file("driver.json"))
+                driver_info: Dict[str, Any] = {}
+                
+                if os.path.isfile(driver_info_path):
+                    with open(driver_info_path, "r") as f:
+                        driver_info = json.load(f)
 
-    def remove_driver(self, driver_name: str) -> None:
-        if driver_name in self._installed_drivers:
-            del self._installed_drivers[driver_name]
-            self.save_installed_drivers()
-
-    def _load_installed_drivers(self) -> None:
-        with open(self._installed_registry_filepath, 'r') as file:
-            installed_drivers_json = json.load(file)
-        for driver_name, driver_info in installed_drivers_json.items():
-            driver_info = InstalledDriverInfo(**driver_info)
-            self._installed_drivers[driver_name] = driver_info
-         
+                installed_driver_info = InstalledDriverInfo(
+                    name=driver_info.get("name", driver_name),
+                    description=driver_info.get("description", ""),
+                    driverPath=driver_info.get("driverPath", f"{self._prefix}{driver_name}.driver"),
+                    driverClass=driver_info.get("driverClass", f"{driver_name.capitalize()}Driver"),
+                    packageName=dist.name
+                )
+                self._installed_drivers[installed_driver_info.name] = installed_driver_info         
 
 class DriverInstaller:
     '''
@@ -159,9 +147,6 @@ class DriverInstaller:
         '''
         Installs the driver using pip and registers it in the installed registry.
         '''
-        owner, repo, branch = self._parse_github_url(driver_repo_url)
-        driver_infos = self._get_driver_infos(owner, repo, branch)
-        package_name = self._get_package_name(owner, repo, branch)
         try:
             # Install from the given repository URL (e.g., GitHub)
             install_command = [sys.executable, "-m", "pip", "install", f"git+{driver_repo_url}"]
@@ -171,67 +156,13 @@ class DriverInstaller:
             print(f"Driver '{driver_name}' installed successfully.")
 
             
-            # Add the driver to the installed registry
-            for driver_info in driver_infos:
-                installed_driver_info = InstalledDriverInfo(packageName=package_name, **driver_info.__dict__)
-                self._installed_registry.add_driver(driver_info.name, installed_driver_info)
+            # refresh installed drivers
+            self._installed_registry.refresh()
 
         except subprocess.CalledProcessError as e:
             print(f"Error occurred during installation of driver '{driver_name}': {e}")
             raise
 
-    def _get_driver_infos(self, owner:str, repo: str, branch: str = "main", driver_info_filename: str = "driver.json") -> List[DriverInfo]:
-        driver_info_url = f"https://raw.githubusercontent.com/{owner}/{repo}/refs/heads/{branch}/{driver_info_filename}"
-
-        response = requests.get(driver_info_url)
-        if response.status_code != 200:
-            raise Exception(f"Failed to download {driver_info_filename} from {driver_info_url}")
-        
-        driver_info_json =json.loads(response.text)
-        if isinstance(driver_info_json, list):
-            driver_info = [DriverInfo(**info_object) for info_object in driver_info_json]
-        else:
-            driver_info = [DriverInfo(**driver_info_json)]
-        
-        return driver_info
-
-    def _get_package_name(self, owner: str, repo: str, branch: str = "main", package_filename: str = "pyproject.toml") -> str:
-        package_file_url = f"https://raw.githubusercontent.com/{owner}/{repo}/refs/heads/{branch}/{package_filename}"
-
-        response = requests.get(package_file_url)
-        if response.status_code != 200:
-            raise Exception(f"Failed to download {package_filename} from {package_file_url}")
-        
-        # Parse the pyproject.toml content
-        pyproject_content = response.text
-        pyproject_data = tomllib.loads(pyproject_content)
-        package_name = pyproject_data.get('project', {}).get('name', None)
-    
-        if not package_name:
-            raise Exception("Package name not found in {package_filename}")
-        
-        return package_name
-
-    def _parse_github_url(self, github_repo_url: str):
-        # Handle case where the branch is specified after '@'
-        if '@' in github_repo_url:
-            repo_url, branch = github_repo_url.split('@')
-        else:
-            repo_url = github_repo_url
-            branch = "main"  # Default to 'main' branch if not specified
-        
-        # Parse the GitHub URL to extract the owner and repo name
-        parsed_url = urlparse(repo_url)
-        path_parts = parsed_url.path.strip('/').split('/')
-        
-        if len(path_parts) < 2:
-            raise ValueError(f"Invalid GitHub repository URL: {github_repo_url}")
-        
-        # Extract the owner and repo name
-        owner = path_parts[0]
-        repo = path_parts[1].replace('.git', '')  # Remove '.git' from repo name if present
-    
-        return owner, repo, branch
     
     def uninstall_driver(self, driver_name: str) -> None:
         '''
@@ -251,7 +182,7 @@ class DriverInstaller:
         except subprocess.CalledProcessError as e:
             print(f"Failed to uninstall driver '{driver_name}': {e}")
             raise
-        self._installed_registry.remove_driver(driver_name)
+        self._installed_registry.refresh()
 
 class DriverLoader:
     '''
