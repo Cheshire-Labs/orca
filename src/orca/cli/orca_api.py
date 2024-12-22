@@ -17,10 +17,9 @@ class OrcaApi:
         return self.__orca
     
     def __init__(self, 
-                 available_drivers_registry: str = "https://raw.githubusercontent.com/Cheshire-Labs/orca-extensions/refs/heads/main/drivers.json", 
-                 installed_registry_filepath: str = "driver_manager/drivers.json") -> None:
+                 available_drivers_registry: str = "https://raw.githubusercontent.com/Cheshire-Labs/orca-extensions/refs/heads/main/drivers.json") -> None:
         self.__orca: Optional[OrcaCore] = None
-        installed_registry = InstalledDriverRegistry(installed_registry_filepath)
+        installed_registry = InstalledDriverRegistry()
         self._driver_manager = DriverManager(
             installed_registry,
             DriverLoader(), 
