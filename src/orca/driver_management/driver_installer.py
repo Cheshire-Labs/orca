@@ -5,7 +5,11 @@ from pydantic import BaseModel, Field
 import json
 import os
 import sys
-import tomllib
+# Conditional import for tomllib/tomli
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib  # Alias tomli as tomllib for compatibility
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 import requests
