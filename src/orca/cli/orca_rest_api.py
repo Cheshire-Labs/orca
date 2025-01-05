@@ -3,7 +3,7 @@ import threading
 import asyncio
 import logging
 from logging import Handler, LogRecord
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Dict, List
 
 from fastapi import FastAPI, HTTPException
 import socketio  # type: ignore
@@ -31,7 +31,7 @@ class SocketIOHandler(Handler):
     def __init__(self, sio: socketio.AsyncServer):
         super().__init__()
         self.sio = sio
-        self.loop = None
+        self.loop: asyncio.AbstractEventLoop | None = None
 
     def emit(self, record: LogRecord) -> None:
         """Emit a log record via Socket.IO."""
@@ -40,6 +40,8 @@ class SocketIOHandler(Handler):
             message = {"data": self.format(record)}
             # Use Socket.IO's built-in background task function
             print(f"Sending log message: {message}")
+            if self.loop is None:
+                self.loop = asyncio.get_running_loop()
             asyncio.run_coroutine_threadsafe(self._send_log_message(message), self.loop)
             # self.sio.start_background_task(self._send_log_message, message)
         except Exception as e:
