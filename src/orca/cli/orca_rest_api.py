@@ -1,11 +1,12 @@
 import time
 import threading
+import asyncio
 import logging
 from logging import Handler, LogRecord
 from typing import Any, Dict, List, Optional, cast
 
 from fastapi import FastAPI, HTTPException
-import socketio # type: ignore
+import socketio  # type: ignore
 import uvicorn
 
 from orca.cli.socketio_mount import socketio_mount
@@ -30,6 +31,7 @@ class SocketIOHandler(Handler):
     def __init__(self, sio: socketio.AsyncServer):
         super().__init__()
         self.sio = sio
+        self.loop = None
 
     def emit(self, record: LogRecord) -> None:
         """Emit a log record via Socket.IO."""
@@ -38,7 +40,8 @@ class SocketIOHandler(Handler):
             message = {"data": self.format(record)}
             # Use Socket.IO's built-in background task function
             print(f"Sending log message: {message}")
-            self.sio.start_background_task(self._send_log_message, message)
+            asyncio.run_coroutine_threadsafe(self._send_log_message(message), self.loop)
+            # self.sio.start_background_task(self._send_log_message, message)
         except Exception as e:
             print(f"Error sending log message: {e}")
 
@@ -48,6 +51,15 @@ class SocketIOHandler(Handler):
             await self.sio.emit("logMessage", message, namespace="/logging")
         except Exception as e:
             print(f"Failed to emit log message: {e}")
+
+
+async def send_response(message: str) -> Dict[str, str]:
+    try:
+        await sio.emit("logMessage", {"data": message}, namespace="/logging")
+        return {"message": message}
+    except Exception as e:
+        print(f"Error sending response: {e}")
+        return {"message": message}  # Still return even if Socket.IO fails
 
 
 # class SocketIOHandler(Handler):
@@ -76,8 +88,10 @@ socketio_handler = SocketIOHandler(sio)
 @sio.on("connect", namespace="/logging")  # type: ignore
 async def handle_connect(sid, environ) -> None:
     print(f"Client connected: {sid}")
+    socketio_handler.loop = asyncio.get_running_loop()
     # handler = SocketIOHandler()
-    # orca_api.set_logging_destination(handler, "INFO")
+    orca_api.set_logging_destination(socketio_handler, "INFO")
+    logging.info("Logging connected to Orca server")
     # await socket_manager.emit('logMessage', {'data': 'Logging connected to Orca server'}, namespace='/logging')
 
 
@@ -98,7 +112,7 @@ async def load(data: Dict[str, Any]) -> Dict[str, str]:
     if config_file is None:
         raise HTTPException(status_code=400, detail="Config file is required.")
     orca_api.load(config_file)
-    return {"message": "Configuration loaded successfully."}
+    return await send_response("Configuration loaded successfully.")
 
 
 @app.post("/init")
@@ -107,7 +121,7 @@ async def init(data: Dict[str, Any]):
     resource_list = data.get("resourceList", [])
     options = data.get("options", {})
     orca_api.init(config_file=config_file, resource_list=resource_list, options=options)
-    return {"message": "Initialization complete."}
+    return await send_response("Initialization complete.")
 
 
 @app.post("/run_workflow")
@@ -263,7 +277,7 @@ def get_transporters() -> Dict[str, Any]:
 @app.post("/stop")
 async def stop() -> Dict[str, str]:
     orca_api.stop()
-    return {"message": "Orca stopped."}
+    return await send_response("Orca stopped.")
 
 
 @app.get("/get_installed_drivers_info")
@@ -287,7 +301,7 @@ async def install_driver(data: Dict[str, Any]) -> Dict[str, str]:
     if driver_name is None:
         raise HTTPException(status_code=400, detail="Driver name is required.")
     orca_api.install_driver(driver_name, driver_repo_url)
-    return {"message": f"Driver '{driver_name}' installed successfully."}
+    return await send_response(f"Driver '{driver_name}' installed successfully.")
 
 
 @app.post("/uninstall_driver")
@@ -296,15 +310,22 @@ async def uninstall_driver(data: Dict[str, Any]) -> Dict[str, str]:
     if driver_name is None:
         raise HTTPException(status_code=400, detail="Driver name is required.")
     orca_api.uninstall_driver(driver_name)
-    return {"message": f"Driver '{driver_name}' uninstalled successfully."}
+    return await send_response(f"Driver '{driver_name}' uninstalled successfully.")
 
 
 @app.get("/shutdown")
 async def shutdown() -> Dict[str, str]:
     """API route to shut down the server."""
-    logging.info("Shutdown request received, shutting down Orca server")
-    uvicorn_server.stop()
-    return {"message": "Server shutdown: success"}
+    try:
+        response = await send_response("Server shutdown: success")
+        logging.info("Shutdown request received, shutting down Orca server")
+        loop = asyncio.get_running_loop()
+        # Schedule the server shutdown
+        loop.call_later(2, uvicorn_server.stop)
+        return response
+    except Exception as e:
+        logging.error(f"Error sending shutdown response: {e}")
+        return await send_response("Server shutdown: failed")
 
 
 # Uvicorn server instance for graceful shutdown
@@ -329,7 +350,7 @@ class UvicornServer(uvicorn.Server):
     def stop(self):
         self.should_exit = True
         if self.thread:
-            self.thread.should_abort_immediately = True # type: ignore
+            self.thread.should_abort_immediately = True  # type: ignore
             self.thread = None
 
 
