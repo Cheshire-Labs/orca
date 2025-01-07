@@ -90,7 +90,6 @@ socketio_handler = SocketIOHandler(sio)
 @sio.on("connect", namespace="/logging")  # type: ignore
 async def handle_connect(sid, environ) -> None:
     print(f"Client connected: {sid}")
-    socketio_handler.loop = asyncio.get_running_loop()
     # handler = SocketIOHandler()
     orca_api.set_logging_destination(socketio_handler, "INFO")
     logging.info("Logging connected to Orca server")
