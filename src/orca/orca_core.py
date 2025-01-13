@@ -11,7 +11,7 @@ from orca.resource_models.base_resource import IInitializableResource
 from orca.resource_models.labware import LabwareTemplate
 from orca.resource_models.location import Location
 from orca.system.system import ISystem
-from orca.yml_config_builder.config_file import ConfigFile
+from orca.yml_config_builder.config_file import ConfigFile, SystemConfig
 from orca.yml_config_builder.template_factories import ConfigToSystemBuilder
 from orca.yml_config_builder.resource_factory import IResourceFactory, ResourceFactory
 
@@ -56,8 +56,8 @@ class OrcaCore:
         return self._system
     
     @property
-    def config(self) -> ConfigFile:
-        return self._config
+    def system_config(self) -> SystemConfig:
+        return self._config._system_config
 
     async def initialize(self,
                    resource_list: Optional[List[str]] = None,

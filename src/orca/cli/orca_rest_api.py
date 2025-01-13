@@ -157,6 +157,11 @@ async def run_method(data: Dict[str, Any]) -> Dict[str, Any]:
     return {"methodId": method_id}
 
 
+@app.get("/get_deployment_stages")
+async def get_deployment_stages() -> Dict[str, Any]:
+    deployment_stages = orca_api.get_deployment_stages()
+    return {"deploymentStages": deployment_stages}
+
 @app.get("/get_workflow_recipes")
 async def get_workflow_recipes() -> Dict[str, Any]:
     recipes = orca_api.get_workflow_recipes()
