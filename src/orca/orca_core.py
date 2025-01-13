@@ -30,19 +30,26 @@ class OrcaCore:
                  log_destination: Optional[Union[str, logging.Handler]] = None
                  ) -> None:
         self.set_logging_destination(log_destination)
-        self._config = ConfigFile(config_filepath)
-        self._config.set_command_line_options(options)
-        builder = ConfigToSystemBuilder()
+
+        self._system_builder = ConfigToSystemBuilder()
         if scripting_registry is not None:
-            builder.set_script_registry(scripting_registry)
+            self._system_builder.set_script_registry(scripting_registry)
         if resource_factory is None:
             absolute_path = os.path.abspath(config_filepath)
             directory_path = os.path.dirname(absolute_path)
             filepath_reconciler = FilepathReconciler(directory_path)
             resource_factory = ResourceFactory(driver_manager, filepath_reconciler)
-        builder.set_resource_factory(resource_factory)
-        self._system: ISystem = self._config.get_system(builder)
+        self._system_builder.set_resource_factory(resource_factory)
+        self._config = ConfigFile(config_filepath)
+        self._build_system(options)
         self._method_executor_registry: Dict[str, MethodExecutor] = {}
+
+    def _build_system(self, options: Dict[str, Any]) -> None:
+        # TODO: the system, builder, and config need to be refactored to manage stage deployment better
+        # TODO: when the deployment stage is and/or can be set needs to be more clearly defined, 
+        # but users need to be able to set the stage when creating workflow/method instances
+        self._config.set_command_line_options(options)
+        self._system: ISystem = self._config.get_system(self._system_builder)  
 
     @property
     def system(self) -> ISystem:
@@ -61,7 +68,8 @@ class OrcaCore:
                     init_fxns.append(resource.initialize)
             await asyncio.gather(*[f() for f in init_fxns])
 
-    def create_workflow_instance(self, workflow_name: str) -> str:
+    def create_workflow_instance(self, workflow_name: str, options: Dict[str, Any] = {}) -> str:
+        self._build_system(options)
         workflow_template = self._system.get_workflow_template(workflow_name)
         workflow = self._system.create_workflow_instance(workflow_template)
         self._system.add_workflow(workflow)
@@ -74,7 +82,12 @@ class OrcaCore:
         await workflow.start()
 
 
-    def create_method_instance(self, method_name: str, start_map: Dict[str, str], end_map: Dict[str, str]) -> str:
+    def create_method_instance(self, 
+                               method_name: str, 
+                               start_map: Dict[str, str], 
+                               end_map: Dict[str, str], 
+                               options: Dict[str, Any] = {}) -> str:
+        self._build_system(options)
         try:
             method_template = self._system.get_method_template(method_name)
         except KeyError:
@@ -114,7 +127,9 @@ class OrcaCore:
         
 
     def stop(self) -> None:
-        self._system.stop_all_threads()        
+        self._system.stop_all_threads()     
+
+    
 
        
 
