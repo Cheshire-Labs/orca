@@ -45,7 +45,7 @@ class OrcaApi:
                      options: Dict[str, Any] = {}) -> str:
         if config_file is not None:
             self.load(config_file)
-        instance_id = self._orca.create_workflow_instance(workflow_name)
+        instance_id = self._orca.create_workflow_instance(workflow_name, options)
         self._loop.create_task(self._orca.run_workflow(instance_id))
         return instance_id
         
@@ -60,7 +60,7 @@ class OrcaApi:
             self.load(config_file)
         start_map = json.loads(start_map_json)
         end_map = json.loads(end_map_json)
-        method_id = self._orca.create_method_instance(method_name, start_map, end_map)
+        method_id = self._orca.create_method_instance(method_name, start_map, end_map, options)
         self._loop.create_task(self._orca.run_method(method_id))
         return method_id
 
