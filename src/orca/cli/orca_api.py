@@ -41,12 +41,9 @@ class OrcaApi:
         asyncio.run(self._orca.initialize(resource_list, options))
 
     def get_deployment_stages(self) -> List[str]:
-        config_file_model = self._orca.config._config
+        config_file_model = self._orca.system_config
         variable_configs = config_file_model.config
-        if isinstance(variable_configs, ConfigModel):
-            return list(variable_configs.model_extra.keys())
-        return []
-
+        return list(variable_configs.model_extra.keys())
 
     def run_workflow(self, 
                      workflow_name: str, 
