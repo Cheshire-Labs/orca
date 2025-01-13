@@ -7,6 +7,7 @@ from orca.driver_management.driver_installer import  DriverInstaller, DriverLoad
 from orca.orca_core import OrcaCore
 from orca.system.method_executor import MethodTemplate
 from orca.system.system import WorkflowTemplate
+from orca.yml_config_builder.configs import ConfigModel
     
 class OrcaApi:
 
@@ -38,6 +39,14 @@ class OrcaApi:
             self.load(config_file)
 
         asyncio.run(self._orca.initialize(resource_list, options))
+
+    def get_deployment_stages(self) -> List[str]:
+        config_file_model = self._orca.config._config
+        variable_configs = config_file_model.config
+        if isinstance(variable_configs, ConfigModel):
+            return list(variable_configs.model_extra.keys())
+        return []
+
 
     def run_workflow(self, 
                      workflow_name: str, 

@@ -54,6 +54,10 @@ class OrcaCore:
     @property
     def system(self) -> ISystem:
         return self._system
+    
+    @property
+    def config(self) -> ConfigFile:
+        return self._config
 
     async def initialize(self,
                    resource_list: Optional[List[str]] = None,
