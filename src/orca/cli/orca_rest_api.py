@@ -3,104 +3,67 @@ import threading
 import asyncio
 import logging
 from logging import Handler, LogRecord
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Dict, List
 
 from fastapi import FastAPI, HTTPException
 import socketio  # type: ignore
 import uvicorn
 
-from orca.cli.socketio_mount import socketio_mount
+from orca.cli.socketio_mount import socketio_mount, get_socketio
 from orca.cli.orca_api import OrcaApi
 from orca.resource_models.labware import AnyLabwareTemplate, LabwareTemplate
-
+from orca.cli.logging_setup import (
+    setup_logging,
+    get_socketio_handler,
+    get_formatter,
+    orca_logger,
+    LOGGING_NAMESPACE,
+)
 
 orca_api: OrcaApi = OrcaApi()
 
 
-# sio: Any = socketio.AsyncServer(async_mode="asgi")
-# socket_app = socketio.ASGIApp(sio)
 app = FastAPI()
 sio = socketio_mount(app)
 
-# socket_manager = SocketManager(app=app, cors_allowed_origins="*", logger=True, engineio_logger=True)
-
-
-class SocketIOHandler(Handler):
-    """A logging handler that emits records via Socket.IO."""
-
-    def __init__(self, sio: socketio.AsyncServer):
-        super().__init__()
-        self.sio = sio
-        self.loop = None
-
-    def emit(self, record: LogRecord) -> None:
-        """Emit a log record via Socket.IO."""
-
-        try:
-            message = {"data": self.format(record)}
-            # Use Socket.IO's built-in background task function
-            print(f"Sending log message: {message}")
-            asyncio.run_coroutine_threadsafe(self._send_log_message(message), self.loop)
-            # self.sio.start_background_task(self._send_log_message, message)
-        except Exception as e:
-            print(f"Error sending log message: {e}")
-
-    async def _send_log_message(self, message: dict) -> None:
-        """Coroutine to send log message via Socket.IO."""
-        try:
-            await self.sio.emit("logMessage", message, namespace="/logging")
-        except Exception as e:
-            print(f"Failed to emit log message: {e}")
+socketio_handler = get_socketio_handler()
 
 
 async def send_response(message: str) -> Dict[str, str]:
     try:
-        await sio.emit("logMessage", {"data": message}, namespace="/logging")
+        record = logging.LogRecord(
+            name="root",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg=message,
+            args=(),
+            exc_info=None,
+        )
+        formatted_message = get_formatter().format(record)
+        await sio.emit(
+            "logMessage", {"data": formatted_message}, namespace=LOGGING_NAMESPACE
+        )
         return {"message": message}
     except Exception as e:
         print(f"Error sending response: {e}")
         return {"message": message}  # Still return even if Socket.IO fails
 
 
-# class SocketIOHandler(Handler):
-#     """A logging handler that emits records via SocketIO."""
-#     def __init__(self, sio: socketio.AsyncServer):
-#         super().__init__()
-#         self._sio = sio
-#         self.loop = asyncio.new_event_loop()
-#         # self.loop = asyncio.get_event_loop()
-
-#     def emit(self, record):
-#         self.format(record)
-#         self.loop.create_task( self._async_emit(record.message))
-
-#     async def _async_emit(self, message):
-#         await self._sio.emit('logMessage', {'data': message}, namespace='/logging') # await my_async_write_function(message)
-
-#     def close(self) -> None:
-#         self.loop.run_until_complete(asyncio.gather(*asyncio.all_tasks(self.loop)))
-#         self.loop.close()
-
-
-socketio_handler = SocketIOHandler(sio)
-
-
-@sio.on("connect", namespace="/logging")  # type: ignore
+@sio.on("connect", namespace=LOGGING_NAMESPACE)  # type: ignore
 async def handle_connect(sid, environ) -> None:
     print(f"Client connected: {sid}")
-    socketio_handler.loop = asyncio.get_running_loop()
-    # handler = SocketIOHandler()
     orca_api.set_logging_destination(socketio_handler, "INFO")
-    logging.info("Logging connected to Orca server")
+    orca_logger.info("Logging connected to Orca server")
     # await socket_manager.emit('logMessage', {'data': 'Logging connected to Orca server'}, namespace='/logging')
 
 
-@sio.on("message", namespace="/logging")  # type: ignore
+@sio.on("message", namespace=LOGGING_NAMESPACE)  # type: ignore
 async def handle_test(sid, data) -> None:
-    await sio.emit("logMessage", {"data": "Test response"}, namespace="/logging")
+    await sio.emit("logMessage", {"data": "Test response"}, namespace=LOGGING_NAMESPACE)
 
 
-@sio.on("disconnect", namespace="/logging")  # type: ignore
+@sio.on("disconnect", namespace=LOGGING_NAMESPACE)  # type: ignore
 async def handle_disconnect(sid) -> None:
     print(f"Client disconnected: {sid}")
 
@@ -134,6 +97,7 @@ async def run_workflow(data: Dict[str, Any]) -> Dict[str, Any]:
     workflow_id = orca_api.run_workflow(
         workflow_name=workflow_name, config_file=config_file, options=options
     )
+    await send_response(f"Workflow '{workflow_name}' started with ID {workflow_id}")
     return {"workflowId": workflow_id}
 
 
@@ -153,6 +117,7 @@ async def run_method(data: Dict[str, Any]) -> Dict[str, Any]:
         config_file=config_file,
         options=options,
     )
+    await send_response(f"Method '{method_name}' started with ID {method_id}")
     return {"methodId": method_id}
 
 
@@ -318,14 +283,14 @@ async def shutdown() -> Dict[str, str]:
     """API route to shut down the server."""
     try:
         response = await send_response("Server shutdown: success")
-        logging.info("Shutdown request received, shutting down Orca server")
+        orca_logger.info("Shutdown request received, shutting down Orca server")
         loop = asyncio.get_running_loop()
-        # Schedule the server shutdown
-        loop.call_later(2, uvicorn_server.stop)
+        loop.call_later(1, uvicorn_server.stop)
+
         return response
     except Exception as e:
-        logging.error(f"Error sending shutdown response: {e}")
-        return await send_response("Server shutdown: failed")
+        orca_logger.error("Error during shutdown: %s", e)
+        return {"message": f"Shutdown error: {str(e)}"}
 
 
 # Uvicorn server instance for graceful shutdown
@@ -359,26 +324,6 @@ uvicorn_server = UvicornServer(
         app=app, host="127.0.0.1", port=5000, log_level="debug", loop="asyncio"
     )
 )
-
-
-# Custom logging setup
-# @app.on_event("startup")
-# async def startup_event():
-#     logger = logging.getLogger("uvicorn.access")
-#     handler = logging.StreamHandler()
-#     handler.setLevel(logging.DEBUG)
-#     handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
-#     logger.addHandler(handler)
-def setup_logging() -> None:
-    logger = logging.getLogger()
-    logger.setLevel(logging.DEBUG)
-
-    # Clear existing handlers to avoid duplicates
-    if not any(isinstance(h, type(socketio_handler)) for h in logger.handlers):
-        logger.handlers = []  # Remove all existing handlers
-        logger.addHandler(socketio_handler)
-        logger.addHandler(logging.StreamHandler())
-        print("SocketIOHandler registered with the logger")
 
 
 if __name__ == "__main__":
