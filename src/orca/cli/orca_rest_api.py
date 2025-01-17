@@ -9,7 +9,7 @@ from fastapi import FastAPI, HTTPException
 import socketio  # type: ignore
 import uvicorn
 
-from orca.cli.socketio_mount import socketio_mount, get_socketio
+from orca.cli.socketio_mount import socketio_mount
 from orca.cli.orca_api import OrcaApi
 from orca.resource_models.labware import AnyLabwareTemplate, LabwareTemplate
 from orca.cli.logging_setup import (
