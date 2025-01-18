@@ -7,6 +7,8 @@ from orca.helper import FilepathReconciler
 from orca.resource_models.resource_extras.teachpoints import Teachpoint
 from orca_driver_interface.transporter_interfaces import ITransporterDriver
 
+orca_logger = logging.getLogger("orca")
+
 class SimulationRoboticArmDriver(SimulationBaseDriver, ITransporterDriver):
     def __init__(self, name: str, filepath_reconciler: FilepathReconciler,  mocking_type: Optional[str] = None, sim_time: float = 0.2) -> None:
         super().__init__(name, mocking_type, sim_time)
@@ -23,15 +25,15 @@ class SimulationRoboticArmDriver(SimulationBaseDriver, ITransporterDriver):
 
     async def pick(self, position_name: str, labware_type: str) -> None:
         self._validate_position(position_name)
-        logging.info(f"Driver: {self._name} picking from {position_name}, labware type: {labware_type} picking...")
+        orca_logger.info(f"Driver: {self._name} picking from {position_name}, labware type: {labware_type} picking...")
         self._sleep()
-        logging.info(f"Driver: {self._name} picked from {position_name}, labware type: {labware_type} picked")
+        orca_logger.info(f"Driver: {self._name} picked from {position_name}, labware type: {labware_type} picked")
 
     async def place(self, position_name: str, labware_type: str) -> None:
         self._validate_position(position_name)
-        logging.info(f"Driver: {self._name} placing to {position_name}, labware type: {labware_type} placing...")
+        orca_logger.info(f"Driver: {self._name} placing to {position_name}, labware type: {labware_type} placing...")
         self._sleep()
-        logging.info(f"Driver: {self._name} placed to {position_name}, labware type: {labware_type} placed")
+        orca_logger.info(f"Driver: {self._name} placed to {position_name}, labware type: {labware_type} placed")
 
     def _validate_position(self, position_name: str) -> None:
         if position_name not in self._positions:
