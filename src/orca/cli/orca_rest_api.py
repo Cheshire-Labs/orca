@@ -2,46 +2,21 @@ import time
 import threading
 import asyncio
 import logging
-from logging import Handler, LogRecord
+
 from typing import Any, Dict, List
 
 from fastapi import FastAPI, HTTPException
-import socketio  # type: ignore
 import uvicorn
 
 from orca.cli.socketio_mount import socketio_mount
 from orca.cli.orca_api import OrcaApi
+from orca.logger.socketio_logger_handler import SocketIOHandler
 from orca.resource_models.labware import AnyLabwareTemplate, LabwareTemplate
 
 orca_logger = logging.getLogger("orca")
 app = FastAPI()
 sio = socketio_mount(app)
 
-class SocketIOHandler(Handler):
-    """A logging handler that emits records via Socket.IO."""
-
-    def __init__(self, sio: socketio.AsyncServer):
-        super().__init__()
-        self.sio = sio
-        self.loop: asyncio.AbstractEventLoop | None = None
-
-    def emit(self, record: LogRecord) -> None:
-        """Emit a log record via Socket.IO."""
-
-        try:
-            message = {"data": self.format(record)}
-            if self.loop is None:
-                self.loop = asyncio.get_running_loop()
-            asyncio.run_coroutine_threadsafe(self._send_log_message(message), self.loop)
-        except Exception as e:
-            print(f"Error sending log message: {e}")
-
-    async def _send_log_message(self, message: dict) -> None:
-        """Coroutine to send log message via Socket.IO."""
-        try:
-            await self.sio.emit("logMessage", message, namespace="/logging")
-        except Exception as e:
-            print(f"Failed to emit log message: {e}")
 
 
 socketio_handler = SocketIOHandler(sio)
