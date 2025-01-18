@@ -16,13 +16,11 @@ from orca.resource_models.labware import AnyLabwareTemplate, LabwareTemplate
 orca_logger = logging.getLogger("orca")
 app = FastAPI()
 sio = socketio_mount(app)
+# socketio_handler = SocketIOHandler(sio)
 
-
-
-socketio_handler = SocketIOHandler(sio)
-if not any(isinstance(h, type(socketio_handler)) for h in orca_logger.handlers):
-    orca_logger.addHandler(socketio_handler)
-    orca_logger.setLevel(logging.DEBUG)
+# if not any(isinstance(h, type(socketio_handler)) for h in orca_logger.handlers):
+#     orca_logger.addHandler(socketio_handler)
+#     orca_logger.setLevel(logging.DEBUG)
 
 orca_api: OrcaApi = OrcaApi()
 
@@ -68,6 +66,7 @@ async def run_workflow(data: Dict[str, Any]) -> Dict[str, Any]:
     workflow_id = orca_api.run_workflow(
         workflow_name=workflow_name, config_file=config_file, options=options
     )
+    logging.info(f"SOCKETIO ::: Workflow {workflow_name} started with ID {workflow_id}")
     return {"workflowId": workflow_id}
 
 
@@ -296,26 +295,17 @@ uvicorn_server = UvicornServer(
 )
 
 
-# Custom logging setup
-# @app.on_event("startup")
-# async def startup_event():
-#     logger = logging.getLogger("uvicorn.access")
-#     handler = logging.StreamHandler()
-#     handler.setLevel(logging.DEBUG)
-#     handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
-#     logger.addHandler(handler)
-def setup_logging() -> None:
-    logger = logging.getLogger()
-    logger.setLevel(logging.DEBUG)
+# def setup_logging() -> None:
+#     logger = logging.getLogger()
+#     logger.setLevel(logging.DEBUG)
 
-    # Clear existing handlers to avoid duplicates
-    if not any(isinstance(h, type(socketio_handler)) for h in logger.handlers):
-        logger.handlers = []  # Remove all existing handlers
-        logger.addHandler(socketio_handler)
-        logger.addHandler(logging.StreamHandler())
-        print("SocketIOHandler registered with the logger")
+#     # Clear existing handlers to avoid duplicates
+#     if not any(isinstance(h, type(socketio_handler)) for h in logger.handlers):
+#         logger.handlers = []  # Remove all existing handlers
+#         logger.addHandler(socketio_handler)
+#         logger.addHandler(logging.StreamHandler())
+#         print("SocketIOHandler registered with the logger")
 
 
 if __name__ == "__main__":
-    setup_logging()
-    uvicorn_server.start()
+    uvicorn_server.run()
