@@ -2,7 +2,7 @@
 
 import argparse
 from orca.cli.orca_cli import OrcaCmdShell
-from orca.cli.orca_rest_api import uvicorn_server, setup_logging
+from orca.cli.orca_rest_api import uvicorn_server
 
 def main():
     parser = argparse.ArgumentParser(prog="orca", description="Orca CLI Tool")
@@ -23,8 +23,7 @@ def main():
     if args.command == "interactive":
         OrcaCmdShell().cmdloop()
     elif args.command == "server":
-        setup_logging()
-        uvicorn_server.start()
+        uvicorn_server.run()
     elif args.args:
         # Execute the command using OrcaCmdShell's onecmd
         OrcaCmdShell().onecmd(" ".join(args.args))

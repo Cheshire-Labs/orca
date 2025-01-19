@@ -18,7 +18,7 @@ from orca.yml_config_builder.resource_factory import IResourceFactory, ResourceF
 
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-
+orca_logger = logging.getLogger("orca")
 class OrcaCore:
 
     def __init__(self, 
@@ -26,11 +26,8 @@ class OrcaCore:
                  driver_manager: DriverManager,
                  options: Dict[str, Any] = {},
                  scripting_registry: Optional[IScriptRegistry] = None,
-                 resource_factory: Optional[IResourceFactory] = None,
-                 log_destination: Optional[Union[str, logging.Handler]] = None
+                 resource_factory: Optional[IResourceFactory] = None
                  ) -> None:
-        self.set_logging_destination(log_destination)
-
         self._system_builder = ConfigToSystemBuilder()
         if scripting_registry is not None:
             self._system_builder.set_script_registry(scripting_registry)
@@ -132,31 +129,6 @@ class OrcaCore:
 
     def stop(self) -> None:
         self._system.stop_all_threads()     
-
-    
-
-       
-
-    @staticmethod
-    def set_logging_destination(destination: Optional[Union[str, logging.Handler]] = None, logging_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO") -> None:
-        """Configure logging with the given destination. If None, defaults to StreamHandler."""
-
-        logger = logging.getLogger()
-        logger.handlers = []  # Remove any previous handlers to reset logging configuration
-        logger.setLevel(logging_level)  # Set desired logging level
-        
-        if destination is None:
-            handler: logging.Handler = logging.StreamHandler()
-        elif isinstance(destination, str):  # If a file path is given
-            handler = logging.FileHandler(destination)
-        elif isinstance(destination, logging.Handler):  # If a stream handler is provided (e.g., from VS Code)
-            handler = destination
-        else:  # Default to console output
-            handler = logging.StreamHandler()
-        
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
 
 
 if __name__ == "__main__":
