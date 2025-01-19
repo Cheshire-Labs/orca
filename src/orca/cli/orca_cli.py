@@ -1,6 +1,5 @@
 import argparse
 import cmd
-import logging
 import traceback
 import colorama
 
@@ -343,6 +342,4 @@ class OrcaCmdShell(cmd.Cmd):
             print("\nType 'help <command>' to get help on a specific command.")
     
 if __name__ == "__main__":
-    logging.basicConfig(handlers=[logging.StreamHandler()], level=logging.DEBUG)
     OrcaCmdShell().cmdloop()
-    # C:\Users\miike\source\repos\cheshire-orca\examples\smc_assay\smc_assay_example.orca.yml

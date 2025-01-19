@@ -66,7 +66,7 @@ async def run_workflow(data: Dict[str, Any]) -> Dict[str, Any]:
     workflow_id = orca_api.run_workflow(
         workflow_name=workflow_name, config_file=config_file, options=options
     )
-    logging.info(f"SOCKETIO ::: Workflow {workflow_name} started with ID {workflow_id}")
+    orca_logger.info(f"Workflow {workflow_name} started with ID {workflow_id}")
     return {"workflowId": workflow_id}
 
 
@@ -112,7 +112,7 @@ async def get_workflow_recipes() -> Dict[str, Any]:
 
 @app.get("/test")
 async def test() -> Dict[str, str]:
-    logging.info("Test pinged")
+    orca_logger.info("Test pinged")
     return {"status": "route reachable"}
 
 
@@ -252,13 +252,13 @@ async def shutdown() -> Dict[str, str]:
     try:
         response = {"message": "Server shutdown: success"}
 
-        logging.info("Shutdown request received, shutting down Orca server")
+        orca_logger.info("Shutdown request received, shutting down Orca server")
         loop = asyncio.get_running_loop()
         # Schedule the server shutdown
         loop.call_later(2, uvicorn_server.stop)
         return response
     except Exception as e:
-        logging.error(f"Error sending shutdown response: {e}")
+        orca_logger.error(f"Error sending shutdown response: {e}")
         return {"message": "Server shutdown: failed"}
 
 
@@ -293,19 +293,6 @@ uvicorn_server = UvicornServer(
         app=app, host="127.0.0.1", port=5000, log_level="debug", loop="asyncio"
     )
 )
-
-
-# def setup_logging() -> None:
-#     logger = logging.getLogger()
-#     logger.setLevel(logging.DEBUG)
-
-#     # Clear existing handlers to avoid duplicates
-#     if not any(isinstance(h, type(socketio_handler)) for h in logger.handlers):
-#         logger.handlers = []  # Remove all existing handlers
-#         logger.addHandler(socketio_handler)
-#         logger.addHandler(logging.StreamHandler())
-#         print("SocketIOHandler registered with the logger")
-
 
 if __name__ == "__main__":
     uvicorn_server.run()

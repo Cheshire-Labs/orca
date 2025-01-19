@@ -13,6 +13,7 @@ from orca.system.reservation_manager import IReservationManager, LocationReserva
 from orca.system.system_map import SystemMap
 from orca.workflow_models.status_enums import ActionStatus
 
+orca_logger = logging.getLogger("orca")
 class IActionObserver:
     def action_notify(self, event: str, action: 'BaseAction') -> None:
         pass
@@ -182,8 +183,8 @@ class LocationAction(BaseAction):
         self._status = ActionStatus.PERFORMING_ACTION
         self.is_executing.set()
         # TODO: DELETE DELETE DELETE
-        for Labware in self.resource.loaded_labware:
-            logging.debug(f"LOADED LABWARE: {Labware.name}")
+        # for Labware in self.resource.loaded_labware:
+        #    orca_logger.debug(f"LOADED LABWARE: {Labware.name}")
 
         # Execute the action
         if self.resource is not None:

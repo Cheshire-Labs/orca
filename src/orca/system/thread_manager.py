@@ -11,6 +11,8 @@ from orca.workflow_models.labware_thread import LabwareThread
 from orca.workflow_models.workflow_templates import ThreadTemplate
 
 
+orca_logger = logging.getLogger("orca")
+
 class ThreadFactory:
     def __init__(self, labware_registry: ILabwareRegistry, move_handler: MoveHandler, reservation_manager: IReservationManager, system_map: SystemMap) -> None:
         self._labware_registry: ILabwareRegistry = labware_registry
@@ -156,12 +158,12 @@ class ThreadManager(IThreadManager):
         while not self.has_completed():
 
             for thread in self.active_threads:
-                logging.info(f"Thread {thread.name} - {thread.status}")
+                orca_logger.info(f"Thread {thread.name} - {thread.status}")
                 if thread in self.unstarted_threads:
                     loop = asyncio.get_running_loop()
                     loop.create_task(thread.start())
                 await asyncio.sleep(0.2)
-        logging.info("All threads have completed execution.")
+        orca_logger.info("All threads have completed execution.")
 
 class ThreadManagerFactory:
     @staticmethod
