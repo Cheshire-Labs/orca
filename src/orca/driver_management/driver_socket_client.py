@@ -60,11 +60,11 @@ class RemoteDriverClient(IDriver):
         return await self._sio.send(action, data)
         
     def _run_async_task(self, action: str, data: Dict[str, Any] = {}) -> Dict[str, Any]:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
+        try:
+            loop = asyncio.get_running_loop()
             future = asyncio.run_coroutine_threadsafe(self.send(action, data), loop)
             return json.loads(future.result())
-        else:
+        except RuntimeError:
             return json.loads(asyncio.run(self.send(action, data)))
 
     @property
