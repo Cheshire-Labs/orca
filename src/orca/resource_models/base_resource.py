@@ -6,6 +6,8 @@ from orca_driver_interface.driver_interfaces import IDriver
 from orca_driver_interface.driver_interfaces import ILabwarePlaceableDriver
 from orca.resource_models.labware import Labware
 
+orca_logger = logging.getLogger("orca")
+
 class ResourceUnavailableError(Exception):
     def __init__(self, message: str = "Resource is unavailable.") -> None:
         super().__init__(message)
@@ -115,32 +117,32 @@ class Equipment(IEquipment):
         self._driver.set_init_options(init_options)
     
     async def initialize(self) -> None:
-        logging.info(f"Initializing...")
-        logging.info(f"Name: {self._name}")
+        orca_logger.info(f"Initializing...")
+        orca_logger.info(f"Name: {self._name}")
         await self._driver.initialize()
-        logging.info(f"Initialized")
+        orca_logger.info(f"Initialized")
 
     async def execute(self, command: str, options: Dict[str, Any]) -> None:
         if command is None:
             raise ValueError(f"{self} - No command to execute")
-        logging.info(f"{self} - execute - {command}")
-        logging.info(f"{self} - {command} executing...")
+        orca_logger.info(f"{self} - execute - {command}")
+        orca_logger.info(f"{self} - {command} executing...")
         await self._driver.execute(command, options)
-        logging.info(f"{self} - {command} executed")
+        orca_logger.info(f"{self} - {command} executed")
 
     @property
     def is_connected(self) -> bool:
         return self._driver.is_connected
 
     async def connect(self) -> None:
-        logging.info(f"{self} - Connecting...")
+        orca_logger.info(f"{self} - Connecting...")
         await self._driver.connect()
-        logging.info(f"{self} - Connected")
+        orca_logger.info(f"{self} - Connected")
 
     async def disconnect(self) -> None:
-        logging.info(f"{self} - Disconnecting...")
+        orca_logger.info(f"{self} - Disconnecting...")
         await self._driver.disconnect()
-        logging.info(f"{self} - Disconnected")
+        orca_logger.info(f"{self} - Disconnected")
 
 
 
@@ -203,14 +205,14 @@ class LabwareLoadableEquipment(Equipment, ILabwarePlaceable):
     async def prepare_for_place(self, labware: Labware) -> None:
         if self._labware_reg.stage is not None:
             raise ValueError(f"{self} - Stage already contains labware: {self._labware_reg.stage}.  Unable to place {labware}")
-        logging.info(f"{self} - preparing for place of {labware}")
+        orca_logger.info(f"{self} - preparing for place of {labware}")
         await self._driver.prepare_for_place(labware.name, labware.labware_type)
 
     async def prepare_for_pick(self, labware: Labware) -> None:
         if self._labware_reg.stage == labware:
             return
         else:
-            logging.info(f"{self} - preparing for pick of {labware}")
+            orca_logger.info(f"{self} - preparing for pick of {labware}")
             await self._driver.prepare_for_pick(labware.name, labware.labware_type)
             self._labware_reg.unload_labware_to_stage(labware)
 
@@ -218,7 +220,7 @@ class LabwareLoadableEquipment(Equipment, ILabwarePlaceable):
         if self._labware_reg.stage != labware:
             raise ValueError(f"{self} - An error has ocurred.  The labware {labware} notified as picked does not match the previously staged labware. "
                               "The wrong labware may have been picked.")
-        logging.info(f"{self} - labware {labware} picked from stage")
+        orca_logger.info(f"{self} - labware {labware} picked from stage")
         self._labware_reg.set_stage(None)
         await self._driver.notify_picked(labware.name, labware.labware_type)
     
@@ -227,7 +229,7 @@ class LabwareLoadableEquipment(Equipment, ILabwarePlaceable):
             raise ValueError(f"{self} - An error has ocurred.  The labware {labware} notified as placed was placed with labware {self._labware_reg.stage} already on the stage.  "
                              "A crash may have occurred.")
         self._labware_reg.set_stage(labware)
-        logging.info(f"{self} - labware {labware} received on stage")
+        orca_logger.info(f"{self} - labware {labware} received on stage")
         await self._driver.notify_placed(labware.name, labware.labware_type)
         self._labware_reg.load_labware_from_stage(labware)
 
