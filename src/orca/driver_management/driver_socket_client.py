@@ -1,6 +1,5 @@
 import asyncio
 import json
-import logging
 from typing import Any, Dict, List, Optional
 from socketio.async_client import AsyncClient # type: ignore[import-untyped]
 
@@ -89,7 +88,6 @@ class RemoteDriverClient(IDriver):
 
     async def execute(self, command: str, options: Dict[str, Any]) -> None:
         dict_ret = self._run_async_task("execute", {"command": command, "options": options})
-        logging.debug(dict_ret)
 
 
 class RemoteLabwarePlaceableDriverClient(RemoteDriverClient, ILabwarePlaceableDriver):

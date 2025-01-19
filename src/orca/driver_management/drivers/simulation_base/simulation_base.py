@@ -4,6 +4,8 @@ from typing import Any, Dict, Optional
 
 from orca_driver_interface.driver_interfaces import IDriver
 
+orca_logger = logging.getLogger("orca")
+
 class SimulationBaseDriver(IDriver):
     def __init__(self, name: str, mocking_type: Optional[str] = None, sim_time: float = 0.2):
         self._name: str = name
@@ -44,11 +46,11 @@ class SimulationBaseDriver(IDriver):
         self._is_initialized = True
 
     async def execute(self, command: str, options: Dict[str, Any]) -> None:
-        logging.info(f"{self._name} executing command: {command}")
+        orca_logger.info(f"{self._name} executing command: {command}")
         if len(options.keys()) > 0:
-            logging.info(f"Options: {options}")
+            orca_logger.info(f"Options: {options}")
         self._sleep()
-        logging.info(f"{self._name} executed command: {command}")
+        orca_logger.info(f"{self._name} executed command: {command}")
 
     def _sleep(self) -> None:
         self._is_running = True

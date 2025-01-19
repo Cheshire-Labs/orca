@@ -2,7 +2,6 @@ from types import MappingProxyType
 from typing import Any, Dict, List, Literal, Union, Optional
 import asyncio
 import json
-import logging
 from orca.driver_management.driver_installer import  DriverInstaller, DriverLoader, DriverManager, DriverRegistryInfo, InstalledDriverInfo, InstalledDriverRegistry, RemoteAvailableDriverRegistry
 from orca.orca_core import OrcaCore
 from orca.system.method_executor import MethodTemplate
