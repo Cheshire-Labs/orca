@@ -10,16 +10,14 @@ class SocketIOHandler(Handler):
     def __init__(self, sio: socketio.AsyncServer):
         super().__init__()
         self.sio = sio
-        self.loop: asyncio.AbstractEventLoop | None = None
 
     def emit(self, record: LogRecord) -> None:
         """Emit a log record via Socket.IO."""
 
         try:
             message = {"data": self.format(record)}
-            if self.loop is None:
-                self.loop = asyncio.get_running_loop()
-            asyncio.run_coroutine_threadsafe(self._send_log_message(message), self.loop)
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._send_log_message(message))
         except Exception as e:
             print(f"Error sending log message: {e}")
 

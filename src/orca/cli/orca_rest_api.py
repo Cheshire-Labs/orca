@@ -16,11 +16,10 @@ from orca.resource_models.labware import AnyLabwareTemplate, LabwareTemplate
 orca_logger = logging.getLogger("orca")
 app = FastAPI()
 sio = socketio_mount(app)
-# socketio_handler = SocketIOHandler(sio)
-
-# if not any(isinstance(h, type(socketio_handler)) for h in orca_logger.handlers):
-#     orca_logger.addHandler(socketio_handler)
-#     orca_logger.setLevel(logging.DEBUG)
+socketio_handler = SocketIOHandler(sio)
+if not any(isinstance(h, type(socketio_handler)) for h in orca_logger.handlers):
+    orca_logger.addHandler(socketio_handler)
+    orca_logger.setLevel(logging.DEBUG)
 
 orca_api: OrcaApi = OrcaApi()
 
@@ -40,6 +39,7 @@ async def handle_disconnect(sid) -> None:
 @app.post("/load")
 async def load(data: Dict[str, Any]) -> Dict[str, str]:
     config_file = data.get("configFile")
+    orca_logger.info(f"Configuration loaded from {config_file}")
     if config_file is None:
         raise HTTPException(status_code=400, detail="Config file is required.")
     orca_api.load(config_file)

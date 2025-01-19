@@ -18,7 +18,7 @@ from orca.yml_config_builder.resource_factory import IResourceFactory, ResourceF
 
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-
+orca_logger = logging.getLogger("orca")
 class OrcaCore:
 
     def __init__(self, 
