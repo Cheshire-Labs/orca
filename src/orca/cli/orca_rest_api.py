@@ -30,7 +30,7 @@ orca_api: OrcaApi = OrcaApi()
 async def handle_connect(sid, environ) -> None:
     print(f"Client connected: {sid}")
 
-@sio.on("disconnect", namespace=LOGGING_NAMESPACE)  # type: ignore
+@sio.on("disconnect", namespace="/logging")  # type: ignore
 async def handle_disconnect(sid) -> None:
     print(f"Client disconnected: {sid}")
 
