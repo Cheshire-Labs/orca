@@ -46,7 +46,8 @@ class OrcaApi:
         if config_file is not None:
             self.load(config_file)
         instance_id = self._orca.create_workflow_instance(workflow_name)
-        self._loop.create_task(self._orca.run_workflow(instance_id))
+        loop = asyncio.get_running_loop()
+        loop.create_task(self._orca.run_workflow(instance_id))
         return instance_id
         
     
