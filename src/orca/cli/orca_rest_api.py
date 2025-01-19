@@ -5,77 +5,48 @@ import logging
 from logging import Handler, LogRecord
 from typing import Any, Dict, List
 
+from typing import Any, Dict, List
+
 from fastapi import FastAPI, HTTPException
-import socketio  # type: ignore
 import uvicorn
 
 from orca.cli.socketio_mount import socketio_mount
 from orca.cli.orca_api import OrcaApi
+from orca.logger.socketio_logger_handler import SocketIOHandler
 from orca.resource_models.labware import AnyLabwareTemplate, LabwareTemplate
-from orca.cli.logging_setup import (
-    setup_logging,
-    get_socketio_handler,
-    get_formatter,
-    orca_logger,
-    LOGGING_NAMESPACE,
-)
+
+orca_logger = logging.getLogger("orca")
+app = FastAPI()
+sio = socketio_mount(app)
+socketio_handler = SocketIOHandler(sio)
+if not any(isinstance(h, type(socketio_handler)) for h in orca_logger.handlers):
+    orca_logger.addHandler(socketio_handler)
+    orca_logger.setLevel(logging.DEBUG)
 
 orca_api: OrcaApi = OrcaApi()
 
 
-app = FastAPI()
-sio = socketio_mount(app)
-
-socketio_handler = get_socketio_handler()
-
-
-async def send_response(message: str) -> Dict[str, str]:
-    try:
-        record = logging.LogRecord(
-            name="root",
-            level=logging.INFO,
-            pathname="",
-            lineno=0,
-            msg=message,
-            args=(),
-            exc_info=None,
-        )
-        formatted_message = get_formatter().format(record)
-        await sio.emit(
-            "logMessage", {"data": formatted_message}, namespace=LOGGING_NAMESPACE
-        )
-        return {"message": message}
-    except Exception as e:
-        print(f"Error sending response: {e}")
-        return {"message": message}  # Still return even if Socket.IO fails
-
-
-@sio.on("connect", namespace=LOGGING_NAMESPACE)  # type: ignore
+@sio.on("connect", namespace="/logging")  # type: ignore
 async def handle_connect(sid, environ) -> None:
     print(f"Client connected: {sid}")
-    orca_api.set_logging_destination(socketio_handler, "INFO")
-    orca_logger.info("Logging connected to Orca server")
-    # await socket_manager.emit('logMessage', {'data': 'Logging connected to Orca server'}, namespace='/logging')
-
-
-@sio.on("message", namespace=LOGGING_NAMESPACE)  # type: ignore
-async def handle_test(sid, data) -> None:
-    await sio.emit("logMessage", {"data": "Test response"}, namespace=LOGGING_NAMESPACE)
-
 
 @sio.on("disconnect", namespace=LOGGING_NAMESPACE)  # type: ignore
 async def handle_disconnect(sid) -> None:
     print(f"Client disconnected: {sid}")
 
 
+
+
 # REST API endpoints
 @app.post("/load")
 async def load(data: Dict[str, Any]) -> Dict[str, str]:
     config_file = data.get("configFile")
+    orca_logger.info(f"Configuration loaded from {config_file}")
     if config_file is None:
         raise HTTPException(status_code=400, detail="Config file is required.")
     orca_api.load(config_file)
-    return await send_response("Configuration loaded successfully.")
+    return {"message": "Configuration loaded successfully."}
+
 
 
 @app.post("/init")
@@ -84,7 +55,7 @@ async def init(data: Dict[str, Any]):
     resource_list = data.get("resourceList", [])
     options = data.get("options", {})
     orca_api.init(config_file=config_file, resource_list=resource_list, options=options)
-    return await send_response("Initialization complete.")
+    return {"message": "Initialization complete."}
 
 
 @app.post("/run_workflow")
@@ -97,7 +68,7 @@ async def run_workflow(data: Dict[str, Any]) -> Dict[str, Any]:
     workflow_id = orca_api.run_workflow(
         workflow_name=workflow_name, config_file=config_file, options=options
     )
-    await send_response(f"Workflow '{workflow_name}' started with ID {workflow_id}")
+    orca_logger.info(f"Workflow {workflow_name} started with ID {workflow_id}")
     return {"workflowId": workflow_id}
 
 
@@ -144,7 +115,7 @@ async def get_workflow_recipes() -> Dict[str, Any]:
 
 @app.get("/test")
 async def test() -> Dict[str, str]:
-    logging.info("Test pinged")
+    orca_logger.info("Test pinged")
     return {"status": "route reachable"}
 
 
@@ -242,7 +213,7 @@ def get_transporters() -> Dict[str, Any]:
 @app.post("/stop")
 async def stop() -> Dict[str, str]:
     orca_api.stop()
-    return await send_response("Orca stopped.")
+    return {"message": "Orca stopped."}
 
 
 @app.get("/get_installed_drivers_info")
@@ -266,7 +237,7 @@ async def install_driver(data: Dict[str, Any]) -> Dict[str, str]:
     if driver_name is None:
         raise HTTPException(status_code=400, detail="Driver name is required.")
     orca_api.install_driver(driver_name, driver_repo_url)
-    return await send_response(f"Driver '{driver_name}' installed successfully.")
+    return {"message": f"Driver '{driver_name}' installed successfully."}
 
 
 @app.post("/uninstall_driver")
@@ -275,22 +246,23 @@ async def uninstall_driver(data: Dict[str, Any]) -> Dict[str, str]:
     if driver_name is None:
         raise HTTPException(status_code=400, detail="Driver name is required.")
     orca_api.uninstall_driver(driver_name)
-    return await send_response(f"Driver '{driver_name}' uninstalled successfully.")
+    return {"message": f"Driver '{driver_name}' uninstalled successfully."}
 
 
 @app.get("/shutdown")
 async def shutdown() -> Dict[str, str]:
     """API route to shut down the server."""
     try:
-        response = await send_response("Server shutdown: success")
+        response = {"message": "Server shutdown: success"}
+
         orca_logger.info("Shutdown request received, shutting down Orca server")
         loop = asyncio.get_running_loop()
         loop.call_later(1, uvicorn_server.stop)
 
         return response
     except Exception as e:
-        orca_logger.error("Error during shutdown: %s", e)
-        return {"message": f"Shutdown error: {str(e)}"}
+        orca_logger.error(f"Error sending shutdown response: {e}")
+        return {"message": "Server shutdown: failed"}
 
 
 # Uvicorn server instance for graceful shutdown
@@ -325,7 +297,5 @@ uvicorn_server = UvicornServer(
     )
 )
 
-
 if __name__ == "__main__":
-    setup_logging()
-    uvicorn_server.start()
+    uvicorn_server.run()
