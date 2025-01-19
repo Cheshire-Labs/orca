@@ -11,6 +11,8 @@
         "**/build"
     ],
     "search.exclude": {
-        "**/build": true
+        "**/build": true,
+        "**/dist": true,
+        "**/.venv": true
     },
 }

@@ -8,6 +8,7 @@ from orca.resource_models.labware import Labware
 from orca.resource_models.location import ILabwareLocationObserver, Location
 from orca.system.system_map import ILocationRegistry
 
+orca_logger = logging.getLogger("orca")
 
 class ILabwareLocationManager:
     def is_occupied(self, location: Location) -> bool:
@@ -92,7 +93,7 @@ class ReservationManager(IReservationManager, IAvailabilityManager, ILabwareLoca
         self._location_reservations[location_name] = request
         request.set_location(self._location_reg.get_location(location_name))
         request.completed.set()
-        logging.info(f"Thread {request.labware} - Reservation {request.id} granted for {location_name}")
+        orca_logger.info(f"Thread {request.labware} - Reservation {request.id} granted for {location_name}")
 
     def _process_next_request(self, location_name: str) -> None:
         queue = self._location_queues.setdefault(location_name, [])
@@ -110,7 +111,7 @@ class ReservationManager(IReservationManager, IAvailabilityManager, ILabwareLoca
         queue = self._location_queues.setdefault(location_name, [])
         if request not in queue:
             queue.append(request)
-            logging.info(f"Thread {request.labware} - Reservation {request.id} waiting for availability at {location_name}")
+            orca_logger.info(f"Thread {request.labware} - Reservation {request.id} waiting for availability at {location_name}")
     
     def can_reserve(self, location_name: str) -> bool:
         return location_name not in self._location_reservations.keys() and self._location_reg.get_location(location_name).labware is None
@@ -118,7 +119,7 @@ class ReservationManager(IReservationManager, IAvailabilityManager, ILabwareLoca
     def release_reservation(self, location_name: str) -> None:
         if location_name in self._location_reservations.keys():
             reservation = self._location_reservations[location_name]
-            logging.info(f"Releasing reservation {reservation.id} for {location_name}")
+            orca_logger.info(f"Releasing reservation {reservation.id} for {location_name}")
             del self._location_reservations[location_name]
             self._process_next_request(location_name)
             
@@ -129,7 +130,7 @@ class ReservationManager(IReservationManager, IAvailabilityManager, ILabwareLoca
                 self._process_next_request(location.name)
 
     def _handle_deadlock(self, request: LocationReservation):
-        logging.info("Deadlock detected")
+        orca_logger.info("Deadlock detected")
         request.deadlocked.set()
         request.completed.set()
 

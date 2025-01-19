@@ -2,16 +2,7 @@ from types import MappingProxyType
 from typing import Any, Dict, List, Literal, Union, Optional
 import asyncio
 import json
-import logging
-from orca.driver_management.driver_installer import (
-    DriverInstaller,
-    DriverLoader,
-    DriverManager,
-    DriverRegistryInfo,
-    InstalledDriverInfo,
-    InstalledDriverRegistry,
-    RemoteAvailableDriverRegistry,
-)
+from orca.driver_management.driver_installer import  DriverInstaller, DriverLoader, DriverManager, DriverRegistryInfo, InstalledDriverInfo, InstalledDriverRegistry, RemoteAvailableDriverRegistry
 from orca.orca_core import OrcaCore
 from orca.system.method_executor import MethodTemplate
 from orca.system.system import WorkflowTemplate
@@ -35,11 +26,9 @@ class OrcaApi:
         installed_registry = InstalledDriverRegistry()
         self._driver_manager = DriverManager(
             installed_registry,
-            DriverLoader(),
-            DriverInstaller(installed_registry),
-            RemoteAvailableDriverRegistry(available_drivers_registry),
-        )
-        self._loop = asyncio.get_event_loop()
+            DriverLoader(), 
+            DriverInstaller(installed_registry), 
+            RemoteAvailableDriverRegistry(available_drivers_registry))
 
     def load(self, config_filepath: str):
         self.__orca = OrcaCore(config_filepath, self._driver_manager)
@@ -64,7 +53,8 @@ class OrcaApi:
         if config_file is not None:
             self.load(config_file)
         instance_id = self._orca.create_workflow_instance(workflow_name)
-        self._loop.create_task(self._orca.run_workflow(instance_id))
+        loop = asyncio.get_running_loop()
+        loop.create_task(self._orca.run_workflow(instance_id))
         return instance_id
 
     def run_method(
@@ -80,7 +70,8 @@ class OrcaApi:
         start_map = json.loads(start_map_json)
         end_map = json.loads(end_map_json)
         method_id = self._orca.create_method_instance(method_name, start_map, end_map)
-        self._loop.create_task(self._orca.run_method(method_id))
+        loop = asyncio.get_running_loop()
+        loop.create_task(self._orca.run_method(method_id))
         return method_id
 
     def get_workflow_recipes(self) -> MappingProxyType[str, WorkflowTemplate]:
@@ -126,12 +117,4 @@ class OrcaApi:
 
     def uninstall_driver(self, driver_name: str) -> None:
         self._driver_manager.uninstall_driver(driver_name)
-
-    def set_logging_destination(
-        self,
-        destination: Optional[Union[str, logging.Handler]] = None,
-        logging_level: Literal[
-            "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"
-        ] = "INFO",
-    ) -> None:
-        OrcaCore.set_logging_destination(destination, logging_level)
+    
