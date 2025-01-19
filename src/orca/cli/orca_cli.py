@@ -158,23 +158,6 @@ class OrcaCmdShell(cmd.Cmd):
             print(f"Error: {e}")
             traceback.print_exc()
 
-    def do_set_logging(self, arg: str):
-        """Set logging destination"""
-        try:
-            args = self._parsers["set_logging"].parse_args(shlex.split(arg))
-            if args.file:
-                print(f"Setting logging destination to file: {args.file}")
-                self._orca_shell.set_logging_destination(args.file, args.level)
-            else:
-                print(f"Setting logging to default stream with level: {args.level}")
-                self._orca_shell.set_logging_destination(None, args.level)
-        except SystemExit as e:
-            print(f"Argument parsing error: {e}")
-            self._parsers["set_logging"].print_help()
-        except Exception as e:
-            print(f"Error: {e}")
-            traceback.print_exc()
-
     def do_install_driver(self, arg: str):
         """Install the driver"""
         try:
@@ -312,12 +295,6 @@ class OrcaCmdShell(cmd.Cmd):
         # Parser for 'list_transporters' command
         list_transporters_parser = argparse.ArgumentParser(prog='list_transporters', description="List all transporters")
         parsers['list_transporters'] = list_transporters_parser
-
-        # Parser for 'set_logging' command
-        set_logging_parser = argparse.ArgumentParser(prog='set_logging', description="Set logging destination")
-        set_logging_parser.add_argument("--file", help="Set the logging destination to a file")
-        set_logging_parser.add_argument("--level", choices=["debug", "info", "warning", "error"], default="info", help="Logging level")
-        parsers['set_logging'] = set_logging_parser
 
         return parsers
     
