@@ -115,7 +115,6 @@ class ThreadManager(IThreadManager):
         self._thread_registry = thread_registry
         self._system_map = system_map
         self._move_handler = move_handler
-        self._loop: asyncio.AbstractEventLoop | None = None
 
     @property
     def threads(self) -> List[LabwareThread]:
@@ -145,7 +144,6 @@ class ThreadManager(IThreadManager):
         return [thread for thread in self._thread_registry.threads if thread.status == LabwareThreadStatus.CREATED]
 
     async def start_all_threads(self) -> None:
-        self._loop = asyncio.get_event_loop()
         # # self._loop.set_debug(True)
         # self._loop.run_until_complete(self.async_execute())
         await self.async_execute()
@@ -155,13 +153,13 @@ class ThreadManager(IThreadManager):
             thread.stop()
 
     async def async_execute(self) -> None:
-        assert self._loop is not None
         while not self.has_completed():
 
             for thread in self.active_threads:
                 logging.info(f"Thread {thread.name} - {thread.status}")
                 if thread in self.unstarted_threads:
-                    task = self._loop.create_task(thread.start())
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(thread.start())
                 await asyncio.sleep(0.2)
         logging.info("All threads have completed execution.")
 
