@@ -40,8 +40,8 @@ def options_config() -> SystemOptionsConfigModel:
 @pytest.fixture
 def registry(variables_config, options_config) -> VariablesRegistry:
     registry = VariablesRegistry()
-    registry.add_config("opt", options_config)
-    registry.add_config("config", variables_config)
+    registry.set_selector_configuration("opt", options_config)
+    registry.set_selector_configuration("config", variables_config)
     return registry
 
 class TestVariableConfig:
