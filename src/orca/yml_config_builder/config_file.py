@@ -1,8 +1,8 @@
 from typing import Any, Dict, Optional
 from orca.scripting.scripting import IScriptRegistry
 from orca.system.system import System
-from orca.yml_config_builder.configs import SystemConfig, SystemOptionsConfig
-from orca.yml_config_builder.dynamic_config import DynamicSystemConfig
+from orca.yml_config_builder.configs import SystemConfigModel, SystemOptionsConfigModel
+from orca.yml_config_builder.dynamic_config import DynamicSystemConfigModel
 from orca.yml_config_builder.template_factories import ConfigToSystemBuilder
 
 import yaml
@@ -16,11 +16,11 @@ class ConfigFile:
         with open( self._config_filepath, "r") as f:
             yml_content = f.read()
         self._yml = yaml.load(yml_content, Loader=yaml.FullLoader)
-        self._system_config = SystemConfig.model_validate(self._yml)
+        self._system_config = SystemConfigModel.model_validate(self._yml)
         self._variable_registry = self._get_variable_registry(self._system_config)
-        self._config = DynamicSystemConfig(self._system_config, self._variable_registry)
+        self._config = DynamicSystemConfigModel(self._system_config, self._variable_registry)
 
-    def _get_variable_registry(self, system_config: SystemConfig) -> VariablesRegistry:
+    def _get_variable_registry(self, system_config: SystemConfigModel) -> VariablesRegistry:
         registry = VariablesRegistry()
         registry.add_config("labwares", system_config.labwares)
         registry.add_config("config", system_config.config)
@@ -28,7 +28,7 @@ class ConfigFile:
     
     def set_command_line_options(self, options: Dict[str, Any]) -> None:
         if self._system_config.options is None:
-            self._system_config.options = SystemOptionsConfig()
+            self._system_config.options = SystemOptionsConfigModel()
         # TODO: thrown together, make this nicer
         self._system_config.options.stage = options.get("stage", "prod")
         self._variable_registry.add_config("opt", self._system_config.options)
