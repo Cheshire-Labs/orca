@@ -36,9 +36,6 @@ class OrcaCore:
                  stage: str = "prod",
                  ) -> None:
         self._config = SystemConfiguration(config_filepath)
-        self._config.set_options({stage: stage})
-            # if scripting_registry is not None:
-        #     builder.set_script_registry(scripting_registry)
 
         # set scripting registry
         if scripting_registry is None:
@@ -93,20 +90,15 @@ class OrcaCore:
         self._builder.set_method_template_factory(method_template_factory)
         self._builder.set_workflow_template_factory(workflow_template_factory)
         self._method_executor_registry: Dict[str, MethodExecutor] = {}
-        self._build_system()
-
-    def _build_system(self, stage: str = "prod") -> None:
-        self._config.set_deployment_stage(stage)
-        system = self._builder.get_system()
-        self._system = system
+        self._system = self._builder.get_system()
 
     @property
     def system(self) -> ISystem:
         return self._system
     
     @property
-    def system_config(self) -> SystemConfig:
-        return self._config._system_config
+    def system_config(self) -> SystemConfiguration:
+        return self._config
 
     async def initialize(self,
                    resource_list: Optional[List[str]] = None,
@@ -121,8 +113,9 @@ class OrcaCore:
                     init_fxns.append(resource.initialize)
             await asyncio.gather(*[f() for f in init_fxns])
 
-    def create_workflow_instance(self, workflow_name: str, options: Dict[str, Any] = {}) -> str:
-        self._build_system(options)
+    def create_workflow_instance(self, 
+                                 workflow_name: str, 
+                                 options: Dict[str, Any] = {}) -> str:
         workflow_template = self._system.get_workflow_template(workflow_name)
         workflow = self._system.create_workflow_instance(workflow_template)
         self._system.add_workflow(workflow)
@@ -140,7 +133,6 @@ class OrcaCore:
                                start_map: Dict[str, str], 
                                end_map: Dict[str, str], 
                                options: Dict[str, Any] = {}) -> str:
-        self._build_system(options)
         try:
             method_template = self._system.get_method_template(method_name)
         except KeyError:
