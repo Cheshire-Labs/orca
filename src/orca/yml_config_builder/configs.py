@@ -16,7 +16,7 @@ class ConfigModel(BaseModel):
     
 class SystemOptionsConfigModel(ConfigModel):
     model_config = ConfigDict(extra='allow')
-    stage: str = 'dev'
+    stage: str = 'prod'
 
 class VariablesConfigModel(ConfigModel):
     model_config = ConfigDict(extra='allow')

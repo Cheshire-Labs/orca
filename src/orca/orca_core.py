@@ -1,18 +1,25 @@
 import os
-from typing import Any, Callable, Coroutine, Dict, List, Literal, Optional, Union
+from typing import Any, Callable, Coroutine, Dict, List, Optional
 import logging
 import asyncio
 
 from orca.driver_management.driver_installer import DriverInstaller, DriverLoader, DriverManager, InstalledDriverRegistry, RemoteAvailableDriverRegistry
 from orca.helper import FilepathReconciler
-from orca.scripting.scripting import IScriptRegistry
+from orca.scripting.scripting import IScriptRegistry, ScriptFactory, ScriptRegistry
 from orca.system.method_executor import MethodExecutor
 from orca.resource_models.base_resource import IInitializableResource
 from orca.resource_models.labware import LabwareTemplate
 from orca.resource_models.location import Location
-from orca.system.system import ISystem
-from orca.yml_config_builder.config_file import ConfigFile
-from orca.yml_config_builder.template_factories import ConfigToSystemBuilder
+from orca.system.move_handler import MoveHandler
+from orca.system.registries import LabwareRegistry, TemplateRegistry
+from orca.system.reservation_manager import ReservationManager
+from orca.system.resource_registry import ResourceRegistry
+from orca.system.system import ISystem, SystemInfo
+from orca.system.system_map import SystemMap
+from orca.system.thread_manager import ThreadManagerFactory
+from orca.system.workflow_registry import WorkflowRegistry
+from orca.yml_config_builder.config_file import SystemConfiguration
+from orca.yml_config_builder.template_factories import ConfigToSystemBuilder, MethodTemplateFactory, ThreadTemplateFactory, WorkflowTemplateFactory
 from orca.yml_config_builder.resource_factory import IResourceFactory, ResourceFactory
 
 
@@ -24,23 +31,74 @@ class OrcaCore:
     def __init__(self, 
                  config_filepath: str, 
                  driver_manager: DriverManager,
-                 options: Dict[str, Any] = {},
                  scripting_registry: Optional[IScriptRegistry] = None,
-                 resource_factory: Optional[IResourceFactory] = None
+                 resource_factory: Optional[IResourceFactory] = None,
+                 stage: str = "prod",
                  ) -> None:
-        self._config = ConfigFile(config_filepath)
-        self._config.set_command_line_options(options)
-        builder = ConfigToSystemBuilder()
-        if scripting_registry is not None:
-            builder.set_script_registry(scripting_registry)
+        self._config = SystemConfiguration(config_filepath)
+        self._config.set_options({stage: stage})
+            # if scripting_registry is not None:
+        #     builder.set_script_registry(scripting_registry)
+
+        # set scripting registry
+        if scripting_registry is None:
+            absolute_path = os.path.abspath(config_filepath)
+            directory_path = os.path.dirname(absolute_path)
+            file_reconciler = FilepathReconciler(directory_path)
+            scripting_factory = ScriptFactory(self._config.scripting, file_reconciler)
+            scripting_registry = ScriptRegistry(scripting_factory)
+        self._scripting_registry: IScriptRegistry = scripting_registry
+
+        # set resource factory
         if resource_factory is None:
             absolute_path = os.path.abspath(config_filepath)
             directory_path = os.path.dirname(absolute_path)
             filepath_reconciler = FilepathReconciler(directory_path)
             resource_factory = ResourceFactory(driver_manager, filepath_reconciler)
-        builder.set_resource_factory(resource_factory)
-        self._system: ISystem = self._config.get_system(builder)
+        self._resource_factory: IResourceFactory = resource_factory
+
+        resource_reg = ResourceRegistry()
+        system_map = SystemMap(resource_reg)
+        template_registry = TemplateRegistry()
+        labware_registry = LabwareRegistry()
+        reservation_manager = ReservationManager(system_map) 
+        move_handler = MoveHandler(reservation_manager, labware_registry, system_map)
+        thread_manager = ThreadManagerFactory.create_instance(labware_registry, reservation_manager, system_map, move_handler)
+        workflow_registry = WorkflowRegistry(thread_manager, labware_registry, system_map)
+        system_info = SystemInfo(self._config.system.name, 
+                                 self._config.system.version, 
+                                 self._config.system.description, 
+                                 dict(self._config.options.__dict__))
+        method_template_factory = MethodTemplateFactory(resource_reg, labware_registry)
+        thread_template_factory = ThreadTemplateFactory(labware_registry, 
+                                                        system_map, 
+                                                        template_registry, 
+                                                        template_registry, 
+                                                        system_map,
+                                                        thread_manager,
+                                                        self._scripting_registry)
+        workflow_template_factory = WorkflowTemplateFactory(thread_template_factory, template_registry)
+
+        self._builder = ConfigToSystemBuilder()
+        self._builder.set_config(self._config)
+        self._builder.set_system_info(system_info)
+        self._builder.set_system_map(system_map)
+        self._builder.set_script_registry(self._scripting_registry)
+        self._builder.set_resource_registry(resource_reg)
+        self._builder.set_template_registry(template_registry)
+        self._builder.set_labware_registry(labware_registry)
+        self._builder.set_thread_manager(thread_manager)
+        self._builder.set_workflow_registry(workflow_registry)
+        self._builder.set_resource_factory(resource_factory)
+        self._builder.set_method_template_factory(method_template_factory)
+        self._builder.set_workflow_template_factory(workflow_template_factory)
         self._method_executor_registry: Dict[str, MethodExecutor] = {}
+        self._build_system()
+
+    def _build_system(self, stage: str = "prod") -> None:
+        self._config.set_deployment_stage(stage)
+        system = self._builder.get_system()
+        self._system = system
 
     @property
     def system(self) -> ISystem:

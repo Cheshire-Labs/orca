@@ -17,7 +17,9 @@ class DynamicBaseConfigModel(Generic[T]):
         return self._registry.get(value)
 
 class DynamicSystemOptionsConfigModel(DynamicBaseConfigModel[SystemOptionsConfigModel], ISystemOptionsConfig):
-    pass
+    @property
+    def stage(self) -> str:
+        return self._config.stage
 
 class DynamicVariablesConfigModel(DynamicBaseConfigModel[VariablesConfigModel], IVariablesConfig):
     pass
@@ -205,6 +207,13 @@ class DynamicWorkflowConfigModel(DynamicBaseConfigModel[WorkflowConfigModel], IW
         return {key: DynamicLabwareThreadConfigModel(value, self._registry) for key, value in self._config.threads.items()}
 
 class DynamicSystemConfigModel(DynamicBaseConfigModel[SystemConfigModel], ISystemConfig):
+    
+    def set_options(self, options: Dict[str, Any]) -> None:
+        self._config.options = SystemOptionsConfigModel.model_validate(options)
+
+    def set_deployment_stage(self, stage: str) -> None:
+        self._config.options.stage = stage
+
     @property    
     def system(self) -> ISystemSettingsConfig:
         return DynamicSystemSettingsConfigModel(self._config.system, self._registry)
@@ -247,5 +256,5 @@ class DynamicSystemConfigModel(DynamicBaseConfigModel[SystemConfigModel], ISyste
         return DynamicScriptBaseConfigModel(self._config.scripting, self._registry)
 
     @property
-    def options(self) -> Dict[str, Any]:
-        return {key: self.get_dynamic(value) for key, value in self._config.model_extra.items()}
+    def options(self) -> DynamicSystemOptionsConfigModel:
+        return DynamicSystemOptionsConfigModel(self._config.options, self._registry)

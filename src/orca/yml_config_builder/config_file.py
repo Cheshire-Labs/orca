@@ -1,40 +1,64 @@
-from typing import Any, Dict, Optional
-from orca.scripting.scripting import IScriptRegistry
-from orca.system.system import System
-from orca.yml_config_builder.configs import SystemConfigModel, SystemOptionsConfigModel
+from typing import Any, Dict, Union
+from orca.config_interfaces import ILabwareConfig, ILocationConfig, IMethodConfig, IResourceConfig, IResourcePoolConfig, IScriptBaseConfig, ISystemConfig, ISystemOptionsConfig, ISystemSettingsConfig, IVariablesConfig, IWorkflowConfig
+from orca.yml_config_builder.configs import SystemConfigModel
 from orca.yml_config_builder.dynamic_config import DynamicSystemConfigModel
-from orca.yml_config_builder.template_factories import ConfigToSystemBuilder
 
 import yaml
 
 from orca.yml_config_builder.variable_resolution import VariablesRegistry
 
-# TODO: This class and ConfigToSystemBuilder are too intertwined - need to refactor
-class ConfigFile:
+class SystemConfiguration(ISystemConfig):
+   
     def __init__(self, config_filepath: str) -> None:
         self._config_filepath = config_filepath
         with open( self._config_filepath, "r") as f:
             yml_content = f.read()
-        self._yml = yaml.load(yml_content, Loader=yaml.FullLoader)
-        self._system_config = SystemConfigModel.model_validate(self._yml)
-        self._variable_registry = self._get_variable_registry(self._system_config)
-        self._config = DynamicSystemConfigModel(self._system_config, self._variable_registry)
+        self._yml = yaml.load(yml_content, Loader=yaml.FullLoader) # type: ignore
+        self._system_config_model = SystemConfigModel.model_validate(self._yml)
+        self._variable_registry = VariablesRegistry()
+        self._variable_registry.set_selector_configuration("labwares", self._system_config_model.labwares)
+        self._variable_registry.set_selector_configuration("config", self._system_config_model.config)
+        self._variable_registry.set_selector_configuration("opt", self._system_config_model.options)
+        self._config = DynamicSystemConfigModel(self._system_config_model, self._variable_registry)
 
-    def _get_variable_registry(self, system_config: SystemConfigModel) -> VariablesRegistry:
-        registry = VariablesRegistry()
-        registry.add_config("labwares", system_config.labwares)
-        registry.add_config("config", system_config.config)
-        return registry
+    def set_deployment_stage(self, stage: str) -> None:
+        self._system_config_model.options.stage = stage
     
-    def set_command_line_options(self, options: Dict[str, Any]) -> None:
-        if self._system_config.options is None:
-            self._system_config.options = SystemOptionsConfigModel()
-        # TODO: thrown together, make this nicer
-        self._system_config.options.stage = options.get("stage", "prod")
-        self._variable_registry.add_config("opt", self._system_config.options)
+    def set_options(self, options: Dict[str, Any]) -> None:
+        self._config.set_options(options)
 
-    def get_system(self, builder: ConfigToSystemBuilder) -> System:
-        builder.set_config(self._config)
-        builder.set_config_filepath(self._config_filepath)
+    @property    
+    def system(self) -> ISystemSettingsConfig:
+        return self._config.system
 
-        return builder.get_system()
+    @property    
+    def labwares(self) -> Dict[str, ILabwareConfig]:
+        return self._config.labwares
+    
+    @property    
+    def config(self) -> IVariablesConfig:
+        return self._config.config
+
+    @property    
+    def locations(self) -> Dict[str, ILocationConfig]:
+        return self._config.locations
+
+    @property    
+    def resources(self) -> Dict[str, Union[IResourceConfig, IResourcePoolConfig]]:
+        return self._config.resources
+
+    @property    
+    def methods(self) -> Dict[str, IMethodConfig]:
+        return self._config.methods
+
+    @property    
+    def workflows(self) -> Dict[str, IWorkflowConfig]:
+        return self._config.workflows
+
+    @property    
+    def scripting(self) -> IScriptBaseConfig:
+        return self._config.scripting
+
+    @property
+    def options(self) -> ISystemOptionsConfig:
+        return self._config.options
