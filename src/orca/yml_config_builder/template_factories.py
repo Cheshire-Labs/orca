@@ -1,28 +1,22 @@
-
-import os
 from typing import Dict, List, Optional, Tuple, Union
 
 from orca.config_interfaces import ILabwareConfig, ILabwareThreadConfig, IMethodActionConfig, IMethodConfig, IResourceConfig, IResourcePoolConfig, ISystemConfig, IThreadStepConfig, IWorkflowConfig
-from orca.helper import FilepathReconciler
 from orca.resource_models.base_resource import Equipment, LabwareLoadableEquipment
 from orca.resource_models.labware import AnyLabwareTemplate, LabwareTemplate
 from orca.resource_models.location import Location
 from orca.system.workflow_registry import WorkflowRegistry
-from orca.scripting.scripting import IScriptRegistry, ScriptFactory, ScriptRegistry
-from orca.system.move_handler import MoveHandler
-from orca.system.thread_manager import ThreadManagerFactory
+from orca.scripting.scripting import IScriptRegistry
 from orca.system.labware_registry_interfaces import ILabwareTemplateRegistry
 from orca.system.thread_manager import IThreadManager
 from orca.system.registries import LabwareRegistry
-from orca.system.reservation_manager import ReservationManager
-from orca.system.resource_registry import IResourceRegistry, ResourceRegistry
+from orca.system.resource_registry import IResourceRegistry
 from orca.system.system import System, SystemInfo
 from orca.system.system_map import ILocationRegistry, IResourceLocator, SystemMap
 from orca.system.registries import TemplateRegistry
 from orca.system.template_registry_interfaces import IThreadTemplateRegistry, IMethodTemplateRegistry, IWorkflowTemplateRegistry
 from orca.workflow_models.spawn_thread_action import SpawnThreadAction
 from orca.workflow_models.labware_thread import IThreadObserver
-from orca.yml_config_builder.resource_factory import IResourceFactory, ResourceFactory, ResourcePoolFactory
+from orca.yml_config_builder.resource_factory import IResourceFactory, ResourcePoolFactory
 from orca.resource_models.resource_pool import EquipmentResourcePool
 from orca.resource_models.transporter_resource import TransporterEquipment
 from orca.workflow_models.workflow_templates import IMethodTemplate, JunctionMethodTemplate, ThreadTemplate, MethodActionTemplate, MethodTemplate, WorkflowTemplate
@@ -80,6 +74,7 @@ class MethodActionConfigToTemplate:
                                     inputs,
                                     outputs, 
                                     config.options)
+
 
 class MethodTemplateFactory:
     def __init__(self, resource_reg: IResourceRegistry, labware_template_reg: ILabwareTemplateRegistry) -> None:
@@ -206,108 +201,64 @@ class WorkflowTemplateFactory:
                 workflow.add_thread(thread_template, is_start=True)
         return workflow
 
-
-class ConfigToSystemBuilder:
-    def __init__(self) -> None:
-        self._config: Optional[ISystemConfig] = None
-        self._scripting_registry: Optional[IScriptRegistry] = None
-        self._resource_factory: Optional[IResourceFactory] = None
-
-    def set_config(self, config: ISystemConfig) -> None:
-        self._config = config
-
-    def set_config_filepath(self, config_filepath: str) -> None:
-        self._config_filepath = config_filepath
-        
-    def set_script_registry(self, script_reg: IScriptRegistry) -> None:
+class ScriptsBuilder:
+    def __init__(self, config: ISystemConfig, script_reg: IScriptRegistry) -> None:
+        self._config: ISystemConfig = config
         self._scripting_registry = script_reg
 
-    def set_resource_factory(self, resource_factory: IResourceFactory) -> None:
-        self._resource_factory = resource_factory
-        
-    def get_system(self) -> System:
-        if self._config is None:
-            raise ValueError("Config is not set.  You must set the config before building the system")
-        
-        resource_reg = ResourceRegistry()
-        system_map = SystemMap(resource_reg)
-        template_registry = TemplateRegistry()
-        labware_registry = LabwareRegistry()
-        reservation_manager = ReservationManager(system_map) 
-        move_handler = MoveHandler(reservation_manager, labware_registry, system_map)
-        thread_manager = ThreadManagerFactory.create_instance(labware_registry, reservation_manager, system_map, move_handler)
-        workflow_registry = WorkflowRegistry(thread_manager, labware_registry, system_map)
-        system_info = SystemInfo(self._config.system.name, self._config.system.version, self._config.system.description, self._config.options)
-        system = System(system_info, system_map, resource_reg, template_registry, labware_registry, thread_manager, workflow_registry)
-
-        
-        # TODO: Move factories out
-        if self._scripting_registry is None:
-            absolute_path = os.path.abspath(self._config_filepath)
-            directory_path = os.path.dirname(absolute_path)
-            file_reconciler = FilepathReconciler(directory_path)
-            scripting_factory = ScriptFactory(self._config.scripting, file_reconciler)
-            self._scripting_registry = ScriptRegistry(scripting_factory)
-        self._scripting_registry.set_system(system)
-        method_template_factory = MethodTemplateFactory(resource_reg, labware_registry)
-        thread_template_factory = ThreadTemplateFactory(labware_registry, 
-                                                        system_map, 
-                                                        template_registry, 
-                                                        template_registry, 
-                                                        system_map,
-                                                        thread_manager,
-                                                        self._scripting_registry)
-        workflow_template_factory = WorkflowTemplateFactory(thread_template_factory, template_registry)
-
-        self._build_scripts(self._config, self._scripting_registry)
-        self._build_resources(self._config, resource_reg)
-        self._build_locations(self._config, resource_reg, system_map)
-        self._build_labware_templates(self._config, labware_registry)
-        self._build_method_templates(self._config, method_template_factory, template_registry)
-        self._build_workflow_templates(self._config, workflow_template_factory, template_registry)
-        return system
-    
-    def _build_scripts(self, config: ISystemConfig, script_reg: IScriptRegistry) -> None:
-        for script_name, script_config in config.scripting.scripts.items():
+    def build_scripts(self) -> None:
+        for script_name, script_config in self._config.scripting.scripts.items():
             filepath, class_name = script_config.source.split(":")
-            script = script_reg.create_script(filepath, class_name)
-            script_reg.add_script(script_name, script)
-    
-    def _build_resources(self, config: ISystemConfig, resource_reg: IResourceRegistry) -> None:
-        if self._resource_factory is None:
-            raise ValueError("Resource factory is not set.  You must set the resource factory before building resources")
+            script = self._scripting_registry.create_script(filepath, class_name)
+            self._scripting_registry.add_script(script_name, script)
+
+
+class ResourcesBuilder:
+    def __init__(self, config: ISystemConfig, resource_factory: IResourceFactory, resource_reg: IResourceRegistry) -> None:
+        self._config: ISystemConfig = config
+        self._resource_factory: IResourceFactory = resource_factory
+        self._resource_reg: IResourceRegistry = resource_reg
+
+    def build_resources(self) -> None:
+
         resource_pool_configs: Dict[str, IResourcePoolConfig] = {}
 
         # build resources from resource defs in config, defer resource pool creation
-        for name, resource_config in config.resources.items():
+        for name, resource_config in self._config.resources.items():
             if resource_config.type == "pool" and isinstance(resource_config, IResourcePoolConfig):
                 resource_pool_configs[name] = resource_config
                 continue
             elif isinstance(resource_config, IResourceConfig):
-                resource_reg.add_resource(self._resource_factory.create(name, resource_config))
+                self._resource_reg.add_resource(self._resource_factory.create(name, resource_config))
             else:
                 raise ValueError(f"Resource {name} has an invalid type {resource_config.type}")
             
         # build resource pools
         for name, resource_config in resource_pool_configs.items():
-            pool = ResourcePoolFactory(resource_reg).create(name, resource_config)
-            resource_reg.add_resource_pool(pool)
+            pool = ResourcePoolFactory(self._resource_reg).create(name, resource_config)
+            self._resource_reg.add_resource_pool(pool)
 
-    def _build_locations(self, config: ISystemConfig, resource_registry: IResourceRegistry, system_map: SystemMap) -> None:
+class LocationsBuilder:
+    def __init__(self, config: ISystemConfig, resource_registry: IResourceRegistry, system_map: SystemMap) -> None:
+        self._config: ISystemConfig = config
+        self._resource_registry: IResourceRegistry = resource_registry
+        self._system_map: SystemMap = system_map
+
+    def build_locations(self) -> None:
         # build locations from location defs in config
-        for location_name, location_config in config.locations.items():
+        for location_name, location_config in self._config.locations.items():
             location = Location(location_config.teachpoint_name)
             location.set_options(location_config.options)  
-            system_map.add_location(location)
+            self._system_map.add_location(location)
         
-        for res in resource_registry.resources:
+        for res in self._resource_registry.resources:
             # skip resources like newtowrk switches, etc that don't have plate pad locations
             if isinstance(res, LabwareLoadableEquipment) \
                 and not isinstance(res, EquipmentResourcePool) \
                 and not isinstance(res, TransporterEquipment):
                 # set resource to each location
                 # if the plate-pad is not set in the resource definition, then use the resource name
-                resource_config = config.resources[res.name]
+                resource_config = self._config.resources[res.name]
                 if not isinstance(resource_config, IResourceConfig):
                     raise ValueError(f"Resource {res.name} has an invalid type {resource_config.type}")
                 if resource_config.plate_pad is not None:
@@ -316,26 +267,170 @@ class ConfigToSystemBuilder:
                     location_name = res.name
 
                 try:
-                    location = system_map.get_location(location_name)
+                    location = self._system_map.get_location(location_name)
                 except KeyError:
                     raise LookupError(f"Location {location_name} referenced in resource {res.name} is not recognized.  Locations must be defined by the transporting resource.")
                 location.resource = res
 
-    def _build_labware_templates(self, config: ISystemConfig, labware_temp_reg: ILabwareTemplateRegistry) -> None:
-        adapter = LabwareConfigToTemplateAdapter()
-        for labware_name, labware_config in config.labwares.items():
-            labware_template = adapter.get_template(labware_name, labware_config)
-            labware_temp_reg.add_labware_template(labware_template)
 
-    def _build_method_templates(self, config: ISystemConfig, method_template_factory: MethodTemplateFactory, method_temp_Reg: IMethodTemplateRegistry) -> None:
-        for method_name, method_config in config.methods.items():
-            method_template = method_template_factory.get_template(method_name, method_config)
-            method_temp_Reg.add_method_template( method_template)
 
-    def _build_workflow_templates(self, config: ISystemConfig, workflow_template_factory: WorkflowTemplateFactory, workflow_temp_reg: IWorkflowTemplateRegistry) -> None:
-        for workflow_name, workflow_config in config.workflows.items():
-            workflow_template = workflow_template_factory.get_template(workflow_name, workflow_config,)
-            workflow_temp_reg.add_workflow_template(workflow_template)
+
+
+class LabwareTemplatesBuilder:
+    def __init__(self, config: ISystemConfig, labware_template_registry: ILabwareTemplateRegistry) -> None:
+        self._config = config
+        self._adapter = LabwareConfigToTemplateAdapter()
+        self._labware_template_registry = labware_template_registry
+    
+    def build_labware_templates(self) -> None:
+        for labware_name, labware_config in self._config.labwares.items():
+            labware_template = self._adapter.get_template(labware_name, labware_config)
+            self._labware_template_registry.add_labware_template(labware_template)
+
+
+class MethodTemplatesBuilder:
+    def __init__(self, config: ISystemConfig, method_template_factory: MethodTemplateFactory, method_template_registry: IMethodTemplateRegistry) -> None:
+        self._config: ISystemConfig = config
+        self._method_template_factory: MethodTemplateFactory = method_template_factory
+        self._method_template_registry: IMethodTemplateRegistry = method_template_registry
+
+    def build_method_templates(self) -> None:
+        for method_name, method_config in self._config.methods.items():
+            method_template = self._method_template_factory.get_template(method_name, method_config)
+            self._method_template_registry.add_method_template(method_template)
+ 
+class WorkflowTemplatesBuilder:
+    def __init__(self, 
+                 config: ISystemConfig, 
+                 workflow_template_factory: WorkflowTemplateFactory, 
+                 workflow_template_registry: IWorkflowTemplateRegistry
+                 ) -> None:
+        self._config: ISystemConfig = config
+        self._workflow_template_factory: WorkflowTemplateFactory = workflow_template_factory
+        self._workflow_temp_reg: IWorkflowTemplateRegistry = workflow_template_registry
+
+    def build_workflow_templates(self) -> None:
+        for workflow_name, workflow_config in self._config.workflows.items():
+            workflow_template = self._workflow_template_factory.get_template(workflow_name, workflow_config)
+            self._workflow_temp_reg.add_workflow_template(workflow_template)
+
+
+
+class ConfigToSystemBuilder:
+    def __init__(self) -> None:
+        
+        self._config: Optional[ISystemConfig] = None
+        self._scripting_registry: Optional[IScriptRegistry] = None
+        self._system_info: Optional[SystemInfo] = None 
+        self._system_map: Optional[SystemMap] = None
+        self._resource_reg: Optional[IResourceRegistry] = None
+        self._template_registry: Optional[TemplateRegistry] = None
+        self._labware_registry: Optional[LabwareRegistry] = None
+        self._thread_manager: Optional[IThreadManager] = None
+        self._workflow_registry: Optional[WorkflowRegistry] = None
+        self._resource_factory: Optional[IResourceFactory] = None
+        self._method_template_factory: Optional[MethodTemplateFactory] = None
+        self._workflow_template_factory: Optional[WorkflowTemplateFactory] = None
+
+    def set_config(self, config: ISystemConfig) -> None:
+        self._config = config
+
+    def set_system_info(self, system_info: SystemInfo) -> None:
+        self._system_info = system_info
+    
+    def set_system_map(self, system_map: SystemMap) -> None:
+        self._system_map = system_map
+
+    def set_resource_registry(self, resource_reg: IResourceRegistry) -> None:
+        self._resource_reg = resource_reg
+
+    def set_template_registry(self, template_registry: TemplateRegistry) -> None:
+        self._template_registry = template_registry
+    
+    def set_labware_registry(self, labware_registry: LabwareRegistry) -> None:
+        self._labware_registry = labware_registry
+
+    def set_thread_manager(self, thread_manager: IThreadManager) -> None:
+        self._thread_manager = thread_manager
+
+    def set_workflow_registry(self, workflow_registry: WorkflowRegistry) -> None:
+        self._workflow_registry = workflow_registry
+
+    def set_script_registry(self, script_reg: IScriptRegistry) -> None:
+        self._scripting_registry = script_reg
+    
+    def set_resource_factory(self, resource_factory: IResourceFactory) -> None:
+        self._resource_factory = resource_factory
+
+    def set_method_template_factory(self, method_template_factory: MethodTemplateFactory) -> None:
+        self._method_template_factory = method_template_factory
+
+    def set_workflow_template_factory(self, workflow_template_factory: WorkflowTemplateFactory) -> None:
+        self._workflow_template_factory = workflow_template_factory
+    
+        
+    def get_system(self) -> System:
+        if self._config is None:
+            raise ValueError("Config is not set.  You must set the config before building the system")
+        if self._scripting_registry is None:
+            raise ValueError("Script registry is not set.  You must set the script registry before building the system")
+        if self._system_info is None:
+            raise ValueError("System info is not set.  You must set the system info before building the system") 
+        if self._system_map is None:
+            raise ValueError("System map is not set.  You must set the system map before building the system")
+        if self._resource_reg is None:
+            raise ValueError("Resource registry is not set.  You must set the resource registry before building the system")
+        if self._template_registry is None:
+            raise ValueError("Template registry is not set.  You must set the template registry before building the system")
+        if self._labware_registry is None:
+            raise ValueError("Labware registry is not set.  You must set the labware registry before building the system")
+        if self._thread_manager is None:
+            raise ValueError("Thread manager is not set.  You must set the thread manager before building the system")
+        if self._workflow_registry is None:
+            raise ValueError("Workflow registry is not set.  You must set the workflow registry before building the system")
+        if self._resource_factory is None:
+            raise ValueError("Resource factory is not set.  You must set the resource factory before building the system")
+        if self._method_template_factory is None:
+            raise ValueError("Method template factory is not set.  You must set the method template factory before building the system")
+        if self._workflow_template_factory is None:
+            raise ValueError("Workflow template factory is not set.  You must set the workflow template factory before building the system")
+
+        system = System(self._system_info, 
+                        self._system_map, 
+                        self._resource_reg, 
+                        self._template_registry, 
+                        self._labware_registry, 
+                        self._thread_manager, 
+                        self._workflow_registry)
+
+        
+        self._scripting_registry.set_system(system)
+
+        self._scripts_builder = ScriptsBuilder(self._config, self._scripting_registry)
+        self._resources_builder = ResourcesBuilder(self._config, self._resource_factory, self._resource_reg)
+        self._locations_builder = LocationsBuilder(self._config, self._resource_reg, self._system_map)
+        self._labware_templates_builder = LabwareTemplatesBuilder(self._config, self._labware_registry)
+        self._workflow_template_builder = WorkflowTemplatesBuilder(self._config, self._workflow_template_factory, self._template_registry)
+        self._method_template_builder = MethodTemplatesBuilder(self._config, self._method_template_factory, self._template_registry)
+
+        self._scripts_builder.build_scripts()
+        self._resources_builder.build_resources()
+        self._locations_builder.build_locations()
+        self._labware_templates_builder.build_labware_templates()
+        self._method_template_builder.build_method_templates()
+        self._workflow_template_builder.build_workflow_templates()
+        return system
+    
+
+    
+
+
+
+
+
+
+
+
 
 
 

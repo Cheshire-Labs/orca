@@ -1,8 +1,13 @@
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Union
 
+from orca.yml_config_builder.configs import SystemOptionsConfigModel
+
 class ISystemOptionsConfig(ABC):
-    pass
+    @property
+    @abstractmethod
+    def stage(self) -> str:
+        raise NotImplementedError
 
 class IVariablesConfig(ABC):
     pass
@@ -253,6 +258,6 @@ class ISystemConfig(ABC):
     
     @property
     @abstractmethod
-    def options(self) -> Dict[str, Any]:
+    def options(self) -> ISystemOptionsConfig:
         raise NotImplementedError
 
