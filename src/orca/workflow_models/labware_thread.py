@@ -220,6 +220,10 @@ class LabwareThread(IMethodObserver):
         return self._move_action
 
     async def start(self) -> None: 
+        # initialization check
+        if self.status == LabwareThreadStatus.CREATED:
+            self.initialize_labware()
+
         while not self.has_completed():
             # no methods left, send home
             if len(self.pending_methods) == 0:
@@ -309,6 +313,8 @@ class LabwareThread(IMethodObserver):
         assert self._move_action is not None
         self._status = LabwareThreadStatus.AWAITING_MOVE_TARGET_AVAILABILITY
         while self._move_action.target.labware is not None:
+            print(f"Thread {self.name} waiting for target {self._move_action.target.name} to be available. Current labware: {self._move_action.target.labware.name}")
+            print(f"Deadlock status: {self._move_action.reservation.deadlocked.is_set()}")
             if self._move_action.reservation.deadlocked.is_set():
                 await self._handle_deadlock()
             await asyncio.sleep(0.2)
