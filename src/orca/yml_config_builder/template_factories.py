@@ -16,11 +16,14 @@ from orca.system.registries import TemplateRegistry
 from orca.system.template_registry_interfaces import IThreadTemplateRegistry, IMethodTemplateRegistry, IWorkflowTemplateRegistry
 from orca.workflow_models.spawn_thread_action import SpawnThreadAction
 from orca.workflow_models.labware_thread import IThreadObserver
+from orca.yml_config_builder.configs import SystemConfigModel
+from orca.yml_config_builder.dynamic_config import DynamicSystemConfigModel
 from orca.yml_config_builder.resource_factory import IResourceFactory, ResourcePoolFactory
 from orca.resource_models.resource_pool import EquipmentResourcePool
 from orca.resource_models.transporter_resource import TransporterEquipment
 from orca.workflow_models.workflow_templates import IMethodTemplate, JunctionMethodTemplate, ThreadTemplate, MethodActionTemplate, MethodTemplate, WorkflowTemplate
 from orca.yml_config_builder.special_yml_parsing import get_dynamic_yaml_keys, is_dynamic_yaml
+from orca.yml_config_builder.variable_resolution import VariablesRegistry
 
 
 class LabwareConfigToTemplateAdapter:
@@ -331,9 +334,13 @@ class ConfigToSystemBuilder:
         self._resource_factory: Optional[IResourceFactory] = None
         self._method_template_factory: Optional[MethodTemplateFactory] = None
         self._workflow_template_factory: Optional[WorkflowTemplateFactory] = None
+        self._variable_registry = VariablesRegistry()
 
-    def set_config(self, config: ISystemConfig) -> None:
-        self._config = config
+
+    def set_config(self, config: SystemConfigModel) -> None:
+        self._variable_registry.set_selector_configuration("labwares", config.labwares)
+        self._variable_registry.set_selector_configuration("config", config.config)
+        self._config = DynamicSystemConfigModel(config, self._variable_registry)
 
     def set_system_info(self, system_info: SystemInfo) -> None:
         self._system_info = system_info
@@ -369,7 +376,8 @@ class ConfigToSystemBuilder:
         self._workflow_template_factory = workflow_template_factory
     
         
-    def get_system(self) -> System:
+    def get_system(self, deployment_stage: str) -> System:
+        
         if self._config is None:
             raise ValueError("Config is not set.  You must set the config before building the system")
         if self._scripting_registry is None:
@@ -394,6 +402,8 @@ class ConfigToSystemBuilder:
             raise ValueError("Method template factory is not set.  You must set the method template factory before building the system")
         if self._workflow_template_factory is None:
             raise ValueError("Workflow template factory is not set.  You must set the workflow template factory before building the system")
+        
+        self._variable_registry.set_selector_configuration("opt", {"stage": deployment_stage})
 
         system = System(self._system_info, 
                         self._system_map, 

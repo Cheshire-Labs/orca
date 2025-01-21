@@ -1,16 +1,14 @@
 from abc import ABC, abstractmethod
 
-from importlib.machinery import ModuleSpec
-import os
 from typing import Dict
 import importlib.util
 import sys
 from pathlib import Path
-from orca.config_interfaces import IScriptBaseConfig
 from orca.helper import FilepathReconciler
 from orca.system.system import ISystem
 from orca.workflow_models.labware_thread import LabwareThread
 from orca.workflow_models.labware_thread import IThreadObserver
+from orca.yml_config_builder.configs import ScriptBaseConfigModel
 
 
 class IThreadScript(IThreadObserver, ABC):
@@ -60,8 +58,8 @@ class IScriptFactory(ABC):
 
 class ScriptFactory(IScriptFactory):
 
-    def __init__(self, scripting_config: IScriptBaseConfig, filepath_reconciler: FilepathReconciler) -> None:
-        self._scripting_config: IScriptBaseConfig = scripting_config
+    def __init__(self, scripting_config: ScriptBaseConfigModel, filepath_reconciler: FilepathReconciler) -> None:
+        self._scripting_config = scripting_config
         self._filepath_reconciler = filepath_reconciler
         self._filepath_reconciler.set_base_dir(self._scripting_config.base_dir)
 

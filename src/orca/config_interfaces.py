@@ -4,13 +4,12 @@ from typing import Any, Dict, List, Optional, Union
 from orca.yml_config_builder.configs import SystemOptionsConfigModel
 
 class ISystemOptionsConfig(ABC):
-    @property
-    @abstractmethod
-    def stage(self) -> str:
-        raise NotImplementedError
+    pass
 
 class IVariablesConfig(ABC):
-    pass
+    @abstractmethod
+    def get_deployment_stages(self) -> List[str]:
+        raise NotImplementedError
 
 class IScriptConfig(ABC):
     @property
