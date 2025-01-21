@@ -1,5 +1,5 @@
 from typing import Dict, List, Optional, Tuple, Union
-
+import logging
 from orca.config_interfaces import ILabwareConfig, ILabwareThreadConfig, IMethodActionConfig, IMethodConfig, IResourceConfig, IResourcePoolConfig, ISystemConfig, IThreadStepConfig, IWorkflowConfig
 from orca.resource_models.base_resource import Equipment, LabwareLoadableEquipment
 from orca.resource_models.labware import AnyLabwareTemplate, LabwareTemplate
@@ -26,6 +26,7 @@ from orca.yml_config_builder.special_yml_parsing import get_dynamic_yaml_keys, i
 from orca.yml_config_builder.variable_resolution import VariablesRegistry
 
 
+orca_logger = logging.getLogger("orca")
 class LabwareConfigToTemplateAdapter:
 
     def get_template(self, name: str, config: ILabwareConfig) -> LabwareTemplate:
@@ -404,7 +405,7 @@ class ConfigToSystemBuilder:
             raise ValueError("Workflow template factory is not set.  You must set the workflow template factory before building the system")
         
         self._variable_registry.set_selector_configuration("opt", {"stage": deployment_stage})
-        
+        orca_logger.info(f"Building system for deployment stage '{deployment_stage}'...")
         system = System(self._system_info, 
                         self._system_map, 
                         self._resource_reg, 
@@ -429,19 +430,5 @@ class ConfigToSystemBuilder:
         self._labware_templates_builder.build_labware_templates()
         self._method_template_builder.build_method_templates()
         self._workflow_template_builder.build_workflow_templates()
+        orca_logger.info("Completed System build")
         return system
-    
-
-    
-
-
-
-
-
-
-
-
-
-
-
-        
