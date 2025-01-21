@@ -3,6 +3,8 @@ import os
 from typing import Any, Dict, Optional, List, Union, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from orca.config_interfaces import IVariablesConfig
+
 
 class ConfigModel(BaseModel):
     model_config = ConfigDict(extra='allow')
@@ -16,9 +18,11 @@ class ConfigModel(BaseModel):
     
 class SystemOptionsConfigModel(ConfigModel):
     model_config = ConfigDict(extra='allow')
-    stage: str = 'prod'
 
-class VariablesConfigModel(ConfigModel):
+    def get_deployment_stages(self) -> List[str]:
+        return list(self.model_extra.keys())
+
+class VariablesConfigModel(ConfigModel, IVariablesConfig):
     model_config = ConfigDict(extra='allow')
     
 class ScriptConfigModel(ConfigModel):

@@ -3,6 +3,8 @@ from typing import Any, Callable, Coroutine, Dict, List, Optional
 import logging
 import asyncio
 
+import yaml
+
 from orca.driver_management.driver_installer import DriverInstaller, DriverLoader, DriverManager, InstalledDriverRegistry, RemoteAvailableDriverRegistry
 from orca.helper import FilepathReconciler
 from orca.scripting.scripting import IScriptRegistry, ScriptFactory, ScriptRegistry
@@ -18,7 +20,7 @@ from orca.system.system import ISystem, SystemInfo
 from orca.system.system_map import SystemMap
 from orca.system.thread_manager import ThreadManagerFactory
 from orca.system.workflow_registry import WorkflowRegistry
-from orca.yml_config_builder.config_file import SystemConfiguration
+from orca.yml_config_builder.configs import SystemConfigModel
 from orca.yml_config_builder.template_factories import ConfigToSystemBuilder, MethodTemplateFactory, ThreadTemplateFactory, WorkflowTemplateFactory
 from orca.yml_config_builder.resource_factory import IResourceFactory, ResourceFactory
 
@@ -33,9 +35,13 @@ class OrcaCore:
                  driver_manager: DriverManager,
                  scripting_registry: Optional[IScriptRegistry] = None,
                  resource_factory: Optional[IResourceFactory] = None,
-                 stage: str = "prod",
+                 deployment_stage: str = "prod"
                  ) -> None:
-        self._config = SystemConfiguration(config_filepath)
+        self._config_filepath = config_filepath
+        with open( self._config_filepath, "r") as f:
+            yml_content = f.read()
+        self._yml = yaml.load(yml_content, Loader=yaml.FullLoader) # type: ignore
+        self._config = SystemConfigModel.model_validate(self._yml)
 
         # set scripting registry
         if scripting_registry is None:
@@ -90,14 +96,14 @@ class OrcaCore:
         self._builder.set_method_template_factory(method_template_factory)
         self._builder.set_workflow_template_factory(workflow_template_factory)
         self._method_executor_registry: Dict[str, MethodExecutor] = {}
-        self._system = self._builder.get_system()
+        self._system = self._builder.get_system(deployment_stage)
 
     @property
     def system(self) -> ISystem:
         return self._system
     
     @property
-    def system_config(self) -> SystemConfiguration:
+    def system_config(self) -> SystemConfigModel:
         return self._config
 
     async def initialize(self,
