@@ -108,7 +108,9 @@ class OrcaCore:
 
     async def initialize(self,
                    resource_list: Optional[List[str]] = None,
-                   options: Dict[str, Any] = {}) -> None:
+                   deployment_stage: Optional[str] = None) -> None:
+        if deployment_stage is not None:
+            self._system = self._builder.get_system(deployment_stage)
         if resource_list is None:
             await self._system.initialize_all()
         else:
@@ -121,7 +123,10 @@ class OrcaCore:
 
     def create_workflow_instance(self, 
                                  workflow_name: str, 
-                                 options: Dict[str, Any] = {}) -> str:
+                                 deployment_stage: Optional[str] = None,
+                                 ) -> str:
+        if deployment_stage is not None:
+            self._system = self._builder.get_system(deployment_stage)
         workflow_template = self._system.get_workflow_template(workflow_name)
         workflow = self._system.create_workflow_instance(workflow_template)
         self._system.add_workflow(workflow)
@@ -138,7 +143,10 @@ class OrcaCore:
                                method_name: str, 
                                start_map: Dict[str, str], 
                                end_map: Dict[str, str], 
-                               options: Dict[str, Any] = {}) -> str:
+                               deployment_stage: Optional[str] = None,
+                               ) -> str:
+        if deployment_stage is not None:
+            self._system = self._builder.get_system(deployment_stage)
         try:
             method_template = self._system.get_method_template(method_name)
         except KeyError:

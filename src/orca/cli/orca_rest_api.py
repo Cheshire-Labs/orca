@@ -53,8 +53,8 @@ async def load(data: Dict[str, Any]) -> Dict[str, str]:
 async def init(data: Dict[str, Any]):
     config_file = data.get("configFile")
     resource_list = data.get("resourceList", [])
-    options = data.get("options", {})
-    orca_api.init(config_file=config_file, resource_list=resource_list, options=options)
+    stage = data.get("stage", None)
+    orca_api.init(config_file, resource_list, stage)
     return {"message": "Initialization complete."}
 
 
@@ -64,9 +64,9 @@ async def run_workflow(data: Dict[str, Any]) -> Dict[str, Any]:
     if workflow_name is None:
         raise HTTPException(status_code=400, detail="Workflow name is required.")
     config_file = data.get("configFile", None)
-    options = data.get("options", {})
+    stage = data.get("stage", None)
     workflow_id = orca_api.run_workflow(
-        workflow_name=workflow_name, config_file=config_file, options=options
+        workflow_name, config_file, stage
     )
     orca_logger.info(f"Workflow {workflow_name} started with ID {workflow_id}")
     return {"workflowId": workflow_id}
@@ -80,13 +80,13 @@ async def run_method(data: Dict[str, Any]) -> Dict[str, Any]:
     start_map_json = data.get("startMap", {})
     end_map_json = data.get("endMap", {})
     config_file = data.get("configFile", None)
-    options = data.get("options", {})
+    stage = data.get("stage", None)
     method_id = orca_api.run_method(
-        method_name=method_name,
-        start_map_json=start_map_json,
-        end_map_json=end_map_json,
-        config_file=config_file,
-        options=options,
+        method_name,
+        start_map_json,
+        end_map_json,
+        config_file,
+        stage
     )
     return {"methodId": method_id}
 
