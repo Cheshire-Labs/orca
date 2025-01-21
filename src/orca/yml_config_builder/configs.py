@@ -25,6 +25,9 @@ class SystemOptionsConfigModel(ConfigModel):
 class VariablesConfigModel(ConfigModel, IVariablesConfig):
     model_config = ConfigDict(extra='allow')
     
+    def get_deployment_stages(self) -> List[str]:
+        return list(self.model_extra.keys())
+    
 class ScriptConfigModel(ConfigModel):
     model_config = ConfigDict(extra='allow')
     source: str

@@ -404,7 +404,7 @@ class ConfigToSystemBuilder:
             raise ValueError("Workflow template factory is not set.  You must set the workflow template factory before building the system")
         
         self._variable_registry.set_selector_configuration("opt", {"stage": deployment_stage})
-
+        
         system = System(self._system_info, 
                         self._system_map, 
                         self._resource_reg, 
