@@ -47,6 +47,10 @@ class IScriptRegistry(ABC):
     @abstractmethod
     def create_script(self, filepath: str, class_name: str) -> ThreadScript:
         raise NotImplementedError
+    
+    @abstractmethod
+    def clear(self) -> None:
+        raise NotImplementedError
 
 class IScriptFactory(ABC):
     
@@ -111,4 +115,7 @@ class ScriptRegistry(IScriptRegistry):
 
     def create_script(self, filepath: str, class_name: str) -> ThreadScript:
         return self._factory.create_script(filepath, class_name)
+    
+    def clear(self) -> None:
+        self._scripts.clear()
        
