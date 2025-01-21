@@ -116,8 +116,11 @@ class InstalledDriverRegistry:
 
     def _discover_installed_drivers(self) -> None:
         for dist in importlib.metadata.distributions():
-            if dist.metadata["Name"].startswith(self._prefix):
-                driver_name = dist.metadata["Name"].replace(self._prefix, "")
+            name = dist.metadata["Name"]
+            if name is None:
+                continue
+            if name.startswith(self._prefix):
+                driver_name = name.replace(self._prefix, "")
                 
                 # get the driver info file
                 driver_info_path = str(dist.locate_file("driver.json"))
