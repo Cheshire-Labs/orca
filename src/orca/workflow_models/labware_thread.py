@@ -220,6 +220,10 @@ class LabwareThread(IMethodObserver):
         return self._move_action
 
     async def start(self) -> None: 
+        # initialization check
+        if self.status == LabwareThreadStatus.CREATED:
+            self.initialize_labware()
+
         while not self.has_completed():
             # no methods left, send home
             if len(self.pending_methods) == 0:
