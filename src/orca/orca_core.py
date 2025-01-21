@@ -175,7 +175,7 @@ class OrcaCore:
                                  end_map_obj,
                                  self._system,
                                  self._system)
-        self._method_executor_registry[method_name] = executer
+        self._method_executor_registry[executer.id] = executer
         return executer.id
     
     async def run_method(self, method_id: str) -> None:
@@ -186,7 +186,7 @@ class OrcaCore:
         
 
     def stop(self) -> None:
-        self._system.stop_all_threads()     
+        self._system.stop_all_threads()
 
 
 if __name__ == "__main__":
