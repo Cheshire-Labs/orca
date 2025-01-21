@@ -76,3 +76,7 @@ class WorkflowRegistry(IWorkflowRegistry):
     def create_method_instance(self, template: MethodTemplate) -> Method:
         # TODO: May need to delete this method and rexamine the design for method access
         raise NotImplementedError
+    
+    def clear(self) -> None:
+        self._workflows.clear()
+        self._methods.clear()

@@ -377,7 +377,7 @@ class ConfigToSystemBuilder:
         self._workflow_template_factory = workflow_template_factory
     
         
-    def get_system(self, deployment_stage: str) -> System:
+    def get_system(self, deployment_stage: str, clear_registries: bool = False) -> System:
         
         if self._config is None:
             raise ValueError("Config is not set.  You must set the config before building the system")
@@ -406,6 +406,15 @@ class ConfigToSystemBuilder:
         
         self._variable_registry.set_selector_configuration("opt", {"stage": deployment_stage})
         orca_logger.info(f"Building system for deployment stage '{deployment_stage}'...")
+        
+        if clear_registries:
+            self._resource_reg.clear()
+            self._template_registry.clear()
+            self._labware_registry.clear()
+            self._workflow_registry.clear()
+            self._scripting_registry.clear()
+
+        
         system = System(self._system_info, 
                         self._system_map, 
                         self._resource_reg, 

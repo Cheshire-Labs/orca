@@ -77,6 +77,10 @@ class LabwareRegistry(ILabwareRegistry, ILabwareTemplateRegistry):
     def add_labware_template(self, labware: LabwareTemplate) -> None:
         self._labware_templates[labware.name] = labware
 
+    def clear(self) -> None:
+        self._labwares.clear()
+        self._labware_templates.clear()
+
 
 class TemplateRegistry(IThreadTemplateRegistry, IWorkflowTemplateRegistry, IMethodTemplateRegistry):
     def __init__(self) -> None:
@@ -117,3 +121,7 @@ class TemplateRegistry(IThreadTemplateRegistry, IWorkflowTemplateRegistry, IMeth
             raise KeyError(f"Workflow {name} is already defined in the system.  Each workflow must have a unique name")
         self._workflow_templates[name] = workflow
 
+    def clear(self) -> None:
+        self._labware_thread_templates.clear()
+        self._method_templates.clear()
+        self._workflow_templates.clear()
