@@ -113,7 +113,7 @@ class VariablesRegistry:
         self._router = VariablesLookupRouter()
         self._parser = VariableStringParser(self._router)
 
-    def add_config(self, selector: str, config: ConfigModel | Dict[str, Any]) -> None:
+    def set_selector_configuration(self, selector: str, config: ConfigModel | Dict[str, Any]) -> None:
         self._router.add_config(selector, config)
 
     def get(self, key: Any) -> Any:
