@@ -110,6 +110,7 @@ class OrcaCore:
                    resource_list: Optional[List[str]] = None,
                    deployment_stage: Optional[str] = None) -> None:
         if deployment_stage is not None:
+            self._builder.clear_registries()
             self._system = self._builder.get_system(deployment_stage)
         if resource_list is None:
             await self._system.initialize_all()
@@ -126,6 +127,7 @@ class OrcaCore:
                                  deployment_stage: Optional[str] = None,
                                  ) -> str:
         if deployment_stage is not None:
+            self._builder.clear_registries()
             self._system = self._builder.get_system(deployment_stage)
         workflow_template = self._system.get_workflow_template(workflow_name)
         workflow = self._system.create_workflow_instance(workflow_template)
@@ -146,6 +148,7 @@ class OrcaCore:
                                deployment_stage: Optional[str] = None,
                                ) -> str:
         if deployment_stage is not None:
+            self._builder.clear_registries()
             self._system = self._builder.get_system(deployment_stage)
         try:
             method_template = self._system.get_method_template(method_name)
