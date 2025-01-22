@@ -30,7 +30,7 @@ class OrcaApi:
             DriverInstaller(installed_registry), 
             RemoteAvailableDriverRegistry(available_drivers_registry))
 
-    def load(self, config_filepath: str):
+    def load(self, config_filepath: str) -> None:
         self.__orca = OrcaCore(config_filepath, self._driver_manager)
 
     def init(
@@ -38,7 +38,7 @@ class OrcaApi:
         config_file: Optional[str] = None,
         resource_list: Optional[List[str]] = None,
         deployment_stage: Optional[str] = None,
-    ):
+    ) -> None:
         if config_file is not None:
             self.load(config_file)
 
@@ -64,16 +64,14 @@ class OrcaApi:
     def run_method(
         self,
         method_name: str,
-        start_map_json: str,
-        end_map_json: str,
+        start_map: Dict[str, str],
+        end_map: Dict[str, str],
         config_file: Optional[str] = None,
         deployment_stage: Optional[str] = None,
         )-> str:
         
         if config_file is not None:
             self.load(config_file)
-        start_map = json.loads(start_map_json)
-        end_map = json.loads(end_map_json)
         method_id = self._orca.create_method_instance(method_name, start_map, end_map, deployment_stage)
         loop = asyncio.get_running_loop()
         loop.create_task(self._orca.run_method(method_id))

@@ -77,14 +77,14 @@ async def run_method(data: Dict[str, Any]) -> Dict[str, Any]:
     method_name = data.get("methodName")
     if method_name is None:
         raise HTTPException(status_code=400, detail="Method name is required.")
-    start_map_json = data.get("startMap", {})
-    end_map_json = data.get("endMap", {})
+    start_map = data.get("startMap", {})
+    end_map = data.get("endMap", {})
     config_file = data.get("configFile", None)
     stage = data.get("stage", None)
     method_id = orca_api.run_method(
         method_name,
-        start_map_json,
-        end_map_json,
+        start_map,
+        end_map,
         config_file,
         stage
     )
