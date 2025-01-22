@@ -88,6 +88,7 @@ async def run_method(data: Dict[str, Any]) -> Dict[str, Any]:
         config_file,
         stage
     )
+    orca_logger.info(f"Method {method_name} started with ID {method_id}")
     return {"methodId": method_id}
 
 
