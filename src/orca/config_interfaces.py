@@ -5,7 +5,9 @@ class ISystemOptionsConfig(ABC):
     pass
 
 class IVariablesConfig(ABC):
-    pass
+    @abstractmethod
+    def get_deployment_stages(self) -> List[str]:
+        raise NotImplementedError
 
 class IScriptConfig(ABC):
     @property
@@ -253,6 +255,6 @@ class ISystemConfig(ABC):
     
     @property
     @abstractmethod
-    def options(self) -> Dict[str, Any]:
+    def options(self) -> ISystemOptionsConfig:
         raise NotImplementedError
 
