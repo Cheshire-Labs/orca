@@ -253,3 +253,6 @@ class System(ISystem):
     
     async def initialize_all(self) -> None:
         return await self._resources.initialize_all()
+
+    def clear_resources(self) -> None:
+        return self._resources.clear_resources()

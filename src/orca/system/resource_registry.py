@@ -68,7 +68,7 @@ class IResourceRegistry(ABC):
         raise NotImplementedError
     
     @abstractmethod
-    def clear(self) -> None:
+    def clear_resources(self) -> None:
         raise NotImplementedError
 
 
@@ -131,7 +131,7 @@ class ResourceRegistry(IResourceRegistry):
     async def initialize_all(self) -> None:
         await asyncio.gather(*[r.initialize() for r in self._resources.values() if isinstance(r, IInitializableResource)])
 
-    def clear(self) -> None:
+    def clear_resources(self) -> None:
         self._resources.clear()
         self._resource_pools.clear()
         self._observers.clear()
