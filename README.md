@@ -113,7 +113,7 @@ To see a quick demo of how orca works:
 5. Open your command line
 6. Install Orca
     ```bash
-    pip install git+https://github.com/cheshire-labs/orca.git@dev
+    pip install cheshire-orca
     ```
 
 
@@ -152,7 +152,7 @@ To see a quick demo of how orca works:
 2. Install via pip
     - Install from github
         ```bash
-        pip install git+https://github.com/cheshire-labs/orca.git@dev
+        pip install cheshire-orca
         ```
 
     - Download/Clone repo and install locally
