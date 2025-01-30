@@ -1,8 +1,9 @@
 from types import MappingProxyType
-from typing import Any, Dict, List, Literal, Union, Optional
+from typing import Dict, List, Optional
 import asyncio
-import json
-from orca.driver_management.driver_installer import  DriverInstaller, DriverLoader, DriverManager, DriverRegistryInfo, InstalledDriverInfo, InstalledDriverRegistry, RemoteAvailableDriverRegistry
+from orca.driver_management.driver_installer import \
+    DriverInstaller, DriverLoader, DriverManager, DriverRegistryInfo, \
+    InstalledDriverInfo, InstalledDriverRegistry, RemoteAvailableDriverRegistry
 from orca.orca_core import OrcaCore
 from orca.system.method_executor import MethodTemplate
 from orca.system.system import WorkflowTemplate
@@ -26,9 +27,9 @@ class OrcaApi:
         installed_registry = InstalledDriverRegistry()
         self._driver_manager = DriverManager(
             installed_registry,
-            DriverLoader(), 
-            DriverInstaller(installed_registry), 
-            RemoteAvailableDriverRegistry(available_drivers_registry))
+            DriverLoader(),
+            DriverInstaller(installed_registry),
+            RemoteAvailableDriverRegistry(available_drivers_registry, installed_registry))
 
     def load(self, config_filepath: str) -> None:
         self.__orca = OrcaCore(config_filepath, self._driver_manager)
@@ -48,10 +49,10 @@ class OrcaApi:
         config_file_model = self._orca.system_config
         variable_configs = config_file_model.config
         return list(variable_configs.model_extra.keys())
-    
-    def run_workflow(self, 
-                     workflow_name: str, 
-                     config_file: Optional[str] = None, 
+
+    def run_workflow(self,
+                     workflow_name: str,
+                     config_file: Optional[str] = None,
                      deployment_stage: Optional[str] = None,
                      ) -> str:
         if config_file is not None:
@@ -68,8 +69,8 @@ class OrcaApi:
         end_map: Dict[str, str],
         config_file: Optional[str] = None,
         deployment_stage: Optional[str] = None,
-        )-> str:
-        
+                    ) -> str:
+
         if config_file is not None:
             self.load(config_file)
         method_id = self._orca.create_method_instance(method_name, start_map, end_map, deployment_stage)
@@ -120,4 +121,3 @@ class OrcaApi:
 
     def uninstall_driver(self, driver_name: str) -> None:
         self._driver_manager.uninstall_driver(driver_name)
-    
