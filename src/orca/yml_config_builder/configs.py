@@ -108,7 +108,7 @@ class SystemConfigModel(ConfigModel):
     resources: Dict[str, Union[ResourceConfigModel, ResourcePoolConfigModel]]
     methods: Dict[str, MethodConfigModel]
     workflows: Dict[str, WorkflowConfigModel]
-    scripting: ScriptBaseConfigModel = Field(default={})
+    scripting: ScriptBaseConfigModel | None = Field(default=None)
 
     @model_validator(mode='before')
     def check_resource_type(cls, values: Dict[str, Any]):

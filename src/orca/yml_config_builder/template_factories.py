@@ -211,6 +211,8 @@ class ScriptsBuilder:
         self._scripting_registry = script_reg
 
     def build_scripts(self) -> None:
+        if self._config.scripting is None:
+            return
         for script_name, script_config in self._config.scripting.scripts.items():
             filepath, class_name = script_config.source.split(":")
             script = self._scripting_registry.create_script(filepath, class_name)

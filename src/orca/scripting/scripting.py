@@ -62,10 +62,11 @@ class IScriptFactory(ABC):
 
 class ScriptFactory(IScriptFactory):
 
-    def __init__(self, scripting_config: ScriptBaseConfigModel, filepath_reconciler: FilepathReconciler) -> None:
+    def __init__(self, scripting_config: ScriptBaseConfigModel | None, filepath_reconciler: FilepathReconciler) -> None:
         self._scripting_config = scripting_config
         self._filepath_reconciler = filepath_reconciler
-        self._filepath_reconciler.set_base_dir(self._scripting_config.base_dir)
+        if self._scripting_config is not None:
+            self._filepath_reconciler.set_base_dir(self._scripting_config.base_dir)
 
     def set_system(self, system: ISystem) -> None:
         self._system = system

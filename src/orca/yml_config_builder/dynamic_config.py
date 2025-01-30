@@ -253,7 +253,9 @@ class DynamicSystemConfigModel(DynamicBaseConfigModel[SystemConfigModel], ISyste
         return {key: DynamicWorkflowConfigModel(value, self._registry) for key, value in self._config.workflows.items()}
 
     @property    
-    def scripting(self) -> IScriptBaseConfig:
+    def scripting(self) -> IScriptBaseConfig | None:
+        if self._config.scripting is None:
+            return None
         return DynamicScriptBaseConfigModel(self._config.scripting, self._registry)
 
     @property
