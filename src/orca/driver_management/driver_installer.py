@@ -101,7 +101,7 @@ class InstalledDriverRegistry:
         return self._installed_drivers
 
     def __init__(self) -> None:
-        self._prefix = "cl-orca-driver-"
+        self._prefix = "orca-driver-"
         self.refresh()
     
     def get_installed_driver_info(self, driver_name: str) -> InstalledDriverInfo:
