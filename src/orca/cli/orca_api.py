@@ -1,3 +1,4 @@
+import logging
 from types import MappingProxyType
 from typing import Dict, List, Optional
 import asyncio
@@ -8,7 +9,7 @@ from orca.orca_core import OrcaCore
 from orca.system.method_executor import MethodTemplate
 from orca.system.system import WorkflowTemplate
 
-
+orca_logger = logging.getLogger("orca")
 class OrcaApi:
 
     @property
@@ -23,16 +24,24 @@ class OrcaApi:
         self,
         available_drivers_registry: str = "https://raw.githubusercontent.com/Cheshire-Labs/orca-extensions/refs/heads/main/drivers.json",
     ) -> None:
-        self.__orca: Optional[OrcaCore] = None
-        installed_registry = InstalledDriverRegistry()
-        self._driver_manager = DriverManager(
-            installed_registry,
-            DriverLoader(),
-            DriverInstaller(installed_registry),
-            RemoteAvailableDriverRegistry(available_drivers_registry, installed_registry))
+        try:
+            self.__orca: Optional[OrcaCore] = None
+            installed_registry = InstalledDriverRegistry()
+            self._driver_manager = DriverManager(
+                installed_registry,
+                DriverLoader(), 
+                DriverInstaller(installed_registry), 
+                RemoteAvailableDriverRegistry(available_drivers_registry, installed_registry))
+        except Exception as e:
+            orca_logger.error(f"Failed to initialize OrcaApi: {e}")
+            raise
 
     def load(self, config_filepath: str) -> None:
-        self.__orca = OrcaCore(config_filepath, self._driver_manager)
+        try:
+            self.__orca = OrcaCore(config_filepath, self._driver_manager)
+        except Exception as e:
+            orca_logger.error(f"Failed to load configuration file: {e}")
+            raise
 
     def init(
         self,
