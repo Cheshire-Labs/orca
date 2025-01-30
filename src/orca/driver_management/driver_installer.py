@@ -2,14 +2,15 @@
 Driver management module.
 """
 from abc import ABC
+import importlib
+import importlib.metadata
+import importlib.resources
+import subprocess
+from pydantic import BaseModel, Field
 import json
 import os
 import sys
 from typing import Any, Dict, List, Optional
-import importlib
-import importlib.metadata
-import subprocess
-from pydantic import BaseModel, Field
 import requests
 
 from orca_driver_interface.driver_interfaces import IDriver
@@ -55,6 +56,7 @@ class InstalledDriverRegistry:
 
     def __init__(self) -> None:
         self._prefix = "orca-driver-"
+        self._prefix = "orca-driver-"
         self.refresh()
 
     def get_installed_driver_info(self, driver_name: str) -> InstalledDriverInfo:
@@ -74,14 +76,10 @@ class InstalledDriverRegistry:
                 continue
             if name.startswith(self._prefix):
                 driver_name = name.replace(self._prefix, "")
-
                 # get the driver info file
-                driver_info_path = str(dist.locate_file("driver.json"))
-                driver_info: Dict[str, Any] = {}
-
-                if os.path.isfile(driver_info_path):
-                    with open(driver_info_path, "r") as f:
-                        driver_info = json.load(f)
+                driver_info_path = importlib.resources.files(f"{driver_name}_driver").joinpath("driver.json")
+                driver_info_text = driver_info_path.read_text()
+                driver_info: Dict[str, Any] = json.loads(driver_info_text)
 
                 installed_driver_info = InstalledDriverInfo(
                     name=driver_info.get("name", driver_name),
@@ -213,8 +211,8 @@ class DriverLoader:
 
             if not issubclass(driver_class, IDriver):
                 raise TypeError(f"Class '{driver_info.driverClass}' does not implement IDriver.")
-
-            return driver_class()
+            args = {"name": driver_name}
+            return driver_class(**args)
 
         except (ImportError, AttributeError, TypeError) as e:
             raise RuntimeError(f"Error loading driver '{driver_name}': {e}") from e
