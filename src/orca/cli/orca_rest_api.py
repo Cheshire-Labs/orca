@@ -120,7 +120,6 @@ async def get_workflow_recipes() -> Dict[str, Any]:
 
 @app.get("/test")
 async def test() -> Dict[str, str]:
-    orca_logger.info("Test pinged")
     return {"status": "route reachable"}
 
 
