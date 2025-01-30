@@ -28,7 +28,7 @@ class OrcaApi:
             installed_registry,
             DriverLoader(), 
             DriverInstaller(installed_registry), 
-            RemoteAvailableDriverRegistry(available_drivers_registry))
+            RemoteAvailableDriverRegistry(available_drivers_registry, installed_registry))
 
     def load(self, config_filepath: str) -> None:
         self.__orca = OrcaCore(config_filepath, self._driver_manager)
