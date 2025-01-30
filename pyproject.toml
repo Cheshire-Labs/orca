@@ -18,14 +18,26 @@ classifiers = [
     "Operating System :: OS Independent"
 ]
 requires-python = ">=3.10"
-dynamic = ["dependencies", "optional-dependencies"]
+dependencies = [
+    "colorama>=0.4.6",
+    "pydantic>=2.7.4", 
+    "python-socketio>=5.11.2",
+    "networkx>=3.3", 
+    "matplotlib>=3.9.0",
+    "PyYAML>=6.0.1",
+    "requests>=2.32.3", 
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.3.1",  
+    "types-PyYAML",
+    "types-setuptools",
+    "black",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
-
-[tool.setuptools.dynamic]
-dependencies = {file = ["requirements.txt"]}
-optional-dependencies = {dev = { file = ["requirements.txt", "requirements-dev.txt"] }}
 
 [tool.setuptools.package-data]
 "*" = ["py.typed"]
