@@ -35,6 +35,9 @@ class DynamicScriptBaseConfigModel(DynamicBaseConfigModel[ScriptBaseConfigModel]
     
     @property    
     def scripts(self) -> Dict[str, IScriptConfig]:
+        # handles default case of empty scripts
+        if self._config == {}:
+            return {}
         return {key: DynamicScriptingConfigModel(value, self._registry) for key, value in self._config.scripts.items()}
 
 class DynamicMethodActionConfigModel(DynamicBaseConfigModel[MethodActionConfigModel], IMethodActionConfig):    

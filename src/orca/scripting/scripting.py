@@ -60,6 +60,16 @@ class IScriptFactory(ABC):
     def set_system(self, system: ISystem) -> None:
         raise NotImplementedError
 
+
+class NullScriptFactory(IScriptFactory):
+
+    def create_script(self, filepath: str, class_name: str) -> ThreadScript:
+        raise NotImplementedError
+
+    def set_system(self, system: ISystem) -> None:
+        self._system = system
+
+
 class ScriptFactory(IScriptFactory):
 
     def __init__(self, scripting_config: ScriptBaseConfigModel, filepath_reconciler: FilepathReconciler) -> None:
