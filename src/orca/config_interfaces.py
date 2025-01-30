@@ -250,7 +250,7 @@ class ISystemConfig(ABC):
 
     @property
     @abstractmethod
-    def scripting(self) -> IScriptBaseConfig:
+    def scripting(self) -> IScriptBaseConfig | None:
         raise NotImplementedError
     
     @property
