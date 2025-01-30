@@ -202,7 +202,7 @@ if __name__ == "__main__":
             installed_registry,
             DriverLoader(), 
             DriverInstaller(installed_registry), 
-            RemoteAvailableDriverRegistry(available_drivers_registry))
+            RemoteAvailableDriverRegistry(available_drivers_registry, installed_registry))
     orca = OrcaCore(config_file_path, driver_manager)
     workflow_id = orca.create_workflow_instance(workflow_name)
     asyncio.run(orca.run_workflow(workflow_id))
