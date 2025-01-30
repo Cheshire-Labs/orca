@@ -211,7 +211,8 @@ class ScriptsBuilder:
         self._scripting_registry = script_reg
 
     def build_scripts(self) -> None:
-        for script_name, script_config in self._config.scripting.scripts.items():
+        scripting_base_config = self._config.scripting
+        for script_name, script_config in scripting_base_config.scripts.items():
             filepath, class_name = script_config.source.split(":")
             script = self._scripting_registry.create_script(filepath, class_name)
             self._scripting_registry.add_script(script_name, script)
