@@ -14,7 +14,18 @@ class DynamicBaseConfigModel(Generic[T]):
         self._registry = registry
 
     def get_dynamic(self, value: Any) -> Any:
-        return self._registry.get(value)
+        """
+        Resolves dynamic values.
+        If the value is a string referencing a dynamic variable, resolve it.
+        If it's a dictionary or list, resolve all nested values recursively.
+        """
+        if isinstance(value, dict):
+            return {key: self.get_dynamic(val) for key, val in value.items()}
+        elif isinstance(value, list):
+            return [self.get_dynamic(item) for item in value]
+        elif isinstance(value, str):
+            return self._registry.get(value)  # Resolve dynamic values
+        return value
 
 class DynamicSystemOptionsConfigModel(DynamicBaseConfigModel[SystemOptionsConfigModel], ISystemOptionsConfig):
     pass
