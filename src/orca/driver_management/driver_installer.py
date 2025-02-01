@@ -2,15 +2,15 @@
 Driver management module.
 """
 from abc import ABC
-import json
-import os
-import sys
-from typing import Any, Dict, List, Optional
 import importlib
 import importlib.metadata
 import importlib.resources
 import subprocess
 from pydantic import BaseModel, Field
+import json
+import os
+import sys
+from typing import Any, Dict, List, Optional
 import requests
 
 from orca_driver_interface.driver_interfaces import IDriver
