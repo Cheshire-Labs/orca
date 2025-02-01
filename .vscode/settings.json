@@ -8,9 +8,19 @@
         "./src"
     ],
     "python.analysis.exclude": [
-        "**/build"
+        "**/build",
+        "**/dist",
+        "**/.venv",
+        "**/.mypy_cache",
+        "**/.pytest_cache",
+        "**/.VSCodeCounter"
     ],
     "search.exclude": {
-        "**/build": true
+        "**/build": true,
+        "**/dist": true,
+        "**/.venv": true,
+        "**/.mypy_cache": true,
+        "**/.pytest_cache": true,
+        "**/.VSCodeCounter": true
     },
 }

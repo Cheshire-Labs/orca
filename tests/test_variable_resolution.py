@@ -1,8 +1,8 @@
 import pytest
 import yaml
 
-from orca.yml_config_builder.configs import SystemOptionsConfig, ConfigModel, VariablesConfig
-from orca.yml_config_builder.dynamic_config import DynamicBaseConfig
+from orca.yml_config_builder.configs import SystemOptionsConfigModel, ConfigModel, VariablesConfigModel
+from orca.yml_config_builder.dynamic_config import DynamicBaseConfigModel
 from orca.yml_config_builder.variable_resolution import VariablesRegistry
 
 example_variable_config = r"""
@@ -26,26 +26,26 @@ opt:
 """
 
 @pytest.fixture
-def variables_config() -> VariablesConfig:
+def variables_config() -> VariablesConfigModel:
     yml_config = yaml.safe_load(example_variable_config)
     config = yml_config["config"]
-    return VariablesConfig.model_validate(config)
+    return VariablesConfigModel.model_validate(config)
 
 @pytest.fixture
-def options_config() -> SystemOptionsConfig:
+def options_config() -> SystemOptionsConfigModel:
     yml_config = yaml.safe_load(example_options_config)
     config = yml_config["opt"]
-    return SystemOptionsConfig.model_validate(config)
+    return SystemOptionsConfigModel.model_validate(config)
 
 @pytest.fixture
 def registry(variables_config, options_config) -> VariablesRegistry:
     registry = VariablesRegistry()
-    registry.add_config("opt", options_config)
-    registry.add_config("config", variables_config)
+    registry.set_selector_configuration("opt", options_config)
+    registry.set_selector_configuration("config", variables_config)
     return registry
 
 class TestVariableConfig:
-    def test_variable_config(self, variables_config: VariablesConfig):
+    def test_variable_config(self, variables_config: VariablesConfigModel):
         assert variables_config.model_extra["test"]["volume"] == 40.1
 
 class TestVariableRegistry:
@@ -87,7 +87,7 @@ class TestVariableRegistry:
 class MockConfig(ConfigModel):
     test: str
 
-class DynamicMockClass(DynamicBaseConfig[MockConfig]):
+class DynamicMockClass(DynamicBaseConfigModel[MockConfig]):
     @property
     def test(self) -> str:
         return self.get_dynamic(self._config.test)

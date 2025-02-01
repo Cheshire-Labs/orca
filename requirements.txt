@@ -9,7 +9,7 @@ bleach==6.1.0
 blinker==1.8.2
 certifi==2024.6.2
 charset-normalizer==3.3.2
-cheshire-orca-interfaces @ git+https://github.com/Cheshire-Labs/orca-interfaces.git@a54077c5170ea6367bbb50ebdaabd7b3c8cc2ddf
+orca-interfaces==0.1.0
 click==8.1.7
 colorama==0.4.6
 contourpy==1.2.1

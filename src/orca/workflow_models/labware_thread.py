@@ -14,7 +14,7 @@ from orca.workflow_models.action import BaseAction, IActionObserver, LocationAct
 from orca.workflow_models.dynamic_resource_action import DynamicResourceAction
 from orca.workflow_models.status_enums import ActionStatus, MethodStatus, LabwareThreadStatus
 
-
+orca_logger = logging.getLogger("orca")
 class IThreadObserver(ABC):
     @abstractmethod
     def thread_notify(self, event: str, thread: LabwareThread) -> None:
@@ -220,6 +220,10 @@ class LabwareThread(IMethodObserver):
         return self._move_action
 
     async def start(self) -> None: 
+        # initialization check
+        if self.status == LabwareThreadStatus.CREATED:
+            self.initialize_labware()
+
         while not self.has_completed():
             # no methods left, send home
             if len(self.pending_methods) == 0:
@@ -323,7 +327,7 @@ class LabwareThread(IMethodObserver):
 
     async def _handle_deadlock(self) -> None:
         assert self._move_action is not None
-        logging.info(f"Thread {self.name} - Deadlock detected")
+        orca_logger.info(f"Thread {self.name} - Deadlock detected")
         old_target = self._move_action.target
         self._move_action = await self._move_handler.handle_deadlock(self._move_action)
-        logging.info(f"Thread {self.name} - Deadlock resolved - reroute target {old_target.name} to {self._move_action.target.name}")
+        orca_logger.info(f"Thread {self.name} - Deadlock resolved - reroute target {old_target.name} to {self._move_action.target.name}")
