@@ -57,11 +57,11 @@ Cheshire Labs is actively seeking laboratories interested in using Orca.  Please
 
 <h1 id="how-it-works">⚙️ How It Works</h1>
 
-Orca simplifies complex lab automation workflows by allowing users to deploy their systems using just a configuration file. Streamline your automation setup like you would your cloud infrastructure.
+Orca simplifies complex lab automation workflows by allowing users to deploy their systems using just a configuration file. Streamline your automation setup like you would your cloud IT infrastructure.
 
 Your configuration file defines different aspects of your workflow, including: labware, resources, system options, methods, and workflows. The configuration file supports the integration of custom scripts, and variables can be used to deploy different configurations depending on the context of the deployment.
 
-Orca is currently operated via the command line to allow external systems to drive the scheduler. Users can choose to run entire workflows or individual methods as needed, offering flexibility to adapt to changing lab environments.
+Orca is currently operates in two modes, a server mode and an interactive command line. Users can choose to run entire workflows or individual methods as needed, offering flexibility to adapt to changing lab environments.
 
 <h1 id="features">🚀 Features</h1>
 
@@ -113,7 +113,7 @@ To see a quick demo of how orca works:
 5. Open your command line
 6. Install Orca
     ```bash
-    pip install git+https://github.com/cheshire-labs/orca.git@dev
+    pip install cheshire-orca
     ```
 
 
@@ -152,7 +152,7 @@ To see a quick demo of how orca works:
 2. Install via pip
     - Install from github
         ```bash
-        pip install git+https://github.com/cheshire-labs/orca.git@dev
+        pip install cheshire-orca
         ```
 
     - Download/Clone repo and install locally
@@ -160,9 +160,9 @@ To see a quick demo of how orca works:
         pip install -e <orca-root-directory>
         ```
 
-3. Start Orca command shell
+3. Start Orca's interactive command shell
     ```bash
-    orca
+    orca interactive
     ```
 
 4. Exit Orca command shell
@@ -182,7 +182,7 @@ pip uninstall cheshire-orca
 ### Basic Overview
 
 1. [Define your configuration file](#define-your-configuration-file)
-2. Launch Orca command shell
+2. Launch Orca's interactive command shell
 3. Run your entire workflow or run a single method
 
 ### Example
@@ -190,17 +190,21 @@ To run the [Example Configuration File](./examples/smc_assay/smc_assay_example.o
 1. Using python launch the Orca command shell from your command line
 
     ```bash
-    orca
+    orca interactive
     ```
 
+2. Load your desired configuration file
+    ```bash
+     load --config <config_file_path>
+    ```
 2. Run the entire ```smc-assay``` workflow as defined under the [workflows](#workflows) section of the configuation file
     ```bash
-    run --workflow smc-assay --config <path>/examples/smc_assay/smc_assay_example.orca.yml
+    run --workflow smc-assay --stage test
     ```
 
 3. OR instead of running an entire workflow, just run a single method.  To do this you must define where each plate used by the method will begin and end using JSON for a start-map and end-map
     ```bash
-    run_method --method add-detection-antibody --start-map {\"plate-1\":\"pad_1\",\"tips-96\":\"pad_2\"} --end-map {\"plate-1\":\"pad_4\",\"tips-96\":\"pad_5\"} --config <path>/examples/smc_assay/smc_assay_example.orca.yml
+    run_method --method add-detection-antibody --start-map {\"plate-1\":\"pad_1\",\"tips-96\":\"pad_2\"} --end-map {\"plate-1\":\"pad_4\",\"tips-96\":\"pad_5\"} [--stage test
     ```
 
 4. Exit Shell
@@ -219,9 +223,9 @@ Orca is run from a shell interface.  This must be started before issuing command
 
 **Starting Orca**
 
-Start the Orca shell:
+Start the Orca interactive shell:
 ```bash
-orca
+orca interactive
 ```
 
 

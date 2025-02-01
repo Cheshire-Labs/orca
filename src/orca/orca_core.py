@@ -7,7 +7,7 @@ import yaml
 
 from orca.driver_management.driver_installer import DriverInstaller, DriverLoader, DriverManager, InstalledDriverRegistry, RemoteAvailableDriverRegistry
 from orca.helper import FilepathReconciler
-from orca.scripting.scripting import IScriptRegistry, ScriptFactory, ScriptRegistry
+from orca.scripting.scripting import IScriptFactory, IScriptRegistry, NullScriptFactory, ScriptFactory, ScriptRegistry
 from orca.system.method_executor import MethodExecutor
 from orca.resource_models.base_resource import IInitializableResource
 from orca.resource_models.labware import LabwareTemplate
@@ -48,8 +48,13 @@ class OrcaCore:
             absolute_path = os.path.abspath(config_filepath)
             directory_path = os.path.dirname(absolute_path)
             file_reconciler = FilepathReconciler(directory_path)
-            scripting_factory = ScriptFactory(self._config.scripting, file_reconciler)
-            scripting_registry = ScriptRegistry(scripting_factory)
+            # if no scripting is defined, create a null scripting factory
+            if self._config.scripting == {}:
+                scripting_factory: IScriptFactory = NullScriptFactory()
+                scripting_registry = ScriptRegistry(scripting_factory)
+            else:
+                scripting_factory = ScriptFactory(self._config.scripting, file_reconciler)
+                scripting_registry = ScriptRegistry(scripting_factory)
         self._scripting_registry: IScriptRegistry = scripting_registry
 
         # set resource factory

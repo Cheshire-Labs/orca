@@ -7,20 +7,22 @@ name = "cheshire-orca"
 version = "0.1.0"
 description = "Laboratory Automation Framework"
 authors = [
-    { name = "Cheshire Labs", email = "michaeltsalmi@cheshirelabs.io" }
+    { name = "Cheshire Labs", email = "support@cheshirelabs.io" }
 ]
 readme = "README.md"
-license = { text = "GNU Affero General Public License v3 (AGPLv3)" }
+license = {text = "AGPL-3.0-only"}
 classifiers = [
     "Programming Language :: Python :: 3.10",
     "License :: OSI Approved :: GNU Affero General Public License v3 (AGPLv3)",
     "Operating System :: OS Independent"
 ]
 requires-python = ">=3.10"
-dynamic = ["dependencies"]
+urls = {"Repository" = "https://github.com/Cheshire-Labs/orca"}
+dynamic = ["dependencies", "optional-dependencies"]
 
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}
+optional-dependencies = {dev = { file = ["requirements.txt", "requirements-dev.txt"] }}
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -29,15 +31,6 @@ where = ["src"]
 "*" = [
     "py.typed"
 ]
-[project.optional-dependencies]
-dev = [
-    "types-setuptools>=75.1.0",
-    "pytest>=8.3.2",
-    "types-requests==2.32.0"
-]
-
-[project.urls]
-"Repository" = "https://github.com/Cheshire-Labs/orca"
 
 [project.scripts]
 orca = "orca.orca_entry:main"
