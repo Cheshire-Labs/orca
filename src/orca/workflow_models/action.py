@@ -7,12 +7,13 @@ import uuid
 from orca.resource_models.base_resource import LabwareLoadableEquipment
 from orca.resource_models.labware import AnyLabwareTemplate, Labware, LabwareTemplate
 from orca.resource_models.location import Location
-from orca.drivers.transporter_resource import TransporterEquipment
+from orca.resource_models.transporter_resource import TransporterEquipment
 from orca.system.labware_registry_interfaces import ILabwareRegistry
 from orca.system.reservation_manager import IReservationManager, LocationReservation
 from orca.system.system_map import SystemMap
 from orca.workflow_models.status_enums import ActionStatus
 
+orca_logger = logging.getLogger("orca")
 class IActionObserver:
     def action_notify(self, event: str, action: 'BaseAction') -> None:
         pass
@@ -182,8 +183,8 @@ class LocationAction(BaseAction):
         self._status = ActionStatus.PERFORMING_ACTION
         self.is_executing.set()
         # TODO: DELETE DELETE DELETE
-        for Labware in self.resource.loaded_labware:
-            logging.debug(f"LOADED LABWARE: {Labware.name}")
+        # for Labware in self.resource.loaded_labware:
+        #    orca_logger.debug(f"LOADED LABWARE: {Labware.name}")
 
         # Execute the action
         if self.resource is not None:

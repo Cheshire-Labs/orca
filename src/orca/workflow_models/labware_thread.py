@@ -14,7 +14,7 @@ from orca.workflow_models.action import BaseAction, IActionObserver, LocationAct
 from orca.workflow_models.dynamic_resource_action import DynamicResourceAction
 from orca.workflow_models.status_enums import ActionStatus, MethodStatus, LabwareThreadStatus
 
-
+orca_logger = logging.getLogger("orca")
 class IThreadObserver(ABC):
     @abstractmethod
     def thread_notify(self, event: str, thread: LabwareThread) -> None:
@@ -43,11 +43,16 @@ class MethodObserver(IMethodObserver):
 class Method(IActionObserver):
 
     def __init__(self, name: str) -> None:
+        self._id = str(uuid.uuid4())
         self._name = name
         self._steps: List[DynamicResourceAction] = []
         self._current_action: LocationAction | None = None
         self.__status: MethodStatus = MethodStatus.CREATED
         self._observers: List[IMethodObserver] = []
+
+    @property
+    def id(self) -> str:
+        return self._id
 
     @property
     def name(self) -> str:
@@ -132,6 +137,7 @@ class LabwareThread(IMethodObserver):
         self._previous_action: LocationAction | None = None
         self._assigned_action: LocationAction | None = None
         self._move_action: MoveAction | None = None
+        self._stop_event = asyncio.Event()
         
     @property
     def id(self) -> str:
@@ -214,6 +220,10 @@ class LabwareThread(IMethodObserver):
         return self._move_action
 
     async def start(self) -> None: 
+        # initialization check
+        if self.status == LabwareThreadStatus.CREATED:
+            self.initialize_labware()
+
         while not self.has_completed():
             # no methods left, send home
             if len(self.pending_methods) == 0:
@@ -225,11 +235,26 @@ class LabwareThread(IMethodObserver):
                 await self._handle_action_assignment()
 
             assert self._assigned_action is not None
-            while self.current_location != self._assigned_action.location:
+
+            # move to the assigned location
+            while self.current_location != self._assigned_action.location and not self._stop_event.is_set():
                 await self._handle_thread_move_assignment()
                 await asyncio.sleep(0.2)
+
+            if self._stop_event.is_set():
+                self._handle_thread_stop()
+                return
+            
             await self._handle_thread_at_assigned_location()
             await asyncio.sleep(0.2)
+
+    def stop(self) -> None:
+        self._status = LabwareThreadStatus.STOPPING
+        self._stop_event.set()
+        
+    def _handle_thread_stop(self) -> None:
+        self._stop_event.clear()
+        self._status = LabwareThreadStatus.STOPPED
         
 
     async def _handle_action_assignment(self) -> None:
@@ -302,7 +327,7 @@ class LabwareThread(IMethodObserver):
 
     async def _handle_deadlock(self) -> None:
         assert self._move_action is not None
-        logging.info(f"Thread {self.name} - Deadlock detected")
+        orca_logger.info(f"Thread {self.name} - Deadlock detected")
         old_target = self._move_action.target
         self._move_action = await self._move_handler.handle_deadlock(self._move_action)
-        logging.info(f"Thread {self.name} - Deadlock resolved - reroute target {old_target.name} to {self._move_action.target.name}")
+        orca_logger.info(f"Thread {self.name} - Deadlock resolved - reroute target {old_target.name} to {self._move_action.target.name}")

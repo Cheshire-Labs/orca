@@ -11,6 +11,8 @@ from orca.workflow_models.labware_thread import LabwareThread
 from orca.workflow_models.workflow_templates import ThreadTemplate
 
 
+orca_logger = logging.getLogger("orca")
+
 class ThreadFactory:
     def __init__(self, labware_registry: ILabwareRegistry, move_handler: MoveHandler, reservation_manager: IReservationManager, system_map: SystemMap) -> None:
         self._labware_registry: ILabwareRegistry = labware_registry
@@ -101,6 +103,10 @@ class IThreadManager(IThreadRegistry, ABC):
     @abstractmethod
     async def start_all_threads(self) -> None:
         raise NotImplementedError
+    
+    @abstractmethod
+    def stop_all_threads(self) -> None:
+        raise NotImplementedError
 
 
 class ThreadManager(IThreadManager):
@@ -111,7 +117,6 @@ class ThreadManager(IThreadManager):
         self._thread_registry = thread_registry
         self._system_map = system_map
         self._move_handler = move_handler
-        self._loop: asyncio.AbstractEventLoop | None = None
 
     @property
     def threads(self) -> List[LabwareThread]:
@@ -141,21 +146,24 @@ class ThreadManager(IThreadManager):
         return [thread for thread in self._thread_registry.threads if thread.status == LabwareThreadStatus.CREATED]
 
     async def start_all_threads(self) -> None:
-        self._loop = asyncio.get_event_loop()
         # # self._loop.set_debug(True)
         # self._loop.run_until_complete(self.async_execute())
         await self.async_execute()
 
+    def stop_all_threads(self) -> None:
+        for thread in self.threads:
+            thread.stop()
+
     async def async_execute(self) -> None:
-        assert self._loop is not None
         while not self.has_completed():
 
             for thread in self.active_threads:
-                logging.info(f"Thread {thread.name} - {thread.status}")
+                orca_logger.info(f"Thread {thread.name} - {thread.status}")
                 if thread in self.unstarted_threads:
-                    task = self._loop.create_task(thread.start())
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(thread.start())
                 await asyncio.sleep(0.2)
-        logging.info("All threads have completed execution.")
+        orca_logger.info("All threads have completed execution.")
 
 class ThreadManagerFactory:
     @staticmethod

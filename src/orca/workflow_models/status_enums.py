@@ -26,6 +26,8 @@ class LabwareThreadStatus(Enum):
     AWAITING_CO_THREADS = auto()
     PERFORMING_ACTION = auto()    
     COMPLETED = auto()
+    STOPPING = auto()
+    STOPPED = auto()
 
 
 
