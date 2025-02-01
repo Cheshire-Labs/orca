@@ -1,10 +1,9 @@
 import asyncio
 import json
-import logging
 from typing import Any, Dict, List, Optional
 from socketio.async_client import AsyncClient # type: ignore[import-untyped]
 
-from orca.drivers.driver_interfaces import IDriver, ILabwarePlaceableDriver
+from orca_driver_interface.driver_interfaces import IDriver, ILabwarePlaceableDriver
 
 
 class SocketClient:
@@ -60,11 +59,11 @@ class RemoteDriverClient(IDriver):
         return await self._sio.send(action, data)
         
     def _run_async_task(self, action: str, data: Dict[str, Any] = {}) -> Dict[str, Any]:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
+        try:
+            loop = asyncio.get_running_loop()
             future = asyncio.run_coroutine_threadsafe(self.send(action, data), loop)
             return json.loads(future.result())
-        else:
+        except RuntimeError:
             return json.loads(asyncio.run(self.send(action, data)))
 
     @property
@@ -89,7 +88,6 @@ class RemoteDriverClient(IDriver):
 
     async def execute(self, command: str, options: Dict[str, Any]) -> None:
         dict_ret = self._run_async_task("execute", {"command": command, "options": options})
-        logging.debug(dict_ret)
 
 
 class RemoteLabwarePlaceableDriverClient(RemoteDriverClient, ILabwarePlaceableDriver):

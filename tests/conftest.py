@@ -1,6 +1,6 @@
 import pytest
 
-from orca.drivers.transporter_resource import TransporterEquipment
+from orca.resource_models.transporter_resource import TransporterEquipment
 from orca.system.registries import LabwareRegistry
 from orca.system.resource_registry import ResourceRegistry
 from orca.system.system_map import SystemMap
