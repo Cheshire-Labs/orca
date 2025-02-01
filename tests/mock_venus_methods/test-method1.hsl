@@ -1,0 +1,55 @@
+global device ML_STAR ("test-method.lay", "ML_STAR", hslTrue);
+#include "test-method.res"
+/* {{ 2 "LibraryInsertLine" "" */ // }} ""
+/* {{ 2 "VariableInsertLine" "" */ // }} ""
+// {{ 2 "TemplateIncludeBlock" ""
+ namespace _Method { #include "HSLMETEDLib.hs_" } 
+ namespace _Method { #include "HSLMECCLib.hs_" } 
+ namespace _Method { #include "HSLPTLLib.hsl" } 
+// }} ""
+// {{{ 2 "LocalSubmethodInclude" ""
+ namespace _Method {  #include __filename__ ".sub"  } 
+// }} ""
+/* {{ 2 "ProcessInsertLine" "" */ // }} ""
+// {{{ 5 "main" "Begin"
+namespace _Method { method main(  ) void {
+// }} ""
+// {{ 5 "main" "InitLocals"
+// }} ""
+// {{ 2 "AutoInitBlock" ""
+PTL::SetWashingStateDefault("RinseTime1", 5);
+PTL::SetWashingStateDefault("SoakTime1", 5);
+PTL::SetWashingStateDefault("FlowRate1", 11);
+PTL::SetWashingStateDefault("RinseTime2", 0);
+PTL::SetWashingStateDefault("SoakTime2", 0);
+PTL::SetWashingStateDefault("FlowRate2", 11);
+PTL::SetWashingStateDefault("DrainingTime", 10);
+PTL::SetWashingStateDefault("StartWashLiquid", 0);
+PTL::SetLoadingStateDefault("RecoveryOptionContinue", hslTrue);
+PTL::SetLoadingStateDefault("RecoveryOptionExclude", hslTrue);
+PTL::SetLoadingStateDefault("RecoveryOptionDefault", 0);
+PTL::SetLoadingStateDefault("KitLotCheckEnabled", hslFalse);
+::RegisterAbortHandler( "OnAbort");
+// }} ""
+// {{ 1 1 0 "dc9a9c6c_6578_41ae_899731d1528cae70" "ML_STAR:{1C0C0CB0-7C87-11D3-AD83-0004ACB1DCB2}"
+{
+	variable arrRetValues[];
+	arrRetValues = ML_STAR._1C0C0CB0_7C87_11D3_AD83_0004ACB1DCB2("dc9a9c6c_6578_41ae_899731d1528cae70"); // Initialize
+}
+// }} ""
+// {{ 2 1 0 "ff36ad2a_e03e_4f54_bcaa8450cd43de59" "ML_STAR:{E294A9A7-BEFC-4000-9A4C-926B91B8DE1C}"
+{
+	ML_STAR._E294A9A7_BEFC_4000_9A4C_926B91B8DE1C("ff36ad2a_e03e_4f54_bcaa8450cd43de59"); // EasyHead96Aspirate
+}
+// }} ""
+// {{ 3 1 0 "f879c50b_74c5_4b40_b770a25a749afc08" "ML_STAR:{7DE53592-BBE5-4f1d-B657-161F1AAECA3E}"
+{
+	ML_STAR._7DE53592_BBE5_4f1d_B657_161F1AAECA3E("f879c50b_74c5_4b40_b770a25a749afc08"); // EasyHead96Dispense
+}
+// }} ""
+// {{ 2 "AutoExitBlock" ""
+// }} ""
+// {{{ 5 "main" "End"
+} }
+// }} ""
+// $$author=miike$$valid=0$$time=2024-01-31 20:14$$checksum=11df5a35$$length=084$$

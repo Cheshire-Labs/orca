@@ -1,0 +1,26 @@
+{
+    "python.testing.pytestArgs": [
+        "tests"
+    ],
+    "python.testing.unittestEnabled": false,
+    "python.testing.pytestEnabled": true,
+    "python.analysis.extraPaths": [
+        "./src"
+    ],
+    "python.analysis.exclude": [
+        "**/build",
+        "**/dist",
+        "**/.venv",
+        "**/.mypy_cache",
+        "**/.pytest_cache",
+        "**/.VSCodeCounter"
+    ],
+    "search.exclude": {
+        "**/build": true,
+        "**/dist": true,
+        "**/.venv": true,
+        "**/.mypy_cache": true,
+        "**/.pytest_cache": true,
+        "**/.VSCodeCounter": true
+    },
+}

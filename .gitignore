@@ -1,0 +1,9 @@
+.idea
+.mypy_cache
+.venv
+build
+**/~*.tmp
+__pycache__
+.VSCodeCounter/*
+*.egg-info
+.pytest_cache
