@@ -4,6 +4,6 @@
 build
 **/~*.tmp
 __pycache__
-.VSCodeCounter/*
+.VSCodeCounter/
 *.egg-info
 .pytest_cache
