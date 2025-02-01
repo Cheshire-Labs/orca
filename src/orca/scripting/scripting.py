@@ -1,16 +1,14 @@
 from abc import ABC, abstractmethod
 
-from importlib.machinery import ModuleSpec
-import os
 from typing import Dict
 import importlib.util
 import sys
 from pathlib import Path
-from orca.config_interfaces import IScriptBaseConfig
 from orca.helper import FilepathReconciler
 from orca.system.system import ISystem
 from orca.workflow_models.labware_thread import LabwareThread
 from orca.workflow_models.labware_thread import IThreadObserver
+from orca.yml_config_builder.configs import ScriptBaseConfigModel
 
 
 class IThreadScript(IThreadObserver, ABC):
@@ -49,6 +47,10 @@ class IScriptRegistry(ABC):
     @abstractmethod
     def create_script(self, filepath: str, class_name: str) -> ThreadScript:
         raise NotImplementedError
+    
+    @abstractmethod
+    def clear(self) -> None:
+        raise NotImplementedError
 
 class IScriptFactory(ABC):
     
@@ -58,12 +60,23 @@ class IScriptFactory(ABC):
     def set_system(self, system: ISystem) -> None:
         raise NotImplementedError
 
+
+class NullScriptFactory(IScriptFactory):
+
+    def create_script(self, filepath: str, class_name: str) -> ThreadScript:
+        raise NotImplementedError
+
+    def set_system(self, system: ISystem) -> None:
+        self._system = system
+
+
 class ScriptFactory(IScriptFactory):
 
-    def __init__(self, scripting_config: IScriptBaseConfig, filepath_reconciler: FilepathReconciler) -> None:
-        self._scripting_config: IScriptBaseConfig = scripting_config
+    def __init__(self, scripting_config: ScriptBaseConfigModel | None, filepath_reconciler: FilepathReconciler) -> None:
+        self._scripting_config = scripting_config
         self._filepath_reconciler = filepath_reconciler
-        self._filepath_reconciler.set_base_dir(self._scripting_config.base_dir)
+        if self._scripting_config is not None:
+            self._filepath_reconciler.set_base_dir(self._scripting_config.base_dir)
 
     def set_system(self, system: ISystem) -> None:
         self._system = system
@@ -113,4 +126,7 @@ class ScriptRegistry(IScriptRegistry):
 
     def create_script(self, filepath: str, class_name: str) -> ThreadScript:
         return self._factory.create_script(filepath, class_name)
+    
+    def clear(self) -> None:
+        self._scripts.clear()
        
