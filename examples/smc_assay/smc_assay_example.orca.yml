@@ -1,0 +1,498 @@
+system:
+    name: "smc-assay"
+    version: "0.0.1"
+    description: "SMC Assay Example"
+
+labwares:
+    sample-plate:
+        type: "Matrix 96 Well"
+    plate-1:
+        type: "Corning 96 Well"
+    final-plate:
+        type: "SMC 384 plate"
+    bead-reservoir:
+        type: "reservoir"
+        static: true
+    buffer-b-reservoir:
+        type: "reservoir"
+        static: true
+    buffer-d-reservoir:
+        type: "reservoir"
+        static: true
+    detection-reservoir:
+        type: "reservoir"
+        static: true
+    tips-96:
+        type: "96 Tips"
+    tips-384:
+        type: "384 Tips"
+
+resources:
+    biotek-1:
+        type: biotek
+        com: "COM3"
+        plate-pad: "biotek_1"
+        sim: true
+    
+    biotek-2:
+        type: biotek
+        com: "COM4"
+        plate-pad: "biotek_2"
+        sim: true
+    
+    bravo-96-head:
+        type: bravo
+        ip: 192.168.1.123
+        head: 96
+        plate-pad: "bravo_96"
+        sim: true
+        initial-deck:
+            1: bead-reservoir
+            2: detection-reservoir
+            6: waste
+    
+    bravo-384-head:
+        type: bravo
+        ip: 192.168.1.124
+        head: 384
+        plate-pad: "bravo_384"
+        sim: true
+        initial-deck:
+            1: buffer-b-reservoir
+            2: buffer-d-reservoir
+            6: waste
+    sealer:
+        type: plateloc
+        com: "COM7"
+        sim: true
+    
+    centrifuge:
+        type: vspin
+        com: "COM8"
+        sim: true
+    
+    plate-hotel:
+        type: agilent-hotel
+        plate-pad: "plate_hotel"
+        sim: true
+
+    delidder:
+        type: delidder
+        com: COM19
+        plate-pad: "delidder"
+        sim: true
+
+    smc-pro:
+        type: smc-pro
+        ip: 192.168.1.122
+        plate-pad: "smc_pro"
+        sim: true
+
+## ROBOTICS
+    ddr-1:
+        type: ddr
+        ip: 192.168.1.125
+        positions: ddr1.xml
+        sim: true
+        base-type: transporter
+
+    ddr-2:
+        type: ddr
+        ip: 192.168.1.126
+        positions: ddr2.xml
+        sim: true
+        base-type: transporter
+
+    ddr-3:
+        type: ddr
+        ip: 192.168.1.127
+        positions: ddr3.xml
+        sim: true
+        base-type: transporter
+
+    translator-1:
+        type: translator
+        com: "COM5"
+        positions: translator1.xml
+        sim: true
+        base-type: transporter
+        
+    translater-2:
+        type: translator
+        com: "COM6"
+        positions: translator2.xml
+        sim: true
+        base-type: transporter
+
+## STACKERS
+    stacker-sample-start:
+        type: vstack
+        ip: 192.168.1.121
+        plate-pad: stacker_1
+        sim: true
+        init:
+            labware: ${labwares:sample-plate.type}
+
+    stacker-sample-end:
+        type: vstack
+        ip: 192.168.1.122
+        plate-pad: stacker_2
+        sim: true
+        init:
+            labware: ${labwares:sample-plate.type}
+
+    stacker-plate-1-start:
+        type: vstack
+        ip: 192.168.1.123
+        plate-pad: stacker_3
+        sim: true
+        init:
+            labware: "Corning 96 Well"
+
+    stacker-final-plate-start:
+        type: vstack
+        ip: 192.168.1.124
+        plate-pad: stacker_4
+        sim: true
+        init:
+            labware: ${labwares:final-plate.type}
+
+    stacker-96-tips:
+        type: vstack
+        ip: 192.168.1.125
+        plate-pad: stacker_5
+        sim: true
+        init:
+            labware: ${labwares:tips-96.type}
+
+    stacker-384-tips-start:
+        type: vstack
+        ip: 192.168.1.126
+        plate-pad: stacker_6
+        sim: true
+        init:
+            labware: ${labwares:tips-384.type}
+
+    stacker-384-tips-end:
+        type: vstack
+        ip: 192.168.1.127
+        plate-pad: stacker_7
+        sim: true
+        init:
+            labware: ${labwares:tips-384.type}
+
+## SHAKERS
+    shaker-1:
+        type: shaker
+        com: "COM9"
+        plate-pad: shaker_1
+        sim: true
+
+    shaker-2:
+        type: shaker
+        com: "COM10"
+        plate-pad: shaker_2
+        sim: true
+    
+    shaker-3:
+        type: shaker
+        com: "COM11"
+        plate-pad: shaker_3
+        sim: true
+
+    shaker-4:
+        type: shaker
+        com: "COM12"
+        plate-pad: shaker_4
+        sim: true
+
+    shaker-5:
+        type: shaker
+        com: "COM13"
+        plate-pad: shaker_5
+        sim: true
+
+    shaker-6:
+        type: shaker
+        com: "COM14"
+        plate-pad: shaker_6
+        sim: true
+    
+    shaker-7:
+        type: shaker
+        com: "COM15"
+        plate-pad: shaker_7
+        sim: true
+
+    shaker-8:
+        type: shaker
+        com: "COM16"
+        plate-pad: shaker_8
+        sim: true
+
+    shaker-9:
+        type: shaker
+        com: "COM17"
+        plate-pad: shaker_9
+        sim: true
+
+    shaker-10:
+        type: shaker
+        com: "COM18"
+        plate-pad: shaker_10
+        sim: true
+
+## WASTE
+    waste-1:
+        type: waste
+        plate-pad: waste_1
+        sim: true
+
+    waste-2:
+        type: waste
+        plate-pad: waste_2
+        sim: true
+
+## NETWORKING
+    serial-switch:
+        type: serial-switch
+        ip: 192.168.0.1
+        sim: true
+        base-type: non-labware
+
+    splitter:
+        type: switch
+        ip: 192.168.0.2
+        sim: true
+        base-type: non-labware
+
+## RESOURCE POOLS
+    shaker-collection:
+        type: pool 
+        resources: [shaker-1, shaker-2, shaker-3, shaker-4, shaker-5, shaker-6, shaker-7, shaker-8, shaker-9, shaker-10]
+
+    waste-collection:
+        type: pool 
+        resources: [waste-1, waste-2]
+
+config:
+    prod:
+        settle-time: 120
+        bead-incubation-time: 7200
+        post-detection-incubate-time: 3600
+        post-detection-settle-time: 600
+    test:
+        settle-time: 0
+        bead-incubation-time: 0
+        post-detection-incubate-time: 0
+        post-detection-settle-time: 0
+
+
+
+methods:
+    sample-to-bead-plate:
+        actions:
+            - bravo-96-head:
+                command: run
+                inputs: [sample-plate, tips-96, plate-1]
+                deck-setup:
+                    4: 96-tips
+                    5: sample-plate
+                    9: plate-1
+                protocol: sample-to-bead-plate.pro
+
+    incubate-2hrs:
+      actions:
+        - shaker-collection:
+            command: shake
+            inputs: [plate-1]
+            shake-time: ${config:${opt:stage}.bead-incubation-time}
+
+    post-capture-wash:
+      actions:
+        - biotek-1:
+            command: run
+            inputs: [plate-1]
+            protocol: post-capture-wash.pro
+
+    add-detection-antibody:
+      actions:
+        - bravo-96-head:
+            command: run
+            inputs: [plate-1, tips-96]
+            deck-setup:
+                4: tips-96
+                5: plate-1
+            protocol: add-detection-antibody.pro
+
+    incubate-1-hr:
+      actions:
+        - shaker-collection:
+            command: shake
+            inputs: [plate-1]
+            shake-time: ${config:${opt:stage}.post-detection-incubate-time}
+
+    pre-transfer-wash:
+      actions:
+        - biotek-2:
+            command: run
+            inputs: [plate-1]
+            protocol: pre-transfer-wash.pro
+
+    discard-supernatant:
+        actions:
+            - biotek-2:
+                command: run
+                inputs: [plate-1]
+                protocol: discard-supernatant.pro
+
+    add-elution-buffer-b:
+        actions:
+            - bravo-384-head:
+                command: run
+                inputs: [plate-1]
+                deck-setup:
+                    1: buffer-b-reservoir
+                    9: plate-1
+                protocol: add-elution-buffer-b.pro
+
+    incubate-10-min:
+        actions:
+            - shaker-1:
+                command: shake
+                inputs: [plate-1]
+                shake-time: ${config:${opt:stage}.post-detection-settle-time}
+
+    add-buffer-d:
+        actions:
+            - bravo-384-head:
+                command: run
+                inputs: [plate-1]
+                deck-setup:
+                    9: plate-1
+                protocol: add-buffer-d.pro
+
+    combine-plates:
+        actions:
+            - bravo-384-head:
+                command: run
+                inputs: [final-plate, plate-1, tips-384]
+                ratio: 
+                    final-plate: 1
+                    plate-1: 4
+                protocol: combine-plates.pro
+        
+    transfer-eluate:
+        actions:
+            - bravo-384-head:
+                command: run
+                inputs: [final-plate, tips-384]
+                protocol: transfer-eluate.pro
+
+    centrifuge:
+        actions:
+            - centrifuge:
+                command: spin
+                inputs: [final-plate]
+                speed: 2000
+                time: 120
+    read:
+        actions:
+            - smc-pro:
+                command: read
+                inputs: [final-plate]
+                protocol: read.pro
+                filepath: "results.csv"
+
+    delid:
+        actions:
+            - delidder:
+                command: delid
+                inputs: [$ANY]
+
+workflows:
+    smc-assay:
+        threads:
+            plate-1: 
+                labware: plate-1
+                type: start
+                start: stacker-plate-1-start
+                end: waste-1
+                steps:
+                    - method: sample-to-bead-plate 
+                      spawn: 
+                        - sample-plate
+                        - tips-96
+                    - incubate-2hrs
+                    - post-capture-wash
+                    - method: add-detection-antibody
+                      spawn: 
+                        - tips-96
+                    - incubate-1-hr
+                    - pre-transfer-wash
+                    - discard-supernatant
+                    - method: add-elution-buffer-b
+                      spawn: 
+                        - tips-96
+                    - incubate-10-min
+                    - method: add-buffer-d
+                      spawn:
+                        - tips-96
+                    - method: combine-plates
+                      spawn:
+                        - final-plate
+                        - tips-384
+
+            sample-plate:
+                type: wrapper
+                labware: sample-plate
+                start: stacker-sample-start
+                end: stacker-sample-end
+                steps:
+                    - delid
+                    - ${0}      
+            
+            final-plate:
+                type: wrapper
+                labware: final-plate
+                start: stacker-final-plate-start
+                end: plate-hotel
+                scripts: 
+                    - spawn-final-plate-script
+                steps:
+                    - ${0}
+                    - method: transfer-eluate
+                      spawn:
+                        - tips-384
+                    - centrifuge
+                    - read
+            
+            tips-96:
+                type: wrapper
+                labware: tips-96
+                start: stacker-96-tips
+                end: waste-1
+                steps:
+                    - delid
+                    - ${0}
+
+            tips-384:
+                type: wrapper
+                labware: tips-384
+                start: stacker-384-tips-start
+                end: stacker-384-tips-end
+                scripts: 
+                    - spawn-384-tips-script
+                steps:
+                    - delid
+                    - ${0}
+           
+
+## SCRIPT EXAMPLES
+scripting:
+    scripts:
+        spawn-384-tips-script:
+            source: spawn_384_tips.py:Spawn384TipsScript
+        spawn-final-plate-script:
+            source: spawn_final_plate.py:SpawnFinalPlateScript
+            

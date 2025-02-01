@@ -1,0 +1,5 @@
+<teachpoints>
+    <teachpoint name="Location1" wrist="90.0" elbow="45.0" shoulder="30.0" />
+    <teachpoint name="Location2" wrist="120.0" elbow="60.0" shoulder="45.0" />
+    <teachpoint name="mock-hamilton" wrist="30.0" elbow="120.0" shoulder="90.0" />
+</teachpoints>
