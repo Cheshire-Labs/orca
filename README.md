@@ -95,6 +95,8 @@ No scheduler software fits every need. Orca offers powerful Python scripting to 
 
 <h1 id="quick-start">⚡ Demo Quick Start</h1>
 
+Orca can be run via a server or by command line.  It is suggested to use Orca with it's [VS Code Extension](https://github.com/Cheshire-Labs/orca-vs-code-ext) which can be installed via the VS Code Marketplace.
+
 ### Basic Overview
 
 1. [Define your configuration file](#define-your-configuration-file)
@@ -142,8 +144,6 @@ To see a quick demo of how orca works:
 
 <h1 id="installation">💾 Installation</h1>
 
- 🚧 **Installation is still in the process of being streamlined.**  Drivers need to be placed in the drivers folder and manually connected.  Driver installation will be streamlined soon.  Thank you for your patience.
-
 1. Create Python vitual environment (Optional)
     ```bash
     python -m venv <env-name>
@@ -155,7 +155,7 @@ To see a quick demo of how orca works:
         pip install cheshire-orca
         ```
 
-    - Download/Clone repo and install locally
+    - OR Download/Clone repo and install locally
         ```
         pip install -e <orca-root-directory>
         ```
@@ -212,6 +212,14 @@ To run the [Example Configuration File](./examples/smc_assay/smc_assay_example.o
     exit
     ```
 ---
+<h1 id="server">Server</h1>
+Orca can also be run as a server.  This server mode is used by VS Code Extension and features and API.
+
+## Starting the server
+```bash
+orca server
+```
+
 ---
 <h1 id="command-line-commands">⌨️ Command Line Commands</h1>
 
