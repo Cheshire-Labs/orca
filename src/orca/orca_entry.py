@@ -23,6 +23,7 @@ def main():
     if args.command == "interactive":
         OrcaCmdShell().cmdloop()
     elif args.command == "server":
+        from orca.cli.orca_rest_api import uvicorn_server
         uvicorn_server.run()
     elif args.args:
         # Execute the command using OrcaCmdShell's onecmd
@@ -31,4 +32,6 @@ def main():
         parser.print_help()
 
 if __name__ == "__main__":
+    # main()
+    from orca.cli.orca_rest_api import uvicorn_server
     uvicorn_server.run()
