@@ -1,7 +1,7 @@
 from typing import Optional, Dict, Any, Callable, List
 from unittest.mock import MagicMock
 from orca.driver_management.drivers.simulation_labware_placeable.simulation_labware_placeable import SimulationLabwarePlaceableDriver
-from orca.driver_management.drivers.simulation_robotic_arm.simulation_robotic_arm import SimulationRoboticArmDriver
+from orca.driver_management.drivers.simulation_robotic_arm.simulation_robotic_arm import LegacySimulationRoboticArmDriver
 from orca.helper import FilepathReconciler
 from orca.resource_models.transporter_resource import TransporterEquipment
 from orca.resource_models.base_resource import LabwareLoadableEquipment
@@ -47,7 +47,7 @@ class MockEquipmentResource(LabwareLoadableEquipment):
 class MockRoboticArm(TransporterEquipment):
     def __init__(self, name: str, mocking_type: Optional[str] = None, positions: List[str] = []) -> None:
         file_reconciler = MagicMock(FilepathReconciler)
-        driver = SimulationRoboticArmDriver(name, file_reconciler, mocking_type)
+        driver = LegacySimulationRoboticArmDriver(name, file_reconciler, mocking_type)
         driver.set_init_options({"positions": positions})
         super().__init__(name, driver)
         self._on_pick: Callable[[Labware, Location], None] = lambda x, y: None

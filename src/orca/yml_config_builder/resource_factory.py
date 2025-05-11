@@ -4,7 +4,7 @@ from orca.config_interfaces import IResourceConfig, IResourcePoolConfig
 from orca.driver_management.driver_installer import IDriverManager
 from orca.driver_management.driver_socket_client import RemoteLabwarePlaceableDriverClient
 from orca.driver_management.drivers.simulation_base.simulation_base import SimulationBaseDriver
-from orca.driver_management.drivers.simulation_robotic_arm.simulation_robotic_arm import SimulationRoboticArmDriver
+from orca.driver_management.drivers.simulation_robotic_arm.simulation_robotic_arm import LegacySimulationRoboticArmDriver
 from orca.driver_management.drivers.simulation_labware_placeable.simulation_labware_placeable import SimulationLabwarePlaceableDriver
 from orca.helper import FilepathReconciler
 from orca.resource_models.base_resource import Equipment, IEquipment, LabwareLoadableEquipment
@@ -93,7 +93,7 @@ class ResourceFactory(IResourceFactory):
         if res_type == 'non-labware':
             return SimulationBaseDriver(name,res_type)
         elif res_type == 'transporter':
-            return SimulationRoboticArmDriver(name, self._filepath_reconciler, res_type)
+            return LegacySimulationRoboticArmDriver(name, self._filepath_reconciler, res_type)
         else:
             return SimulationLabwarePlaceableDriver(name, res_type)
 
