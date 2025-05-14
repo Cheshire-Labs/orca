@@ -5,6 +5,7 @@ from orca.resource_models.labware import LabwareTemplate
 from orca.resource_models.location import Location
 from orca.resource_models.resource_pool import EquipmentResourcePool
 from orca.sdk import sdk
+from orca.system.system_map import ILocationRegistry
 from orca.workflow_models.workflow_templates import MethodActionTemplate, MethodTemplate, ThreadTemplate, WorkflowTemplate
 
 
@@ -112,7 +113,7 @@ def convert_sdk_method_to_system_method(method: sdk.Method) -> MethodTemplate:
     return system_method
 
 
-def convert_sdk_thread_to_system_thread(thread: sdk.Thread, location_reg: sdk.LocationRegistry) -> ThreadTemplate:
+def convert_sdk_thread_to_system_thread(thread: sdk.Thread, location_reg: ILocationRegistry) -> ThreadTemplate:
     """
     Convert SDK thread to system thread.
     :param thread: The SDK thread to convert.
@@ -123,8 +124,8 @@ def convert_sdk_thread_to_system_thread(thread: sdk.Thread, location_reg: sdk.Lo
     thread_end = location_reg.get_location(thread.end)
     system_thread = ThreadTemplate(
         labware_template=convert_sdk_labware_to_system_labware(thread.labware),
-        start=convert_sdk_location_to_system_location(thread_start),
-        end=convert_sdk_location_to_system_location(thread_end),
+        start=thread_start,
+        end=thread_end,
     )
     for step in thread.steps:
         system_method = convert_sdk_method_to_system_method(step)
@@ -132,7 +133,7 @@ def convert_sdk_thread_to_system_thread(thread: sdk.Thread, location_reg: sdk.Lo
 
     return system_thread
 
-def convert_sdk_workflow_to_system_workflow(workflow: sdk.Workflow, location_reg: sdk.LocationRegistry) -> WorkflowTemplate:
+def convert_sdk_workflow_to_system_workflow(workflow: sdk.Workflow, location_reg: ILocationRegistry) -> WorkflowTemplate:
     """
     Convert SDK workflow to system workflow.
     :param workflow: The SDK workflow to convert.
