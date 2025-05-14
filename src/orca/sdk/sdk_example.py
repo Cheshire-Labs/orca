@@ -1,7 +1,3 @@
-#  just trying out another way to implement the sdk
-import asyncio
-from typing import List
-
 from orca.driver_management.drivers.simulation_labware_placeable.simulation_labware_placeable import SimulationLabwarePlaceableDriver
 from orca.driver_management.drivers.simulation_robotic_arm.simulation_robotic_arm import SimulationRoboticArmDriver
 from orca.sdk.sdk import EquipmentPool, Labware, LabwareRegistry, LocationRegistry, MethodRegistry, ResourceRegistry, Equipment, Location, Method, Action, Thread, ThreadRegistry, Workflow
@@ -240,7 +236,7 @@ transfer_eluate = Method("transfer_eluate", [
         }
     )])
 
-centrifuge = Method("centrifuge", [
+centrifuge_method = Method("centrifuge", [
     Action(resource=centrifuge,
         command="spin",
         inputs=[final_plate],
@@ -310,7 +306,7 @@ final_plate_thread.set_end("plate_hotel")
 final_plate_thread.add_steps([
     WrapperMethod(),
     transfer_eluate,
-    centrifuge,
+    centrifuge_method,
     read
 ])
 
