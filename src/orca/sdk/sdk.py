@@ -120,6 +120,8 @@ class LocationRegistry:
     def assign_resources(self, resources: Dict[str, Equipment]) -> None:
         pass
 
+    def get_locations(self) -> List[Location]:
+        return [loc for loc in self._locations.values()]
 
 
 
