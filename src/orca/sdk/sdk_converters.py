@@ -1,12 +1,13 @@
 
+from typing import List
 from orca.resource_models.base_resource import Equipment, ILabwarePlaceableDriver, LabwareLoadableEquipment
 
-from orca.resource_models.labware import LabwareTemplate
+from orca.resource_models.labware import AnyLabwareTemplate, LabwareTemplate
 from orca.resource_models.location import Location
 from orca.resource_models.resource_pool import EquipmentResourcePool
 from orca.sdk import sdk
 from orca.system.system_map import ILocationRegistry
-from orca.workflow_models.workflow_templates import MethodActionTemplate, MethodTemplate, ThreadTemplate, WorkflowTemplate
+from orca.workflow_models.workflow_templates import JunctionMethodTemplate, MethodActionTemplate, MethodTemplate, ThreadTemplate, WorkflowTemplate
 
 
 def convert_sdk_equipment_to_system_equipment(equipment: sdk.Equipment) -> Equipment:
@@ -47,11 +48,11 @@ def convert_sdk_labware_to_system_labware(labware: sdk.Labware) -> LabwareTempla
     :param labware: The SDK labware to convert.
     :return: The converted system labware.
     """
-    system_labware = LabwareTemplate(
+
+    return LabwareTemplate(
         name=labware.name,
         type=labware.type,
     )
-    return system_labware
 
 def convert_sdk_location_to_system_location(location: sdk.Location) -> Location:
     """
@@ -88,12 +89,26 @@ def convert_sdk_action_to_system_action(action: sdk.Action) -> MethodActionTempl
         system_resource = convert_sdk_equipment_pool_to_system_equipment_pool(action.resource)
     else:
         raise ValueError(f"Unsupported resource type: {type(action.resource)}")
+    
+    inputs: List[LabwareTemplate | AnyLabwareTemplate] = []
+    for i in action.inputs:
+        if isinstance(i, sdk.AnyLabware):
+            inputs.append(AnyLabwareTemplate())
+        else:
+            inputs.append(convert_sdk_labware_to_system_labware(i))
+    
+    outputs: List[LabwareTemplate | AnyLabwareTemplate] = []
+    for o in action.outputs:
+        if isinstance(o, sdk.AnyLabware):
+            outputs.append(AnyLabwareTemplate())
+        else:
+            outputs.append(convert_sdk_labware_to_system_labware(o))
 
     system_action = MethodActionTemplate(
         resource=system_resource,
         command=action.command,
-        inputs=[convert_sdk_labware_to_system_labware(l) for l in action.inputs],
-        outputs=[convert_sdk_labware_to_system_labware(l) for l in action.outputs],
+        inputs=inputs,
+        outputs=outputs,
         options=action.options
     )
     return system_action
@@ -128,8 +143,12 @@ def convert_sdk_thread_to_system_thread(thread: sdk.Thread, location_reg: ILocat
         end=thread_end,
     )
     for step in thread.steps:
-        system_method = convert_sdk_method_to_system_method(step)
-        system_thread.add_method(system_method)
+        if isinstance(step, sdk.WrapperMethod):
+            system_thread.add_method(JunctionMethodTemplate())
+        else:
+            assert isinstance(step, sdk.Method)
+            system_method = convert_sdk_method_to_system_method(step)
+            system_thread.add_method(system_method)
 
     return system_thread
 
