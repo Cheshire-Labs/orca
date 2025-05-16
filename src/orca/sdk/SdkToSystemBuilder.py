@@ -1,6 +1,7 @@
-from typing import List, Optional
+from typing import List
 
 from orca.resource_models.base_resource import Equipment
+from orca.resource_models.labware import LabwareTemplate
 from orca.resource_models.resource_pool import EquipmentResourcePool
 from orca.sdk import sdk
 from orca.sdk.sdk_converters import convert_sdk_equipment_pool_to_system_equipment_pool, convert_sdk_equipment_to_system_equipment, convert_sdk_labware_to_system_labware, convert_sdk_location_to_system_location, convert_sdk_method_to_system_method, convert_sdk_thread_to_system_thread, convert_sdk_workflow_to_system_workflow
@@ -9,19 +10,28 @@ from orca.system.registries import LabwareRegistry, TemplateRegistry
 from orca.system.reservation_manager import ReservationManager
 from orca.system.resource_registry import ResourceRegistry
 from orca.system.system import System, SystemInfo
-from orca.system.system_map import SystemMap
+from orca.system.system_map import ILocationRegistry, SystemMap
 from orca.system.thread_manager import IThreadManager, ThreadFactory, ThreadManager, ThreadRegistry
 from orca.system.workflow_registry import WorkflowRegistry
+from orca.workflow_models.labware_thread import IThreadObserver, LabwareThread
 
+class EventBus(IThreadObserver):
+    def __init__(self) -> None:
+        self._system: System | None = None
+        self._observers: List[IThreadObserver] = []
 
+    def add_thread_event_handler(self, observer: IThreadObserver) -> None:
+        if observer not in self._observers:
+            self._observers.append(observer)
+    
+    def thread_notify(self, event: str, thread: LabwareThread) -> None:
+        for observer in self._observers:
+            observer.thread_notify(event, thread)
 
 class SdkToSystemBuilder:
     """
     This class is responsible for converting the SDK representation of a system into a system representation.
     """
-
-  
-
 
     def __init__(self,
                  system_info: SystemInfo,
@@ -32,13 +42,14 @@ class SdkToSystemBuilder:
                  workflows: List[sdk.Workflow],
                  threads: List[sdk.Thread]
                  ) -> None:
-        self._system_info: Optional[SystemInfo] = None
+        self._system_info: SystemInfo = system_info
         self._resource_reg: ResourceRegistry = self._get_resource_registry(resources)
         self._labware_registry: LabwareRegistry = self._get_labware_registry(labwares)
-        self._template_registry: TemplateRegistry  = self._get_template_registry(methods, workflows, threads, location_registry)
         self._system_map: SystemMap = self._get_system_map(location_registry)
+        self._template_registry: TemplateRegistry  = self._get_template_registry(methods, workflows, threads, self._system_map)
+        
         self._thread_manager: IThreadManager = self._get_thread_manager(self._labware_registry, threads, self._system_map)
-        self._system_map = SystemMap(self._resource_reg)
+        self._workflow_registry = WorkflowRegistry(self._thread_manager, self._labware_registry, self._system_map)
 
     def _get_system_map(self, location_registry: sdk.LocationRegistry) -> SystemMap:
         system_map = SystemMap(self._resource_reg)
@@ -56,9 +67,6 @@ class SdkToSystemBuilder:
         
         
         thread_reg = ThreadRegistry(self._labware_registry, thread_factory)
-        for t in threads:
-            system_thread = convert_sdk_thread_to_system_thread(t, system_map)
-            thread_reg.add_thread(system_thread)
         manager = ThreadManager(thread_reg, system_map, move_handler)
         return manager
 
@@ -81,10 +89,11 @@ class SdkToSystemBuilder:
         reg = LabwareRegistry()
         for l in labwares:
             system_labware = convert_sdk_labware_to_system_labware(l)
-            reg.add_labware_template(system_labware)
+            if isinstance(system_labware, LabwareTemplate):
+                reg.add_labware_template(system_labware)
         return reg
     
-    def _get_template_registry(self, methods: List[sdk.Method], workflows: List[sdk.Workflow], threads: List[sdk.Thread], location_reg: sdk.LocationRegistry) -> TemplateRegistry:
+    def _get_template_registry(self, methods: List[sdk.Method], workflows: List[sdk.Workflow], threads: List[sdk.Thread], location_reg: ILocationRegistry) -> TemplateRegistry:
         reg = TemplateRegistry()
  
         for m in methods:
@@ -96,14 +105,17 @@ class SdkToSystemBuilder:
         return reg
 
 
+
     def get_system(self):
+
         
-        workflow_registry = WorkflowRegistry(self._thread_manager, self._labware_registry, system_map)
         system = System(self._system_info, 
-                system_map, 
+                self._system_map, 
                 self._resource_reg, 
                 self._template_registry, 
                 self._labware_registry, 
                 self._thread_manager, 
-                workflow_registry)
+                self._workflow_registry)
+        
+        
         return system

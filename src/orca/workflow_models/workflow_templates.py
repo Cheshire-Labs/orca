@@ -166,6 +166,9 @@ class ThreadTemplate:
     def observers(self) -> List[IThreadObserver]:
         return self._observers
     
+    def add_observer(self, observer: IThreadObserver) -> None:
+        self._observers.append(observer)
+    
     def set_wrapped_method(self, wrapped_method: Method) -> None:
         self._wrapped_method
         for m in self._methods:
