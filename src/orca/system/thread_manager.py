@@ -8,7 +8,7 @@ from orca.system.reservation_manager import IReservationManager
 from orca.system.system_map import SystemMap
 from orca.workflow_models.status_enums import LabwareThreadStatus
 from orca.workflow_models.labware_thread import LabwareThread
-from orca.workflow_models.workflow_templates import ThreadTemplate
+from orca.workflow_models.thread_template import ThreadTemplate
 
 
 orca_logger = logging.getLogger("orca")

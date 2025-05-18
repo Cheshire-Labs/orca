@@ -109,7 +109,8 @@ class SystemMap(ILocationRegistry, IResourceLocator, IResourceLocationObserver, 
     def add_location(self, location: Location) -> None:
         self._graph.add_node(location.teachpoint_name, location=location)
         if isinstance(location.resource, ILabwarePlaceable):
-            self._equipment_map[location.resource.name] = location
+            self.assign_resource_to_location(location.name, location.resource)
+            
         location.add_observer(self)
 
     def get_resource_location(self, resource_name: str) -> Location:
@@ -200,6 +201,17 @@ class SystemMap(ILocationRegistry, IResourceLocator, IResourceLocationObserver, 
             self.add_edge(edge[0], edge[1], transporter)
             self.add_edge(edge[1], edge[0], transporter)
 
+    def assign_resource_to_location(self, location_name: str, resource: ILabwarePlaceable) -> None:
+        try:
+            location = self.get_location(location_name)
+        except KeyError:
+            raise ValueError(f"Location {location_name} does not exist")
+        self._equipment_map[resource.name] = location
+
+    def assign_resources(self, resources: Dict[str, ILabwarePlaceable]) -> None:
+        for name, resource in resources.items():
+            self.assign_resource_to_location(name, resource)
+        
     def resource_registry_notify(self, event: str, resource: IResource) -> None:
         if event == "resource_added":
             if isinstance(resource, TransporterEquipment):

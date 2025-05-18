@@ -116,6 +116,13 @@ class ResourceRegistry(IResourceRegistry):
         self._resources[name] = resource
         [observer.resource_registry_notify("resource_added", resource) for observer in self._observers]
 
+    def add_resources(self, resources: List[IResource | EquipmentResourcePool]) -> None:
+        for resource in resources:
+            if isinstance(resource, EquipmentResourcePool):
+                self.add_resource_pool(resource)
+            else:
+                self.add_resource(resource)
+
     def get_resource_pool(self, name: str) -> EquipmentResourcePool:
         return self._resource_pools[name]
 

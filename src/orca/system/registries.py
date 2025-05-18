@@ -1,13 +1,16 @@
 from types import MappingProxyType
 from orca.resource_models.base_resource import IResource
 from orca.resource_models.location import Location
+from orca.system.interfaces import IMethodTemplateRegistry, IWorkflowTemplateRegistry
 from orca.system.labware_registry_interfaces import ILabwareRegistry, ILabwareTemplateRegistry
 from orca.resource_models.labware import Labware, LabwareTemplate
 from orca.system.resource_registry import IResourceRegistry
 from orca.system.system_map import ILocationRegistry
-from orca.system.template_registry_interfaces import IThreadTemplateRegistry, IMethodTemplateRegistry, IWorkflowTemplateRegistry
+from orca.system.interfaces import IThreadTemplateRegistry
+from orca.workflow_models.method_template import MethodTemplate
+from orca.workflow_models.thread_template import ThreadTemplate
 from orca.workflow_models.labware_thread import Method
-from orca.workflow_models.workflow_templates import ThreadTemplate, MethodTemplate, WorkflowTemplate
+from orca.workflow_models.workflow_templates import WorkflowTemplate
 
 
 from typing import List, Dict

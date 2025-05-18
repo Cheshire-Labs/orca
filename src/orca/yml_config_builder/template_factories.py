@@ -4,6 +4,7 @@ from orca.config_interfaces import ILabwareConfig, ILabwareThreadConfig, IMethod
 from orca.resource_models.base_resource import Equipment, LabwareLoadableEquipment
 from orca.resource_models.labware import AnyLabwareTemplate, LabwareTemplate
 from orca.resource_models.location import Location
+from orca.system.interfaces import IMethodTemplateRegistry, IWorkflowTemplateRegistry
 from orca.system.workflow_registry import WorkflowRegistry
 from orca.scripting.scripting import IScriptRegistry
 from orca.system.labware_registry_interfaces import ILabwareTemplateRegistry
@@ -13,7 +14,10 @@ from orca.system.resource_registry import IResourceRegistry
 from orca.system.system import System, SystemInfo
 from orca.system.system_map import ILocationRegistry, IResourceLocator, SystemMap
 from orca.system.registries import TemplateRegistry
-from orca.system.template_registry_interfaces import IThreadTemplateRegistry, IMethodTemplateRegistry, IWorkflowTemplateRegistry
+from orca.system.interfaces import IThreadTemplateRegistry
+from orca.workflow_models.action_template import MethodActionTemplate
+from orca.workflow_models.method_template import IMethodTemplate, JunctionMethodTemplate, MethodTemplate
+from orca.workflow_models.thread_template import ThreadTemplate
 from orca.workflow_models.spawn_thread_action import SpawnThreadAction
 from orca.workflow_models.labware_thread import IThreadObserver
 from orca.yml_config_builder.configs import SystemConfigModel
@@ -21,7 +25,7 @@ from orca.yml_config_builder.dynamic_config import DynamicSystemConfigModel
 from orca.yml_config_builder.resource_factory import IResourceFactory, ResourcePoolFactory
 from orca.resource_models.resource_pool import EquipmentResourcePool
 from orca.resource_models.transporter_resource import TransporterEquipment
-from orca.workflow_models.workflow_templates import IMethodTemplate, JunctionMethodTemplate, ThreadTemplate, MethodActionTemplate, MethodTemplate, WorkflowTemplate
+from orca.workflow_models.workflow_templates import WorkflowTemplate
 from orca.yml_config_builder.special_yml_parsing import get_dynamic_yaml_keys, is_dynamic_yaml
 from orca.yml_config_builder.variable_resolution import VariablesRegistry
 
@@ -85,7 +89,7 @@ class MethodTemplateFactory:
         self._template_builder = MethodActionConfigToTemplate(resource_reg, labware_template_reg)
 
     def get_template(self, name: str, config: IMethodConfig) -> MethodTemplate:
-        method = MethodTemplate(name, config.options)
+        method = MethodTemplate(name, options=config.options)
         
         for action_item in config.actions:
             for action_name, action_config in action_item.items():
@@ -124,7 +128,7 @@ class ThreadTemplateFactory:
             labware_thread = ThreadTemplate(labware, 
                                             start_location, 
                                             end_location, 
-                                            observers)
+                                            observers=observers)
         except KeyError as e:
             raise KeyError(f"Error building labware thread {name}") from e
         return labware_thread

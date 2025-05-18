@@ -1,0 +1,93 @@
+from types import MappingProxyType
+from orca.system.labware_registry_interfaces import ILabwareRegistry, ILabwareTemplateRegistry
+from orca.system.resource_registry import IResourceRegistry
+from orca.system.system_map import ILocationRegistry, SystemMap
+from orca.system.thread_manager import IThreadManager
+from orca.system.workflow_registry import IWorkflowRegistry
+
+
+from abc import ABC, abstractmethod
+
+from orca.workflow_models.method_template import MethodTemplate
+from orca.workflow_models.thread_template import ThreadTemplate
+from orca.workflow_models.workflow_templates import WorkflowTemplate
+
+
+class ISystemInfo(ABC):
+    @property
+    @abstractmethod
+    def id(self) -> str:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def version(self) -> str:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def description(self) -> str:
+        raise NotImplementedError
+
+
+class IWorkflowTemplateRegistry(ABC):
+
+    @abstractmethod
+    def get_workflow_templates(self) -> MappingProxyType[str, WorkflowTemplate]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_workflow_template(self, name: str) -> WorkflowTemplate:
+        raise NotImplementedError
+
+    @abstractmethod
+    def add_workflow_template(self, workflow: WorkflowTemplate) -> None:
+        raise NotImplementedError
+
+
+class IMethodTemplateRegistry(ABC):
+
+    @abstractmethod
+    def get_method_templates(self) -> MappingProxyType[str, MethodTemplate]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_method_template(self, name: str) -> MethodTemplate:
+        raise NotImplementedError
+
+    @abstractmethod
+    def add_method_template(self, method: MethodTemplate) -> None:
+        raise NotImplementedError
+
+
+class IThreadTemplateRegistry(ABC):
+    @abstractmethod
+    def get_labware_thread_template(self, name: str) -> ThreadTemplate:
+        raise NotImplementedError
+
+    @abstractmethod
+    def add_labware_thread_template(self, labware_thread: ThreadTemplate) -> None:
+        raise NotImplementedError
+
+
+class ISystem(ISystemInfo,
+              IResourceRegistry,
+              ILabwareRegistry,
+              ILabwareTemplateRegistry,
+              IWorkflowTemplateRegistry,
+              IMethodTemplateRegistry,
+              IThreadTemplateRegistry,
+              ILocationRegistry,
+              IWorkflowRegistry,
+              IThreadManager,
+              ABC):
+
+    @property
+    @abstractmethod
+    def system_map(self) -> SystemMap:
+        raise NotImplementedError

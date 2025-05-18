@@ -3,8 +3,9 @@ from typing import Dict
 from orca.system.labware_registry_interfaces import ILabwareRegistry
 from orca.system.system_map import SystemMap
 from orca.workflow_models.labware_thread import Method
+from orca.workflow_models.method_template import MethodTemplate
 from orca.workflow_models.workflow import Workflow
-from orca.workflow_models.workflow_templates import MethodTemplate, WorkflowTemplate
+from orca.workflow_models.workflow_templates import WorkflowTemplate
 from orca.system.thread_manager import IThreadManager
 
 
