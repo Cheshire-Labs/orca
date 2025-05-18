@@ -1,4 +1,3 @@
-from abc import ABC, abstractmethod
 from types import MappingProxyType
 from typing import Dict, List
 import uuid
@@ -8,37 +7,18 @@ from orca.resource_models.transporter_resource import TransporterEquipment
 from orca.resource_models.base_resource import Equipment, IResource
 
 from orca.resource_models.labware import Labware, LabwareTemplate
-from orca.system.labware_registry_interfaces import ILabwareRegistry, ILabwareTemplateRegistry
+from orca.system.interfaces import ISystem
+from orca.system.interfaces import ISystemInfo
 from orca.system.workflow_registry import IWorkflowRegistry
 from orca.system.resource_registry import IResourceRegistry, IResourceRegistryObesrver
-from orca.system.system_map import ILocationRegistry, SystemMap
+from orca.system.system_map import SystemMap
 from orca.system.registries import LabwareRegistry, TemplateRegistry
-from orca.system.template_registry_interfaces import IThreadTemplateRegistry, IMethodTemplateRegistry, IWorkflowTemplateRegistry
+from orca.workflow_models.method_template import MethodTemplate
+from orca.workflow_models.thread_template import ThreadTemplate
 from orca.workflow_models.labware_thread import LabwareThread, Method
 from orca.workflow_models.workflow import Workflow
-from orca.workflow_models.workflow_templates import ThreadTemplate, MethodTemplate, WorkflowTemplate
+from orca.workflow_models.workflow_templates import WorkflowTemplate
 from orca.system.thread_manager import IThreadManager
-
-class ISystemInfo(ABC):
-    @property
-    @abstractmethod
-    def id(self) -> str:
-        raise NotImplementedError
-    
-    @property
-    @abstractmethod
-    def name(self) -> str:
-        raise NotImplementedError
-    
-    @property
-    @abstractmethod
-    def version(self) -> str:
-        raise NotImplementedError
-    
-    @property
-    @abstractmethod
-    def description(self) -> str:
-        raise NotImplementedError
 
 class SystemInfo(ISystemInfo):
     def __init__(self, name: str, version: str, description: str, model_extra: Dict[str, str]) -> None:
@@ -68,23 +48,6 @@ class SystemInfo(ISystemInfo):
     def model_extra(self) -> Dict[str, str]:
         return self._model_extra
     
-
-class ISystem(ISystemInfo,
-              IResourceRegistry, 
-              ILabwareRegistry, 
-              ILabwareTemplateRegistry, 
-              IWorkflowTemplateRegistry, 
-              IMethodTemplateRegistry, 
-              IThreadTemplateRegistry, 
-              ILocationRegistry, 
-              IWorkflowRegistry, 
-              IThreadManager,
-              ABC):
-
-    @property
-    @abstractmethod
-    def system_map(self) -> SystemMap:
-        raise NotImplementedError
 
 class System(ISystem):
     def __init__(self, 

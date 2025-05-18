@@ -8,6 +8,7 @@ import yaml
 from orca.driver_management.driver_installer import DriverInstaller, DriverLoader, DriverManager, InstalledDriverRegistry, RemoteAvailableDriverRegistry
 from orca.helper import FilepathReconciler
 from orca.scripting.scripting import IScriptFactory, IScriptRegistry, NullScriptFactory, ScriptFactory, ScriptRegistry
+from orca.system.interfaces import ISystem
 from orca.system.method_executor import MethodExecutor
 from orca.resource_models.base_resource import IInitializableResource
 from orca.resource_models.labware import LabwareTemplate
@@ -16,7 +17,7 @@ from orca.system.move_handler import MoveHandler
 from orca.system.registries import LabwareRegistry, TemplateRegistry
 from orca.system.reservation_manager import ReservationManager
 from orca.system.resource_registry import ResourceRegistry
-from orca.system.system import ISystem, SystemInfo
+from orca.system.system import SystemInfo
 from orca.system.system_map import SystemMap
 from orca.system.thread_manager import ThreadManagerFactory
 from orca.system.workflow_registry import WorkflowRegistry

@@ -3,7 +3,7 @@ from typing import Dict, List
 
 from orca.system.thread_manager import IThreadManager
 from orca.workflow_models.labware_thread import LabwareThread
-from orca.workflow_models.workflow_templates import ThreadTemplate
+from orca.workflow_models.thread_template import ThreadTemplate
 
 
 class WorkflowThreadManager:

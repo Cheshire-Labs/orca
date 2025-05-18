@@ -1,23 +1,32 @@
 import asyncio
+import os
 from typing import List
 from orca.driver_management.drivers.simulation_labware_placeable.simulation_labware_placeable import SimulationLabwarePlaceableDriver
 from orca.driver_management.drivers.simulation_robotic_arm.simulation_robotic_arm import SimulationRoboticArmDriver
+from orca.resource_models.base_resource import LabwareLoadableEquipment
+from orca.resource_models.labware import AnyLabwareTemplate, LabwareTemplate
+from orca.resource_models.resource_pool import EquipmentResourcePool
+from orca.resource_models.transporter_resource import TransporterEquipment
 from orca.sdk.SdkToSystemBuilder import SdkToSystemBuilder
-from orca.sdk.sdk import EquipmentPool, Labware, AnyLabware, LocationRegistry, Equipment, Method, Action, Thread, ThreadEventHandler, Transporter, Workflow, WrapperMethod
-from orca.system.system import ISystem, SystemInfo
-from orca.workflow_models.labware_thread import LabwareThread
-from orca.workflow_models.status_enums import LabwareThreadStatus
+from orca.system.interfaces import ISystem
+from orca.system.resource_registry import ResourceRegistry
+from orca.system.system import SystemInfo
+from orca.system.system_map import SystemMap
+from orca.workflow_models.action_template import MethodActionTemplate
+from orca.workflow_models.method_template import JunctionMethodTemplate, MethodTemplate
+from orca.workflow_models.thread_template import ThreadTemplate
+from orca.workflow_models.workflow_templates import WorkflowTemplate
 
 
-sample_plate = Labware(name="sample_plate", type="Matrix 96 Well")
-plate_1 = Labware(name="plate_1", type="Corning 96 Well")
-final_plate = Labware(name="final_plate", type="SMC 384 plate")
-bead_reservoir = Labware(name="bead_reservoir", type="reservoir")
-buffer_b_reservoir = Labware(name="buffer_b_reservoir", type="reservoir")
-buffer_d_reservoir = Labware(name="buffer_d_reservoir", type="reservoir")
-detection_reservoir = Labware(name="detection_reservoir", type="reservoir")
-tips_96 = Labware(name="tips_96", type="96 Tips")
-tips_384 = Labware(name="tips_384", type="384 Tips")
+sample_plate = LabwareTemplate(name="sample_plate", type="Matrix 96 Well")
+plate_1 = LabwareTemplate(name="plate_1", type="Corning 96 Well")
+final_plate = LabwareTemplate(name="final_plate", type="SMC 384 plate")
+bead_reservoir = LabwareTemplate(name="bead_reservoir", type="reservoir")
+buffer_b_reservoir = LabwareTemplate(name="buffer_b_reservoir", type="reservoir")
+buffer_d_reservoir = LabwareTemplate(name="buffer_d_reservoir", type="reservoir")
+detection_reservoir = LabwareTemplate(name="detection_reservoir", type="reservoir")
+tips_96 = LabwareTemplate(name="tips_96", type="96 Tips")
+tips_384 = LabwareTemplate(name="tips_384", type="384 Tips")
 
 labwares = [
     sample_plate,
@@ -32,49 +41,56 @@ labwares = [
 ]
 
 # TRANSPORTERS
-ddr_1 = Transporter(name="ddr_1", driver=SimulationRoboticArmDriver(name="ddr_1_driver", mocking_type="ddr", teachpoints_filepath="ddr1.xml"))
-ddr_2 = Transporter(name="ddr_2", driver=SimulationRoboticArmDriver(name="ddr_2_driver", mocking_type="ddr", teachpoints_filepath="ddr2.xml"))
-ddr_3 = Transporter(name="ddr_3", driver=SimulationRoboticArmDriver(name="ddr_3_driver", mocking_type="ddr", teachpoints_filepath="ddr3.xml"))
-translator_1 = Transporter(name="translator_1", driver=SimulationRoboticArmDriver(name="translator_1_driver", mocking_type="translator", teachpoints_filepath="translator1.xml"))
-translator_2 = Transporter(name="translator_2", driver=SimulationRoboticArmDriver(name="translator_2_driver", mocking_type="translator", teachpoints_filepath="translator2.xml"))
+teachpoints_dir = "examples\\smc_assay"
+ddr1_points = os.path.join(teachpoints_dir, "ddr1.xml")
+ddr2_points = os.path.join(teachpoints_dir, "ddr2.xml")
+ddr3_points = os.path.join(teachpoints_dir, "ddr3.xml")
+translator1_points = os.path.join(teachpoints_dir, "translator1.xml")
+translator2_points = os.path.join(teachpoints_dir, "translator2.xml")
+ddr_1 = TransporterEquipment(name="ddr_1", driver=SimulationRoboticArmDriver(name="ddr_1_driver", mocking_type="ddr", teachpoints_filepath=ddr1_points))
+ddr_2 = TransporterEquipment(name="ddr_2", driver=SimulationRoboticArmDriver(name="ddr_2_driver", mocking_type="ddr", teachpoints_filepath=ddr2_points))
+ddr_3 = TransporterEquipment(name="ddr_3", driver=SimulationRoboticArmDriver(name="ddr_3_driver", mocking_type="ddr", teachpoints_filepath=ddr3_points))
+translator_1 = TransporterEquipment(name="translator_1", driver=SimulationRoboticArmDriver(name="translator_1_driver", mocking_type="translator", teachpoints_filepath=translator1_points))
+translator_2 = TransporterEquipment(name="translator_2", driver=SimulationRoboticArmDriver(name="translator_2_driver", mocking_type="translator", teachpoints_filepath=translator2_points))
 
 # EQUIPMENT
-biotek_1 = Equipment(name="biotek_1", driver=SimulationLabwarePlaceableDriver(name="biotek_1_driver", mocking_type="biotek"))
-biotek_2 = Equipment(name="biotek_2", driver=SimulationLabwarePlaceableDriver(name="biotek_2_driver", mocking_type="biotek"))
-bravo_96_head = Equipment(name="bravo_96_head", driver=SimulationLabwarePlaceableDriver(name="bravo_96_head_driver", mocking_type="bravo"))
-bravo_384_head = Equipment(name="bravo_384_head", driver=SimulationLabwarePlaceableDriver(name="bravo_384_head_driver", mocking_type="bravo"))
-sealer = Equipment(name="sealer", driver=SimulationLabwarePlaceableDriver(name="sealer_driver", mocking_type="plateloc"))
-centrifuge = Equipment(name="centrifuge", driver=SimulationLabwarePlaceableDriver(name="centrifuge_driver", mocking_type="vspin"))
-plate_hotel = Equipment(name="plate_hotel", driver=SimulationLabwarePlaceableDriver(name="plate_hotel_driver", mocking_type="agilent_hotel"))
-delidder = Equipment(name="delidder", driver=SimulationLabwarePlaceableDriver(name="delidder_driver", mocking_type="delidder"))
-smc_pro = Equipment(name="smc_pro", driver=SimulationLabwarePlaceableDriver(name="smc_pro_driver", mocking_type="smc_pro"))
-stacker_sample_start = Equipment(name="stacker_sample_start", driver=SimulationLabwarePlaceableDriver(name="stacker_sample_start_driver", mocking_type="vstack"))
-stacker_sample_end = Equipment(name="stacker_sample_end", driver=SimulationLabwarePlaceableDriver(name="stacker_sample_end_driver", mocking_type="vstack"))
-stacker_plate_1_start = Equipment(name="stacker_plate_1_start", driver=SimulationLabwarePlaceableDriver(name="stacker_plate_1_start_driver", mocking_type="vstack"))
-stacker_final_plate_start = Equipment(name="stacker_final_plate_start", driver=SimulationLabwarePlaceableDriver(name="stacker_final_plate_start_driver", mocking_type="vstack"))
-stacker_96_tips = Equipment(name="stacker_96_tips", driver=SimulationLabwarePlaceableDriver(name="stacker_96_tips_driver", mocking_type="vstack"))
-stacker_384_tips_start = Equipment(name="stacker_384_tips_start", driver=SimulationLabwarePlaceableDriver(name="stacker_384_tips_start_driver", mocking_type="vstack"))
-stacker_384_tips_end = Equipment(name="stacker_384_tips_end", driver=SimulationLabwarePlaceableDriver(name="stacker_384_tips_end_driver", mocking_type="vstack"))
-shaker_1 = Equipment(name="shaker_1", driver=SimulationLabwarePlaceableDriver(name="shaker_1_driver", mocking_type="shaker"))
-shaker_2 = Equipment(name="shaker_2", driver=SimulationLabwarePlaceableDriver(name="shaker_2_driver", mocking_type="shaker"))
-shaker_3 = Equipment(name="shaker_3", driver=SimulationLabwarePlaceableDriver(name="shaker_3_driver", mocking_type="shaker"))
-shaker_4 = Equipment(name="shaker_4", driver=SimulationLabwarePlaceableDriver(name="shaker_4_driver", mocking_type="shaker"))
-shaker_5 = Equipment(name="shaker_5", driver=SimulationLabwarePlaceableDriver(name="shaker_5_driver", mocking_type="shaker"))
-shaker_6 = Equipment(name="shaker_6", driver=SimulationLabwarePlaceableDriver(name="shaker_6_driver", mocking_type="shaker"))
-shaker_7 = Equipment(name="shaker_7", driver=SimulationLabwarePlaceableDriver(name="shaker_7_driver", mocking_type="shaker"))
-shaker_8 = Equipment(name="shaker_8", driver=SimulationLabwarePlaceableDriver(name="shaker_8_driver", mocking_type="shaker"))
-shaker_9 = Equipment(name="shaker_9", driver=SimulationLabwarePlaceableDriver(name="shaker_9_driver", mocking_type="shaker"))
-shaker_10 = Equipment(name="shaker_10", driver=SimulationLabwarePlaceableDriver(name="shaker_10_driver", mocking_type="shaker"))
-waste_1 = Equipment(name="waste_1", driver=SimulationLabwarePlaceableDriver(name="waste_1_driver", mocking_type="waste"))
+biotek_1 = LabwareLoadableEquipment(name="biotek_1", driver=SimulationLabwarePlaceableDriver(name="biotek_1_driver", mocking_type="biotek"))
+biotek_2 = LabwareLoadableEquipment(name="biotek_2", driver=SimulationLabwarePlaceableDriver(name="biotek_2_driver", mocking_type="biotek"))
+bravo_96 = LabwareLoadableEquipment(name="bravo_96_head", driver=SimulationLabwarePlaceableDriver(name="bravo_96_head_driver", mocking_type="bravo"))
+bravo_384 = LabwareLoadableEquipment(name="bravo_384_head", driver=SimulationLabwarePlaceableDriver(name="bravo_384_head_driver", mocking_type="bravo"))
+sealer = LabwareLoadableEquipment(name="sealer", driver=SimulationLabwarePlaceableDriver(name="sealer_driver", mocking_type="plateloc"))
+centrifuge = LabwareLoadableEquipment(name="centrifuge", driver=SimulationLabwarePlaceableDriver(name="centrifuge_driver", mocking_type="vspin"))
+plate_hotel = LabwareLoadableEquipment(name="plate_hotel", driver=SimulationLabwarePlaceableDriver(name="plate_hotel_driver", mocking_type="agilent_hotel"))
+delidder = LabwareLoadableEquipment(name="delidder", driver=SimulationLabwarePlaceableDriver(name="delidder_driver", mocking_type="delidder"))
+smc_pro = LabwareLoadableEquipment(name="smc_pro", driver=SimulationLabwarePlaceableDriver(name="smc_pro_driver", mocking_type="smc_pro"))
+stacker_sample_start = LabwareLoadableEquipment(name="stacker_sample_start", driver=SimulationLabwarePlaceableDriver(name="stacker_sample_start_driver", mocking_type="vstack"))
+stacker_sample_end = LabwareLoadableEquipment(name="stacker_sample_end", driver=SimulationLabwarePlaceableDriver(name="stacker_sample_end_driver", mocking_type="vstack"))
+stacker_plate_1_start = LabwareLoadableEquipment(name="stacker_plate_1_start", driver=SimulationLabwarePlaceableDriver(name="stacker_plate_1_start_driver", mocking_type="vstack"))
+stacker_final_plate_start = LabwareLoadableEquipment(name="stacker_final_plate_start", driver=SimulationLabwarePlaceableDriver(name="stacker_final_plate_start_driver", mocking_type="vstack"))
+stacker_96_tips = LabwareLoadableEquipment(name="stacker_96_tips", driver=SimulationLabwarePlaceableDriver(name="stacker_96_tips_driver", mocking_type="vstack"))
+stacker_384_tips_start = LabwareLoadableEquipment(name="stacker_384_tips_start", driver=SimulationLabwarePlaceableDriver(name="stacker_384_tips_start_driver", mocking_type="vstack"))
+stacker_384_tips_end = LabwareLoadableEquipment(name="stacker_384_tips_end", driver=SimulationLabwarePlaceableDriver(name="stacker_384_tips_end_driver", mocking_type="vstack"))
+shaker_1 = LabwareLoadableEquipment(name="shaker_1", driver=SimulationLabwarePlaceableDriver(name="shaker_1_driver", mocking_type="shaker"))
+shaker_2 = LabwareLoadableEquipment(name="shaker_2", driver=SimulationLabwarePlaceableDriver(name="shaker_2_driver", mocking_type="shaker"))
+shaker_3 = LabwareLoadableEquipment(name="shaker_3", driver=SimulationLabwarePlaceableDriver(name="shaker_3_driver", mocking_type="shaker"))
+shaker_4 = LabwareLoadableEquipment(name="shaker_4", driver=SimulationLabwarePlaceableDriver(name="shaker_4_driver", mocking_type="shaker"))
+shaker_5 = LabwareLoadableEquipment(name="shaker_5", driver=SimulationLabwarePlaceableDriver(name="shaker_5_driver", mocking_type="shaker"))
+shaker_6 = LabwareLoadableEquipment(name="shaker_6", driver=SimulationLabwarePlaceableDriver(name="shaker_6_driver", mocking_type="shaker"))
+shaker_7 = LabwareLoadableEquipment(name="shaker_7", driver=SimulationLabwarePlaceableDriver(name="shaker_7_driver", mocking_type="shaker"))
+shaker_8 = LabwareLoadableEquipment(name="shaker_8", driver=SimulationLabwarePlaceableDriver(name="shaker_8_driver", mocking_type="shaker"))
+shaker_9 = LabwareLoadableEquipment(name="shaker_9", driver=SimulationLabwarePlaceableDriver(name="shaker_9_driver", mocking_type="shaker"))
+shaker_10 = LabwareLoadableEquipment(name="shaker_10", driver=SimulationLabwarePlaceableDriver(name="shaker_10_driver", mocking_type="shaker"))
+waste_1 = LabwareLoadableEquipment(name="waste_1", driver=SimulationLabwarePlaceableDriver(name="waste_1_driver", mocking_type="waste"))
 
 # COLLECTIONS
-shaker_collection = EquipmentPool(name="shaker_collection", resources=[shaker_1, shaker_2, shaker_3, shaker_4, shaker_5, shaker_6, shaker_7, shaker_8, shaker_9, shaker_10])
+shaker_collection = EquipmentResourcePool(name="shaker_collection", resources=[shaker_1, shaker_2, shaker_3, shaker_4, shaker_5, shaker_6, shaker_7, shaker_8, shaker_9, shaker_10])
 
-resources: List[Equipment | EquipmentPool] = [
+resource_registry = ResourceRegistry()
+resource_registry.add_resources([
     biotek_1,
     biotek_2,
-    bravo_96_head,
-    bravo_384_head,
+    bravo_96,
+    bravo_384,
     sealer,
     centrifuge, 
     plate_hotel,
@@ -103,31 +119,32 @@ resources: List[Equipment | EquipmentPool] = [
     shaker_10,
     waste_1,
     shaker_collection
-]
+])
 
-l = LocationRegistry()
-l.build_from_transporters([ddr_1, ddr_2, ddr_3, translator_1, translator_2])
-l.assign_resources({
-    "biotek-1": biotek_1,
-    "biotek-2": biotek_2,
-    "bravo-96-head": bravo_96_head,
-    "bravo_384_head": bravo_384_head,
+def initialize_all_transporters(resource_registry: ResourceRegistry):
+    async def _run_all():
+        await asyncio.gather(*(t.initialize() for t in resource_registry.transporters))
+    asyncio.run(_run_all())
+
+initialize_all_transporters(resource_registry)
+
+map = SystemMap(resource_registry)
+map.assign_resources({
+    "biotek_1": biotek_1,
+    "biotek_2": biotek_2,
+    "bravo_96": bravo_96,
+    "bravo_384": bravo_384,
     "sealer": sealer,
     "centrifuge": centrifuge,
     "plate_hotel": plate_hotel,
     "delidder": delidder,
-    "ddr_1": ddr_1,
-    "ddr_2": ddr_2,
-    "ddr_3": ddr_3,
-    "translator_1": translator_1,
-    "translator_2": translator_2,
-    "stacker_sample_start": stacker_sample_start,
-    "stacker_sample_end": stacker_sample_end,
-    "stacker_plate_1_start": stacker_plate_1_start,
-    "stacker_final_plate_start": stacker_final_plate_start,
-    "stacker_96_tips": stacker_96_tips,
-    "stacker_384_tips_start": stacker_384_tips_start,
-    "stacker_384_tips_end": stacker_384_tips_end,
+    "stacker_1": stacker_sample_start,
+    "stacker_2": stacker_sample_end,
+    "stacker_3": stacker_plate_1_start,
+    "stacker_4": stacker_final_plate_start,
+    "stacker_5": stacker_96_tips,
+    "stacker_6": stacker_384_tips_start,
+    "stacker_7": stacker_384_tips_end,
     "shaker_1": shaker_1,
     "shaker_2": shaker_2,
     "shaker_3": shaker_3,
@@ -147,11 +164,11 @@ l.assign_resources({
 
 # METHODS
 
-sample_to_bead_plate_method = Method(
+sample_to_bead_plate_method = MethodTemplate(
     name="sample_to_bead_plate",
     actions=[
-        Action(
-            resource=bravo_96_head,
+        MethodActionTemplate(
+            resource=bravo_96,
             command="run",
             inputs=[sample_plate, tips_96, plate_1],
             options={
@@ -166,20 +183,20 @@ sample_to_bead_plate_method = Method(
     ]
 )
 
-incubate_2hrs = Method("incubate_2hrs",
+incubate_2hrs = MethodTemplate("incubate_2hrs",
     [
-    Action(
+    MethodActionTemplate(
         resource=shaker_collection,
         command="shake",
         inputs=[plate_1],
         options={
-            "shake_time": Variable("incubation_time", default=7200)
+            "shake_time": 7200
         }
     )
 ])
 
-post_capture_wash = Method("post_capture_wash", [
-    Action(
+post_capture_wash = MethodTemplate("post_capture_wash", [
+    MethodActionTemplate(
         resource=biotek_1,
         command="run",
         inputs=[plate_1],
@@ -189,9 +206,9 @@ post_capture_wash = Method("post_capture_wash", [
     )
 ])
 
-add_detection_antibody = Method("add_detection_antibody", [
-    Action(
-        resource=bravo_96_head,
+add_detection_antibody = MethodTemplate("add_detection_antibody", [
+    MethodActionTemplate(
+        resource=bravo_96,
         command="run",
         inputs=[plate_1, tips_96],
         options={
@@ -200,17 +217,17 @@ add_detection_antibody = Method("add_detection_antibody", [
     )
 ])
 
-incubate_1hr = Method("incubate_1hr", [
-    Action(resource=shaker_collection,
+incubate_1hr = MethodTemplate("incubate_1hr", [
+    MethodActionTemplate(resource=shaker_collection,
         command="shake",
         inputs=[plate_1],
         options={
-            "shake_time": Variable("incubation_time", default=3600)
+            "shake_time": 3600
         }
     )])
 
-pre_transfer_wash = Method("pre_transfer_wash", [
-    Action(resource=biotek_2,
+pre_transfer_wash = MethodTemplate("pre_transfer_wash", [
+    MethodActionTemplate(resource=biotek_2,
         command="run",
         inputs=[plate_1],
         options={
@@ -218,8 +235,8 @@ pre_transfer_wash = Method("pre_transfer_wash", [
         }
     )])
 
-discard_supernatant = Method("discard_supernatant", [
-    Action(resource=biotek_2,
+discard_supernatant = MethodTemplate("discard_supernatant", [
+    MethodActionTemplate(resource=biotek_2,
            command="run",
         inputs=[plate_1],
         options={
@@ -227,8 +244,8 @@ discard_supernatant = Method("discard_supernatant", [
         }
     )
 ])
-add_elution_buffer_b = Method("add_elution_buffer_b", [
-    Action(resource=bravo_384_head,
+add_elution_buffer_b = MethodTemplate("add_elution_buffer_b", [
+    MethodActionTemplate(resource=bravo_384,
         command="run",
         inputs=[plate_1, tips_384],
         options={
@@ -239,19 +256,19 @@ add_elution_buffer_b = Method("add_elution_buffer_b", [
             }
         }
     )])
-incubate_10min = Method("incubate_10min", [
-    Action(resource=shaker_collection,
+incubate_10min = MethodTemplate("incubate_10min", [
+    MethodActionTemplate(resource=shaker_collection,
         command="shake",
         inputs=[plate_1],
         options={
-            "shake_time": Variable("incubation_time", default=600)
+            "shake_time": 600
         }
     )])
 
 
 
-add_buffer_d = Method("add_buffer_d", [
-    Action(resource=bravo_384_head,
+add_buffer_d = MethodTemplate("add_buffer_d", [
+    MethodActionTemplate(resource=bravo_384,
         command="run",
         inputs=[plate_1, tips_384],
         options={
@@ -262,8 +279,8 @@ add_buffer_d = Method("add_buffer_d", [
         }
     )])
 
-combine_plates = Method("combine_plates", [
-    Action(resource=bravo_384_head,
+combine_plates = MethodTemplate("combine_plates", [
+    MethodActionTemplate(resource=bravo_384,
         command="run",
         inputs=[plate_1, final_plate, tips_384],
         options={
@@ -275,8 +292,8 @@ combine_plates = Method("combine_plates", [
         }
     )])
 
-transfer_eluate = Method("transfer_eluate", [
-    Action(resource=bravo_384_head,
+transfer_eluate = MethodTemplate("transfer_eluate", [
+    MethodActionTemplate(resource=bravo_384,
            command="run",
         inputs=[final_plate, tips_384],
         options={
@@ -284,8 +301,8 @@ transfer_eluate = Method("transfer_eluate", [
         }
     )])
 
-centrifuge_method = Method("centrifuge", [
-    Action(resource=centrifuge,
+centrifuge_method = MethodTemplate("centrifuge", [
+    MethodActionTemplate(resource=centrifuge,
         command="spin",
         inputs=[final_plate],
         options={
@@ -295,8 +312,8 @@ centrifuge_method = Method("centrifuge", [
     )
 ])
 
-read = Method("read", [
-    Action(resource=smc_pro,
+read = MethodTemplate("read", [
+    MethodActionTemplate(resource=smc_pro,
         command="read",
         inputs=[final_plate],
         options={
@@ -306,10 +323,10 @@ read = Method("read", [
     )]
 )
 
-delid = Method("delid", [
-    Action(resource=delidder,   
+delid = MethodTemplate("delid", [
+    MethodActionTemplate(resource=delidder,   
         command="delid",
-        inputs=[AnyLabware()],
+        inputs=[AnyLabwareTemplate()],
     )
 ])
 
@@ -333,12 +350,11 @@ methods = [
 ]
 
 
-plate_1_thread = Thread(
-    labware=plate_1
-)
-plate_1_thread.set_start("stacker_plate_1_start")
-plate_1_thread.set_end("waste_1")
-plate_1_thread.add_steps([
+plate_1_thread = ThreadTemplate(
+    plate_1,
+    map.get_location("stacker_3"),
+    map.get_location("waste_1"),
+    [
     sample_to_bead_plate_method, 
     incubate_2hrs,
     post_capture_wash,
@@ -353,46 +369,42 @@ plate_1_thread.add_steps([
 ])
 
 
-sample_plate_thread = Thread(
-    labware=sample_plate
-)
-sample_plate_thread.set_start("stacker_sample_start")
-sample_plate_thread.set_end("waste_1")
-sample_plate_thread.add_steps([
+sample_plate_thread = ThreadTemplate(
+    sample_plate,
+    map.get_location("stacker_1"),
+    map.get_location("stacker_2"),
+    [
     delid,
-    WrapperMethod(),
+    JunctionMethodTemplate(),
 ])
 
-final_plate_thread = Thread(
-    labware=final_plate
-)
-final_plate_thread.set_start("stacker_final_plate_start")
-final_plate_thread.set_end("plate_hotel")
-final_plate_thread.add_steps([
-    WrapperMethod(),
+final_plate_thread = ThreadTemplate(
+    final_plate,
+    map.get_location("stacker_4"),
+    map.get_location("plate_hotel"),
+    methods=[
+    JunctionMethodTemplate(),
     transfer_eluate,
     centrifuge_method,
     read
 ])
 
-tips_96_thread = Thread(
-    labware=tips_96
-)
-tips_96_thread.set_start("stacker_96_tips")
-tips_96_thread.set_end("waste_1")
-tips_96_thread.add_steps([
+tips_96_thread = ThreadTemplate(
+    tips_96,
+    map.get_location("stacker_5"),
+    map.get_location("waste_1"),
+    [
     delid,
-    WrapperMethod(),
+    JunctionMethodTemplate(),
 ])
 
-tips_384_thread = Thread(
-    labware=tips_384
-)
-tips_384_thread.set_start("stacker_384_tips_start")
-tips_384_thread.set_end("stacker_384_tips_end")
-tips_384_thread.add_steps([
+tips_384_thread = ThreadTemplate(
+    tips_384,
+    map.get_location("stacker_6"),
+    map.get_location("stacker_7"),
+    [
     delid,
-    WrapperMethod(),
+    JunctionMethodTemplate(),
 ])
 
 
@@ -404,56 +416,57 @@ threads = [
     tips_384_thread
 ]
 
-smc_workflow = Workflow("smc_assay")
-smc_workflow.add_threads([
-    plate_1_thread,
-    sample_plate_thread,
-    final_plate_thread,
-    tips_96_thread,
-    tips_384_thread
-])
+smc_workflow = WorkflowTemplate("smc_assay")
+smc_workflow.add_thread(plate_1_thread, True)
+smc_workflow.add_thread(sample_plate_thread)
+smc_workflow.add_thread(final_plate_thread)
+smc_workflow.add_thread(tips_96_thread)
+smc_workflow.add_thread(tips_384_thread)
 
-smc_workflow.join(sample_plate_thread, plate_1_thread, sample_to_bead_plate_method, True)
-smc_workflow.join(tips_96_thread, plate_1_thread, sample_to_bead_plate_method, True)
-smc_workflow.join(tips_96_thread, plate_1_thread, add_detection_antibody, True)
-smc_workflow.join(tips_96_thread, plate_1_thread, add_elution_buffer_b, set_spawn=True)
-smc_workflow.join(tips_96_thread, plate_1_thread, add_buffer_d, True)
+
+smc_workflow.set_spawn_point(sample_plate_thread, plate_1_thread, sample_to_bead_plate_method)
+smc_workflow.set_spawn_point(tips_96_thread, plate_1_thread, sample_to_bead_plate_method)
+smc_workflow.set_spawn_point(tips_96_thread, plate_1_thread, add_detection_antibody)
+smc_workflow.set_spawn_point(tips_96_thread, plate_1_thread, add_elution_buffer_b)
+smc_workflow.set_spawn_point(tips_96_thread, plate_1_thread, add_buffer_d)
+smc_workflow.set_spawn_point(tips_384_thread, plate_1_thread, combine_plates)
+smc_workflow.set_spawn_point(final_plate_thread, plate_1_thread, combine_plates)
+
+smc_workflow.join(sample_plate_thread, plate_1_thread, sample_to_bead_plate_method)
+smc_workflow.join(tips_96_thread, plate_1_thread, sample_to_bead_plate_method)
+smc_workflow.join(tips_96_thread, plate_1_thread, add_detection_antibody)
+smc_workflow.join(tips_96_thread, plate_1_thread, add_elution_buffer_b)
+smc_workflow.join(tips_96_thread, plate_1_thread, add_buffer_d)
 smc_workflow.join(final_plate_thread, plate_1_thread, combine_plates)
 smc_workflow.join(tips_384_thread, plate_1_thread, combine_plates)
 
 
+# class SpawnNewOnFourthPlate(ThreadEventHandler):
+#     def __init__(self):
+#         self._num_of_spawns = 0
 
+#     def set_system(self, system: ISystem) -> None:
+#         self.system = system
 
-class SpawnNewOnFourthPlate(ThreadEventHandler):
-    def __init__(self):
-        self._num_of_spawns = 0
+#     def thread_notify(self, event: str, thread: LabwareThread) -> None:
 
-    def set_system(self, system: ISystem) -> None:
-        self.system = system
-
-    def thread_notify(self, event: str, thread: LabwareThread) -> None:
-
-        if event == LabwareThreadStatus.CREATED.name.upper():
-            if self._num_of_spawns % 4 != 0:
-                thread.start_location = self.system.get_location(thread.end_location.name)
-            self._num_of_spawns += 1
+#         if event == LabwareThreadStatus.CREATED.name.upper():
+#             if self._num_of_spawns % 4 != 0:
+#                 thread.start_location = self.system.get_location(thread.end_location.name)
+#             self._num_of_spawns += 1
 
 
 
-smc_workflow.set_thread_event_handler(final_plate_thread, SpawnNewOnFourthPlate())
-smc_workflow.set_thread_event_handler(tips_384_thread, SpawnNewOnFourthPlate())
+# smc_workflow.set_thread_event_handler(final_plate_thread, SpawnNewOnFourthPlate())
+# smc_workflow.set_thread_event_handler(tips_384_thread, SpawnNewOnFourthPlate())
 
 
 builder = SdkToSystemBuilder(
-    system_info=SystemInfo(
-        name="SMC Assay",
-        description="SMC Assay",
-        version="1.0.0",
-        model_extra={}
-    ),
+    name="SMC Assay",
+    description="SMC Assay",
     labwares=labwares,
-    resources=resources,
-    location_registry=l,
+    resources_registry=resource_registry,
+    system_map=map,
     methods=methods,
     workflows=[smc_workflow],
     threads=threads
