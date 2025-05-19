@@ -1,11 +1,11 @@
 from typing import Any, Dict, Optional
 from orca_driver_interface.driver_interfaces import ILabwarePlaceableDriver
 from orca.driver_management.drivers.null_plate_pad.null_plate_pad import NullPlatePadDriver
-from orca.resource_models.base_resource import ILabwarePlaceable, LabwareLoadableEquipment
+from orca.resource_models.base_resource import ILabwarePlaceable, Device
 from orca.resource_models.labware import Labware
 
 
-class PlatePad(LabwareLoadableEquipment, ILabwarePlaceable):
+class PlatePad(Device, ILabwarePlaceable):
 
     def __init__(self, name: str, driver: ILabwarePlaceableDriver = NullPlatePadDriver("Basic Plate Pad")) -> None:
         super().__init__(name, driver)

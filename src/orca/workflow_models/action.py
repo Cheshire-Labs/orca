@@ -4,7 +4,7 @@ import logging
 from typing import Any, Callable, Dict, List, Union, cast
 import uuid
 
-from orca.resource_models.base_resource import LabwareLoadableEquipment
+from orca.resource_models.base_resource import Device
 from orca.resource_models.labware import AnyLabwareTemplate, Labware, LabwareTemplate
 from orca.resource_models.location import Location
 from orca.resource_models.transporter_resource import TransporterEquipment
@@ -143,8 +143,8 @@ class LocationAction(BaseAction):
                  assigned_labware_manager: AssignedLabwareManager,
                  options: Dict[str, Any] = {}) -> None:
         super().__init__()   
-        if location.resource is None or not isinstance(location.resource, LabwareLoadableEquipment):
-            raise ValueError(f"Location {location} does not have an {type(LabwareLoadableEquipment)} resource")
+        if location.resource is None or not isinstance(location.resource, Device):
+            raise ValueError(f"Location {location} does not have an {type(Device)} resource")
         self._location = location
         self._command: str = command
         self._options: Dict[str, Any] = options
@@ -153,8 +153,8 @@ class LocationAction(BaseAction):
         self._reservation: LocationReservation = LocationReservation(location, None)
 
     @property
-    def resource(self) -> LabwareLoadableEquipment:
-        return cast(LabwareLoadableEquipment, self._location.resource)
+    def resource(self) -> Device:
+        return cast(Device, self._location.resource)
 
     @property
     def location(self) -> Location:
