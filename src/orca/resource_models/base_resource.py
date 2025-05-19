@@ -182,7 +182,7 @@ class EquipmentLabwareRegistry:
     def set_stage(self, labware: Labware | None) -> None:
         self._stage_labware = labware
  
-class LabwareLoadableEquipment(Equipment, ILabwarePlaceable):
+class Device(Equipment, ILabwarePlaceable):
     def __init__(self, name: str, driver: ILabwarePlaceableDriver) -> None:
         super().__init__(name, driver)
         self._driver: ILabwarePlaceableDriver = driver

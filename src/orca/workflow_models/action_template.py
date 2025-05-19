@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Union
 
 class MethodActionTemplate:
     def __init__(self, resource: Equipment | EquipmentResourcePool,
-                 command: str,
+                 command: Any,
                  inputs: List[Union[LabwareTemplate, AnyLabwareTemplate]],
                  outputs: Optional[List[Union[LabwareTemplate, AnyLabwareTemplate]]] = None,
                  options: Optional[Dict[str, Any]] = None):
@@ -19,7 +19,8 @@ class MethodActionTemplate:
         self._command = command
         self._options: Dict[str, Any] = {} if options is None else options
         self._inputs: List[Union[LabwareTemplate, AnyLabwareTemplate]] = inputs
-        self._outputs: List[Union[LabwareTemplate, AnyLabwareTemplate]] = outputs if outputs is not None else []
+        # outputs default to be the same as the inputs unless specified
+        self._outputs: List[Union[LabwareTemplate, AnyLabwareTemplate]] = outputs if outputs is not None else inputs
 
     @property
     def resource_pool(self) -> EquipmentResourcePool:

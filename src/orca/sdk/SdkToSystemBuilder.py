@@ -7,7 +7,7 @@ from orca.system.reservation_manager import ReservationManager
 from orca.system.resource_registry import ResourceRegistry
 from orca.system.system import System, SystemInfo
 from orca.system.system_map import ILocationRegistry, SystemMap
-from orca.system.thread_manager import IThreadManager, ThreadFactory, ThreadManager, ThreadRegistry
+from orca.system.thread_manager import IThreadManager, ThreadFactory, ThreadManager, ThreadManagerFactory, ThreadRegistry
 from orca.system.workflow_registry import WorkflowRegistry
 from orca.workflow_models.method_template import MethodTemplate
 from orca.workflow_models.thread_template import ThreadTemplate
@@ -38,16 +38,13 @@ class SdkToSystemBuilder:
         self._thread_manager: IThreadManager = self._get_thread_manager(self._labware_registry, self._system_map)
         self._workflow_registry = WorkflowRegistry(self._thread_manager, self._labware_registry, self._system_map)
 
-    def _get_thread_manager(self, labware_registry: LabwareRegistry, system_map: SystemMap) -> ThreadManager:
+    def _get_thread_manager(self, labware_registry: LabwareRegistry, system_map: SystemMap) -> IThreadManager:
         reservation_manager = ReservationManager(system_map)
-
         move_handler = MoveHandler(reservation_manager, labware_registry, system_map)
-        thread_factory = ThreadFactory(labware_registry, move_handler, reservation_manager, system_map)
-        
-        
-        thread_reg = ThreadRegistry(self._labware_registry, thread_factory)
-        manager = ThreadManager(thread_reg, system_map, move_handler)
-        return manager
+
+        thread_manager = ThreadManagerFactory.create_instance(labware_registry, reservation_manager, system_map, move_handler)
+
+        return thread_manager
             
 
     def _get_labware_registry(self, labwares: List[LabwareTemplate]) -> LabwareRegistry:

@@ -1,17 +1,17 @@
 from typing import Optional, Dict, Any, Callable, List
 from unittest.mock import MagicMock
-from orca.driver_management.drivers.simulation_labware_placeable.simulation_labware_placeable import SimulationLabwarePlaceableDriver
+from orca.driver_management.drivers.simulation_labware_placeable.simulation_labware_placeable import SimulationDeviceDriver
 from orca.driver_management.drivers.simulation_robotic_arm.simulation_robotic_arm import LegacySimulationRoboticArmDriver
 from orca.helper import FilepathReconciler
 from orca.resource_models.transporter_resource import TransporterEquipment
-from orca.resource_models.base_resource import LabwareLoadableEquipment
+from orca.resource_models.base_resource import Device
 from orca.resource_models.location import Location
 from orca.resource_models.labware import Labware
 
 
-class MockEquipmentResource(LabwareLoadableEquipment):
+class MockEquipmentResource(Device):
     def __init__(self, name: str, mocking_type: Optional[str] = None):
-        super().__init__(name, SimulationLabwarePlaceableDriver(name, mocking_type))
+        super().__init__(name, SimulationDeviceDriver(name, mocking_type))
         self._on_intialize: Callable[[], None] = lambda: None
         self._on_prepare_for_place: Callable[[Labware], None] = lambda x: None
         self._on_prepare_for_pick: Callable[[Labware], None] = lambda x: None

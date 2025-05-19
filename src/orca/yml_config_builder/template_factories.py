@@ -1,7 +1,7 @@
 from typing import Dict, List, Optional, Tuple, Union
 import logging
 from orca.config_interfaces import ILabwareConfig, ILabwareThreadConfig, IMethodActionConfig, IMethodConfig, IResourceConfig, IResourcePoolConfig, ISystemConfig, IThreadStepConfig, IWorkflowConfig
-from orca.resource_models.base_resource import Equipment, LabwareLoadableEquipment
+from orca.resource_models.base_resource import Equipment, Device
 from orca.resource_models.labware import AnyLabwareTemplate, LabwareTemplate
 from orca.resource_models.location import Location
 from orca.system.interfaces import IMethodTemplateRegistry, IWorkflowTemplateRegistry
@@ -263,7 +263,7 @@ class LocationsBuilder:
         
         for res in self._resource_registry.resources:
             # skip resources like newtowrk switches, etc that don't have plate pad locations
-            if isinstance(res, LabwareLoadableEquipment) \
+            if isinstance(res, Device) \
                 and not isinstance(res, EquipmentResourcePool) \
                 and not isinstance(res, TransporterEquipment):
                 # set resource to each location

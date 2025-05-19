@@ -1,16 +1,14 @@
 import asyncio
 import os
-from typing import List
-from orca.driver_management.drivers.simulation_labware_placeable.simulation_labware_placeable import SimulationLabwarePlaceableDriver
+from typing import Any, List
+from orca.driver_management.drivers.simulation_labware_placeable.simulation_labware_placeable import SimulationDeviceDriver
 from orca.driver_management.drivers.simulation_robotic_arm.simulation_robotic_arm import SimulationRoboticArmDriver
-from orca.resource_models.base_resource import LabwareLoadableEquipment
+from orca.resource_models.base_resource import Device
 from orca.resource_models.labware import AnyLabwareTemplate, LabwareTemplate
 from orca.resource_models.resource_pool import EquipmentResourcePool
 from orca.resource_models.transporter_resource import TransporterEquipment
 from orca.sdk.SdkToSystemBuilder import SdkToSystemBuilder
-from orca.system.interfaces import ISystem
 from orca.system.resource_registry import ResourceRegistry
-from orca.system.system import SystemInfo
 from orca.system.system_map import SystemMap
 from orca.workflow_models.action_template import MethodActionTemplate
 from orca.workflow_models.method_template import JunctionMethodTemplate, MethodTemplate
@@ -54,33 +52,33 @@ translator_1 = TransporterEquipment(name="translator_1", driver=SimulationRoboti
 translator_2 = TransporterEquipment(name="translator_2", driver=SimulationRoboticArmDriver(name="translator_2_driver", mocking_type="translator", teachpoints_filepath=translator2_points))
 
 # EQUIPMENT
-biotek_1 = LabwareLoadableEquipment(name="biotek_1", driver=SimulationLabwarePlaceableDriver(name="biotek_1_driver", mocking_type="biotek"))
-biotek_2 = LabwareLoadableEquipment(name="biotek_2", driver=SimulationLabwarePlaceableDriver(name="biotek_2_driver", mocking_type="biotek"))
-bravo_96 = LabwareLoadableEquipment(name="bravo_96_head", driver=SimulationLabwarePlaceableDriver(name="bravo_96_head_driver", mocking_type="bravo"))
-bravo_384 = LabwareLoadableEquipment(name="bravo_384_head", driver=SimulationLabwarePlaceableDriver(name="bravo_384_head_driver", mocking_type="bravo"))
-sealer = LabwareLoadableEquipment(name="sealer", driver=SimulationLabwarePlaceableDriver(name="sealer_driver", mocking_type="plateloc"))
-centrifuge = LabwareLoadableEquipment(name="centrifuge", driver=SimulationLabwarePlaceableDriver(name="centrifuge_driver", mocking_type="vspin"))
-plate_hotel = LabwareLoadableEquipment(name="plate_hotel", driver=SimulationLabwarePlaceableDriver(name="plate_hotel_driver", mocking_type="agilent_hotel"))
-delidder = LabwareLoadableEquipment(name="delidder", driver=SimulationLabwarePlaceableDriver(name="delidder_driver", mocking_type="delidder"))
-smc_pro = LabwareLoadableEquipment(name="smc_pro", driver=SimulationLabwarePlaceableDriver(name="smc_pro_driver", mocking_type="smc_pro"))
-stacker_sample_start = LabwareLoadableEquipment(name="stacker_sample_start", driver=SimulationLabwarePlaceableDriver(name="stacker_sample_start_driver", mocking_type="vstack"))
-stacker_sample_end = LabwareLoadableEquipment(name="stacker_sample_end", driver=SimulationLabwarePlaceableDriver(name="stacker_sample_end_driver", mocking_type="vstack"))
-stacker_plate_1_start = LabwareLoadableEquipment(name="stacker_plate_1_start", driver=SimulationLabwarePlaceableDriver(name="stacker_plate_1_start_driver", mocking_type="vstack"))
-stacker_final_plate_start = LabwareLoadableEquipment(name="stacker_final_plate_start", driver=SimulationLabwarePlaceableDriver(name="stacker_final_plate_start_driver", mocking_type="vstack"))
-stacker_96_tips = LabwareLoadableEquipment(name="stacker_96_tips", driver=SimulationLabwarePlaceableDriver(name="stacker_96_tips_driver", mocking_type="vstack"))
-stacker_384_tips_start = LabwareLoadableEquipment(name="stacker_384_tips_start", driver=SimulationLabwarePlaceableDriver(name="stacker_384_tips_start_driver", mocking_type="vstack"))
-stacker_384_tips_end = LabwareLoadableEquipment(name="stacker_384_tips_end", driver=SimulationLabwarePlaceableDriver(name="stacker_384_tips_end_driver", mocking_type="vstack"))
-shaker_1 = LabwareLoadableEquipment(name="shaker_1", driver=SimulationLabwarePlaceableDriver(name="shaker_1_driver", mocking_type="shaker"))
-shaker_2 = LabwareLoadableEquipment(name="shaker_2", driver=SimulationLabwarePlaceableDriver(name="shaker_2_driver", mocking_type="shaker"))
-shaker_3 = LabwareLoadableEquipment(name="shaker_3", driver=SimulationLabwarePlaceableDriver(name="shaker_3_driver", mocking_type="shaker"))
-shaker_4 = LabwareLoadableEquipment(name="shaker_4", driver=SimulationLabwarePlaceableDriver(name="shaker_4_driver", mocking_type="shaker"))
-shaker_5 = LabwareLoadableEquipment(name="shaker_5", driver=SimulationLabwarePlaceableDriver(name="shaker_5_driver", mocking_type="shaker"))
-shaker_6 = LabwareLoadableEquipment(name="shaker_6", driver=SimulationLabwarePlaceableDriver(name="shaker_6_driver", mocking_type="shaker"))
-shaker_7 = LabwareLoadableEquipment(name="shaker_7", driver=SimulationLabwarePlaceableDriver(name="shaker_7_driver", mocking_type="shaker"))
-shaker_8 = LabwareLoadableEquipment(name="shaker_8", driver=SimulationLabwarePlaceableDriver(name="shaker_8_driver", mocking_type="shaker"))
-shaker_9 = LabwareLoadableEquipment(name="shaker_9", driver=SimulationLabwarePlaceableDriver(name="shaker_9_driver", mocking_type="shaker"))
-shaker_10 = LabwareLoadableEquipment(name="shaker_10", driver=SimulationLabwarePlaceableDriver(name="shaker_10_driver", mocking_type="shaker"))
-waste_1 = LabwareLoadableEquipment(name="waste_1", driver=SimulationLabwarePlaceableDriver(name="waste_1_driver", mocking_type="waste"))
+biotek_1 = Device(name="biotek_1", driver=SimulationDeviceDriver(name="biotek_1_driver", mocking_type="biotek"))
+biotek_2 = Device(name="biotek_2", driver=SimulationDeviceDriver(name="biotek_2_driver", mocking_type="biotek"))
+bravo_96 = Device(name="bravo_96_head", driver=SimulationDeviceDriver(name="bravo_96_head_driver", mocking_type="bravo"))
+bravo_384 = Device(name="bravo_384_head", driver=SimulationDeviceDriver(name="bravo_384_head_driver", mocking_type="bravo"))
+sealer = Device(name="sealer", driver=SimulationDeviceDriver(name="sealer_driver", mocking_type="plateloc"))
+centrifuge = Device(name="centrifuge", driver=SimulationDeviceDriver(name="centrifuge_driver", mocking_type="vspin"))
+plate_hotel = Device(name="plate_hotel", driver=SimulationDeviceDriver(name="plate_hotel_driver", mocking_type="agilent_hotel"))
+delidder = Device(name="delidder", driver=SimulationDeviceDriver(name="delidder_driver", mocking_type="delidder"))
+smc_pro = Device(name="smc_pro", driver=SimulationDeviceDriver(name="smc_pro_driver", mocking_type="smc_pro"))
+stacker_sample_start = Device(name="stacker_sample_start", driver=SimulationDeviceDriver(name="stacker_sample_start_driver", mocking_type="vstack"))
+stacker_sample_end = Device(name="stacker_sample_end", driver=SimulationDeviceDriver(name="stacker_sample_end_driver", mocking_type="vstack"))
+stacker_plate_1_start = Device(name="stacker_plate_1_start", driver=SimulationDeviceDriver(name="stacker_plate_1_start_driver", mocking_type="vstack"))
+stacker_final_plate_start = Device(name="stacker_final_plate_start", driver=SimulationDeviceDriver(name="stacker_final_plate_start_driver", mocking_type="vstack"))
+stacker_96_tips = Device(name="stacker_96_tips", driver=SimulationDeviceDriver(name="stacker_96_tips_driver", mocking_type="vstack"))
+stacker_384_tips_start = Device(name="stacker_384_tips_start", driver=SimulationDeviceDriver(name="stacker_384_tips_start_driver", mocking_type="vstack"))
+stacker_384_tips_end = Device(name="stacker_384_tips_end", driver=SimulationDeviceDriver(name="stacker_384_tips_end_driver", mocking_type="vstack"))
+shaker_1 = Device(name="shaker_1", driver=SimulationDeviceDriver(name="shaker_1_driver", mocking_type="shaker"))
+shaker_2 = Device(name="shaker_2", driver=SimulationDeviceDriver(name="shaker_2_driver", mocking_type="shaker"))
+shaker_3 = Device(name="shaker_3", driver=SimulationDeviceDriver(name="shaker_3_driver", mocking_type="shaker"))
+shaker_4 = Device(name="shaker_4", driver=SimulationDeviceDriver(name="shaker_4_driver", mocking_type="shaker"))
+shaker_5 = Device(name="shaker_5", driver=SimulationDeviceDriver(name="shaker_5_driver", mocking_type="shaker"))
+shaker_6 = Device(name="shaker_6", driver=SimulationDeviceDriver(name="shaker_6_driver", mocking_type="shaker"))
+shaker_7 = Device(name="shaker_7", driver=SimulationDeviceDriver(name="shaker_7_driver", mocking_type="shaker"))
+shaker_8 = Device(name="shaker_8", driver=SimulationDeviceDriver(name="shaker_8_driver", mocking_type="shaker"))
+shaker_9 = Device(name="shaker_9", driver=SimulationDeviceDriver(name="shaker_9_driver", mocking_type="shaker"))
+shaker_10 = Device(name="shaker_10", driver=SimulationDeviceDriver(name="shaker_10_driver", mocking_type="shaker"))
+waste_1 = Device(name="waste_1", driver=SimulationDeviceDriver(name="waste_1_driver", mocking_type="waste"))
 
 # COLLECTIONS
 shaker_collection = EquipmentResourcePool(name="shaker_collection", resources=[shaker_1, shaker_2, shaker_3, shaker_4, shaker_5, shaker_6, shaker_7, shaker_8, shaker_9, shaker_10])
@@ -201,7 +199,7 @@ post_capture_wash = MethodTemplate("post_capture_wash", [
         command="run",
         inputs=[plate_1],
         options={
-            "protocol": "post_capture_wash.pro"
+            "protocol": "post_capture_wash.pro",
         }
     )
 ])
@@ -473,9 +471,13 @@ builder = SdkToSystemBuilder(
 )
 
 system = builder.get_system()
+workflow = system.create_workflow_instance(smc_workflow)
+system.add_workflow(workflow)
+
+
 
 async def run():
-    await system.start_all_threads()
+    await workflow.start()
 
 if __name__ == "__main__":
     asyncio.run(run())
