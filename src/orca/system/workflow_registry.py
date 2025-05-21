@@ -1,5 +1,6 @@
-from abc import ABC, abstractmethod
 from typing import Dict
+from orca.sdk.sdk import IEventBus, Join, Spawn
+from orca.system.interfaces import IWorkflowRegistry
 from orca.system.labware_registry_interfaces import ILabwareRegistry
 from orca.system.system_map import SystemMap
 from orca.workflow_models.labware_thread import Method
@@ -10,9 +11,10 @@ from orca.system.thread_manager import IThreadManager
 
 
 class WorkflowFactory:
-    def __init__(self, thread_manager: IThreadManager, labware_registry: ILabwareRegistry, system_map: SystemMap) -> None:
+    def __init__(self, thread_manager: IThreadManager, labware_registry: ILabwareRegistry, event_bus: IEventBus, system_map: SystemMap) -> None:
         self._thread_manager: IThreadManager = thread_manager
         self._labware_registry: ILabwareRegistry = labware_registry
+        self._event_bus: IEventBus = event_bus
         self._system_map: SystemMap = system_map
 
     def create_instance(self, template: WorkflowTemplate) -> Workflow:
@@ -20,38 +22,18 @@ class WorkflowFactory:
         for thread_template in template.start_thread_templates:
             # thread = self._thread_manager.create_thread_instance(thread_template)  probably not needed
             workflow.add_start_thread(thread_template)
+
+        for joint in template.joints:
+            self._event_bus.subscribe("thread.start", Join(joint.parent_thread, joint.attaching_thread, joint.parent_method))
+
+        for spawn in template.spawns:
+            self._event_bus.subscribe("method.start", Spawn(spawn.spawn_thread, spawn.parent_thread, spawn.parent_method))
         return workflow
 
 
-class IWorkflowRegistry(ABC):
-    @abstractmethod
-    def get_workflow(self, id: str) -> Workflow:
-        raise NotImplementedError
-
-    @abstractmethod
-    def add_workflow(self, workflow: Workflow) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def create_workflow_instance(self, template: WorkflowTemplate) -> Workflow:
-        raise NotImplementedError
-
-    @abstractmethod
-    def get_method(self, id: str) -> Method:
-        raise NotImplementedError
-
-    @abstractmethod
-    def add_method(self, method: Method) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def create_method_instance(self, template: MethodTemplate) -> Method:
-        raise NotImplementedError
-
-
 class WorkflowRegistry(IWorkflowRegistry):
-    def __init__(self, thread_manager: IThreadManager, labware_registry: ILabwareRegistry, system_map: SystemMap) -> None:
-        self._workflow_factory = WorkflowFactory(thread_manager, labware_registry, system_map)
+    def __init__(self, workflow_factory: WorkflowFactory) -> None:
+        self._workflow_factory = workflow_factory
         self._workflows: Dict[str, Workflow] = {}
         self._methods: Dict[str, Method] = {}
 

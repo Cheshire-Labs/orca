@@ -8,6 +8,7 @@ import yaml
 from orca.driver_management.driver_installer import DriverInstaller, DriverLoader, DriverManager, InstalledDriverRegistry, RemoteAvailableDriverRegistry
 from orca.helper import FilepathReconciler
 from orca.scripting.scripting import IScriptFactory, IScriptRegistry, NullScriptFactory, ScriptFactory, ScriptRegistry
+from orca.sdk.sdk import EventBus
 from orca.system.interfaces import ISystem
 from orca.system.method_executor import MethodExecutor
 from orca.resource_models.base_resource import IInitializableResource
@@ -20,7 +21,7 @@ from orca.system.resource_registry import ResourceRegistry
 from orca.system.system import SystemInfo
 from orca.system.system_map import SystemMap
 from orca.system.thread_manager import ThreadManagerFactory
-from orca.system.workflow_registry import WorkflowRegistry
+from orca.system.workflow_registry import WorkflowFactory, WorkflowRegistry
 from orca.yml_config_builder.configs import SystemConfigModel
 from orca.yml_config_builder.template_factories import ConfigToSystemBuilder, MethodTemplateFactory, ThreadTemplateFactory, WorkflowTemplateFactory
 from orca.yml_config_builder.resource_factory import IResourceFactory, ResourceFactory
@@ -70,10 +71,12 @@ class OrcaCore:
         system_map = SystemMap(resource_reg)
         template_registry = TemplateRegistry()
         labware_registry = LabwareRegistry()
+        event_bus = EventBus()
         reservation_manager = ReservationManager(system_map) 
         move_handler = MoveHandler(reservation_manager, labware_registry, system_map)
         thread_manager = ThreadManagerFactory.create_instance(labware_registry, reservation_manager, system_map, move_handler)
-        workflow_registry = WorkflowRegistry(thread_manager, labware_registry, system_map)
+        workflow_factory = WorkflowFactory(thread_manager, labware_registry, event_bus, system_map)
+        workflow_registry = WorkflowRegistry(workflow_factory)
         system_info = SystemInfo(self._config.system.name, 
                                  self._config.system.version, 
                                  self._config.system.description, 
