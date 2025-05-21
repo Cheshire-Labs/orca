@@ -9,7 +9,7 @@ from orca.resource_models.base_resource import Equipment, IResource
 from orca.resource_models.labware import Labware, LabwareTemplate
 from orca.system.interfaces import ISystem
 from orca.system.interfaces import ISystemInfo
-from orca.system.workflow_registry import IWorkflowRegistry
+from orca.system.interfaces import IWorkflowRegistry
 from orca.system.resource_registry import IResourceRegistry, IResourceRegistryObesrver
 from orca.system.system_map import SystemMap
 from orca.system.registries import LabwareRegistry, TemplateRegistry
