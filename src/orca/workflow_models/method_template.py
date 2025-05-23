@@ -1,8 +1,10 @@
 from orca.resource_models.labware import AnyLabwareTemplate, LabwareTemplate
 from typing import Any, Dict, List, Set, Union
+from orca.sdk.events.execution_context import ThreadExecutionContext, WorkflowExecutionContext
+from orca.sdk.events.event_bus_interface import IEventBus
 from orca.system.labware_registry_interfaces import ILabwareRegistry
 from orca.workflow_models.action_template import MethodActionTemplate
-from orca.workflow_models.labware_thread import IMethodObserver, Method
+from orca.workflow_models.labware_thread import Method
 
 
 from abc import ABC, abstractmethod
@@ -11,10 +13,7 @@ from orca.workflow_models.action_factory import MethodActionFactory
 
 
 class IMethodTemplate(ABC):
-    @abstractmethod
-    def get_instance(self, labware_reg: ILabwareRegistry) -> Method:
-        raise NotImplementedError("IMethodTemplate must implement get_instance method")
-
+    pass
 
 class MethodTemplate(IMethodTemplate):
 
@@ -22,7 +21,6 @@ class MethodTemplate(IMethodTemplate):
         self._name = name
         self._actions: List[MethodActionTemplate] = actions
         self._options = options
-        self._method_observers: List[IMethodObserver] = []
 
     @property
     def name(self) -> str:
@@ -54,29 +52,50 @@ class MethodTemplate(IMethodTemplate):
         for action in actions:
             self.append_action(action)
 
-    def add_method_observer(self, observer: IMethodObserver) -> None:
-        self._method_observers.append(observer)
+    # def get_instance(self, labware_reg: ILabwareRegistry, event_bus: IEventBus) -> Method:
+    #     method = Method(event_bus, self._name)
+    #     for action_template in self.actions:
+    #         factory = MethodActionFactory(action_template, labware_reg, event_bus)
+    #         action = factory.create_instance()
+    #         method.append_step(action)
 
-    def get_instance(self, labware_reg: ILabwareRegistry) -> Method:
-        method = Method(self.name)
-        for action_template in self.actions:
-            factory = MethodActionFactory(action_template, labware_reg)
-            action = factory.create_instance()
-            method.append_step(action)
-            for o in self._method_observers:
-                method.add_observer(o)
-
-        return method
+    #     return method
 
 
 class JunctionMethodTemplate(IMethodTemplate):
     def __init__(self) -> None:
         self._method: Method | None = None
 
-    def set_method(self, method: Method) -> None:
-        self._method = method
-
-    def get_instance(self, labware_reg: ILabwareRegistry) -> Method:
+    @property
+    def method(self) -> Method:
         if self._method is None:
             raise NotImplementedError("Method has not been set")
         return self._method
+
+    def set_method(self, method: Method) -> None:
+        self._method = method
+
+    # def get_instance(self, labware_reg: ILabwareRegistry, event_bus: IEventBus) -> Method:
+    #     if self._method is None:
+    #         raise NotImplementedError("Method has not been set")
+    #     return self._method
+class MethodFactory:
+    def __init__(self, labware_reg: ILabwareRegistry, event_bus: IEventBus) -> None:
+        self._labware_reg: ILabwareRegistry = labware_reg
+        self._event_bus: IEventBus = event_bus
+
+    def create_instance(self, template: IMethodTemplate, context: ThreadExecutionContext) -> Method:
+        if isinstance(template, JunctionMethodTemplate):
+            return template.method
+        elif isinstance(template, MethodTemplate):
+            method = Method(self._event_bus, template.name, context)
+            for action_template in template.actions:
+                factory = MethodActionFactory(action_template, self._labware_reg, self._event_bus)
+                action = factory.create_instance()
+                method.append_step(action)
+
+            return method
+        else:
+            raise TypeError(f"Unknown method template type: {type(template)}")
+
+

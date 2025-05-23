@@ -5,7 +5,7 @@ import importlib.util
 import sys
 from pathlib import Path
 from orca.helper import FilepathReconciler
-from orca.system.interfaces import ISystem
+from orca.system.system_interface import ISystem
 from orca.workflow_models.labware_thread import LabwareThread
 from orca.workflow_models.labware_thread import IThreadObserver
 from orca.yml_config_builder.configs import ScriptBaseConfigModel

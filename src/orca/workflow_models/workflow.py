@@ -1,7 +1,8 @@
 import uuid
 from typing import Dict, List
 
-from orca.system.thread_manager import IThreadManager
+from orca.sdk.events.execution_context import WorkflowExecutionContext
+from orca.system.thread_manager_interface import IThreadManager
 from orca.workflow_models.labware_thread import LabwareThread
 from orca.workflow_models.thread_template import ThreadTemplate
 
@@ -20,13 +21,13 @@ class WorkflowThreadManager:
     def threads(self) -> List[LabwareThread]:
         return list(self._workflow_thread.values())
 
-    def add_start_thread(self, template: ThreadTemplate) -> LabwareThread:
-        thread = self.add_thread(template) 
+    def add_start_thread(self, template: ThreadTemplate, context: WorkflowExecutionContext) -> LabwareThread:
+        thread = self.add_thread(template, context) 
         self._start_threads[thread.id] = thread
         return thread
     
-    def add_thread(self, template: ThreadTemplate) -> LabwareThread:
-        thread = self._system_thread_manager.create_thread_instance(template)
+    def add_thread(self, template: ThreadTemplate, context: WorkflowExecutionContext) -> LabwareThread:
+        thread = self._system_thread_manager.create_thread_instance(template, context)
         self._workflow_thread[thread.id] = thread
         return thread
     
@@ -36,10 +37,10 @@ class WorkflowThreadManager:
 
 class Workflow:
 
-    def __init__(self, name:str, thread_manager: IThreadManager) -> None:
+    def __init__(self, name:str, system_thread_manager: IThreadManager) -> None:
         self._id = str(uuid.uuid4())
         self._name = name
-        self._thread_manager: WorkflowThreadManager = WorkflowThreadManager(thread_manager)
+        self._thread_manager: WorkflowThreadManager = WorkflowThreadManager(system_thread_manager)
 
     @property
     def id(self) -> str:
@@ -58,10 +59,10 @@ class Workflow:
         return self._thread_manager.threads
 
     def add_start_thread(self, template: ThreadTemplate) -> None:
-        self._thread_manager.add_start_thread(template)
+        self._thread_manager.add_start_thread(template, WorkflowExecutionContext(self._id, self._name))
 
     def add_thread(self, template: ThreadTemplate) -> None:
-        self._thread_manager.add_start_thread(template)
+        self._thread_manager.add_start_thread(template, WorkflowExecutionContext(self._id, self._name))
 
     async def start(self) -> None:
         await self._thread_manager.start_all_threads()

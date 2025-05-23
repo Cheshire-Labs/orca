@@ -1,35 +1,29 @@
 from abc import ABC, abstractmethod
 import asyncio
 import logging
-from typing import Any, Callable, Dict, List, Union, cast
+from typing import Any, Dict, List, Union, cast
 import uuid
 
 from orca.resource_models.base_resource import Device
 from orca.resource_models.labware import AnyLabwareTemplate, Labware, LabwareTemplate
 from orca.resource_models.location import Location
 from orca.resource_models.transporter_resource import TransporterEquipment
+from orca.sdk.events.execution_context import ActionExecutionContext, MethodExecutionContext
+from orca.sdk.events.event_bus_interface import IEventBus
 from orca.system.labware_registry_interfaces import ILabwareRegistry
 from orca.system.reservation_manager import IReservationManager, LocationReservation
 from orca.system.system_map import SystemMap
 from orca.workflow_models.status_enums import ActionStatus
 
 orca_logger = logging.getLogger("orca")
-class IActionObserver:
-    def action_notify(self, event: str, action: 'BaseAction') -> None:
-        pass
 
-class ActionObserver(IActionObserver):
-    def __init__(self, callback: Callable[[str, 'BaseAction'], None]) -> None:
-        self._callback = callback
-    
-    def action_notify(self, event: str, action: 'BaseAction') -> None:
-        self._callback(event, action)
 
 class BaseAction(ABC):
-    def __init__(self) -> None:
+    def __init__(self, event_bus: IEventBus, context: MethodExecutionContext) -> None:
         self._id: str = str(uuid.uuid4())
         self.__status: ActionStatus = ActionStatus.CREATED
-        self._observers: List[IActionObserver] = []
+        self._event_bus = event_bus
+        self._execution_context: MethodExecutionContext = context
         self._lock = asyncio.Lock()
 
     @property
@@ -47,8 +41,16 @@ class BaseAction(ABC):
     @_status.setter
     def _status(self, status: ActionStatus) -> None:
         self.__status = status
-        for observer in self._observers:
-            observer.action_notify(self.__status.name.upper(), self)
+        self._event_bus.emit(f"ACTION.{self.id}.{self._status.name.upper()}", 
+                             ActionExecutionContext(
+                                 self._execution_context.workflow_id,
+                                 self._execution_context.workflow_name,
+                                 self._execution_context.thread_id,
+                                    self._execution_context.thread_name,
+                                    self._execution_context.method_id,
+                                    self._execution_context.method_name,
+                                    self.id,
+                             ))
 
     async def execute(self) -> None:
         async with self._lock:
@@ -70,10 +72,6 @@ class BaseAction(ABC):
     
     def reset(self) -> None:
         self._status = ActionStatus.CREATED
-
-    def add_observer(self, observer: IActionObserver) -> None:
-        if observer not in self._observers:
-            self._observers.append(observer)
 
 
 class AssignedLabwareManager:
@@ -138,11 +136,13 @@ class AssignedLabwareManager:
 
 class LocationAction(BaseAction):
     def __init__(self,
+                 event_bus: IEventBus,
+                 context: MethodExecutionContext,
                  location: Location,
                  command: str,
                  assigned_labware_manager: AssignedLabwareManager,
                  options: Dict[str, Any] = {}) -> None:
-        super().__init__()   
+        super().__init__(event_bus, context)   
         if location.resource is None or not isinstance(location.resource, Device):
             raise ValueError(f"Location {location} does not have an {type(Device)} resource")
         self._location = location
@@ -229,11 +229,13 @@ class LocationAction(BaseAction):
 
 class MoveAction(BaseAction):
     def __init__(self,
+                 event_bus: IEventBus,
+                 context: MethodExecutionContext,
                  labware: Labware,
                  source: Location,
                  target: Location,
                  transporter: TransporterEquipment) -> None:
-        super().__init__()
+        super().__init__(event_bus, context)
         self._labware = labware
         self._source = source
         self._target = target
@@ -261,6 +263,16 @@ class MoveAction(BaseAction):
     @property
     def reservation(self) -> LocationReservation:
         return self._reservation
+    
+    @property
+    def context(self) -> MethodExecutionContext:
+        return self._execution_context
+    
+
+    # TODO: context and event bus need to be refactored out of the action objects
+    @property
+    def event_bus(self) -> IEventBus:
+        return self._event_bus
     
     def set_reservation(self, reservation: LocationReservation) -> None:
         self._reservation = reservation

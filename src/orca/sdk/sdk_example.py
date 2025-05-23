@@ -8,6 +8,7 @@ from orca.resource_models.labware import AnyLabwareTemplate, LabwareTemplate
 from orca.resource_models.resource_pool import EquipmentResourcePool
 from orca.resource_models.transporter_resource import TransporterEquipment
 from orca.sdk.SdkToSystemBuilder import SdkToSystemBuilder
+from orca.sdk.events.event_bus import EventBus
 from orca.system.resource_registry import ResourceRegistry
 from orca.system.system_map import SystemMap
 from orca.workflow_models.action_template import MethodActionTemplate
@@ -458,16 +459,17 @@ smc_workflow.join(tips_384_thread, plate_1_thread, combine_plates)
 # smc_workflow.set_thread_event_handler(final_plate_thread, SpawnNewOnFourthPlate())
 # smc_workflow.set_thread_event_handler(tips_384_thread, SpawnNewOnFourthPlate())
 
-
+event_bus = EventBus()
 builder = SdkToSystemBuilder(
-    name="SMC Assay",
-    description="SMC Assay",
-    labwares=labwares,
-    resources_registry=resource_registry,
-    system_map=map,
-    methods=methods,
-    workflows=[smc_workflow],
-    threads=threads
+    "SMC Assay",
+    "SMC Assay",
+    labwares,
+    resource_registry,
+    map,
+    methods,
+    [smc_workflow],
+    threads,    
+    event_bus
 )
 
 system = builder.get_system()

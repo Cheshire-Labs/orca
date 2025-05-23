@@ -3,7 +3,7 @@ import uuid
 from orca.resource_models.labware import LabwareTemplate
 from orca.resource_models.location import Location
 from orca.system.labware_registry_interfaces import ILabwareRegistry
-from orca.system.thread_manager import IThreadManager
+from orca.system.thread_manager_interface import IThreadManager
 from orca.workflow_models.method_template import MethodTemplate
 from orca.workflow_models.thread_template import ThreadTemplate
 from orca.workflow_models.spawn_thread_action import SpawnThreadAction

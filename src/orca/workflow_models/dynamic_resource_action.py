@@ -4,19 +4,22 @@ from orca.resource_models.base_resource import Equipment
 from orca.resource_models.labware import AnyLabwareTemplate, Labware, LabwareTemplate
 from orca.resource_models.location import Location
 from orca.resource_models.resource_pool import EquipmentResourcePool
+from orca.sdk.events.execution_context import MethodExecutionContext
+from orca.sdk.events.event_bus_interface import IEventBus
 from orca.system.labware_registry_interfaces import ILabwareRegistry
 
 from typing import Any, Dict, List, Set, Union
 
 from orca.system.reservation_manager import IReservationManager
 from orca.system.system_map import IResourceLocator, SystemMap
-from orca.workflow_models.action import AssignedLabwareManager, IActionObserver, LocationAction, LocationActionCollectionReservationRequest
+from orca.workflow_models.action import AssignedLabwareManager, LocationAction, LocationActionCollectionReservationRequest
 from orca.workflow_models.status_enums import ActionStatus
 
 
 class DynamicResourceAction:
     def __init__(self,
                  labware_registry: ILabwareRegistry,
+                 event_bus: IEventBus,
                  resource: EquipmentResourcePool | List[Equipment] | Equipment,
                  command: str,
                  expected_input_templates: List[Union[LabwareTemplate, AnyLabwareTemplate]],
@@ -34,7 +37,7 @@ class DynamicResourceAction:
                                                                                   expected_input_templates, 
                                                                                   expected_output_templates)
         self._location_action: LocationAction | None = None
-        self._observers: List[IActionObserver] = []
+        self._event_bus = event_bus
 
     @property
     def command(self) -> str:
@@ -73,23 +76,16 @@ class DynamicResourceAction:
             return ActionStatus.AWAITING_LOCATION_RESERVATION
         return self._location_action.status
 
-    def add_observer(self, observer: IActionObserver) -> None:
-        if observer not in self._observers:
-            self._observers.append(observer)
-        if self._location_action is not None:
-            self._location_action.add_observer(observer)
 
-    async def resolve_action(self, reference_point: Location, reservation_manager: IReservationManager, system_map: SystemMap) -> LocationAction:
+    async def resolve_action(self, reference_point: Location, reservation_manager: IReservationManager, system_map: SystemMap, context: MethodExecutionContext) -> LocationAction:
         if self._location_action is not None:
             return self._location_action
-        reservation_request = LocationActionCollectionReservationRequest(self._get_potential_location_actions(system_map))
+        reservation_request = LocationActionCollectionReservationRequest(self._get_potential_location_actions(system_map, context))
         self._location_action = await reservation_request.reserve_location(reservation_manager, reference_point, system_map)
-        for observer in self._observers:
-            self._location_action.add_observer(observer)
         self._location_action._status = ActionStatus.RESOLVED
         return self._location_action
 
-    def _get_potential_location_actions(self, resource_locator: IResourceLocator) -> List[LocationAction]:
+    def _get_potential_location_actions(self, resource_locator: IResourceLocator, context: MethodExecutionContext) -> List[LocationAction]:
         potential_locations: Set[Location] = set()
         for resource in self._resource_pool.resources:
             potential_location = resource_locator.get_resource_location(resource.name)
@@ -97,7 +93,9 @@ class DynamicResourceAction:
 
         location_actions: List[LocationAction] = []
         for location in potential_locations:
-            location_action = LocationAction(location, 
+            location_action = LocationAction(self._event_bus,
+                                             context,
+                                             location, 
                                              self._command, 
                                              self._assigned_labware_manager,
                                              self._options)

@@ -7,10 +7,12 @@ from typing import Callable, List
 import uuid
 from orca.resource_models.location import Location
 from orca.resource_models.labware import AnyLabwareTemplate, Labware, LabwareTemplate
+from orca.sdk.events.execution_context import ActionExecutionContext, ExecutionContext, MethodExecutionContext, ThreadExecutionContext, WorkflowExecutionContext
+from orca.sdk.events.event_bus_interface import IEventBus
 from orca.system.move_handler import MoveHandler
 from orca.system.reservation_manager import IReservationManager
 from orca.system.system_map import SystemMap
-from orca.workflow_models.action import BaseAction, IActionObserver, LocationAction, MoveAction
+from orca.workflow_models.action import LocationAction, MoveAction
 from orca.workflow_models.dynamic_resource_action import DynamicResourceAction
 from orca.workflow_models.status_enums import ActionStatus, MethodStatus, LabwareThreadStatus
 
@@ -40,15 +42,16 @@ class MethodObserver(IMethodObserver):
     def method_notify(self, event: str, method: Method) -> None:
         self._callback(event, method)
     
-class Method(IActionObserver):
+class Method:
 
-    def __init__(self, name: str) -> None:
+    def __init__(self, event_bus: IEventBus, name: str, context: ThreadExecutionContext) -> None:
         self._id = str(uuid.uuid4())
         self._name = name
-        self._steps: List[DynamicResourceAction] = []
+        self._actions: List[DynamicResourceAction] = []
         self._current_action: LocationAction | None = None
         self.__status: MethodStatus = MethodStatus.CREATED
-        self._observers: List[IMethodObserver] = []
+        self._context: ThreadExecutionContext = context
+        self._event_bus = event_bus
 
     @property
     def id(self) -> str:
@@ -70,36 +73,37 @@ class Method(IActionObserver):
         if self.__status == status:
             return
         self.__status = status
-        for observer in self._observers:
-            observer.method_notify(self._status.name.upper(), self)
+        self._event_bus.emit(f"METHOD.{self.id}.{self._status.name.upper()}", MethodExecutionContext(self._context.workflow_id,
+                                                                                                     self._context.workflow_name, 
+                                                                                                     self._context.thread_id, 
+                                                                                                     self._context.thread_name, 
+                                                                                                     self._name, 
+                                                                                                     self._status.name.upper()))
 
     def assign_thread(self, input_template: LabwareTemplate, thread: LabwareThread) -> None:
-        for step in self._steps:
+        for step in self._actions:
             if input_template in step.expected_input_templates:
                 step.assign_input(input_template, thread.labware)
             elif any(isinstance(template, AnyLabwareTemplate) for template in step.expected_input_templates):
                 step.assign_input(input_template, thread.labware)
     
     def append_step(self, step: DynamicResourceAction) -> None:
-        self._steps.append(step)
+        self._actions.append(step)
     
     @property 
     def pending_steps(self) -> List[DynamicResourceAction]:
-        return [step for step in self._steps if step.status != ActionStatus.COMPLETED]
+        return [step for step in self._actions if step.status != ActionStatus.COMPLETED]
 
     def has_completed(self) -> bool:
         return self._status == MethodStatus.COMPLETED
 
-    def action_notify(self, event: str, action: BaseAction) -> None:
+    def action_notify(self, event: str, context: ExecutionContext) -> None:
+        assert isinstance(context, ActionExecutionContext)
         if event == ActionStatus.COMPLETED.name.upper():
             if len(self.pending_steps) == 0:
                 self._set_status(MethodStatus.COMPLETED)
         else:
             self._set_status(MethodStatus.IN_PROGRESS)
-        
-
-    def add_observer(self, observer: IMethodObserver) -> None:
-        self._observers.append(observer)
 
     async def resolve_next_action(self, reference_point: Location, reservation_manager: IReservationManager, system_map: SystemMap) -> LocationAction | None:
         
@@ -107,8 +111,18 @@ class Method(IActionObserver):
             self._set_status(MethodStatus.COMPLETED)
             return None
         current_step = self.pending_steps[0]
-        current_step.add_observer(self)
-        return await current_step.resolve_action(reference_point, reservation_manager, system_map) 
+
+        location_action = await current_step.resolve_action(reference_point, reservation_manager, system_map, MethodExecutionContext(self._context.workflow_id,
+                                                                                                     self._context.workflow_name, 
+                                                                                                     self._context.thread_id, 
+                                                                                                     self._context.thread_name, 
+                                                                                                     self._name, 
+                                                                                                     self._status.name.upper())) 
+        # TODO: fix this callback
+        self._event_bus.subscribe(f"ACTION.{location_action.id}.COMPLETED", lambda event, context: self.action_notify(event, context))  
+        return location_action
+    
+
         
 
 class LabwareThread(IMethodObserver):
@@ -120,16 +134,19 @@ class LabwareThread(IMethodObserver):
                  move_handler: MoveHandler,
                  reservation_manager: IReservationManager, 
                  system_map: SystemMap, 
-                 observers: List[IThreadObserver] = []) -> None:
+                 event_bus: IEventBus,
+                 execution_context: WorkflowExecutionContext,
+                 ) -> None:
         self._labware: Labware = labware
         self._start_location: Location = start_location
         self._end_location: Location = end_location
         self._system_map: SystemMap = system_map
         self._method_sequence: List[Method] = []
         self.__status: LabwareThreadStatus = LabwareThreadStatus.UNCREATED
-        self._observers = observers
         self._move_handler = move_handler
         self._reservation_manager = reservation_manager
+        self._event_bus = event_bus
+        self._execution_context = execution_context
         self._status = LabwareThreadStatus.CREATED
         # set current_location is after self._status assignment to accommodate scripts changing start location
         # TODO: source of truth needs to be changed to a labware manager
@@ -184,8 +201,11 @@ class LabwareThread(IMethodObserver):
         if self.__status == status:
             return
         self.__status = status
-        for observer in self._observers:
-            observer.thread_notify(self._status.name.upper(), self)
+        self._event_bus.emit(f"THREAD.{self.id}.{self._status.name.upper()}", 
+                             ThreadExecutionContext(self._execution_context.workflow_id,
+                                                        self._execution_context.workflow_name, 
+                                                        self.id, 
+                                                        self.name))
 
     @property
     def labware(self) -> Labware:
@@ -204,8 +224,6 @@ class LabwareThread(IMethodObserver):
     def append_method_sequence(self, method: Method) -> None:
         self._method_sequence.append(method)
     
-    def add_observer(self, observer: IThreadObserver) -> None:
-        self._observers.append(observer)
 
     def method_notify(self, event: str, method: Method) -> None:
         if event == MethodStatus.COMPLETED.name.upper():
@@ -274,7 +292,16 @@ class LabwareThread(IMethodObserver):
     async def _handle_thread_move_assignment(self) -> None:
         assert self.assigned_action is not None
         self._status = LabwareThreadStatus.AWAITING_MOVE_RESERVATION 
-        self._move_action = await self._move_handler.resolve_move_action(self._labware, 
+        current_method = self.pending_methods[0]
+        method_execution_context = MethodExecutionContext(self._execution_context.workflow_id,
+                                                            self._execution_context.workflow_name, 
+                                                            self.id, 
+                                                            self.name, 
+                                                            current_method.id,
+                                                            current_method.name)
+        self._move_action = await self._move_handler.resolve_move_action(self._event_bus,
+                                                                         method_execution_context,
+                                                                         self._labware, 
                                                                    self.current_location, 
                                                                    self.assigned_action.location, 
                                                                    self.assigned_action)
@@ -300,8 +327,17 @@ class LabwareThread(IMethodObserver):
        
     async def _handle_thread_completion(self) -> None:
         while self.current_location != self.end_location:  
-            self._status = LabwareThreadStatus.AWAITING_MOVE_RESERVATION           
-            self._move_action = await self._move_handler.resolve_move_action(self._labware, 
+            self._status = LabwareThreadStatus.AWAITING_MOVE_RESERVATION 
+            current_method = self.pending_methods[0]
+            method_execution_context = MethodExecutionContext(self._execution_context.workflow_id,
+                                                            self._execution_context.workflow_name, 
+                                                            self.id, 
+                                                            self.name, 
+                                                            current_method.id,
+                                                            current_method.name)          
+            self._move_action = await self._move_handler.resolve_move_action(self._event_bus,
+                                                                             method_execution_context,
+                                                                             self._labware, 
                                                                     self.current_location, 
                                                                     self.end_location, 
                                                                     None)
