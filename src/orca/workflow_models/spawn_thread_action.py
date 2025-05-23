@@ -1,4 +1,4 @@
-from orca.system.thread_manager import IThreadManager
+from orca.system.thread_manager_interface import IThreadManager
 from orca.workflow_models.status_enums import MethodStatus
 from orca.workflow_models.labware_thread import IMethodObserver, Method
 from orca.workflow_models.thread_template import ThreadTemplate

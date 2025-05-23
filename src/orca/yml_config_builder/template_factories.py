@@ -8,7 +8,7 @@ from orca.system.interfaces import IMethodTemplateRegistry, IWorkflowTemplateReg
 from orca.system.workflow_registry import WorkflowRegistry
 from orca.scripting.scripting import IScriptRegistry
 from orca.system.labware_registry_interfaces import ILabwareTemplateRegistry
-from orca.system.thread_manager import IThreadManager
+from orca.system.thread_manager_interface import IThreadManager
 from orca.system.registries import LabwareRegistry
 from orca.system.resource_registry import IResourceRegistry
 from orca.system.system import System, SystemInfo
@@ -19,7 +19,6 @@ from orca.workflow_models.action_template import MethodActionTemplate
 from orca.workflow_models.method_template import IMethodTemplate, JunctionMethodTemplate, MethodTemplate
 from orca.workflow_models.thread_template import ThreadTemplate
 from orca.workflow_models.spawn_thread_action import SpawnThreadAction
-from orca.workflow_models.labware_thread import IThreadObserver
 from orca.yml_config_builder.configs import SystemConfigModel
 from orca.yml_config_builder.dynamic_config import DynamicSystemConfigModel
 from orca.yml_config_builder.resource_factory import IResourceFactory, ResourcePoolFactory
@@ -108,14 +107,13 @@ class ThreadTemplateFactory:
                 labware_thread_temp_reg: IThreadTemplateRegistry, 
                 resource_locator: IResourceLocator,
                 thread_manager: IThreadManager,
-                script_reg: IScriptRegistry) -> None:
+                ) -> None:
         self._labware_temp_reg: ILabwareTemplateRegistry = labware_temp_reg
         self._location_reg: ILocationRegistry = location_reg
         self._method_temp_reg: IMethodTemplateRegistry = method_temp_reg
         self._thread_temp_reg: IThreadTemplateRegistry = labware_thread_temp_reg
         self._resource_locator: IResourceLocator = resource_locator
         self._thread_manager: IThreadManager = thread_manager
-        self._script_reg: IScriptRegistry = script_reg
 
     def get_template(self, 
                 name: str, 
@@ -124,11 +122,9 @@ class ThreadTemplateFactory:
             labware = self._get_labware_template(config)
             start_location = self._get_location(self._location_reg, config.start)                                            
             end_location = self._get_location(self._location_reg, config.end)
-            observers: List[IThreadObserver] = [self._script_reg.get_script(script_name) for script_name in config.scripts]
             labware_thread = ThreadTemplate(labware, 
                                             start_location, 
-                                            end_location, 
-                                            observers=observers)
+                                            end_location)
         except KeyError as e:
             raise KeyError(f"Error building labware thread {name}") from e
         return labware_thread

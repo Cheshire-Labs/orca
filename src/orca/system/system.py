@@ -7,7 +7,8 @@ from orca.resource_models.transporter_resource import TransporterEquipment
 from orca.resource_models.base_resource import Equipment, IResource
 
 from orca.resource_models.labware import Labware, LabwareTemplate
-from orca.system.interfaces import ISystem
+from orca.sdk.events.execution_context import WorkflowExecutionContext
+from orca.system.system_interface import ISystem
 from orca.system.interfaces import ISystemInfo
 from orca.system.interfaces import IWorkflowRegistry
 from orca.system.resource_registry import IResourceRegistry, IResourceRegistryObesrver
@@ -18,7 +19,7 @@ from orca.workflow_models.thread_template import ThreadTemplate
 from orca.workflow_models.labware_thread import LabwareThread, Method
 from orca.workflow_models.workflow import Workflow
 from orca.workflow_models.workflow_templates import WorkflowTemplate
-from orca.system.thread_manager import IThreadManager
+from orca.system.thread_manager_interface import IThreadManager
 
 class SystemInfo(ISystemInfo):
     def __init__(self, name: str, version: str, description: str, model_extra: Dict[str, str]) -> None:
@@ -202,8 +203,8 @@ class System(ISystem):
     def create_method_instance(self, template: MethodTemplate) -> Method:
         return self._workflow_registry.create_method_instance(template)
     
-    def create_thread_instance(self, template: ThreadTemplate) -> LabwareThread:
-        return self._thread_manager.create_thread_instance(template)
+    def create_thread_instance(self, template: ThreadTemplate, context: WorkflowExecutionContext) -> LabwareThread:
+        return self._thread_manager.create_thread_instance(template, context)
     
     def create_workflow_instance(self, template: WorkflowTemplate) -> Workflow:
         return self._workflow_registry.create_workflow_instance(template)

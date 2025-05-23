@@ -1,5 +1,7 @@
 from typing import Dict
-from orca.sdk.sdk import IEventBus, Join, Spawn
+from orca.sdk.events.event_bus_interface import IEventBus
+from orca.sdk.events.event_handlers import Spawn
+from orca.sdk.events.event_handlers import Join
 from orca.system.interfaces import IWorkflowRegistry
 from orca.system.labware_registry_interfaces import ILabwareRegistry
 from orca.system.system_map import SystemMap
@@ -7,7 +9,7 @@ from orca.workflow_models.labware_thread import Method
 from orca.workflow_models.method_template import MethodTemplate
 from orca.workflow_models.workflow import Workflow
 from orca.workflow_models.workflow_templates import WorkflowTemplate
-from orca.system.thread_manager import IThreadManager
+from orca.system.thread_manager_interface import IThreadManager
 
 
 class WorkflowFactory:
@@ -24,10 +26,10 @@ class WorkflowFactory:
             workflow.add_start_thread(thread_template)
 
         for joint in template.joints:
-            self._event_bus.subscribe("thread.start", Join(joint.parent_thread, joint.attaching_thread, joint.parent_method))
+            self._event_bus.subscribe("THREAD.START", Join(joint.parent_thread, joint.attaching_thread, joint.parent_method))
 
         for spawn in template.spawns:
-            self._event_bus.subscribe("method.start", Spawn(spawn.spawn_thread, spawn.parent_thread, spawn.parent_method))
+            self._event_bus.subscribe("METHOD.START", Spawn(spawn.spawn_thread, spawn.parent_thread, spawn.parent_method))
         return workflow
 
 

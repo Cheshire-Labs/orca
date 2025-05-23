@@ -1,10 +1,11 @@
 from orca.resource_models.labware import Labware
 from orca.resource_models.location import Location
+from orca.sdk.events.execution_context import MethodExecutionContext
+from orca.sdk.events.event_bus_interface import IEventBus
 from orca.system.labware_registry_interfaces import ILabwareRegistry
 from orca.system.reservation_manager import IReservationManager
 from orca.system.system_map import SystemMap
 from orca.workflow_models.action import LocationAction, MoveAction
-from orca.workflow_models.route import Route
 
 import asyncio
 from typing import List
@@ -71,9 +72,9 @@ class MoveHandler:
         self._labware_registry = labware_registry
         self._system_map = system_map
 
-    async def resolve_move_action(self, labware: Labware, current_location: Location, target_location: Location, assigned_action: LocationAction | None = None) -> MoveAction:
+    async def resolve_move_action(self, event_bus: IEventBus, context: MethodExecutionContext, labware: Labware, current_location: Location, target_location: Location, assigned_action: LocationAction | None = None) -> MoveAction:
         potential_paths = self._get_potential_paths(current_location, target_location)
-        potential_moves = self._get_potential_move_actions(labware, potential_paths)
+        potential_moves = self._get_potential_move_actions(event_bus, context, labware, potential_paths)
         if assigned_action is not None:
             self._assign_reservation_to_moves(potential_moves, assigned_action)
         # check for any moves using the assigned_action's reservation
@@ -93,7 +94,7 @@ class MoveHandler:
         # if move_action.target is in the potential_paths, remove it
         potential_paths = [path for path in potential_paths if move_action.target.teachpoint_name not in path]
         sorted_paths = sorted(potential_paths, key=lambda path: len(path))
-        potential_moves = self._get_potential_move_actions(move_action.labware, sorted_paths)
+        potential_moves = self._get_potential_move_actions(move_action.event_bus, move_action.context, move_action.labware, sorted_paths)
         route_reservation = MoveActionCollectionReservationRequest(potential_moves)
         reserved_move_action = await route_reservation.reserve_route(self._reservation_manager)
 
@@ -107,14 +108,14 @@ class MoveHandler:
             raise ValueError("No routes found between source and target")
         return potential_paths
 
-    def _get_potential_move_actions(self, labware: Labware, potential_paths: List[List[str]]) -> List[MoveAction]:
+    def _get_potential_move_actions(self, event_bus: IEventBus, context: MethodExecutionContext, labware: Labware, potential_paths: List[List[str]]) -> List[MoveAction]:
     
         potential_actions: List[MoveAction] = []
         for path in potential_paths:
             source_location = self._system_map.get_location(path[0])
             target = self._system_map.get_location(path[1])
             transporter = self._system_map.get_transporter_between(source_location.name, target.name)
-            action = MoveAction(labware, source_location, target, transporter)
+            action = MoveAction(event_bus, context, labware, source_location, target, transporter)
             potential_actions.append(action)
         return potential_actions
     
