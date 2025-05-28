@@ -96,7 +96,8 @@ class AssignedLabwareManager:
     @property
     def expected_inputs(self) -> List[Labware]:
         if any(input is None for input in self._expected_inputs.values()):
-            raise ValueError("Not all expected inputs have been assigned")
+            missing_inputs = [key.name for key, input in self._expected_inputs.items() if input is None]
+            raise ValueError(f"Not all expected inputs have been assigned.  Missing: {missing_inputs}")
         return [labware for labware in self._expected_inputs.values() if labware is not None]
 
     @property
