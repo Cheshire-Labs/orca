@@ -16,14 +16,16 @@ class ThreadExecutionContext(WorkflowExecutionContext):
 
 @dataclass(frozen=True)
 class MethodExecutionContext(ThreadExecutionContext):
-    method_id: str
-    method_name: str
+    method_id: Optional[str]
+    method_name: Optional[str]
 
 
 @dataclass(frozen=True)
 class ActionExecutionContext(MethodExecutionContext):
     action_id: str
+    action_status: str
     action_name: Optional[str] = None
+    
 
 
 ExecutionContext = Union[

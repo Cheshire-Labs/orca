@@ -7,13 +7,14 @@ from orca.resource_models.transporter_resource import TransporterEquipment
 from orca.resource_models.base_resource import Equipment, IResource
 
 from orca.resource_models.labware import Labware, LabwareTemplate
-from orca.sdk.events.execution_context import WorkflowExecutionContext
+from orca.sdk.events.execution_context import ThreadExecutionContext, WorkflowExecutionContext
 from orca.system.system_interface import ISystem
-from orca.system.interfaces import ISystemInfo
+from orca.system.interfaces import IMethodRegistry, ISystemInfo
 from orca.system.interfaces import IWorkflowRegistry
 from orca.system.resource_registry import IResourceRegistry, IResourceRegistryObesrver
 from orca.system.system_map import SystemMap
 from orca.system.registries import LabwareRegistry, TemplateRegistry
+from orca.system.workflow_registry import WorkflowRegistry
 from orca.workflow_models.method_template import MethodTemplate
 from orca.workflow_models.thread_template import ThreadTemplate
 from orca.workflow_models.labware_thread import LabwareThread, Method
@@ -58,12 +59,14 @@ class System(ISystem):
                  template_registry: TemplateRegistry, 
                  labware_registry: LabwareRegistry, 
                  thread_manager: IThreadManager,
+                 method_registry: IMethodRegistry,
                  workflow_registry: IWorkflowRegistry) -> None:
         self._info = info
         self._resources = resource_registry
         self._system_map = system_map
         self._templates = template_registry
         self._labwares = labware_registry
+        self._method_registry = method_registry
         self._workflow_registry = workflow_registry
         self._thread_manager = thread_manager
 
@@ -192,16 +195,16 @@ class System(ISystem):
         self._thread_manager.add_thread(labware_thread)
 
     def get_method(self, id: str) -> Method:
-        return self._workflow_registry.get_method(id)
+        return self._method_registry.get_method(id)
     
     def add_method(self, method: Method) -> None:
-        self._workflow_registry.add_method(method)
+        self._method_registry.add_method(method)
 
     def add_observer(self, observer: IResourceRegistryObesrver) -> None:
         return self._resources.add_observer(observer)
     
-    def create_method_instance(self, template: MethodTemplate) -> Method:
-        return self._workflow_registry.create_method_instance(template)
+    def create_method_instance(self, template: MethodTemplate, context: ThreadExecutionContext) -> Method:
+        return self._method_registry.create_method_instance(template, context)
     
     def create_thread_instance(self, template: ThreadTemplate, context: WorkflowExecutionContext) -> LabwareThread:
         return self._thread_manager.create_thread_instance(template, context)

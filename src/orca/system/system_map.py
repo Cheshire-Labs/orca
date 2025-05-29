@@ -206,6 +206,7 @@ class SystemMap(ILocationRegistry, IResourceLocator, IResourceLocationObserver, 
             location = self.get_location(location_name)
         except KeyError:
             raise ValueError(f"Location {location_name} does not exist")
+        location.resource = resource
         self._equipment_map[resource.name] = location
 
     def assign_resources(self, resources: Dict[str, ILabwarePlaceable]) -> None:

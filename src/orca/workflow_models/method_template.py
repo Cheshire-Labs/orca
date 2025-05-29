@@ -1,15 +1,12 @@
 from orca.resource_models.labware import AnyLabwareTemplate, LabwareTemplate
 from typing import Any, Dict, List, Set, Union
-from orca.sdk.events.execution_context import ThreadExecutionContext, WorkflowExecutionContext
-from orca.sdk.events.event_bus_interface import IEventBus
-from orca.system.labware_registry_interfaces import ILabwareRegistry
+from orca.sdk.events.execution_context import WorkflowExecutionContext
 from orca.workflow_models.action_template import MethodActionTemplate
 from orca.workflow_models.labware_thread import Method
 
 
 from abc import ABC, abstractmethod
 
-from orca.workflow_models.action_factory import MethodActionFactory
 
 
 class IMethodTemplate(ABC):
@@ -79,23 +76,7 @@ class JunctionMethodTemplate(IMethodTemplate):
     #     if self._method is None:
     #         raise NotImplementedError("Method has not been set")
     #     return self._method
-class MethodFactory:
-    def __init__(self, labware_reg: ILabwareRegistry, event_bus: IEventBus) -> None:
-        self._labware_reg: ILabwareRegistry = labware_reg
-        self._event_bus: IEventBus = event_bus
 
-    def create_instance(self, template: IMethodTemplate, context: ThreadExecutionContext) -> Method:
-        if isinstance(template, JunctionMethodTemplate):
-            return template.method
-        elif isinstance(template, MethodTemplate):
-            method = Method(self._event_bus, template.name, context)
-            for action_template in template.actions:
-                factory = MethodActionFactory(action_template, self._labware_reg, self._event_bus)
-                action = factory.create_instance()
-                method.append_step(action)
 
-            return method
-        else:
-            raise TypeError(f"Unknown method template type: {type(template)}")
 
 

@@ -40,9 +40,10 @@ class BaseAction(ABC):
 
     @_status.setter
     def _status(self, status: ActionStatus) -> None:
+        if status == self.__status:
+            return
         self.__status = status
-        self._event_bus.emit(f"ACTION.{self.id}.{self._status.name.upper()}", 
-                             ActionExecutionContext(
+        context = ActionExecutionContext(
                                  self._execution_context.workflow_id,
                                  self._execution_context.workflow_name,
                                  self._execution_context.thread_id,
@@ -50,7 +51,10 @@ class BaseAction(ABC):
                                     self._execution_context.method_id,
                                     self._execution_context.method_name,
                                     self.id,
-                             ))
+                                    self.__status.name.upper(),
+                             )
+        self._event_bus.emit(f"ACTION.{self.id}.{self._status.name.upper()}", context) 
+        self._event_bus.emit(f"ACTION.{self.id}.STATUS_CHANGED", context)
 
     async def execute(self) -> None:
         async with self._lock:
