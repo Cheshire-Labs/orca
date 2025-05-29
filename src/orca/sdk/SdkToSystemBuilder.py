@@ -11,7 +11,7 @@ from orca.system.resource_registry import ResourceRegistry
 from orca.system.system import System, SystemInfo
 from orca.system.system_map import ILocationRegistry, SystemMap
 from orca.system.thread_manager import ThreadManagerFactory
-from orca.system.workflow_registry import WorkflowFactory, WorkflowRegistry
+from orca.system.workflow_registry import MethodFactory, MethodRegistry, WorkflowFactory, WorkflowRegistry
 from orca.workflow_models.method_template import MethodTemplate
 from orca.workflow_models.thread_template import ThreadTemplate
 from orca.workflow_models.workflow_templates import WorkflowTemplate
@@ -39,7 +39,8 @@ class SdkToSystemBuilder:
         self._system_map: SystemMap = system_map
         self._event_bus = SystemBoundEventBus(event_bus)
         self._template_registry: TemplateRegistry = self._get_template_registry(methods, workflows, threads, self._system_map)
-        
+        self._method_factory = MethodFactory(self._labware_registry, self._event_bus)
+        self._method_registry = MethodRegistry(self._method_factory)
         self._thread_manager: IThreadManager = self._get_thread_manager(self._labware_registry, self._system_map)
         workflow_factory = WorkflowFactory(self._thread_manager, self._labware_registry, self._event_bus, self._system_map)
         self._workflow_registry = WorkflowRegistry(workflow_factory)
@@ -48,7 +49,7 @@ class SdkToSystemBuilder:
         reservation_manager = ReservationManager(system_map)
         move_handler = MoveHandler(reservation_manager, labware_registry, system_map)
 
-        thread_manager = ThreadManagerFactory.create_instance(labware_registry, reservation_manager, system_map, move_handler, self._event_bus)
+        thread_manager = ThreadManagerFactory.create_instance(labware_registry, self._method_registry, reservation_manager, system_map, move_handler, self._event_bus)
 
         return thread_manager
             
@@ -80,6 +81,7 @@ class SdkToSystemBuilder:
                 self._template_registry, 
                 self._labware_registry, 
                 self._thread_manager, 
+                self._method_registry,
                 self._workflow_registry)
         self._event_bus.bind_system(system)
         

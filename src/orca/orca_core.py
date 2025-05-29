@@ -10,7 +10,7 @@ from orca.helper import FilepathReconciler
 from orca.scripting.scripting import IScriptFactory, IScriptRegistry, NullScriptFactory, ScriptFactory, ScriptRegistry
 from orca.sdk.events.event_bus import EventBus
 from orca.system.system_interface import ISystem
-from orca.system.method_executor import MethodExecutor
+from orca.system.standalone_method_executor import StandaloneMethodExecutor
 from orca.resource_models.base_resource import IInitializableResource
 from orca.resource_models.labware import LabwareTemplate
 from orca.resource_models.location import Location
@@ -104,7 +104,7 @@ class OrcaCore:
         self._builder.set_resource_factory(resource_factory)
         self._builder.set_method_template_factory(method_template_factory)
         self._builder.set_workflow_template_factory(workflow_template_factory)
-        self._method_executor_registry: Dict[str, MethodExecutor] = {}
+        self._method_executor_registry: Dict[str, StandaloneMethodExecutor] = {}
         self._system = self._builder.get_system(deployment_stage)
 
     @property
@@ -182,7 +182,7 @@ class OrcaCore:
         end_map_obj: Dict[LabwareTemplate, Location] = labware_location_hook(end_map)
 
         method_template = self._system.get_method_template(method_name)
-        executer = MethodExecutor(method_template,
+        executer = StandaloneMethodExecutor(method_template,
                                  start_map_obj,
                                  end_map_obj,
                                  self._system,

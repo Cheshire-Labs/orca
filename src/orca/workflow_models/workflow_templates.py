@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 from typing import Dict, List
 
+from orca.sdk.events.event_bus_interface import EventHandlerType
 from orca.workflow_models.method_template import MethodTemplate
 from orca.workflow_models.thread_template import ThreadTemplate
 
@@ -18,6 +19,12 @@ class JoinInfo:
     attaching_thread: ThreadTemplate
     parent_method: MethodTemplate
 
+
+@dataclass
+class EventHookInfo:
+    event_name: str
+    handler: EventHandlerType
+
 class WorkflowTemplate:
     
     def __init__(self, name: str) -> None:
@@ -26,6 +33,7 @@ class WorkflowTemplate:
         self._threads: Dict[str, ThreadTemplate] = {}
         self._joints: List[JoinInfo] = []
         self._spawns: List[SpawnInfo] = []
+        self._event_hooks: List[EventHookInfo] = []
 
     @property
     def name(self) -> str:
@@ -42,6 +50,10 @@ class WorkflowTemplate:
     @property
     def joints(self) -> List[JoinInfo]:
         return self._joints
+    
+    @property
+    def event_hooks(self) -> List[EventHookInfo]:
+        return self._event_hooks
     
     @property
     def spawns(self) -> List[SpawnInfo]:
@@ -65,3 +77,6 @@ class WorkflowTemplate:
         if from_thread.name not in self._threads:
             raise ValueError(f"Thread {from_thread.name} not found in workflow")
         self._spawns.append(SpawnInfo(spawn_thread, from_thread, at))
+
+    def add_event_hook(self, event_name: str, handler: EventHandlerType) -> None:
+        self._event_hooks.append(EventHookInfo(event_name, handler))

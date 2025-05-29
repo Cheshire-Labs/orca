@@ -77,8 +77,8 @@ class Method:
                                                                                                      self._context.workflow_name, 
                                                                                                      self._context.thread_id, 
                                                                                                      self._context.thread_name, 
-                                                                                                     self._name, 
-                                                                                                     self._status.name.upper()))
+                                                                                                     self._id, 
+                                                                                                     self._name))
 
     def assign_thread(self, input_template: LabwareTemplate, thread: LabwareThread) -> None:
         for step in self._actions:
@@ -99,7 +99,7 @@ class Method:
 
     def action_notify(self, event: str, context: ExecutionContext) -> None:
         assert isinstance(context, ActionExecutionContext)
-        if event == ActionStatus.COMPLETED.name.upper():
+        if "COMPLETED" == context.action_status.upper():
             if len(self.pending_steps) == 0:
                 self._set_status(MethodStatus.COMPLETED)
         else:
@@ -116,10 +116,11 @@ class Method:
                                                                                                      self._context.workflow_name, 
                                                                                                      self._context.thread_id, 
                                                                                                      self._context.thread_name, 
-                                                                                                     self._name, 
-                                                                                                     self._status.name.upper())) 
+                                                                                                     self._id, 
+                                                                                                     self._name)) 
         # TODO: fix this callback
-        self._event_bus.subscribe(f"ACTION.{location_action.id}.COMPLETED", lambda event, context: self.action_notify(event, context))  
+        self._event_bus.subscribe(f"ACTION.{location_action.id}.STATUS_CHANGED", lambda event, context: self.action_notify(event, context))  
+        self._set_status(MethodStatus.IN_PROGRESS)        
         return location_action
     
 
@@ -328,13 +329,12 @@ class LabwareThread(IMethodObserver):
     async def _handle_thread_completion(self) -> None:
         while self.current_location != self.end_location:  
             self._status = LabwareThreadStatus.AWAITING_MOVE_RESERVATION 
-            current_method = self.pending_methods[0]
             method_execution_context = MethodExecutionContext(self._execution_context.workflow_id,
                                                             self._execution_context.workflow_name, 
                                                             self.id, 
                                                             self.name, 
-                                                            current_method.id,
-                                                            current_method.name)          
+                                                            None,
+                                                            None)          
             self._move_action = await self._move_handler.resolve_move_action(self._event_bus,
                                                                              method_execution_context,
                                                                              self._labware, 

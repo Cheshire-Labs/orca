@@ -21,7 +21,6 @@ class Spawn(SystemBoundEventHandler):
         self._spawn_thread: ThreadTemplate = spawn_thread
         self._parent_thread: ThreadTemplate = parent_thread
         self._parent_method: MethodTemplate = parent_method
-        self._has_executed: bool = False
 
     def handle(self, event: str, context: ExecutionContext) -> None:
         assert isinstance(context, MethodExecutionContext), "Context must be of type MethodExecutionContext"
@@ -29,11 +28,10 @@ class Spawn(SystemBoundEventHandler):
             return
         if context.method_name != self._parent_method.name:
             return
-        if self._has_executed:
-            return
-        if event == MethodStatus.IN_PROGRESS.name.upper():
+
+        if event == "METHOD.IN_PROGRESS":
             thread = self.system.create_thread_instance(self._spawn_thread, context)
-            self._has_executed = True
+            self.system.add_thread(thread)
 
 
 class Join(SystemBoundEventHandler):
@@ -41,7 +39,6 @@ class Join(SystemBoundEventHandler):
         self._parent_thread: ThreadTemplate = parent_thread
         self._attaching_thread: ThreadTemplate = attaching_thread
         self._parent_method: MethodTemplate = parent_method
-        self._has_executed: bool = False
 
     def handle(self, event: str, context: ExecutionContext) -> None:
         assert isinstance(context, MethodExecutionContext), "Context must be of type MethodExecutionContext"
@@ -49,9 +46,8 @@ class Join(SystemBoundEventHandler):
             return
         if context.method_name != self._parent_method.name:
             return
-        if self._has_executed:
-            return
-        if event == MethodStatus.IN_PROGRESS.name.upper():
+        if event == "METHOD.IN_PROGRESS":
+            if context.method_id is None:
+                raise ValueError("Method ID must be provided in the context for Join event handler")
             method = self.system.get_method(context.method_id)
             self._attaching_thread.set_wrapped_method(method)
-            self._has_executed = True

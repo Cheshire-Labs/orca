@@ -1,5 +1,5 @@
 from orca.system.thread_manager_interface import IThreadManager
-from orca.system.interfaces import IMethodTemplateRegistry, ISystemInfo, IThreadTemplateRegistry, IWorkflowRegistry, IWorkflowTemplateRegistry
+from orca.system.interfaces import IMethodRegistry, IMethodTemplateRegistry, ISystemInfo, IThreadTemplateRegistry, IWorkflowRegistry, IWorkflowTemplateRegistry
 from orca.system.labware_registry_interfaces import ILabwareRegistry, ILabwareTemplateRegistry
 from orca.system.resource_registry import IResourceRegistry
 from orca.system.system_map import ILocationRegistry, SystemMap
@@ -16,6 +16,7 @@ class ISystem(ISystemInfo,
               IMethodTemplateRegistry,
               IThreadTemplateRegistry,
               ILocationRegistry,
+              IMethodRegistry,
               IWorkflowRegistry,
               IThreadManager,
               ABC):

@@ -9,7 +9,7 @@ from orca.workflow_models.thread_template import ThreadTemplate
 from orca.workflow_models.spawn_thread_action import SpawnThreadAction
 from orca.workflow_models.method_template import JunctionMethodTemplate
 
-class MethodExecutor:
+class StandaloneMethodExecutor:
     def __init__(self, 
                  template: MethodTemplate, 
                  labware_start_mapping: Dict[LabwareTemplate, Location], 

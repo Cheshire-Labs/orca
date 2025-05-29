@@ -3,13 +3,14 @@ import logging
 from typing import Dict, List
 from orca.sdk.events.execution_context import ThreadExecutionContext, WorkflowExecutionContext
 from orca.sdk.events.event_bus_interface import IEventBus
+from orca.system.interfaces import IMethodRegistry
 from orca.system.thread_registry_interface import IThreadRegistry
 from orca.system.thread_manager_interface import IThreadManager
 from orca.system.labware_registry_interfaces import ILabwareRegistry
 from orca.system.move_handler import MoveHandler
 from orca.system.reservation_manager import IReservationManager
 from orca.system.system_map import SystemMap
-from orca.workflow_models.method_template import MethodFactory
+from orca.system.workflow_registry import MethodFactory
 from orca.workflow_models.status_enums import LabwareThreadStatus
 from orca.workflow_models.labware_thread import LabwareThread
 from orca.workflow_models.thread_template import ThreadTemplate
@@ -57,10 +58,14 @@ class ThreadFactory:
 
 
 class ThreadRegistry(IThreadRegistry):
-    def __init__(self, labware_registry: ILabwareRegistry, thread_factory: ThreadFactory) -> None:
+    def __init__(self, 
+                 labware_registry: ILabwareRegistry, 
+                 method_reg: IMethodRegistry,
+                 thread_factory: ThreadFactory) -> None:
         self._threads: Dict[str, LabwareThread] = {}
         self._labware_registry = labware_registry
         self._thread_factory = thread_factory
+        self._method_reg = method_reg
 
     @property
     def threads(self) -> List[LabwareThread]:
@@ -78,9 +83,9 @@ class ThreadRegistry(IThreadRegistry):
         return matches[0]
 
     def add_thread(self, labware_thread: LabwareThread) -> None:
-        if labware_thread.id in self._threads.keys():
-            raise KeyError(f"Labware Thread {labware_thread.id} is already defined in the system.  Each labware thread must have a unique id")
         self._threads[labware_thread.id] = labware_thread
+        for method in labware_thread.pending_methods:   # TODO: change this once things are refactored
+            self._method_reg.add_method(method)
 
 
     def create_thread_instance(self, template: ThreadTemplate, context: WorkflowExecutionContext) -> LabwareThread:
@@ -147,7 +152,7 @@ class ThreadManager(IThreadManager):
 
 class ThreadManagerFactory:
     @staticmethod
-    def create_instance(labware_registry: ILabwareRegistry, reservation_manager: IReservationManager, system_map: SystemMap, move_handler: MoveHandler, event_bus: IEventBus) -> IThreadManager:
+    def create_instance(labware_registry: ILabwareRegistry, method_registry: IMethodRegistry, reservation_manager: IReservationManager, system_map: SystemMap, move_handler: MoveHandler, event_bus: IEventBus) -> IThreadManager:
         thread_factory = ThreadFactory(labware_registry, move_handler, reservation_manager,system_map, event_bus)
-        thread_registry = ThreadRegistry(labware_registry, thread_factory)
+        thread_registry = ThreadRegistry(labware_registry, method_registry, thread_factory)
         return ThreadManager(thread_registry, system_map, move_handler)

@@ -58,11 +58,11 @@ class Workflow:
     def threads(self) -> List[LabwareThread]:
         return self._thread_manager.threads
 
-    def add_start_thread(self, template: ThreadTemplate) -> None:
-        self._thread_manager.add_start_thread(template, WorkflowExecutionContext(self._id, self._name))
+    # def add_start_thread(self, template: ThreadTemplate) -> None:
+    #     self._thread_manager.add_start_thread(template, WorkflowExecutionContext(self._id, self._name))
 
-    def add_thread(self, template: ThreadTemplate) -> None:
-        self._thread_manager.add_start_thread(template, WorkflowExecutionContext(self._id, self._name))
+    # def add_thread(self, template: ThreadTemplate) -> None:
+    #     self._thread_manager.add_start_thread(template, WorkflowExecutionContext(self._id, self._name))
 
     async def start(self) -> None:
         await self._thread_manager.start_all_threads()

@@ -1,5 +1,8 @@
 import asyncio
 import os
+import logging
+import sys
+import time
 from typing import Any, List
 from orca.driver_management.drivers.simulation_labware_placeable.simulation_labware_placeable import SimulationDeviceDriver
 from orca.driver_management.drivers.simulation_robotic_arm.simulation_robotic_arm import SimulationRoboticArmDriver
@@ -9,13 +12,25 @@ from orca.resource_models.resource_pool import EquipmentResourcePool
 from orca.resource_models.transporter_resource import TransporterEquipment
 from orca.sdk.SdkToSystemBuilder import SdkToSystemBuilder
 from orca.sdk.events.event_bus import EventBus
+from orca.sdk.events.event_handlers import Spawn, SystemBoundEventHandler
+from orca.sdk.events.execution_context import ExecutionContext, MethodExecutionContext, ThreadExecutionContext
 from orca.system.resource_registry import ResourceRegistry
 from orca.system.system_map import SystemMap
 from orca.workflow_models.action_template import MethodActionTemplate
+from orca.workflow_models.labware_thread import LabwareThread
 from orca.workflow_models.method_template import JunctionMethodTemplate, MethodTemplate
+from orca.workflow_models.status_enums import LabwareThreadStatus
 from orca.workflow_models.thread_template import ThreadTemplate
 from orca.workflow_models.workflow_templates import WorkflowTemplate
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    stream=sys.stdout 
+)
+
+logger = logging.getLogger("orca")
+logger.info("This should show up in the terminal/output panel")
 
 sample_plate = LabwareTemplate(name="sample_plate", type="Matrix 96 Well")
 plate_1 = LabwareTemplate(name="plate_1", type="Corning 96 Well")
@@ -425,39 +440,83 @@ smc_workflow.add_thread(tips_384_thread)
 
 smc_workflow.set_spawn_point(sample_plate_thread, plate_1_thread, sample_to_bead_plate_method)
 smc_workflow.set_spawn_point(tips_96_thread, plate_1_thread, sample_to_bead_plate_method)
-smc_workflow.set_spawn_point(tips_96_thread, plate_1_thread, add_detection_antibody)
-smc_workflow.set_spawn_point(tips_96_thread, plate_1_thread, add_elution_buffer_b)
-smc_workflow.set_spawn_point(tips_96_thread, plate_1_thread, add_buffer_d)
+smc_workflow.set_spawn_point(tips_384_thread, plate_1_thread, add_detection_antibody)
+smc_workflow.set_spawn_point(tips_384_thread, plate_1_thread, add_elution_buffer_b)
+smc_workflow.set_spawn_point(tips_384_thread, plate_1_thread, add_buffer_d)
 smc_workflow.set_spawn_point(tips_384_thread, plate_1_thread, combine_plates)
 smc_workflow.set_spawn_point(final_plate_thread, plate_1_thread, combine_plates)
 
 smc_workflow.join(sample_plate_thread, plate_1_thread, sample_to_bead_plate_method)
 smc_workflow.join(tips_96_thread, plate_1_thread, sample_to_bead_plate_method)
 smc_workflow.join(tips_96_thread, plate_1_thread, add_detection_antibody)
-smc_workflow.join(tips_96_thread, plate_1_thread, add_elution_buffer_b)
-smc_workflow.join(tips_96_thread, plate_1_thread, add_buffer_d)
+smc_workflow.join(tips_384_thread, plate_1_thread, add_elution_buffer_b)
+smc_workflow.join(tips_384_thread, plate_1_thread, add_buffer_d)
+
 smc_workflow.join(final_plate_thread, plate_1_thread, combine_plates)
 smc_workflow.join(tips_384_thread, plate_1_thread, combine_plates)
 
+smc_workflow.join(tips_384_thread, final_plate_thread, transfer_eluate)
 
-# class SpawnNewOnFourthPlate(ThreadEventHandler):
-#     def __init__(self):
+
+# class SpawnNewOnFourthPlateOld(SystemBoundEventHandler):
+#     def __init__(self, spawn_thread: ThreadTemplate, parent_threads: List[ThreadTemplate], parent_methods: List[MethodTemplate]) -> None:
+#         self._spawn_thread = spawn_thread
+#         self._parent_threads = parent_threads
+#         self._parent_methods = parent_methods
 #         self._num_of_spawns = 0
-
-#     def set_system(self, system: ISystem) -> None:
-#         self.system = system
-
-#     def thread_notify(self, event: str, thread: LabwareThread) -> None:
-
-#         if event == LabwareThreadStatus.CREATED.name.upper():
+    
+#     def handle(self, event: str, context: Any) -> None:
+#         assert isinstance(context, MethodExecutionContext), "Context must be of type MethodExecutionContext"
+#         if context.thread_name not in [t.name for t in self._parent_threads]:
+#             return
+#         if context.method_name not in [m.name for m in self._parent_methods]:
+#             return
+#         if event == "METHOD.IN_PROGRESS":
+#             thread = self.system.create_thread_instance(self._spawn_thread, context)
 #             if self._num_of_spawns % 4 != 0:
-#                 thread.start_location = self.system.get_location(thread.end_location.name)
+#                 thread.start_location = thread.end_location
+#             self.system.add_thread(thread)
 #             self._num_of_spawns += 1
 
 
 
-# smc_workflow.set_thread_event_handler(final_plate_thread, SpawnNewOnFourthPlate())
-# smc_workflow.set_thread_event_handler(tips_384_thread, SpawnNewOnFourthPlate())
+class SpawnNewOnFourthPlate(SystemBoundEventHandler):
+    def __init__(self, attach_thread: ThreadTemplate):
+        self._attach_thread = attach_thread
+        self._previous_thread: LabwareThread | None = None
+        self._num_of_spawns = 0
+    
+    def handle(self, event: str, context: ExecutionContext) -> None:
+        assert isinstance(context, ThreadExecutionContext), "Context must be of type ThreadExecutionContext"
+        if event == "THREAD.CREATED" and context.thread_name == self._attach_thread.name:
+            self._handle_thread_created_event(context)
+    
+    def _handle_thread_created_event(self, context: ThreadExecutionContext):
+        thread = self.system.get_thread(context.thread_id)
+        if self._num_of_spawns % 4 != 0:
+            self._await_previous_thread_completion()
+            thread.start_location = thread.end_location
+        self._allow_thread_to_spawn(thread)
+
+
+    def _allow_thread_to_spawn(self, thread: LabwareThread):
+        self._num_of_spawns += 1
+        self._previous_thread = thread
+        return
+    
+    def _await_previous_thread_completion(self):
+        if self._previous_thread is None:
+            return
+        while self._previous_thread.status != LabwareThreadStatus.COMPLETED:
+            time.sleep(1)
+        self._previous_thread = None
+
+        
+            
+
+tips_384_spawner = SpawnNewOnFourthPlate(tips_384_thread)
+smc_workflow.add_event_hook("THREAD.CREATED", tips_384_spawner)
+smc_workflow.add_event_hook("THREAD.CREATED", SpawnNewOnFourthPlate(final_plate_thread))
 
 event_bus = EventBus()
 builder = SdkToSystemBuilder(
