@@ -13,77 +13,16 @@ from orca.sdk.events.event_bus_interface import IEventBus
 from orca.system.labware_registry_interfaces import ILabwareRegistry
 from orca.system.reservation_manager import IReservationManager, LocationReservation
 from orca.system.system_map import SystemMap
+from orca.workflow_models.labware_thread import StatusManager
 from orca.workflow_models.status_enums import ActionStatus
 
 orca_logger = logging.getLogger("orca")
 
 
-class BaseAction(ABC):
-    def __init__(self, event_bus: IEventBus, context: MethodExecutionContext) -> None:
-        self._id: str = str(uuid.uuid4())
-        self.__status: ActionStatus = ActionStatus.CREATED
-        self._event_bus = event_bus
-        self._execution_context: MethodExecutionContext = context
-        self._lock = asyncio.Lock()
-
-    @property
-    def id(self) -> str:
-        return self._id
-
-    @property
-    def status(self) -> ActionStatus:
-        return self._status
-    
-    @property
-    def _status(self) -> ActionStatus:
-        return self.__status
-
-    @_status.setter
-    def _status(self, status: ActionStatus) -> None:
-        if status == self.__status:
-            return
-        self.__status = status
-        context = ActionExecutionContext(
-                                 self._execution_context.workflow_id,
-                                 self._execution_context.workflow_name,
-                                 self._execution_context.thread_id,
-                                    self._execution_context.thread_name,
-                                    self._execution_context.method_id,
-                                    self._execution_context.method_name,
-                                    self.id,
-                                    self.__status.name.upper(),
-                             )
-        self._event_bus.emit(f"ACTION.{self.id}.{self._status.name.upper()}", context) 
-        self._event_bus.emit(f"ACTION.{self.id}.STATUS_CHANGED", context)
-
-    async def execute(self) -> None:
-        async with self._lock:
-            if self._status == ActionStatus.COMPLETED:
-                return
-            if self._status == ActionStatus.ERRORED:
-                raise ValueError("Action has errored, cannot execute")
-            try:
-                await self._perform_action()
-            except Exception as e:
-                self._status = ActionStatus.ERRORED
-                raise e        
-            self._status = ActionStatus.COMPLETED
-
-
-    @abstractmethod
-    async def _perform_action(self) -> None:
-        raise NotImplementedError
-    
-    def reset(self) -> None:
-        self._status = ActionStatus.CREATED
-
-
 class AssignedLabwareManager:
     def __init__(self,
-                 labware_registry: ILabwareRegistry,
                  expected_input_templates: List[Union[LabwareTemplate, AnyLabwareTemplate]],
                  expected_output_templates: List[Union[LabwareTemplate, AnyLabwareTemplate]]) -> None:
-        self._labware_reg = labware_registry
         self._expected_input_templates = expected_input_templates
         self._expected_inputs: Dict[LabwareTemplate | AnyLabwareTemplate, Labware | None] = {template: None for template in expected_input_templates}
         self._expected_output_templates = expected_output_templates
@@ -138,32 +77,105 @@ class AssignedLabwareManager:
     def __str__(self) -> str:
         return f"Input Manager: {self._expected_inputs}"
 
-
-class LocationAction(BaseAction):
-    def __init__(self,
-                 event_bus: IEventBus,
-                 context: MethodExecutionContext,
-                 location: Location,
-                 command: str,
-                 assigned_labware_manager: AssignedLabwareManager,
-                 options: Dict[str, Any] = {}) -> None:
-        super().__init__(event_bus, context)   
-        if location.resource is None or not isinstance(location.resource, Device):
-            raise ValueError(f"Location {location} does not have an {type(Device)} resource")
-        self._location = location
-        self._command: str = command
-        self._options: Dict[str, Any] = options
-        self._assigned_labware_manager: AssignedLabwareManager = assigned_labware_manager
-        self.is_executing: asyncio.Event = asyncio.Event()
-        self._reservation: LocationReservation = LocationReservation(location, None)
+class BaseAction(ABC):
+    def __init__(self) -> None:
+        self._id: str = str(uuid.uuid4())
 
     @property
-    def resource(self) -> Device:
-        return cast(Device, self._location.resource)
+    def id(self) -> str:
+        return self._id
+
+
+    
+    def reset(self) -> None:
+        self._status = ActionStatus.CREATED
+
+class BaseActionExecutor(ABC):
+    def __init__(self, status_manager: StatusManager):
+        self._status_manager = status_manager
+        self._lock = asyncio.Lock()
+        self.status = ActionStatus.CREATED
+
+    @property
+    @abstractmethod
+    def status(self) -> ActionStatus:
+        raise NotImplementedError
+
+    @status.setter
+    @abstractmethod
+    def status(self, status: ActionStatus) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def _perform_action(self) -> None:
+        raise NotImplementedError
+
+    async def execute(self) -> None:
+        async with self._lock:
+            if self.status == ActionStatus.COMPLETED:
+                return
+            if self.status == ActionStatus.ERRORED:
+                raise ValueError("Action has errored, cannot execute")
+            try:
+                await self._perform_action()
+            except Exception as e:
+                self.status = ActionStatus.ERRORED
+                raise e        
+            self.status = ActionStatus.COMPLETED
+
+
+
+
+
+class LocationActionData(BaseAction):
+    def __init__(self, location: Location, command: str, options: Dict[str, Any] = {}) -> None:
+        super().__init__()
+        if location.resource is None or not isinstance(location.resource, Device):
+            raise ValueError(f"Location {location} does not have an {type(Device)} resource")
+        self._location: Location = location
+        self._command: str = command
+        self._options: Dict[str, Any] = options
+        self._reservation: LocationReservation = LocationReservation(location, None)
 
     @property
     def location(self) -> Location:
         return self._location
+
+    @property
+    def command(self) -> str:
+        return self._command
+
+    @property
+    def options(self) -> Dict[str, Any]:
+        return self._options
+    
+    @property
+    def resource(self) -> Device:
+        return cast(Device, self._location.resource)
+    
+    @property
+    def reservation(self) -> LocationReservation:
+        return self._reservation
+    
+    def release_reservation(self) -> None:
+        self._reservation.release_reservation()
+
+    def __str__(self) -> str:
+        return f"Location Action: {self.location} - {self._command}"
+    
+
+class LocationActionExecutor(BaseActionExecutor):
+    def __init__(self,
+                action: LocationActionData,
+                 status_manager: StatusManager,
+                 context: MethodExecutionContext,
+                 assigned_labware_manager: AssignedLabwareManager,
+                 ) -> None:
+        super().__init__(status_manager)   
+        self._context = context
+        self._action = action
+        self._assigned_labware_manager: AssignedLabwareManager = assigned_labware_manager
+        self.is_executing: asyncio.Event = asyncio.Event()
     
     @property
     def expected_inputs(self) -> List[Labware]:
@@ -173,12 +185,28 @@ class LocationAction(BaseAction):
     def expected_outputs(self) -> List[Labware]:
         return self._assigned_labware_manager.expected_outputs
     
-    @property
-    def reservation(self) -> LocationReservation:
-        return self._reservation
-    
     def assign_input(self, template_slot: LabwareTemplate, input: Labware):
         self._assigned_labware_manager.assign_input(template_slot, input)
+
+    @property
+    def status(self) -> ActionStatus:
+        status = self._status_manager.get_status(self._action.id)
+        return ActionStatus[status]
+
+    @status.setter
+    def status(self, status: ActionStatus) -> None:
+        id = self._action.id
+        context = ActionExecutionContext(
+                                 self._context.workflow_id,
+                                 self._context.workflow_name,
+                                 self._context.thread_id,
+                                    self._context.thread_name,
+                                    self._context.method_id,
+                                    self._context.method_name,
+                                    id,
+                                    status.name.upper(),
+                             )
+        self._status_manager.set_status("ACTION", id, status.name, context)
 
     async def _perform_action(self) -> None:
         # TODO: check the correct labware is present
@@ -187,16 +215,13 @@ class LocationAction(BaseAction):
 
         self._status = ActionStatus.PERFORMING_ACTION
         self.is_executing.set()
-        # TODO: DELETE DELETE DELETE
-        # for Labware in self.resource.loaded_labware:
-        #    orca_logger.debug(f"LOADED LABWARE: {Labware.name}")
 
         # Execute the action
-        if self.resource is not None:
-            await self.resource.execute(self._command, self._options)
+        if self._action.resource is not None:
+            await self._action.resource.execute(self._action.command, self._action.options)
 
     def get_missing_input_labware(self) -> List[Labware]:
-        loaded_labwares = self.resource.loaded_labware[:]
+        loaded_labwares = self._action.resource.loaded_labware[:]
         missing_labware: List[Labware] = []
 
         for labware in self._assigned_labware_manager.expected_inputs:
@@ -213,7 +238,7 @@ class LocationAction(BaseAction):
         return len(self.get_missing_input_labware()) == 0
     
     def get_present_output_labware(self) -> List[Labware]:
-        loaded_labwares = self.resource.loaded_labware[:]
+        loaded_labwares = self._action.resource.loaded_labware[:]
         present_labware: List[Labware] = []
 
         for labware in self._assigned_labware_manager.expected_outputs:
@@ -226,28 +251,29 @@ class LocationAction(BaseAction):
     def all_output_labware_removed(self) -> bool:
         return len(self.get_present_output_labware()) == 0
     
-    def release_reservation(self) -> None:
-        self._reservation.release_reservation()
 
-    def __str__(self) -> str:
-        return f"Location Action: {self.location} - {self._command}"
 
-class MoveAction(BaseAction):
-    def __init__(self,
-                 event_bus: IEventBus,
-                 context: MethodExecutionContext,
+
+
+
+
+class MoveActionData(BaseAction):
+    def __init__(self, 
                  labware: Labware,
                  source: Location,
                  target: Location,
-                 transporter: TransporterEquipment) -> None:
-        super().__init__(event_bus, context)
+                 transporter: TransporterEquipment):
+        super().__init__()
         self._labware = labware
         self._source = source
         self._target = target
-        self._transporter: TransporterEquipment = transporter
-        self._reservation = LocationReservation(self._target, labware)
+        self._transporter = transporter
         self._release_reservation_on_place = True
-        self._status = ActionStatus.AWAITING_MOVE_RESERVATION
+        self._reservation = LocationReservation(self.target, self.labware)
+    
+    @property
+    def labware(self) -> Labware:
+        return self._labware
 
     @property
     def source(self) -> Location:
@@ -262,59 +288,80 @@ class MoveAction(BaseAction):
         return self._transporter
     
     @property
-    def labware(self) -> Labware:
-        return self._labware
+    def  release_reservation_on_place(self) -> bool:
+        return self._release_reservation_on_place
     
     @property
     def reservation(self) -> LocationReservation:
         return self._reservation
-    
-    @property
-    def context(self) -> MethodExecutionContext:
-        return self._execution_context
-    
-
-    # TODO: context and event bus need to be refactored out of the action objects
-    @property
-    def event_bus(self) -> IEventBus:
-        return self._event_bus
     
     def set_reservation(self, reservation: LocationReservation) -> None:
         self._reservation = reservation
 
     def set_release_reservation_on_place(self, release: bool) -> None:
         self._release_reservation_on_place = release
-    
-    async def _perform_action(self) -> None:
-        if self._reservation is None:
-            raise ValueError("Reservation must be set before performing action")
-        if self._labware is None:
-            raise ValueError("Labware must be set before performing action")
+        
 
-        if self._target.labware is not None:
+class MoveActionExecutor(BaseActionExecutor):
+    def __init__(self,
+                 status_manager: StatusManager,
+                 context: MethodExecutionContext,
+                 action: MoveActionData) -> None:
+        super().__init__(status_manager)
+        self._action = action
+        self._context = context
+        self.status = ActionStatus.CREATED
+        self.status = ActionStatus.AWAITING_MOVE_RESERVATION
+
+    @property
+    def status(self) -> ActionStatus:
+        status = self._status_manager.get_status(self._action.id)
+        return ActionStatus[status]
+
+    @status.setter
+    def status(self, status: ActionStatus) -> None:
+        id = self._action.id
+        context = ActionExecutionContext(
+                                 self._context.workflow_id,
+                                 self._context.workflow_name,
+                                 self._context.thread_id,
+                                    self._context.thread_name,
+                                    self._context.method_id,
+                                    self._context.method_name,
+                                    id,
+                                    status.name.upper(),
+                             )
+        self._status_manager.set_status("ACTION", id, status.name, context)
+    
+    async def perform_action(self) -> None:
+        if self._action.reservation is None:
+            raise ValueError("Reservation must be set before performing action")
+        if self._action.labware is None:
+            raise ValueError("Labware must be set before performing action")
+        if self._action.target.labware is not None:
             raise ValueError("Target location is occupied")
 
-        self._status = ActionStatus.MOVING
+        self.status = ActionStatus.MOVING
         # move the labware
-        await self._source.prepare_for_pick(self._labware)
-        await self._target.prepare_for_place(self._labware)
+        await self._action.source.prepare_for_pick(self._action.labware)
+        await self._action.target.prepare_for_place(self._action.labware)
 
-        await self._transporter.pick(self._source)
-        await self._source.notify_picked(self._labware)
+        await self._action.transporter.pick(self._action.source)
+        await self._action.source.notify_picked(self._action.labware)
         
-        await self._transporter.place(self._target)
-        await self._target.notify_placed(self._labware)
+        await self._action.transporter.place(self._action.target)
+        await self._action.target.notify_placed(self._action.labware)
         # await notify_picked
-        if self._release_reservation_on_place:
-            self._reservation.release_reservation()
+        if self._action.release_reservation_on_place:
+            self._action.reservation.release_reservation()
 
 
 class LocationActionCollectionReservationRequest:
-    def __init__(self, location_actions: List[LocationAction]) -> None:
+    def __init__(self, location_actions: List[LocationActionData]) -> None:
         self._location_action_requests = location_actions
-        self._reserved_action: LocationAction | None = None
+        self._reserved_action: LocationActionData | None = None
 
-    async def reserve_location(self, reservation_manager: IReservationManager, reference_point: Location, system_map: SystemMap) -> LocationAction:
+    async def reserve_location(self, reservation_manager: IReservationManager, reference_point: Location, system_map: SystemMap) -> LocationActionData:
         location_actions = self._get_ordered_location_actions(reference_point, system_map)
         for request in location_actions:
             request.reservation.request_reservation(reservation_manager)
@@ -348,7 +395,7 @@ class LocationActionCollectionReservationRequest:
             raise ValueError("No reservation to release")
 
 
-    def _get_ordered_location_actions(self, reference_point: Location, system_map: SystemMap) -> List[LocationAction]:
+    def _get_ordered_location_actions(self, reference_point: Location, system_map: SystemMap) -> List[LocationActionData]:
         return sorted(self._location_action_requests, key=lambda x: system_map.get_distance(reference_point.teachpoint_name, x.location.teachpoint_name))
 
 
