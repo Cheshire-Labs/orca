@@ -26,7 +26,7 @@ class MethodFactory:
             for action_template in template.actions:
                 factory = MethodActionFactory(action_template, self._labware_reg, self._event_bus)
                 action = factory.create_instance()
-                method.append_step(action)
+                method.append_action(action)
             return method
         else:
             raise TypeError(f"Unknown method template type: {type(template)}")

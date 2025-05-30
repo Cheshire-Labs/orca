@@ -12,18 +12,17 @@ from typing import Any, Dict, List, Set, Union
 
 from orca.system.reservation_manager import IReservationManager
 from orca.system.system_map import IResourceLocator, SystemMap
-from orca.workflow_models.action import AssignedLabwareManager, LocationAction, LocationActionCollectionReservationRequest
+from orca.workflow_models.action import AssignedLabwareManager, LocationActionData, LocationActionExecutor, LocationActionCollectionReservationRequest
+from orca.workflow_models.labware_thread import StatusManager
 from orca.workflow_models.status_enums import ActionStatus
 
 
-class DynamicResourceAction:
-    def __init__(self,
-                 labware_registry: ILabwareRegistry,
-                 event_bus: IEventBus,
-                 resource: EquipmentResourcePool | List[Equipment] | Equipment,
-                 command: str,
-                 expected_input_templates: List[Union[LabwareTemplate, AnyLabwareTemplate]],
-                 expected_output_templates: List[Union[LabwareTemplate, AnyLabwareTemplate]],
+class ResourceActionData:
+    def __init__(self, 
+                 resource: EquipmentResourcePool | List[Equipment] | Equipment, 
+                 command: str, 
+                 expected_input_templates: List[Union[LabwareTemplate, AnyLabwareTemplate]], 
+                 expected_output_templates: List[Union[LabwareTemplate, AnyLabwareTemplate]], 
                  options: Dict[str, Any] = {}) -> None:
         if isinstance(resource, EquipmentResourcePool):
             self._resource_pool: EquipmentResourcePool = resource
@@ -31,14 +30,15 @@ class DynamicResourceAction:
             self._resource_pool = EquipmentResourcePool(f"Generated Resource Pool - {uuid.uuid4()}", resource)
         elif isinstance(resource, Equipment):
             self._resource_pool = EquipmentResourcePool(f"Generated Resource Pool - {uuid.uuid4()}", [resource])
-        self._command: str = command
-        self._options: Dict[str, Any] = options
-        self._assigned_labware_manager = AssignedLabwareManager(labware_registry, 
-                                                                                  expected_input_templates, 
-                                                                                  expected_output_templates)
-        self._location_action: LocationAction | None = None
-        self._event_bus = event_bus
+        self._command = command
+        self._expected_input_templates = expected_input_templates
+        self._expected_output_templates = expected_output_templates
+        self._assigned_labware_manager = AssignedLabwareManager(
+                                                    self._expected_input_templates, 
+                                                    self._expected_output_templates)
+        self._options = options
 
+    
     @property
     def command(self) -> str:
         return self._command
@@ -53,12 +53,12 @@ class DynamicResourceAction:
     
     @property
     def expected_input_templates(self) -> List[Union[LabwareTemplate, AnyLabwareTemplate]]:
-        return self._assigned_labware_manager.expected_input_templates
+        return self._expected_input_templates
     
     @property
     def expected_output_templates(self) -> List[Union[LabwareTemplate, AnyLabwareTemplate]]:
-        return self._assigned_labware_manager.expected_output_templates
-
+        return self._expected_output_templates
+    
     @property
     def expected_inputs(self) -> List[Labware]:
         return self._assigned_labware_manager.expected_inputs
@@ -70,43 +70,56 @@ class DynamicResourceAction:
     def assign_input(self, template_slot: LabwareTemplate, input: Labware):
         self._assigned_labware_manager.assign_input(template_slot, input)
     
-    @property
-    def status(self) -> ActionStatus:
-        if self._location_action is None:
-            return ActionStatus.AWAITING_LOCATION_RESERVATION
-        return self._location_action.status
 
 
-    async def resolve_action(self, reference_point: Location, reservation_manager: IReservationManager, system_map: SystemMap, context: MethodExecutionContext) -> LocationAction:
+class ResourceActionResolver:
+    def __init__(self,
+                status_manager: StatusManager,
+                action: ResourceActionData) -> None:
+        self._action = action
+
+        self._location_action: LocationActionData | None = None
+        self._status_manager = status_manager
+
+    async def resolve_action_location(self, 
+                             reference_point: Location, 
+                             reservation_manager: IReservationManager, 
+                             system_map: SystemMap, 
+                             context: MethodExecutionContext) -> LocationActionData:
         if self._location_action is not None:
             return self._location_action
-        reservation_request = LocationActionCollectionReservationRequest(self._get_potential_location_actions(system_map, context))
+        reservation_request = LocationActionCollectionReservationRequest(self._get_potential_location_actions(system_map))
         self._location_action = await reservation_request.reserve_location(reservation_manager, reference_point, system_map)
         self._location_action._status = ActionStatus.RESOLVED
         return self._location_action
 
-    def _get_potential_location_actions(self, resource_locator: IResourceLocator, context: MethodExecutionContext) -> List[LocationAction]:
+    def _get_potential_location_actions(self, resource_locator: IResourceLocator) -> List[LocationActionData]:
         potential_locations: Set[Location] = set()
-        for resource in self._resource_pool.resources:
+        for resource in self._action.resource_pool.resources:
             potential_location = resource_locator.get_resource_location(resource.name)
             potential_locations.add(potential_location)
 
-        location_actions: List[LocationAction] = []
+        location_actions: List[LocationActionData] = []
         for location in potential_locations:
-            location_action = LocationAction(self._event_bus,
-                                             context,
-                                             location, 
-                                             self._command, 
-                                             self._assigned_labware_manager,
-                                             self._options)
+            location_action = LocationActionData(location,
+                                                 self._action.command,
+                                             self._action.options)
             location_actions.append(location_action)
         return location_actions
     
     
-    def __str__(self) -> str:
-        return f"Resource Action Pool: {self._resource_pool.name} - {self._command}"
+    # def __str__(self) -> str:
+    #     return f"Resource Action Pool: {self._action.resource_pool.name} - {self._action.command}"
 
 
+    # @property
+    # def status(self) -> ActionStatus:
+    #     if self._location_action is None:
+    #         return ActionStatus.AWAITING_LOCATION_RESERVATION
+    #     return self._location_action.status
 
+    # @status.setter
+    # def status(self, status: ActionStatus) -> None:
+    #     self._status_manager.set_status("ACTION", self._action.id, status, context=self._context)
             
 
