@@ -26,5 +26,5 @@ class IThreadRegistry(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def create_thread_instance(self, template: ThreadTemplate, context: WorkflowExecutionContext) -> LabwareThread:
+    def create_thread_instance(self, template: ThreadTemplate) -> LabwareThread:
         raise NotImplementedError

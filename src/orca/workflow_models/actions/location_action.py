@@ -1,0 +1,278 @@
+from abc import ABC
+import asyncio
+import logging
+from typing import Any, Dict, List, Union, cast
+import uuid
+
+from orca.resource_models.base_resource import Device
+from orca.resource_models.labware import Labware, LabwareTemplate
+from orca.resource_models.location import Location
+from orca.sdk.events.execution_context import LocationActionExecutionContext, MethodExecutionContext
+from orca.system.reservation_manager import LocationReservation
+from orca.workflow_models.actions.base_executor import ExecutingActionDecorator
+from orca.workflow_models.actions.util import AssignedLabwareManager
+from orca.workflow_models.status_enums import ActionStatus
+from orca.workflow_models.status_manager import StatusManager
+from abc import ABC, abstractmethod
+
+orca_logger = logging.getLogger("orca")
+class ILocationAction(ABC):
+
+    @property
+    @abstractmethod
+    def id(self) -> str:
+        pass
+    
+    @property
+    @abstractmethod
+    def location(self) -> Location:
+        pass
+
+    @property
+    @abstractmethod
+    def command(self) -> str:
+        pass
+
+    @property
+    @abstractmethod
+    def options(self) -> Dict[str, Any]:
+        pass
+
+    @property
+    @abstractmethod
+    def resource(self) -> Device:
+        pass
+
+    @property
+    @abstractmethod
+    def expected_inputs(self) -> List[Labware]:
+        pass
+
+    @property
+    @abstractmethod
+    def expected_outputs(self) -> List[Labware]:
+        pass
+
+    @abstractmethod
+    def assign_input(self, template_slot: LabwareTemplate, input: Labware):
+        pass
+
+    @property
+    @abstractmethod
+    def reservation(self) -> LocationReservation:
+        pass
+
+    @abstractmethod
+    def release_reservation(self) -> None:
+        pass
+
+    @abstractmethod
+    def get_missing_input_labware(self) -> List[Labware]:
+        pass
+
+    @abstractmethod
+    def all_input_labware_present(self) -> bool:
+        pass
+
+    @abstractmethod
+    def get_present_output_labware(self) -> List[Labware]:
+        pass
+
+    @abstractmethod
+    def all_output_labware_removed(self) -> bool:
+        pass
+
+    @property
+    @abstractmethod
+    def all_labware_is_present(self) -> asyncio.Event:
+        pass
+        
+class LocationAction(ILocationAction):
+    def __init__(self, 
+                 location_reservation: LocationReservation, 
+                 assigned_labware_manager: AssignedLabwareManager,
+                 command: str, 
+                 options: Dict[str, Any] = {}) -> None:
+        self._id: str = str(uuid.uuid4())
+        self._command: str = command
+        self._options: Dict[str, Any] = options
+        self._reservation: LocationReservation = location_reservation
+        self._assigned_labware_manager: AssignedLabwareManager = assigned_labware_manager
+
+    @property
+    def id(self) -> str:
+        return self._id
+
+    @property
+    def location(self) -> Location:
+        return self._reservation.reserved_location
+
+    @property
+    def command(self) -> str:
+        return self._command
+
+    @property
+    def options(self) -> Dict[str, Any]:
+        return self._options
+    
+    @property
+    def resource(self) -> Device:
+        return cast(Device, self.location.resource)
+    
+    @property
+    def expected_inputs(self) -> List[Labware]:
+        return self._assigned_labware_manager.expected_inputs
+    
+    @property
+    def expected_outputs(self) -> List[Labware]:
+        return self._assigned_labware_manager.expected_outputs
+    
+    def assign_input(self, template_slot: LabwareTemplate, input: Labware):
+        self._assigned_labware_manager.assign_input(template_slot, input)
+    
+    @property
+    def reservation(self) -> LocationReservation:
+        return self._reservation
+    
+    def release_reservation(self) -> None:
+        self._reservation.release_reservation()
+
+    def __str__(self) -> str:
+        return f"Location Action: {self.location} - {self._command}"
+    
+
+    def get_missing_input_labware(self) -> List[Labware]:
+        loaded_labwares = self.resource.loaded_labware[:]
+        missing_labware: List[Labware] = []
+
+        for labware in self._assigned_labware_manager.expected_inputs:
+            if labware not in loaded_labwares:
+                missing_labware.append(labware)
+            else:
+                loaded_labwares.remove(labware)
+
+        if len(missing_labware) > 0:
+            self._status = ActionStatus.AWAITING_CO_THREADS
+        return missing_labware
+    
+    def all_input_labware_present(self) -> bool:
+        return len(self.get_missing_input_labware()) == 0
+    
+    def get_present_output_labware(self) -> List[Labware]:
+        loaded_labwares = self.resource.loaded_labware[:]
+        present_labware: List[Labware] = []
+
+        for labware in self._assigned_labware_manager.expected_outputs:
+            if labware in loaded_labwares:
+                present_labware.append(labware)
+                loaded_labwares.remove(labware)
+
+        return present_labware
+    
+    def all_output_labware_removed(self) -> bool:
+        return len(self.get_present_output_labware()) == 0
+    
+    @property
+    def all_labware_is_present(self) -> asyncio.Event:
+        return self._assigned_labware_manager.all_labware_is_present
+
+
+class ExecutingLocationAction(ExecutingActionDecorator, ILocationAction):
+    def __init__(self,
+                 status_manager: StatusManager,
+                 action: ILocationAction,
+                 context: MethodExecutionContext,
+                 ) -> None:
+        super().__init__()
+        self._status_manager = status_manager
+        self._context = context
+        self._action = action
+
+    @property
+    def status(self) -> ActionStatus:
+        status = self._status_manager.get_status(self._action.id)
+        return ActionStatus[status]
+
+    @status.setter
+    def status(self, status: ActionStatus) -> None:
+        id = self._action.id
+        context = LocationActionExecutionContext(
+            self._context.workflow_id,
+            self._context.workflow_name,
+            self._context.method_id,
+            self._context.method_name,
+            id,
+            status.name.upper(),
+        )
+        self._status_manager.set_status("ACTION", id, status.name, context)
+
+    async def _execute_action(self) -> None:
+        self._status = ActionStatus.AWAITING_CO_THREADS
+        await self._action.all_labware_is_present.wait()
+        self._status = ActionStatus.EXECUTING_ACTION
+        self._ensure_all_labware_present()
+        # Execute the action
+        if self._action.resource is not None:
+            await self._action.resource.execute(self._action.command, self._action.options)
+        self._status = ActionStatus.COMPLETED
+
+    def _ensure_all_labware_present(self) -> None:
+        missing_labware = self._action.get_missing_input_labware()
+        if len(missing_labware) > 0:
+            raise ValueError(
+                f"Missing labware for action '{self._action.command}' (ID: {self._action.id}) at location '{self._action.location}': "
+                f"{', '.join([labware.name for labware in missing_labware])}"
+            )
+    @property
+    def id(self) -> str:
+        return self._action.id
+
+    @property
+    def location(self) -> Location:
+        return self._action.location
+
+    @property
+    def command(self) -> str:
+        return self._action.command
+
+    @property
+    def options(self) -> Dict[str, Any]:
+        return self._action.options
+
+    @property
+    def resource(self) -> Device:
+        return self._action.resource
+
+    @property
+    def expected_inputs(self) -> List[Labware]:
+        return self._action.expected_inputs
+
+    @property
+    def expected_outputs(self) -> List[Labware]:
+        return self._action.expected_outputs
+
+    def assign_input(self, template_slot: LabwareTemplate, input: Labware):
+        return self._action.assign_input(template_slot, input)
+
+    @property
+    def reservation(self) -> LocationReservation:
+        return self._action.reservation
+
+    def release_reservation(self) -> None:
+        return self._action.release_reservation()
+
+    def get_missing_input_labware(self) -> List[Labware]:
+        return self._action.get_missing_input_labware()
+
+    def all_input_labware_present(self) -> bool:
+        return self._action.all_input_labware_present()
+
+    def get_present_output_labware(self) -> List[Labware]:
+        return self._action.get_present_output_labware()
+
+    def all_output_labware_removed(self) -> bool:
+        return self._action.all_output_labware_removed()
+
+    @property
+    def all_labware_is_present(self) -> asyncio.Event:
+        return self._action.all_labware_is_present

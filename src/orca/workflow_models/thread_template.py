@@ -1,7 +1,7 @@
 from orca.resource_models.labware import LabwareTemplate
 from orca.resource_models.location import Location
 from orca.workflow_models.method_template import IMethodTemplate
-from orca.workflow_models.labware_thread import Method
+from orca.workflow_models.method import Method
 from orca.workflow_models.method_template import JunctionMethodTemplate
 
 

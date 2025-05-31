@@ -13,7 +13,7 @@ from orca.resource_models.transporter_resource import TransporterEquipment
 from orca.sdk.SdkToSystemBuilder import SdkToSystemBuilder
 from orca.sdk.events.event_bus import EventBus
 from orca.sdk.events.event_handlers import Spawn, SystemBoundEventHandler
-from orca.sdk.events.execution_context import ExecutionContext, MethodExecutionContext, ThreadExecutionContext
+from orca.sdk.events.execution_context import ExecutionContext, ThreadExecutionContext
 from orca.system.resource_registry import ResourceRegistry
 from orca.system.system_map import SystemMap
 from orca.workflow_models.action_template import MethodActionTemplate

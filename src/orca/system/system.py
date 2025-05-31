@@ -15,9 +15,10 @@ from orca.system.resource_registry import IResourceRegistry, IResourceRegistryOb
 from orca.system.system_map import SystemMap
 from orca.system.registries import LabwareRegistry, TemplateRegistry
 from orca.system.workflow_registry import WorkflowRegistry
+from orca.workflow_models.method import Method
 from orca.workflow_models.method_template import MethodTemplate
 from orca.workflow_models.thread_template import ThreadTemplate
-from orca.workflow_models.labware_thread import LabwareThread, Method
+from orca.workflow_models.labware_thread import LabwareThread
 from orca.workflow_models.workflow import Workflow
 from orca.workflow_models.workflow_templates import WorkflowTemplate
 from orca.system.thread_manager_interface import IThreadManager
@@ -203,11 +204,11 @@ class System(ISystem):
     def add_observer(self, observer: IResourceRegistryObesrver) -> None:
         return self._resources.add_observer(observer)
     
-    def create_method_instance(self, template: MethodTemplate, context: ThreadExecutionContext) -> Method:
-        return self._method_registry.create_method_instance(template, context)
+    def create_method_instance(self, template: MethodTemplate) -> Method:
+        return self._method_registry.create_method_instance(template)
     
-    def create_thread_instance(self, template: ThreadTemplate, context: WorkflowExecutionContext) -> LabwareThread:
-        return self._thread_manager.create_thread_instance(template, context)
+    def create_thread_instance(self, template: ThreadTemplate) -> LabwareThread:
+        return self._thread_manager.create_thread_instance(template)
     
     def create_workflow_instance(self, template: WorkflowTemplate) -> Workflow:
         return self._workflow_registry.create_workflow_instance(template)

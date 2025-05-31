@@ -2,29 +2,25 @@ from typing import Dict
 from orca.sdk.events.event_bus_interface import IEventBus
 from orca.sdk.events.event_handlers import Spawn
 from orca.sdk.events.event_handlers import Join
-from orca.sdk.events.execution_context import ThreadExecutionContext, WorkflowExecutionContext
 from orca.system.interfaces import IMethodRegistry, IWorkflowRegistry
 from orca.system.labware_registry_interfaces import ILabwareRegistry
 from orca.system.system_map import SystemMap
 from orca.workflow_models.action_factory import MethodActionFactory
-from orca.workflow_models.labware_thread import Method
+from orca.workflow_models.method import Method
 from orca.workflow_models.method_template import IMethodTemplate, JunctionMethodTemplate, MethodTemplate
 from orca.workflow_models.workflow import Workflow
 from orca.workflow_models.workflow_templates import WorkflowTemplate
 from orca.system.thread_manager_interface import IThreadManager
 
 class MethodFactory:
-    def __init__(self, labware_reg: ILabwareRegistry, event_bus: IEventBus) -> None:
-        self._labware_reg: ILabwareRegistry = labware_reg
-        self._event_bus: IEventBus = event_bus
 
-    def create_instance(self, template: IMethodTemplate, context: ThreadExecutionContext) -> Method:
+    def create_instance(self, template: IMethodTemplate) -> Method:
         if isinstance(template, JunctionMethodTemplate):
             return template.method
         elif isinstance(template, MethodTemplate):
-            method = Method(self._event_bus, template.name, context)
+            method = Method( template.name)
             for action_template in template.actions:
-                factory = MethodActionFactory(action_template, self._labware_reg, self._event_bus)
+                factory = MethodActionFactory(action_template)
                 action = factory.create_instance()
                 method.append_action(action)
             return method
@@ -41,7 +37,7 @@ class WorkflowFactory:
     def create_instance(self, template: WorkflowTemplate) -> Workflow:
         workflow = Workflow(template.name, self._thread_manager)
         for thread_template in template.start_thread_templates:
-            thread = self._thread_manager.create_thread_instance(thread_template, WorkflowExecutionContext(workflow.id, workflow.name))
+            thread = self._thread_manager.create_thread_instance(thread_template)
 
         for joint in template.joints:
             self._event_bus.subscribe("METHOD.IN_PROGRESS", Join(joint.parent_thread, joint.attaching_thread, joint.parent_method))
@@ -66,8 +62,8 @@ class MethodRegistry(IMethodRegistry):
     def add_method(self, method: Method) -> None:
         self._methods[method.id] = method
 
-    def create_method_instance(self, template: MethodTemplate, context: ThreadExecutionContext) -> Method:
-        method = self._method_factory.create_instance(template, context)
+    def create_method_instance(self, template: MethodTemplate) -> Method:
+        method = self._method_factory.create_instance(template)
         self.add_method(method)
         return method
     

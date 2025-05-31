@@ -1,0 +1,169 @@
+import asyncio
+from orca.resource_models.labware import AnyLabwareTemplate, Labware, LabwareTemplate
+from orca.resource_models.location import Location
+from orca.resource_models.resource_pool import EquipmentResourcePool
+from orca.system.reservation_manager import IReservationManager, LocationReservation
+from orca.system.system_map import IResourceLocator, SystemMap
+
+
+from typing import Dict, List, Set, Union
+
+
+class LocationCollectionReservationRequest:
+    def __init__(self, locations: List[LocationReservation]) -> None:
+        self._action_location_requests = locations
+        self._reserved_action_location: LocationReservation | None = None
+
+    async def reserve_location(self,
+                               reservation_manager: IReservationManager,
+                               reference_point: Location,
+                               system_map: SystemMap) -> LocationReservation:
+        requests = self._sort_locations(reference_point, system_map)
+        for request in requests:
+            request.request_reservation(reservation_manager)
+
+        # await first location reservation completed
+        done, pending = await asyncio.wait([asyncio.create_task(r.completed.wait()) for r in requests], return_when=asyncio.FIRST_COMPLETED)
+
+        # cancel all pending tasks
+        for task in pending:
+            task.cancel()
+
+        # get first completed route, release all completed, and cancel the rest
+        for request in requests:
+            if request.completed.is_set():
+                if self._reserved_action_location is None:
+                    self._reserved_action_location = request
+                else:
+                    reservation_manager.release_reservation(request.reserved_location.teachpoint_name)
+            else:
+                request.cancelled.set()
+
+        if self._reserved_action_location is None:
+            raise ValueError("No location reserved")
+        return self._reserved_action_location
+
+    def release_reservation(self) -> None:
+        if self._reserved_action_location:
+            self._reserved_action_location.release_reservation()
+            self._reserved_action_location = None
+        else:
+            raise ValueError("No reservation to release")
+
+
+    def _sort_locations(self, reference_point: Location, system_map: SystemMap) -> List[LocationReservation]:
+        return sorted(self._action_location_requests,
+                      key=lambda x: system_map.get_distance(reference_point.teachpoint_name, x.requested_location.teachpoint_name))
+
+
+    def __str__(self) -> str:
+        output =  f"Location Action Reservation: Resource Pool: {[r.requested_location.teachpoint_name for r in self._action_location_requests]}"
+        if self._reserved_action_location:
+            output += f" - Reserved Location: {self._reserved_action_location.reserved_location.teachpoint_name}"
+        else:
+            output += " - Not yet reserved"
+        return output
+
+
+class ResourcePoolResolver:
+    def __init__(self,
+                resource_pool: EquipmentResourcePool) -> None:
+        self._resource_pool = resource_pool
+        self._resolved_location: LocationReservation | None = None
+
+    async def resolve_action_location(self,
+                             reference_point: Location,
+                             reservation_manager: IReservationManager,
+                             system_map: SystemMap) -> LocationReservation:
+        if self._resolved_location is not None:
+            return self._resolved_location
+        reservation_request = LocationCollectionReservationRequest(self._get_potential_action_locations(system_map))
+        self._resolved_location = await reservation_request.reserve_location(reservation_manager, reference_point, system_map)
+        return self._resolved_location
+
+    def _get_potential_action_locations(self, resource_locator: IResourceLocator) -> List[LocationReservation]:
+        potential_locations: Set[Location] = set()
+        for resource in self._resource_pool.resources:
+            potential_location = resource_locator.get_resource_location(resource.name)
+            potential_locations.add(potential_location)
+
+        location_requests: List[LocationReservation] = []
+        for location in potential_locations:
+            location_request = LocationReservation(location, None)
+            location_requests.append(location_request)
+            # location_action = LocationActionData(location,
+            #                                      self._action.command,
+            #                                  self._action.options)
+            # location_actions.append(location_action)
+        return location_requests
+
+
+class AssignedLabwareManager:
+    def __init__(self,
+                 expected_input_templates: List[Union[LabwareTemplate, AnyLabwareTemplate]],
+                 expected_output_templates: List[Union[LabwareTemplate, AnyLabwareTemplate]]) -> None:
+        self._expected_input_templates = expected_input_templates
+        self._expected_inputs: Dict[LabwareTemplate | AnyLabwareTemplate, Labware | None] = {template: None for template in expected_input_templates}
+        self._expected_output_templates = expected_output_templates
+        self._expected_outputs: Dict[LabwareTemplate | AnyLabwareTemplate, Labware | None] = {template: None for template in expected_output_templates}
+        self._all_labware_is_present: asyncio.Event = asyncio.Event()
+
+    @property
+    def expected_input_templates(self) -> List[Union[LabwareTemplate, AnyLabwareTemplate]]:
+        return self._expected_input_templates
+
+    @property
+    def expected_output_templates(self) -> List[Union[LabwareTemplate, AnyLabwareTemplate]]:
+        return self._expected_output_templates
+
+    @property
+    def expected_inputs(self) -> List[Labware]:
+        if any(input is None for input in self._expected_inputs.values()):
+            missing_inputs = [key.name for key, input in self._expected_inputs.items() if input is None]
+            raise ValueError(f"Not all expected inputs have been assigned.  Missing: {missing_inputs}")
+        return [labware for labware in self._expected_inputs.values() if labware is not None]
+
+    @property
+    def expected_outputs(self) -> List[Labware]:
+        if any(output is None for output in self._expected_outputs.values()):
+            raise ValueError("Not all expected outputs have been assigned")
+        return [labware for labware in self._expected_outputs.values() if labware is not None]
+
+    def assign_input(self, template_slot: LabwareTemplate, input: Labware):
+        if template_slot in self._expected_inputs.keys():
+            self._expected_inputs[template_slot] = input
+        elif any(input is None and isinstance(key, AnyLabwareTemplate) for key, input in self._expected_inputs.items()):
+            for key in self._expected_inputs.keys():
+                if isinstance(key, AnyLabwareTemplate):
+                    self._expected_inputs[key] = input
+                    break
+
+        else:
+            raise ValueError(f"No available slot for input {input}")
+        # TODO: keeping this assignment simple for now
+        self.assign_output(template_slot, input)
+        self._update_all_labware_present_event()
+
+    @property
+    def all_labware_is_present(self) -> asyncio.Event:
+        return self._all_labware_is_present
+
+    def assign_output(self, template_slot: LabwareTemplate, output: Labware):
+        if template_slot in self._expected_outputs.keys():
+            self._expected_outputs[template_slot] = output
+        elif any(output is None and isinstance(key, AnyLabwareTemplate) for key, output in self._expected_outputs.items()):
+            for key in self._expected_outputs.keys():
+                if isinstance(key, AnyLabwareTemplate):
+                    self._expected_outputs[key] = output
+                    break
+        else:
+            raise ValueError(f"No available slot for output {output}")
+        self._update_all_labware_present_event()
+
+    def _update_all_labware_present_event(self) -> None:
+        if all(input is not None for input in self._expected_inputs.values()) and \
+           all(output is not None for output in self._expected_outputs.values()):
+            self._all_labware_is_present.set()
+
+    def __str__(self) -> str:
+        return f"Input Manager: {self._expected_inputs}"
