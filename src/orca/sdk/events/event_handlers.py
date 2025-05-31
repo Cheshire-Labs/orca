@@ -24,13 +24,13 @@ class Spawn(SystemBoundEventHandler):
 
     def handle(self, event: str, context: ExecutionContext) -> None:
         assert isinstance(context, MethodExecutionContext), "Context must be of type MethodExecutionContext"
-        if context.thread_name != self._parent_thread.name:
-            return
+        # if context.thread_name != self._parent_thread.name:
+        #     return
         if context.method_name != self._parent_method.name:
             return
 
         if event == "METHOD.IN_PROGRESS":
-            thread = self.system.create_thread_instance(self._spawn_thread, context)
+            thread = self.system.create_thread_instance(self._spawn_thread)
             self.system.add_thread(thread)
 
 
@@ -42,8 +42,8 @@ class Join(SystemBoundEventHandler):
 
     def handle(self, event: str, context: ExecutionContext) -> None:
         assert isinstance(context, MethodExecutionContext), "Context must be of type MethodExecutionContext"
-        if context.thread_name != self._parent_thread.name:
-            return
+        # if context.thread_name != self._parent_thread.name:
+        #     return
         if context.method_name != self._parent_method.name:
             return
         if event == "METHOD.IN_PROGRESS":

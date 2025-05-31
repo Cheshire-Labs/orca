@@ -9,7 +9,7 @@ from orca.system.system_map import ILocationRegistry
 from orca.system.interfaces import IThreadTemplateRegistry
 from orca.workflow_models.method_template import MethodTemplate
 from orca.workflow_models.thread_template import ThreadTemplate
-from orca.workflow_models.labware_thread import Method
+from orca.workflow_models.method import Method
 from orca.workflow_models.workflow_templates import WorkflowTemplate
 
 

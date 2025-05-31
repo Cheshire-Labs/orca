@@ -2,7 +2,7 @@ from orca.resource_models.labware import AnyLabwareTemplate, LabwareTemplate
 from typing import Any, Dict, List, Set, Union
 from orca.sdk.events.execution_context import WorkflowExecutionContext
 from orca.workflow_models.action_template import MethodActionTemplate
-from orca.workflow_models.labware_thread import Method
+from orca.workflow_models.method import Method
 
 
 from abc import ABC, abstractmethod

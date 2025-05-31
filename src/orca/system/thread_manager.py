@@ -1,7 +1,6 @@
 import asyncio
 import logging
 from typing import Dict, List
-from orca.sdk.events.execution_context import ThreadExecutionContext, WorkflowExecutionContext
 from orca.sdk.events.event_bus_interface import IEventBus
 from orca.system.interfaces import IMethodRegistry
 from orca.system.thread_registry_interface import IThreadRegistry
@@ -27,12 +26,12 @@ class ThreadFactory:
                  event_bus: IEventBus) -> None:
         self._labware_registry: ILabwareRegistry = labware_registry
         self._system_map: SystemMap = system_map
-        self._method_factory = MethodFactory(labware_registry, event_bus)
+        self._method_factory = MethodFactory()
         self._move_handler = move_handler
         self._reservation_manager = reservation_manager
         self._event_bus = event_bus
 
-    def create_instance(self, template: ThreadTemplate, context: WorkflowExecutionContext) -> LabwareThread:
+    def create_instance(self, template: ThreadTemplate) -> LabwareThread:
 
         # Instantiate labware
         labware_instance = template.labware_template.create_instance()
@@ -42,15 +41,9 @@ class ThreadFactory:
         thread = LabwareThread(labware_instance,
                                 template.start_location,
                                 template.end_location,
-                                self._move_handler,
-                                self._reservation_manager,
-                                self._system_map,
-                                self._event_bus,
-                                context,
                                 )
-        thread.initialize_labware()
         for method_template in template.method_resolvers:
-            method = self._method_factory.create_instance(method_template, ThreadExecutionContext(context.workflow_id, context.workflow_name, thread.id, thread.name))
+            method = self._method_factory.create_instance(method_template)
             method.assign_thread(template.labware_template, thread)
             thread.append_method_sequence(method)
 
@@ -88,8 +81,8 @@ class ThreadRegistry(IThreadRegistry):
             self._method_reg.add_method(method)
 
 
-    def create_thread_instance(self, template: ThreadTemplate, context: WorkflowExecutionContext) -> LabwareThread:
-        thread = self._thread_factory.create_instance(template, context)
+    def create_thread_instance(self, template: ThreadTemplate) -> LabwareThread:
+        thread = self._thread_factory.create_instance(template)
         self.add_thread(thread)
         return thread
 
@@ -116,8 +109,8 @@ class ThreadManager(IThreadManager):
     def add_thread(self, labware_thread: LabwareThread) -> None:
         return self._thread_registry.add_thread(labware_thread)
 
-    def create_thread_instance(self, template: ThreadTemplate, context: WorkflowExecutionContext) -> LabwareThread:
-        return self._thread_registry.create_thread_instance(template, context)
+    def create_thread_instance(self, template: ThreadTemplate) -> LabwareThread:
+        return self._thread_registry.create_thread_instance(template)
 
     def has_completed(self) -> bool:
         return all([thread.has_completed() for thread in self._thread_registry.threads])

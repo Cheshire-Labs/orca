@@ -21,13 +21,13 @@ class WorkflowThreadManager:
     def threads(self) -> List[LabwareThread]:
         return list(self._workflow_thread.values())
 
-    def add_start_thread(self, template: ThreadTemplate, context: WorkflowExecutionContext) -> LabwareThread:
-        thread = self.add_thread(template, context) 
+    def add_start_thread(self, template: ThreadTemplate) -> LabwareThread:
+        thread = self.add_thread(template) 
         self._start_threads[thread.id] = thread
         return thread
     
-    def add_thread(self, template: ThreadTemplate, context: WorkflowExecutionContext) -> LabwareThread:
-        thread = self._system_thread_manager.create_thread_instance(template, context)
+    def add_thread(self, template: ThreadTemplate) -> LabwareThread:
+        thread = self._system_thread_manager.create_thread_instance(template)
         self._workflow_thread[thread.id] = thread
         return thread
     

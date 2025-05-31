@@ -1,25 +1,24 @@
 from orca.resource_models.labware import Labware
 from orca.resource_models.location import Location
-from orca.sdk.events.execution_context import MethodExecutionContext
-from orca.sdk.events.event_bus_interface import IEventBus
-from orca.system.labware_registry_interfaces import ILabwareRegistry
 from orca.system.reservation_manager import IReservationManager
 from orca.system.system_map import SystemMap
-from orca.workflow_models.action import LocationActionExecutor, MoveActionExecutor
+from orca.workflow_models.actions.location_action import ILocationAction, LocationAction
 
 import asyncio
 from typing import List
 
+from orca.workflow_models.actions.move_action import MoveAction
+
 class MoveActionCollectionReservationRequest:
-    def __init__(self, requested_move_actions: List[MoveActionExecutor]):
+    def __init__(self, requested_move_actions: List[MoveAction]):
         # ensure all the labware in each routestep is the same
         for move_action in requested_move_actions:
             if move_action.labware != requested_move_actions[0].labware:
                 raise ValueError("All labware in a route must be the same")
         self._requested_move_actions = requested_move_actions
-        self._reservation: MoveActionExecutor | None = None
+        self._reservation: MoveAction | None = None
 
-    async def reserve_route(self, reservation_manager: IReservationManager) -> MoveActionExecutor:
+    async def reserve_route(self, reservation_manager: IReservationManager) -> MoveAction:
         for action in self._requested_move_actions:
             action.reservation.request_reservation(reservation_manager)
             if action.reservation.completed.is_set():
@@ -66,15 +65,13 @@ class MoveActionCollectionReservationRequest:
 class MoveHandler:
     def __init__(self,
                 reservation_manager: IReservationManager,
-                labware_registry: ILabwareRegistry,
                 system_map: SystemMap) -> None:
         self._reservation_manager = reservation_manager
-        self._labware_registry = labware_registry
         self._system_map = system_map
 
-    async def resolve_move_action(self, event_bus: IEventBus, context: MethodExecutionContext, labware: Labware, current_location: Location, target_location: Location, assigned_action: LocationActionExecutor | None = None) -> MoveActionExecutor:
+    async def resolve_move_action(self, labware: Labware, current_location: Location, target_location: Location, assigned_action: ILocationAction | None = None) -> MoveAction:
         potential_paths = self._get_potential_paths(current_location, target_location)
-        potential_moves = self._get_potential_move_actions(event_bus, context, labware, potential_paths)
+        potential_moves = self._get_potential_move_actions(labware, potential_paths)
         if assigned_action is not None:
             self._assign_reservation_to_moves(potential_moves, assigned_action)
         # check for any moves using the assigned_action's reservation
@@ -85,7 +82,7 @@ class MoveHandler:
         reserved_move_action = await route_reservation.reserve_route(self._reservation_manager)
         return reserved_move_action
 
-    async def handle_deadlock(self, move_action: MoveActionExecutor) -> MoveActionExecutor:
+    async def handle_deadlock(self, move_action: MoveAction) -> MoveAction:
         # NOTE: Although move_action does not have a reservation and does not need to be released, 
         # even though it is set as completed, it is also deadlocked.  This may lead to confusion and may need to be changed
         # due to this, this handling may work better else where
@@ -94,7 +91,7 @@ class MoveHandler:
         # if move_action.target is in the potential_paths, remove it
         potential_paths = [path for path in potential_paths if move_action.target.teachpoint_name not in path]
         sorted_paths = sorted(potential_paths, key=lambda path: len(path))
-        potential_moves = self._get_potential_move_actions(move_action.event_bus, move_action.context, move_action.labware, sorted_paths)
+        potential_moves = self._get_potential_move_actions( move_action.labware, sorted_paths)
         route_reservation = MoveActionCollectionReservationRequest(potential_moves)
         reserved_move_action = await route_reservation.reserve_route(self._reservation_manager)
 
@@ -108,18 +105,18 @@ class MoveHandler:
             raise ValueError("No routes found between source and target")
         return potential_paths
 
-    def _get_potential_move_actions(self, event_bus: IEventBus, context: MethodExecutionContext, labware: Labware, potential_paths: List[List[str]]) -> List[MoveActionExecutor]:
+    def _get_potential_move_actions(self, labware: Labware, potential_paths: List[List[str]]) -> List[MoveAction]:
     
-        potential_actions: List[MoveActionExecutor] = []
+        potential_actions: List[MoveAction] = []
         for path in potential_paths:
             source_location = self._system_map.get_location(path[0])
             target = self._system_map.get_location(path[1])
             transporter = self._system_map.get_transporter_between(source_location.name, target.name)
-            action = MoveActionExecutor(event_bus, context, labware, source_location, target, transporter)
+            action = MoveAction(labware, source_location, target, transporter)
             potential_actions.append(action)
         return potential_actions
     
-    def _assign_reservation_to_moves(self, potential_moves: List[MoveActionExecutor], assigned_action: LocationActionExecutor) -> None:
+    def _assign_reservation_to_moves(self, potential_moves: List[MoveAction], assigned_action: ILocationAction) -> None:
         # TODO: Fix this later - this is a temporary fix
         # use the reservation already set by the assigned action
         for move in potential_moves:
