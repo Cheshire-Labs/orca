@@ -4,14 +4,15 @@ from orca.config_interfaces import ILabwareConfig, ILabwareThreadConfig, IMethod
 from orca.resource_models.base_resource import Equipment, Device
 from orca.resource_models.labware import AnyLabwareTemplate, LabwareTemplate
 from orca.resource_models.location import Location
+from orca.system.system_info import SystemInfo
 from orca.system.interfaces import IMethodTemplateRegistry, IWorkflowTemplateRegistry
-from orca.system.workflow_registry import WorkflowRegistry
+from orca.workflow_models.workflows.workflow_registry import WorkflowRegistry
 from orca.scripting.scripting import IScriptRegistry
 from orca.system.labware_registry_interfaces import ILabwareTemplateRegistry
 from orca.system.thread_manager_interface import IThreadManager
 from orca.system.registries import LabwareRegistry
 from orca.system.resource_registry import IResourceRegistry
-from orca.system.system import System, SystemInfo
+from orca.system.system import System
 from orca.system.system_map import ILocationRegistry, IResourceLocator, SystemMap
 from orca.system.registries import TemplateRegistry
 from orca.system.interfaces import IThreadTemplateRegistry

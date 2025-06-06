@@ -9,7 +9,6 @@ from abc import ABC, abstractmethod
 class ExecutingActionDecorator(ABC):
     def __init__(self):
         self._is_executing = asyncio.Lock()
-        self.status = ActionStatus.CREATED
 
     @property
     @abstractmethod

@@ -21,8 +21,8 @@ class LabwareTemplate:
     def labware_type(self, value: str) -> None:
         self._labware_type = value
 
-    def create_instance(self) -> Labware:
-        return Labware(self.name, self.labware_type)
+    def create_instance(self) -> LabwareInstance:
+        return LabwareInstance(self.name, self.labware_type)
 
 class AnyLabwareTemplate:
     """A class that represents any labware template"""
@@ -49,7 +49,7 @@ class AnyLabware:
         return "$AnyLabware"
 
 
-class Labware:
+class LabwareInstance:
     
     def __init__(self, name: str, labware_type: str) -> None:
         self._id = str(uuid.uuid4())

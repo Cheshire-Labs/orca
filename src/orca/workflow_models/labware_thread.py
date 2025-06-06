@@ -5,89 +5,59 @@ import asyncio
 import logging
 from typing import Callable, List
 from orca.resource_models.location import Location
-from orca.resource_models.labware import Labware
+from orca.resource_models.labware import LabwareInstance
 from orca.sdk.events.event_bus_interface import IEventBus
 from orca.sdk.events.execution_context import ExecutionContext, MethodExecutionContext, ThreadExecutionContext, WorkflowExecutionContext
 from orca.system.move_handler import MoveHandler
 from orca.system.reservation_manager import IReservationManager
 from orca.system.system_map import SystemMap
-from orca.workflow_models.method import ExecutingMethod, Method
+from orca.workflow_models.interfaces import ILabwareThread
+from orca.workflow_models.method import ExecutingMethod, MethodInstance
 from orca.workflow_models.status_manager import StatusManager
 from orca.workflow_models.actions.dynamic_resource_action import DynamicResourceActionResolver
 
 from orca.workflow_models.actions.location_action import ExecutingLocationAction, ILocationAction
 from orca.workflow_models.actions.move_action import ExecutingMoveAction, MoveAction
-from orca.workflow_models.status_enums import MethodStatus, LabwareThreadStatus
+from orca.workflow_models.status_enums import ActionStatus, MethodStatus, LabwareThreadStatus
 
 orca_logger = logging.getLogger("orca")
 class IThreadObserver(ABC):
     @abstractmethod
-    def thread_notify(self, event: str, thread: LabwareThread) -> None:
+    def thread_notify(self, event: str, thread: LabwareThreadInstance) -> None:
         raise NotImplementedError
     
 class ThreadObserver(IThreadObserver):
-    def __init__(self, callback: Callable[[str, LabwareThread], None]) -> None:
+    def __init__(self, callback: Callable[[str, LabwareThreadInstance], None]) -> None:
         self._callback = callback
     
-    def thread_notify(self, event: str, thread: LabwareThread) -> None:
+    def thread_notify(self, event: str, thread: LabwareThreadInstance) -> None:
         self._callback(event, thread) 
 
 class IMethodObserver(ABC):
     @abstractmethod
-    def method_notify(self, event: str, method: Method) -> None:
+    def method_notify(self, event: str, method: MethodInstance) -> None:
         raise NotImplementedError
 
 class MethodObserver(IMethodObserver):
-    def __init__(self, callback: Callable[[str, Method], None]) -> None:
+    def __init__(self, callback: Callable[[str, MethodInstance], None]) -> None:
         super().__init__()
         self._callback = callback
     
-    def method_notify(self, event: str, method: Method) -> None:
+    def method_notify(self, event: str, method: MethodInstance) -> None:
         self._callback(event, method)
 
 
 
-class ILabwareThread(ABC):
-    @property
-    @abstractmethod
-    def id(self) -> str:
-        raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def name(self) -> str:
-        raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def start_location(self) -> Location:
-        raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def end_location(self) -> Location:
-        raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def labware(self) -> Labware:
-        raise NotImplementedError
-
-    @abstractmethod
-    def append_method_sequence(self, method: Method) -> None:
-        raise NotImplementedError
-    
-
-class LabwareThread(ILabwareThread):
+class LabwareThreadInstance(ILabwareThread):
     def __init__(self, 
-                 labware: Labware, 
+                 labware: LabwareInstance, 
                  start_location: Location, 
                  end_location: Location,
                  ) -> None:
-        self._labware: Labware = labware
+        self._labware: LabwareInstance = labware
         self._start_location: Location = start_location
         self._end_location: Location = end_location
-        self._method_sequence: List[Method] = []
+        self._method_sequence: List[MethodInstance] = []
         # self._status: LabwareThreadStatus = LabwareThreadStatus.UNCREATED
         # self.status = LabwareThreadStatus.CREATED
         # set current_location is after self._status assignment to accommodate scripts changing start location
@@ -116,12 +86,15 @@ class LabwareThread(ILabwareThread):
         self._end_location = location
     
     @property
-    def labware(self) -> Labware:
+    def labware(self) -> LabwareInstance:
         return self._labware
     
-    def append_method_sequence(self, method: Method) -> None:
+    @property
+    def methods(self) -> List[MethodInstance]:
+        return self._method_sequence
+
+    def append_method_sequence(self, method: MethodInstance) -> None:
         self._method_sequence.append(method)
-    
 
 
 
@@ -129,7 +102,7 @@ class LabwareThread(ILabwareThread):
 class ExecutingLabwareThread(ILabwareThread):
 
     def __init__(self, 
-                 thread: LabwareThread,
+                 thread: LabwareThreadInstance,
                  event_bus: IEventBus,
                  move_handler: MoveHandler,
                  status_manager: StatusManager,
@@ -149,7 +122,7 @@ class ExecutingLabwareThread(ILabwareThread):
         # TODO: source of truth needs to be changed to a labware manager
         self._current_location: Location = self._thread.start_location 
         self._previous_action: ExecutingLocationAction | None = None
-        self._assigned_action: ILocationAction | None = None
+        # self._assigned_action: ILocationAction | None = None
         self._move_action: MoveAction | None = None
         self._stop_event = asyncio.Event()
         self.status = LabwareThreadStatus.CREATED
@@ -168,22 +141,18 @@ class ExecutingLabwareThread(ILabwareThread):
     
     @property
     def end_location(self) -> Location:
-        return self._end_location
+        return self._thread.end_location
     
     @end_location.setter
     def end_location(self, location: Location) -> None:
-        self._end_location = location
+        self._thread.end_location = location
     
     @property
-    def labware(self) -> Labware:
+    def labware(self) -> LabwareInstance:
         return self._thread.labware
     
-    def append_method_sequence(self, method: Method) -> None:
+    def append_method_sequence(self, method: MethodInstance) -> None:
         self._thread.append_method_sequence(method)
-
-    def method_notify(self, event: str, method: Method) -> None:
-        if event == MethodStatus.COMPLETED.name.upper():
-            self._current_method = None
 
     @property
     def pending_methods(self) -> List[ExecutingMethod]:
@@ -192,17 +161,16 @@ class ExecutingLabwareThread(ILabwareThread):
     @property
     def completed_methods(self) -> List[ExecutingMethod]:
         return [m for m in self._methods if m.has_completed()]
-    
+
     @property
-    def current_method(self) -> ExecutingMethod | None:
-        for method in self._methods:
-            if method.status == MethodStatus.IN_PROGRESS:
-                return method
-        return None
+    def assigned_method(self) -> ExecutingMethod | None:
+        if len(self.pending_methods) == 0:
+            return None
+        return self.pending_methods[0]
 
     @property
     def assigned_action(self) -> ILocationAction | None:
-        return self._assigned_action
+        return self.assigned_method.current_action if self.assigned_method else None
         
     @property
     def move_action(self) -> MoveAction | None:
@@ -248,29 +216,23 @@ class ExecutingLabwareThread(ILabwareThread):
         if self.status == LabwareThreadStatus.CREATED:
             self.initialize_labware()
 
-        while not self.has_completed():
-            # no methods left, send home
-            if len(self.pending_methods) == 0:
-                await self._handle_thread_completion()
-                return
-            
-            # needs next action assigned
-            if self._assigned_action is None: # or self._assigned_action.status == ActionStatus.COMPLETED:
-                await self._handle_action_assignment()
+        if self.assigned_action is None:
+            await self._start_next_method()
 
-            assert self._assigned_action is not None
+    async def _advance_thread(self) -> None:
 
-            # move to the assigned location
-            while self.current_location != self._assigned_action.location and not self._stop_event.is_set():
-                await self._handle_thread_move_assignment_to_location_action()
-                await asyncio.sleep(0.2)
+        if self._stop_event.is_set():
+            self._handle_thread_stop()
+            return
+        
+        assert self.assigned_action is not None, "Assigned action should not be None when advancing thread"
+        while self.current_location != self.assigned_action.location:
+            await self._assign_and_execute_move_action_to_location_action()
+        
+        await self._handle_thread_at_assigned_location()
 
-            if self._stop_event.is_set():
-                self._handle_thread_stop()
-                return
-            
-            await self._handle_thread_at_assigned_location()
-            await asyncio.sleep(0.2)
+    def handle_method_complete(self, event: str, context: ExecutionContext) -> None:
+        asyncio.create_task(self._start_next_method())
 
     def stop(self) -> None:
         self.status = LabwareThreadStatus.STOPPING
@@ -280,43 +242,39 @@ class ExecutingLabwareThread(ILabwareThread):
         self._stop_event.clear()
         self.status = LabwareThreadStatus.STOPPED
         
+    async def _start_next_method(self) -> None:
+        if len(self.pending_methods) == 0:
+            orca_logger.info(f"No pending methods for thread {self._thread.name}. Sending thread to end location {self.end_location.name}.")
+            await self._handle_thread_completion()
+            return
+        next_method = self.pending_methods[0]
+        orca_logger.info(f"Starting next method: {next_method.name} in thread {self._thread.name}")
+        await next_method.resolve_next_action(self.current_location, self._action_resolver)
+        self._event_bus.subscribe(f"METHOD.{next_method.id}.{MethodStatus.COMPLETED.name}", self.handle_method_complete)
+        await self._advance_thread()
 
-    async def _handle_action_assignment(self) -> None:
-        assert len(self.pending_methods) > 0
-        assert self.current_method is not None, "Current method should not be None when resolving next action"
-        self.status = LabwareThreadStatus.RESOLVING_ACTION_LOCATION
-        # this is to fix when the lawbare is already at the location 
-        # but has not released the reservation of its previous action
-        next_step = self.current_method.pending_actions[0]
-        if self._previous_action is not None and self._current_location.resource in next_step.resource_pool.resources:
-            self._previous_action.release_reservation()
-        
-        self._assigned_action = await self.current_method.resolve_next_action(self.current_location, self._action_resolver)
-        self.status = LabwareThreadStatus.ACTION_LOCATION_RESOLVED
-
-    async def _handle_thread_move_assignment_to_location_action(self) -> None:
-        assert self.current_method is not None, "Current method should not be None when resolving next action"
+    async def _assign_and_execute_move_action_to_location_action(self) -> None:
         assert self.assigned_action is not None, "Assigned action should not be None when moving to assigned location"
         self.status = LabwareThreadStatus.AWAITING_MOVE_RESERVATION
 
         self._move_action = await self._move_handler.resolve_move_action(
-                                                                         self._thread.labware, 
-                                                                   self.current_location, 
-                                                                   self.assigned_action.location, 
-                                                                   self.assigned_action)
+                                            self._thread.labware, 
+                                            self.current_location, 
+                                            self.assigned_action.location, 
+                                             self.assigned_action)
         await self._execute_move_action()
 
     async def _handle_thread_at_assigned_location(self) -> None:
         assert self.assigned_action is not None
         assert self.current_location == self.assigned_action.location
-
+        current_method = self.pending_methods[0]
         self.status = LabwareThreadStatus.AWAITING_CO_THREADS
         await self.assigned_action.all_labware_is_present.wait()
         self.status = LabwareThreadStatus.EXECUTING_ACTION
         context = MethodExecutionContext(self._context.workflow_id,
                                         self._context.workflow_name, 
-                                        self.current_method.id if self.current_method else None,
-                                        self.current_method.name if self.current_method else None)
+                                        current_method.id if current_method else None,
+                                        current_method.name if current_method else None)
         executing_action = ExecutingLocationAction(self._status_manager,
                                                    self.assigned_action, 
                                                    context)

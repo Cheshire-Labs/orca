@@ -4,7 +4,7 @@ import logging
 from typing import Dict, List, Optional
 import uuid
 import networkx as nx # type: ignore
-from orca.resource_models.labware import Labware
+from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.location import ILabwareLocationObserver, Location
 from orca.system.system_map import ILocationRegistry
 
@@ -34,7 +34,7 @@ class IReservationManager:
 
 
 class LocationReservation: 
-    def __init__(self, requested_location: Location, labware: Labware | None = None) -> None:
+    def __init__(self, requested_location: Location, labware: LabwareInstance | None = None) -> None:
         self._id = str(uuid.uuid4())
         self._labware = labware
         self._requested_location: Location = requested_location
@@ -49,7 +49,7 @@ class LocationReservation:
         return self._id
     
     @property
-    def labware(self) -> Labware | None:
+    def labware(self) -> LabwareInstance | None:
         return self._labware
 
     def set_location(self, location: Location) -> None:
@@ -124,7 +124,7 @@ class ReservationManager(IReservationManager, IAvailabilityManager, ILabwareLoca
             self._process_next_request(location_name)
             
 
-    def notify_labware_location_change(self, event: str, location: Location, labware: Labware) -> None:
+    def notify_labware_location_change(self, event: str, location: Location, labware: LabwareInstance) -> None:
         if event == "picked":
             if self.can_reserve(location.name):
                 self._process_next_request(location.name)
@@ -157,7 +157,7 @@ class DeadlockGraph:
     def __init__(self) -> None:
         self._graph: nx.DiGraph = nx.DiGraph()
         
-    def _add_edge(self, requester: Labware, holder: Labware) -> None:
+    def _add_edge(self, requester: LabwareInstance, holder: LabwareInstance) -> None:
         if not self._graph.has_node(requester): # type: ignore
             self._graph.add_node(requester) # type: ignore
         if not self._graph.has_node(holder): # type: ignore

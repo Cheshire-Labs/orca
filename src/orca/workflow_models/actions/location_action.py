@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Union, cast
 import uuid
 
 from orca.resource_models.base_resource import Device
-from orca.resource_models.labware import Labware, LabwareTemplate
+from orca.resource_models.labware import LabwareInstance, LabwareTemplate
 from orca.resource_models.location import Location
 from orca.sdk.events.execution_context import LocationActionExecutionContext, MethodExecutionContext
 from orca.system.reservation_manager import LocationReservation
@@ -45,16 +45,16 @@ class ILocationAction(ABC):
 
     @property
     @abstractmethod
-    def expected_inputs(self) -> List[Labware]:
+    def expected_inputs(self) -> List[LabwareInstance]:
         pass
 
     @property
     @abstractmethod
-    def expected_outputs(self) -> List[Labware]:
+    def expected_outputs(self) -> List[LabwareInstance]:
         pass
 
     @abstractmethod
-    def assign_input(self, template_slot: LabwareTemplate, input: Labware):
+    def assign_input(self, template_slot: LabwareTemplate, input: LabwareInstance):
         pass
 
     @property
@@ -67,15 +67,11 @@ class ILocationAction(ABC):
         pass
 
     @abstractmethod
-    def get_missing_input_labware(self) -> List[Labware]:
+    def get_missing_input_labware(self) -> List[LabwareInstance]:
         pass
 
     @abstractmethod
-    def all_input_labware_present(self) -> bool:
-        pass
-
-    @abstractmethod
-    def get_present_output_labware(self) -> List[Labware]:
+    def get_present_output_labware(self) -> List[LabwareInstance]:
         pass
 
     @abstractmethod
@@ -98,6 +94,7 @@ class LocationAction(ILocationAction):
         self._options: Dict[str, Any] = options
         self._reservation: LocationReservation = location_reservation
         self._assigned_labware_manager: AssignedLabwareManager = assigned_labware_manager
+        self._all_labware_is_present = asyncio.Event()
 
     @property
     def id(self) -> str:
@@ -120,14 +117,14 @@ class LocationAction(ILocationAction):
         return cast(Device, self.location.resource)
     
     @property
-    def expected_inputs(self) -> List[Labware]:
+    def expected_inputs(self) -> List[LabwareInstance]:
         return self._assigned_labware_manager.expected_inputs
     
     @property
-    def expected_outputs(self) -> List[Labware]:
+    def expected_outputs(self) -> List[LabwareInstance]:
         return self._assigned_labware_manager.expected_outputs
     
-    def assign_input(self, template_slot: LabwareTemplate, input: Labware):
+    def assign_input(self, template_slot: LabwareTemplate, input: LabwareInstance):
         self._assigned_labware_manager.assign_input(template_slot, input)
     
     @property
@@ -141,9 +138,9 @@ class LocationAction(ILocationAction):
         return f"Location Action: {self.location} - {self._command}"
     
 
-    def get_missing_input_labware(self) -> List[Labware]:
+    def get_missing_input_labware(self) -> List[LabwareInstance]:
         loaded_labwares = self.resource.loaded_labware[:]
-        missing_labware: List[Labware] = []
+        missing_labware: List[LabwareInstance] = []
 
         for labware in self._assigned_labware_manager.expected_inputs:
             if labware not in loaded_labwares:
@@ -153,14 +150,13 @@ class LocationAction(ILocationAction):
 
         if len(missing_labware) > 0:
             self._status = ActionStatus.AWAITING_CO_THREADS
-        return missing_labware
+        else:
+            self._all_labware_is_present.set()
+        return missing_labware      
     
-    def all_input_labware_present(self) -> bool:
-        return len(self.get_missing_input_labware()) == 0
-    
-    def get_present_output_labware(self) -> List[Labware]:
+    def get_present_output_labware(self) -> List[LabwareInstance]:
         loaded_labwares = self.resource.loaded_labware[:]
-        present_labware: List[Labware] = []
+        present_labware: List[LabwareInstance] = []
 
         for labware in self._assigned_labware_manager.expected_outputs:
             if labware in loaded_labwares:
@@ -174,7 +170,9 @@ class LocationAction(ILocationAction):
     
     @property
     def all_labware_is_present(self) -> asyncio.Event:
-        return self._assigned_labware_manager.all_labware_is_present
+        if not self._all_labware_is_present.is_set():
+            self.get_missing_input_labware()
+        return self._all_labware_is_present
 
 
 class ExecutingLocationAction(ExecutingActionDecorator, ILocationAction):
@@ -187,6 +185,7 @@ class ExecutingLocationAction(ExecutingActionDecorator, ILocationAction):
         self._status_manager = status_manager
         self._context = context
         self._action = action
+        self.status = ActionStatus.CREATED
 
     @property
     def status(self) -> ActionStatus:
@@ -208,13 +207,12 @@ class ExecutingLocationAction(ExecutingActionDecorator, ILocationAction):
 
     async def _execute_action(self) -> None:
         self._status = ActionStatus.AWAITING_CO_THREADS
-        await self._action.all_labware_is_present.wait()
+        await self.all_labware_is_present.wait()
         self._status = ActionStatus.EXECUTING_ACTION
         self._ensure_all_labware_present()
         # Execute the action
         if self._action.resource is not None:
             await self._action.resource.execute(self._action.command, self._action.options)
-        self._status = ActionStatus.COMPLETED
 
     def _ensure_all_labware_present(self) -> None:
         missing_labware = self._action.get_missing_input_labware()
@@ -244,14 +242,14 @@ class ExecutingLocationAction(ExecutingActionDecorator, ILocationAction):
         return self._action.resource
 
     @property
-    def expected_inputs(self) -> List[Labware]:
+    def expected_inputs(self) -> List[LabwareInstance]:
         return self._action.expected_inputs
 
     @property
-    def expected_outputs(self) -> List[Labware]:
+    def expected_outputs(self) -> List[LabwareInstance]:
         return self._action.expected_outputs
 
-    def assign_input(self, template_slot: LabwareTemplate, input: Labware):
+    def assign_input(self, template_slot: LabwareTemplate, input: LabwareInstance):
         return self._action.assign_input(template_slot, input)
 
     @property
@@ -261,18 +259,15 @@ class ExecutingLocationAction(ExecutingActionDecorator, ILocationAction):
     def release_reservation(self) -> None:
         return self._action.release_reservation()
 
-    def get_missing_input_labware(self) -> List[Labware]:
+    def get_missing_input_labware(self) -> List[LabwareInstance]:
         return self._action.get_missing_input_labware()
 
-    def all_input_labware_present(self) -> bool:
-        return self._action.all_input_labware_present()
-
-    def get_present_output_labware(self) -> List[Labware]:
+    def get_present_output_labware(self) -> List[LabwareInstance]:
         return self._action.get_present_output_labware()
 
     def all_output_labware_removed(self) -> bool:
         return self._action.all_output_labware_removed()
-
+    
     @property
     def all_labware_is_present(self) -> asyncio.Event:
         return self._action.all_labware_is_present

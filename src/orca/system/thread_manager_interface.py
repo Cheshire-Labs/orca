@@ -1,10 +1,8 @@
-from orca.system.thread_registry_interface import IThreadRegistry
-
-
 from abc import ABC, abstractmethod
 
 
-class IThreadManager(IThreadRegistry, ABC):
+class IThreadManager(ABC):
+
 
     @abstractmethod
     async def start_all_threads(self) -> None:

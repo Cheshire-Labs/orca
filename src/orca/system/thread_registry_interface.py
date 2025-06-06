@@ -1,30 +1,42 @@
-from orca.sdk.events.execution_context import WorkflowExecutionContext
-from orca.workflow_models.labware_thread import LabwareThread
-from orca.workflow_models.thread_template import ThreadTemplate
-
+from orca.workflow_models.interfaces import ILabwareThread
 
 from abc import ABC, abstractmethod
-from typing import List
+from typing import Generic, List, TypeVar
 
-
-class IThreadRegistry(ABC):
+LabwareThreadType = TypeVar('LabwareThreadType', bound=ILabwareThread)
+class IThreadRegistry(ABC, Generic[LabwareThreadType]):
     @property
     @abstractmethod
-    def threads(self) -> List[LabwareThread]:
+    def threads(self) -> List[LabwareThreadType]:
         raise NotImplementedError
 
     @abstractmethod
-    def get_thread(self, id: str) -> LabwareThread:
+    def get_thread(self, id: str) -> LabwareThreadType:
         raise NotImplementedError
 
     @abstractmethod
-    def get_thread_by_labware(self, labware_id: str) -> LabwareThread:
+    def get_thread_by_labware(self, labware_id: str) -> LabwareThreadType:
         raise NotImplementedError
 
     @abstractmethod
-    def add_thread(self, labware_thread: LabwareThread) -> None:
+    def add_thread(self, labware_thread: LabwareThreadType) -> None:
         raise NotImplementedError
 
-    @abstractmethod
-    def create_thread_instance(self, template: ThreadTemplate) -> LabwareThread:
-        raise NotImplementedError
+
+# class IThreadRegistry(ABC):
+#     @property
+#     @abstractmethod
+#     def threads(self) -> List[ILabwareThread]:
+#         raise NotImplementedError
+
+#     @abstractmethod
+#     def get_thread(self, id: str) -> ILabwareThread:
+#         raise NotImplementedError
+
+#     @abstractmethod
+#     def get_thread_by_labware(self, labware_id: str) -> ILabwareThread:
+#         raise NotImplementedError
+
+#     @abstractmethod
+#     def add_thread(self, labware_thread: ILabwareThread) -> None:
+#         raise NotImplementedError

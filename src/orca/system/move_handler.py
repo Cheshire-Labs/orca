@@ -1,4 +1,4 @@
-from orca.resource_models.labware import Labware
+from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.location import Location
 from orca.system.reservation_manager import IReservationManager
 from orca.system.system_map import SystemMap
@@ -69,7 +69,7 @@ class MoveHandler:
         self._reservation_manager = reservation_manager
         self._system_map = system_map
 
-    async def resolve_move_action(self, labware: Labware, current_location: Location, target_location: Location, assigned_action: ILocationAction | None = None) -> MoveAction:
+    async def resolve_move_action(self, labware: LabwareInstance, current_location: Location, target_location: Location, assigned_action: ILocationAction | None = None) -> MoveAction:
         potential_paths = self._get_potential_paths(current_location, target_location)
         potential_moves = self._get_potential_move_actions(labware, potential_paths)
         if assigned_action is not None:
@@ -105,7 +105,7 @@ class MoveHandler:
             raise ValueError("No routes found between source and target")
         return potential_paths
 
-    def _get_potential_move_actions(self, labware: Labware, potential_paths: List[List[str]]) -> List[MoveAction]:
+    def _get_potential_move_actions(self, labware: LabwareInstance, potential_paths: List[List[str]]) -> List[MoveAction]:
     
         potential_actions: List[MoveAction] = []
         for path in potential_paths:

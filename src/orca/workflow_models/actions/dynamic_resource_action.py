@@ -1,7 +1,7 @@
 
 import uuid
 from orca.resource_models.base_resource import Equipment
-from orca.resource_models.labware import AnyLabwareTemplate, Labware, LabwareTemplate
+from orca.resource_models.labware import AnyLabwareTemplate, LabwareInstance, LabwareTemplate
 from orca.resource_models.location import Location
 from orca.resource_models.resource_pool import EquipmentResourcePool
 
@@ -59,14 +59,14 @@ class UnresolvedLocationAction:
         return self._expected_output_templates
     
     @property
-    def expected_inputs(self) -> List[Labware]:
+    def expected_inputs(self) -> List[LabwareInstance]:
         return self._assigned_labware_manager.expected_inputs
     
     @property
-    def expected_outputs(self) -> List[Labware]:
+    def expected_outputs(self) -> List[LabwareInstance]:
         return self._assigned_labware_manager.expected_outputs
        
-    def assign_input(self, template_slot: LabwareTemplate, input: Labware):
+    def assign_input(self, template_slot: LabwareTemplate, input: LabwareInstance):
         self._assigned_labware_manager.assign_input(template_slot, input)
     
 class DynamicResourceActionResolver:
