@@ -5,7 +5,7 @@ from orca.resource_models.location import Location
 from orca.workflow_models.actions.dynamic_resource_action import UnresolvedLocationAction
 
 if typing.TYPE_CHECKING:
-    from orca.workflow_models.labware_thread import LabwareThreadInstance
+    from orca.workflow_models.labware_threads.labware_thread import LabwareThreadInstance
     from orca.workflow_models.method import MethodInstance
 
 

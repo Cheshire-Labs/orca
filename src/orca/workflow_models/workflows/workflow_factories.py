@@ -1,6 +1,6 @@
 from orca.workflow_models.action_template import MethodActionTemplate
 from orca.workflow_models.actions.dynamic_resource_action import UnresolvedLocationAction
-from orca.workflow_models.labware_thread import LabwareThreadInstance
+from orca.workflow_models.labware_threads.labware_thread import LabwareThreadInstance
 from orca.workflow_models.method import MethodInstance
 from orca.workflow_models.method_template import IMethodTemplate, JunctionMethodTemplate, MethodTemplate
 from orca.workflow_models.thread_template import ThreadTemplate

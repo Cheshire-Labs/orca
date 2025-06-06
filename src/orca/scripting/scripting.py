@@ -6,8 +6,8 @@ import sys
 from pathlib import Path
 from orca.helper import FilepathReconciler
 from orca.system.system_interface import ISystem
-from orca.workflow_models.labware_thread import LabwareThreadInstance
-from orca.workflow_models.labware_thread import IThreadObserver
+from orca.workflow_models.labware_threads.labware_thread import LabwareThreadInstance
+from orca.workflow_models.labware_threads.labware_thread import IThreadObserver
 from orca.yml_config_builder.configs import ScriptBaseConfigModel
 
 

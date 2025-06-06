@@ -13,10 +13,12 @@ from orca.system.resource_registry import ResourceRegistry
 from orca.system.system import System
 from orca.system.system_map import ILocationRegistry, SystemMap
 from orca.system.thread_manager import ThreadManager
+from orca.workflow_models.labware_threads.executing_labware_thread import ExecutingThreadFactory, ExecutingThreadRegistry
 from orca.workflow_models.status_manager import StatusManager
+from orca.workflow_models.workflows.workflow_factories import ThreadFactory
 from orca.workflow_models.workflows.executing_workflow import ExecutingWorkflowFactory, ExecutingWorkflowRegistry
 from orca.workflow_models.workflows.workflow_registry import MethodRegistry, ThreadRegistry, WorkflowRegistry
-from orca.workflow_models.workflows.workflow_factories import MethodFactory, ThreadFactory, WorkflowFactory
+from orca.workflow_models.workflows.workflow_factories import MethodFactory, WorkflowFactory
 from orca.workflow_models.method_template import MethodTemplate
 from orca.workflow_models.thread_template import ThreadTemplate
 from orca.workflow_models.workflow_templates import WorkflowTemplate
@@ -50,14 +52,24 @@ class SdkToSystemBuilder:
         self._thread_registry = ThreadRegistry(self._thread_factory, 
                                                self._method_registry, 
                                                self._labware_registry)
-        
-        self._thread_manager: IThreadManager = ThreadManager()
+
         workflow_factory = WorkflowFactory(self._thread_factory)
         self._workflow_registry = WorkflowRegistry(workflow_factory, self._thread_registry)
 
         self._reservation_manager = ReservationManager(self._system_map)
         self._status_manager = StatusManager(self._event_bus)
+
+
         self._move_hander = MoveHandler(self._reservation_manager, self._system_map)
+        self._executing_thread_factory = ExecutingThreadFactory(self._event_bus,
+                                                                self._move_hander,
+                                                                self._status_manager, 
+                                                                self._reservation_manager,
+                                                                self._system_map)
+        self._executing_thread_registry = ExecutingThreadRegistry(self._thread_registry,
+                                                                  self._executing_thread_factory)
+        
+        self._thread_manager: IThreadManager = ThreadManager(self._executing_thread_registry )
         executing_workflow_factory = ExecutingWorkflowFactory(self._thread_manager,
                                                             self._event_bus, 
                                                             self._move_hander, 
@@ -94,6 +106,7 @@ class SdkToSystemBuilder:
                 self._template_registry, 
                 self._labware_registry, 
                 self._thread_registry,
+                self._executing_thread_registry,
                 self._thread_factory,
                 self._thread_manager, 
                 self._method_registry,

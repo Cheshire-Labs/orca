@@ -8,9 +8,10 @@ from orca.system.resource_registry import IResourceRegistry
 from orca.system.system_map import ILocationRegistry, SystemMap
 from orca.system.thread_registry_interface import IThreadRegistry
 
+from orca.workflow_models.labware_threads.executing_labware_thread import IExecutingThreadRegistry
 from orca.workflow_models.workflows.executing_workflow import IExecutingWorkflowRegistry
 
-from orca.workflow_models.labware_thread import LabwareThreadInstance
+from orca.workflow_models.labware_threads.labware_thread import LabwareThreadInstance
 from orca.workflow_models.thread_template import ThreadTemplate
 
 
@@ -23,7 +24,8 @@ class ISystem(ISystemInfo,
               IThreadTemplateRegistry,
               ILocationRegistry,
               IMethodRegistry,
-              IThreadRegistry[LabwareThreadInstance],
+              IThreadRegistry,
+              IExecutingThreadRegistry,
               IWorkflowRegistry,
               IExecutingWorkflowRegistry,
               IThreadManager,
