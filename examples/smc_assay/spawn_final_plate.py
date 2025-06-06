@@ -1,7 +1,7 @@
 from orca.scripting.scripting import ThreadScript
 from orca.system.system_interface import ISystem
 from orca.workflow_models.status_enums import LabwareThreadStatus
-from orca.workflow_models.labware_thread import LabwareThreadInstance
+from orca.workflow_models.labware_threads.labware_thread import LabwareThreadInstance
 
 
 class SpawnFinalPlateScript(ThreadScript):

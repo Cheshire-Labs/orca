@@ -6,7 +6,9 @@ from orca.system.move_handler import MoveHandler
 from orca.system.reservation_manager import IReservationManager
 from orca.system.system_map import SystemMap
 from orca.system.thread_manager import ThreadManager
-from orca.workflow_models.labware_thread import ExecutingLabwareThread, LabwareThreadInstance
+from orca.system.thread_manager_interface import IThreadManager
+from orca.workflow_models.labware_threads.executing_labware_thread import ExecutingLabwareThread
+from orca.workflow_models.labware_threads.labware_thread import LabwareThreadInstance
 from orca.workflow_models.status_enums import WorkflowStatus
 from orca.workflow_models.status_manager import StatusManager
 from orca.workflow_models.workflows.workflow import IWorkflow, WorkflowInstance
@@ -133,7 +135,7 @@ class ExecutingWorkflowFactory:
 class IExecutingWorkflowRegistry(ABC):
 
     @abstractmethod
-    def get_executing_workflow(self, workflow_id: str) -> ExecutingWorkflow:
+    def get_executing_workflow(self, workflow_instance_id: str) -> ExecutingWorkflow:
         raise NotImplementedError
     
 class ExecutingWorkflowRegistry(IExecutingWorkflowRegistry):
@@ -142,12 +144,35 @@ class ExecutingWorkflowRegistry(IExecutingWorkflowRegistry):
         self._factory = factory
         self._executing_registry: Dict[str, ExecutingWorkflow] = {}
         
-    def get_executing_workflow(self, workflow_id: str) -> ExecutingWorkflow:
-        if workflow_id in self._executing_registry.keys():
-            return self._executing_registry[workflow_id]
+    def get_executing_workflow(self, workflow_instance_id: str) -> ExecutingWorkflow:
+        if workflow_instance_id in self._executing_registry.keys():
+            return self._executing_registry[workflow_instance_id]
         else:
-            workflow_instance = self._workflow_registry.get_workflow(workflow_id)
+            workflow_instance = self._workflow_registry.get_workflow(workflow_instance_id)
             executing_workflow = self._factory.create_instance(workflow_instance)
             self._executing_registry[executing_workflow.id] = executing_workflow
             return executing_workflow
+
+
+class WorkflowThreadManager:
+    def __init__(self, system_thread_manager: IThreadManager ) -> None:
+        self._system_thread_manager: IThreadManager = system_thread_manager
+        self._entry_threads: Dict[str, ExecutingLabwareThread] = {}
+        self._workflow_threads: Dict[str, ExecutingLabwareThread] = {}
+
+    @property
+    def entry_threads(self) -> List[ExecutingLabwareThread]:
+        return list(self._entry_threads.values())
+
+    @property
+    def threads(self) -> List[ExecutingLabwareThread]:
+        return list(self._workflow_threads.values())
+
+    def add_thread(self, thread: ExecutingLabwareThread, is_entry_thread: bool) -> None:
+        if is_entry_thread:
+            self._entry_threads[thread.id] = thread
+        self._workflow_threads[thread.id] = thread
+
+    async def start_entry_threads(self) -> None:
+        await asyncio.gather(*[thread.start() for thread in self.entry_threads])
     

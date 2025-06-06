@@ -1,27 +1,27 @@
 import asyncio
 import logging
-from typing import Dict, List
-from orca.system.thread_registry_interface import IThreadRegistry
+from typing import List
+from orca.sdk.events.execution_context import WorkflowExecutionContext
 from orca.system.thread_manager_interface import IThreadManager
 from orca.workflow_models.status_enums import LabwareThreadStatus
-from orca.workflow_models.labware_thread import ExecutingLabwareThread
+from orca.workflow_models.labware_threads.executing_labware_thread import ExecutingLabwareThread, ExecutingThreadRegistry, IExecutingThreadRegistry
 
 
 orca_logger = logging.getLogger("orca")
 
-class ThreadManager(IThreadManager, IThreadRegistry[ExecutingLabwareThread]):
-    def __init__(self) -> None:
-        self._threads: Dict[str, ExecutingLabwareThread] = {}
+class ThreadManager(IThreadManager, IExecutingThreadRegistry):
+    def __init__(self,  thread_registry: ExecutingThreadRegistry) -> None:
+        self._thread_registry = thread_registry
 
     @property
     def threads(self) -> List[ExecutingLabwareThread]:
-        return list(self._threads.values())
-    
-    def add_thread(self, labware_thread: ExecutingLabwareThread) -> None:
-        self._threads[labware_thread.id] = labware_thread
+        return self._thread_registry.threads
 
-    def get_thread(self, id: str) -> ExecutingLabwareThread:
-        return self._threads[id]
+    def create_executing_thread(self, thread_id: str, context: WorkflowExecutionContext) -> ExecutingLabwareThread:
+        return self._thread_registry.create_executing_thread(thread_id, context)
+
+    def get_executing_thread(self, id: str) -> ExecutingLabwareThread:
+        return self._thread_registry.get_executing_thread(id)
 
     def get_thread_by_labware(self, labware_id: str) -> ExecutingLabwareThread:
         matches = list(filter(lambda thread: thread.labware.id == labware_id, self.threads))

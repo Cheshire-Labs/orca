@@ -2,9 +2,10 @@ from typing import Dict, List
 from orca.system.interfaces import IMethodRegistry, IWorkflowRegistry
 from orca.system.labware_registry_interfaces import ILabwareRegistry
 from orca.system.thread_registry_interface import IThreadRegistry
-from orca.workflow_models.workflows.workflow_factories import MethodFactory, ThreadFactory
+from orca.workflow_models.workflows.workflow_factories import ThreadFactory
+from orca.workflow_models.workflows.workflow_factories import MethodFactory
 from orca.workflow_models.workflows.workflow_factories import WorkflowFactory
-from orca.workflow_models.labware_thread import LabwareThreadInstance
+from orca.workflow_models.labware_threads.labware_thread import LabwareThreadInstance
 from orca.workflow_models.method import MethodInstance
 from orca.workflow_models.method_template import MethodTemplate
 from orca.workflow_models.thread_template import ThreadTemplate
@@ -30,7 +31,7 @@ class MethodRegistry(IMethodRegistry):
     def clear(self) -> None:
         self._methods.clear()
 
-class ThreadRegistry(IThreadRegistry[LabwareThreadInstance]):
+class ThreadRegistry(IThreadRegistry):
     def __init__(self,
                  thread_factory: ThreadFactory,
                  method_reg: IMethodRegistry,

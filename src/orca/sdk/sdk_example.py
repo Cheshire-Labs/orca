@@ -17,7 +17,8 @@ from orca.sdk.events.execution_context import ExecutionContext, ThreadExecutionC
 from orca.system.resource_registry import ResourceRegistry
 from orca.system.system_map import SystemMap
 from orca.workflow_models.action_template import MethodActionTemplate
-from orca.workflow_models.labware_thread import ExecutingLabwareThread, LabwareThreadInstance
+from orca.workflow_models.labware_threads.executing_labware_thread import ExecutingLabwareThread
+from orca.workflow_models.labware_threads.labware_thread import LabwareThreadInstance
 from orca.workflow_models.method_template import JunctionMethodTemplate, MethodTemplate
 from orca.workflow_models.status_enums import LabwareThreadStatus
 from orca.workflow_models.thread_template import ThreadTemplate
@@ -483,7 +484,7 @@ class SpawnNewOnFourthPlate(SystemBoundEventHandler):
     
     def _handle_thread_created_event(self, context: ThreadExecutionContext):
         workflow = self.system.get_executing_workflow(context.workflow_id)
-        thread = workflow.thread_manager.get_thread(context.thread_id)
+        thread = workflow.thread_manager.get_executing_thread(context.thread_id)
         if self._num_of_spawns % 4 != 0:
             self._await_previous_thread_completion()
             thread.update_start_location(thread.end_location)

@@ -1,35 +1,9 @@
 from abc import ABC, abstractmethod
-import asyncio
 import uuid
-from typing import Dict, List
+from typing import List
 
-from orca.system.thread_manager_interface import IThreadManager
-from orca.workflow_models.labware_thread import ExecutingLabwareThread, LabwareThreadInstance
+from orca.workflow_models.labware_threads.labware_thread import LabwareThreadInstance
 from orca.workflow_models.workflow_templates import EventHookInfo, SpawnInfo
-
-
-class WorkflowThreadManager:
-    def __init__(self, system_thread_manager: IThreadManager ) -> None:
-        self._system_thread_manager: IThreadManager = system_thread_manager
-        self._entry_threads: Dict[str, ExecutingLabwareThread] = {}
-        self._workflow_threads: Dict[str, ExecutingLabwareThread] = {}
-    
-    @property
-    def entry_threads(self) -> List[ExecutingLabwareThread]:
-        return list(self._entry_threads.values())
-    
-    @property
-    def threads(self) -> List[ExecutingLabwareThread]:
-        return list(self._workflow_threads.values())
-    
-    def add_thread(self, thread: ExecutingLabwareThread, is_entry_thread: bool) -> None:
-        if is_entry_thread:
-            self._entry_threads[thread.id] = thread
-        self._workflow_threads[thread.id] = thread
-    
-    async def start_entry_threads(self) -> None:
-        await asyncio.gather(*[thread.start() for thread in self.entry_threads])
-
 
 
 class IWorkflow(ABC):
