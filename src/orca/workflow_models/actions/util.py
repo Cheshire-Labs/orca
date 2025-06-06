@@ -1,5 +1,5 @@
 import asyncio
-from orca.resource_models.labware import AnyLabwareTemplate, Labware, LabwareTemplate
+from orca.resource_models.labware import AnyLabwareTemplate, LabwareInstance, LabwareTemplate
 from orca.resource_models.location import Location
 from orca.resource_models.resource_pool import EquipmentResourcePool
 from orca.system.reservation_manager import IReservationManager, LocationReservation
@@ -103,10 +103,9 @@ class AssignedLabwareManager:
                  expected_input_templates: List[Union[LabwareTemplate, AnyLabwareTemplate]],
                  expected_output_templates: List[Union[LabwareTemplate, AnyLabwareTemplate]]) -> None:
         self._expected_input_templates = expected_input_templates
-        self._expected_inputs: Dict[LabwareTemplate | AnyLabwareTemplate, Labware | None] = {template: None for template in expected_input_templates}
+        self._expected_inputs: Dict[LabwareTemplate | AnyLabwareTemplate, LabwareInstance | None] = {template: None for template in expected_input_templates}
         self._expected_output_templates = expected_output_templates
-        self._expected_outputs: Dict[LabwareTemplate | AnyLabwareTemplate, Labware | None] = {template: None for template in expected_output_templates}
-        self._all_labware_is_present: asyncio.Event = asyncio.Event()
+        self._expected_outputs: Dict[LabwareTemplate | AnyLabwareTemplate, LabwareInstance | None] = {template: None for template in expected_output_templates}
 
     @property
     def expected_input_templates(self) -> List[Union[LabwareTemplate, AnyLabwareTemplate]]:
@@ -117,19 +116,19 @@ class AssignedLabwareManager:
         return self._expected_output_templates
 
     @property
-    def expected_inputs(self) -> List[Labware]:
+    def expected_inputs(self) -> List[LabwareInstance]:
         if any(input is None for input in self._expected_inputs.values()):
             missing_inputs = [key.name for key, input in self._expected_inputs.items() if input is None]
             raise ValueError(f"Not all expected inputs have been assigned.  Missing: {missing_inputs}")
         return [labware for labware in self._expected_inputs.values() if labware is not None]
 
     @property
-    def expected_outputs(self) -> List[Labware]:
+    def expected_outputs(self) -> List[LabwareInstance]:
         if any(output is None for output in self._expected_outputs.values()):
             raise ValueError("Not all expected outputs have been assigned")
         return [labware for labware in self._expected_outputs.values() if labware is not None]
 
-    def assign_input(self, template_slot: LabwareTemplate, input: Labware):
+    def assign_input(self, template_slot: LabwareTemplate, input: LabwareInstance):
         if template_slot in self._expected_inputs.keys():
             self._expected_inputs[template_slot] = input
         elif any(input is None and isinstance(key, AnyLabwareTemplate) for key, input in self._expected_inputs.items()):
@@ -142,13 +141,8 @@ class AssignedLabwareManager:
             raise ValueError(f"No available slot for input {input}")
         # TODO: keeping this assignment simple for now
         self.assign_output(template_slot, input)
-        self._update_all_labware_present_event()
 
-    @property
-    def all_labware_is_present(self) -> asyncio.Event:
-        return self._all_labware_is_present
-
-    def assign_output(self, template_slot: LabwareTemplate, output: Labware):
+    def assign_output(self, template_slot: LabwareTemplate, output: LabwareInstance):
         if template_slot in self._expected_outputs.keys():
             self._expected_outputs[template_slot] = output
         elif any(output is None and isinstance(key, AnyLabwareTemplate) for key, output in self._expected_outputs.items()):
@@ -158,12 +152,6 @@ class AssignedLabwareManager:
                     break
         else:
             raise ValueError(f"No available slot for output {output}")
-        self._update_all_labware_present_event()
-
-    def _update_all_labware_present_event(self) -> None:
-        if all(input is not None for input in self._expected_inputs.values()) and \
-           all(output is not None for output in self._expected_outputs.values()):
-            self._all_labware_is_present.set()
 
     def __str__(self) -> str:
         return f"Input Manager: {self._expected_inputs}"

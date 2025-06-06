@@ -1,51 +1,23 @@
+import asyncio
 import uuid
+from typing import List
+
 from orca.resource_models.labware import AnyLabwareTemplate, LabwareTemplate
 from orca.resource_models.location import Location
 from orca.sdk.events.event_bus_interface import IEventBus
-from orca.sdk.events.execution_context import ExecutionContext, LocationActionExecutionContext, MethodExecutionContext, WorkflowExecutionContext
+from orca.sdk.events.execution_context import ExecutionContext, MethodExecutionContext, WorkflowExecutionContext
 from orca.workflow_models.actions.dynamic_resource_action import DynamicResourceActionResolver, UnresolvedLocationAction
 from orca.workflow_models.actions.location_action import LocationAction
-from orca.workflow_models.labware_thread import LabwareThread
-
-
-from abc import ABC, abstractmethod
-from typing import List
-
+from orca.workflow_models.interfaces import ILabwareThread, IMethod
 from orca.workflow_models.status_enums import ActionStatus, MethodStatus
 from orca.workflow_models.status_manager import StatusManager
 
 
-class IMethod(ABC):
-    @property
-    @abstractmethod
-    def id(self) -> str:
-        raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def name(self) -> str:
-        raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def actions(self) -> List[UnresolvedLocationAction]:
-        raise NotImplementedError
-
-    @abstractmethod
-    def append_action(self, action: UnresolvedLocationAction) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def assign_thread(self, input_template: LabwareTemplate, thread: LabwareThread) -> None:
-        raise NotImplementedError
-
-
-class Method:
+class MethodInstance(IMethod):
     def __init__(self, name: str) -> None:
         self._id = str(uuid.uuid4())
         self._name = name
         self._actions: List[UnresolvedLocationAction] = []
-        self._status: MethodStatus = MethodStatus.CREATED
 
     @property
     def id(self) -> str:
@@ -62,7 +34,7 @@ class Method:
     def append_action(self, action: UnresolvedLocationAction) -> None:
         self._actions.append(action)
 
-    def assign_thread(self, input_template: LabwareTemplate, thread: LabwareThread) -> None:
+    def assign_thread(self, input_template: LabwareTemplate, thread: ILabwareThread) -> None:
         for step in self.actions:
             if input_template in step.expected_input_templates:
                 step.assign_input(input_template, thread.labware)
@@ -71,7 +43,7 @@ class Method:
 
 
 class ExecutingMethod(IMethod):
-    def __init__(self, method: Method, event_bus: IEventBus, status_manager: StatusManager, context: WorkflowExecutionContext) -> None:
+    def __init__(self, method: MethodInstance, event_bus: IEventBus, status_manager: StatusManager, context: WorkflowExecutionContext) -> None:
         self._event_bus = event_bus
         self._status_manager = status_manager
         self._context = context
@@ -79,6 +51,9 @@ class ExecutingMethod(IMethod):
         self._pending_actions: List[UnresolvedLocationAction] = method.actions
         self._current_action: LocationAction | None = None
         self._completed_actions: List[LocationAction] = []
+        self.status = MethodStatus.CREATED
+        self._resolving_action_lock = asyncio.Lock()
+        self._action_ready_event = asyncio.Event()
 
     @property
     def id(self) -> str:
@@ -95,7 +70,7 @@ class ExecutingMethod(IMethod):
     def append_action(self, action: UnresolvedLocationAction) -> None:
         self._method.append_action(action)
 
-    def assign_thread(self, input_template: LabwareTemplate, thread: LabwareThread) -> None:
+    def assign_thread(self, input_template: LabwareTemplate, thread: ILabwareThread) -> None:
         self._method.assign_thread(input_template, thread)
 
     @property
@@ -129,9 +104,12 @@ class ExecutingMethod(IMethod):
                                         status.name,
                                         context)
 
-    def _handle_action_start(self, event: str, context: ExecutionContext) -> None:
-        assert self.current_action is not None, "Current action should not be None when action is completed"
-        self.completed_actions.append(self.current_action)
+    def _handle_action_completed(self, event: str, context: ExecutionContext) -> None:
+        assert self._current_action is not None, "Current action should not be None when handling action completion."
+        self._event_bus.unsubscribe(event, self._handle_action_completed)
+        self._current_action.release_reservation()  # TODO: Ensure this is the correct spot to release the reservation -- this was previously in labware thread
+        self._completed_actions.append(self._current_action)
+        self._current_action = None
 
         if len(self.pending_actions) == 0:
             self.status = MethodStatus.COMPLETED
@@ -142,13 +120,14 @@ class ExecutingMethod(IMethod):
             self.status = MethodStatus.COMPLETED
             return None
 
-        if self.current_action is not None:
-            self.completed_actions.append(self.current_action)
-            self._current_action = None
+        async with self._resolving_action_lock:
+            if self._current_action is None:
+                self._action_ready_event.clear()
+                current_dynamic_action = self.pending_actions.pop(0)
+                self._current_action = await action_resolver.resolve_action(current_dynamic_action, current_location)
+                self._event_bus.subscribe(f"ACTION.{self._current_action.id}.{ActionStatus.COMPLETED.name}", self._handle_action_completed)
+                self._action_ready_event.set()
 
-        current_dynamic_action = self.pending_actions.pop(0)
-        self._current_action = await action_resolver.resolve_action(current_dynamic_action, current_location)
-
-        self._event_bus.subscribe(f"ACTION.{self._current_action.id}.{ActionStatus.COMPLETED}", self._handle_action_start)
+        await self._action_ready_event.wait()
         return self._current_action
     

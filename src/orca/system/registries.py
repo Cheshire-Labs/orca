@@ -3,13 +3,13 @@ from orca.resource_models.base_resource import IResource
 from orca.resource_models.location import Location
 from orca.system.interfaces import IMethodTemplateRegistry, IWorkflowTemplateRegistry
 from orca.system.labware_registry_interfaces import ILabwareRegistry, ILabwareTemplateRegistry
-from orca.resource_models.labware import Labware, LabwareTemplate
+from orca.resource_models.labware import LabwareInstance, LabwareTemplate
 from orca.system.resource_registry import IResourceRegistry
 from orca.system.system_map import ILocationRegistry
 from orca.system.interfaces import IThreadTemplateRegistry
 from orca.workflow_models.method_template import MethodTemplate
 from orca.workflow_models.thread_template import ThreadTemplate
-from orca.workflow_models.method import Method
+from orca.workflow_models.method import MethodInstance
 from orca.workflow_models.workflow_templates import WorkflowTemplate
 
 
@@ -61,17 +61,17 @@ class ResourceLocationManager:
 
 class LabwareRegistry(ILabwareRegistry, ILabwareTemplateRegistry):
     def __init__(self) -> None:
-        self._labwares: Dict[str, Labware] = {}
+        self._labwares: Dict[str, LabwareInstance] = {}
         self._labware_templates: Dict[str, LabwareTemplate] = {}
 
     @property
-    def labwares(self) -> List[Labware]:
+    def labwares(self) -> List[LabwareInstance]:
         return list(self._labwares.values())
 
-    def get_labware(self, name: str) -> Labware:
+    def get_labware(self, name: str) -> LabwareInstance:
         return self._labwares[name]
     
-    def add_labware(self, labware: Labware) -> None:
+    def add_labware(self, labware: LabwareInstance) -> None:
         self._labwares[labware.name] = labware
 
     def get_labware_template(self, name: str) -> LabwareTemplate:

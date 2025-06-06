@@ -12,13 +12,7 @@ class SpawnInfo:
     spawn_thread: ThreadTemplate
     parent_thread: ThreadTemplate
     parent_method: MethodTemplate
-
-@dataclass
-class JoinInfo:
-    parent_thread: ThreadTemplate
-    attaching_thread: ThreadTemplate
-    parent_method: MethodTemplate
-
+    join: bool = False
 
 @dataclass
 class EventHookInfo:
@@ -31,7 +25,6 @@ class WorkflowTemplate:
         self._name = name
         self._start_threads: Dict[str, ThreadTemplate] = {}
         self._threads: Dict[str, ThreadTemplate] = {}
-        self._joints: List[JoinInfo] = []
         self._spawns: List[SpawnInfo] = []
         self._event_hooks: List[EventHookInfo] = []
 
@@ -44,13 +37,9 @@ class WorkflowTemplate:
         return list(self._threads.values())
 
     @property
-    def start_thread_templates(self) -> List[ThreadTemplate]:
+    def entry_thread_templates(self) -> List[ThreadTemplate]:
         return list(self._start_threads.values())
-    
-    @property
-    def joints(self) -> List[JoinInfo]:
-        return self._joints
-    
+
     @property
     def event_hooks(self) -> List[EventHookInfo]:
         return self._event_hooks
@@ -64,19 +53,13 @@ class WorkflowTemplate:
         if is_start:
             self._start_threads[thread.name] = thread
 
-    def join(self, thread: ThreadTemplate, to: ThreadTemplate, at: MethodTemplate) -> None:
-        if thread.name not in self._threads:
-            raise ValueError(f"Thread {thread.name} not found in workflow")
-        if to.name not in self._threads:
-            raise ValueError(f"Thread {to.name} not found in workflow")
-        self._joints.append(JoinInfo(to, thread, at))
     
-    def set_spawn_point(self, spawn_thread: ThreadTemplate, from_thread: ThreadTemplate, at: MethodTemplate) -> None:
+    def set_spawn_point(self, spawn_thread: ThreadTemplate, from_thread: ThreadTemplate, at: MethodTemplate, join: bool = False) -> None:
         if spawn_thread.name not in self._threads:
             raise ValueError(f"Thread {spawn_thread.name} not found in workflow")
         if from_thread.name not in self._threads:
             raise ValueError(f"Thread {from_thread.name} not found in workflow")
-        self._spawns.append(SpawnInfo(spawn_thread, from_thread, at))
+        self._spawns.append(SpawnInfo(spawn_thread, from_thread, at, join))
 
     def add_event_hook(self, event_name: str, handler: EventHandlerType) -> None:
         self._event_hooks.append(EventHookInfo(event_name, handler))

@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 import uuid
-from orca.resource_models.labware import Labware
+from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.location import Location
 from orca.resource_models.transporter_resource import TransporterEquipment
 from orca.sdk.events.execution_context import MoveActionExecutionContext, ThreadExecutionContext
@@ -19,7 +19,7 @@ class IMoveAction(ABC):
 
     @property
     @abstractmethod
-    def labware(self) -> Labware:
+    def labware(self) -> LabwareInstance:
         pass
 
     @property
@@ -57,7 +57,7 @@ class IMoveAction(ABC):
 
 class MoveAction(IMoveAction):
     def __init__(self,
-                 labware: Labware,
+                 labware: LabwareInstance,
                  source: Location,
                  target: Location,
                  transporter: TransporterEquipment):
@@ -74,7 +74,7 @@ class MoveAction(IMoveAction):
         return self._id
 
     @property
-    def labware(self) -> Labware:
+    def labware(self) -> LabwareInstance:
         return self._labware
 
     @property
@@ -109,6 +109,7 @@ class ExecutingMoveAction(ExecutingActionDecorator, IMoveAction):
                  status_manager: StatusManager,
                  context: ThreadExecutionContext,
                  action: IMoveAction) -> None:
+        super().__init__()
         self._status_manager = status_manager
         self._action = action
         self._context = context
@@ -163,7 +164,7 @@ class ExecutingMoveAction(ExecutingActionDecorator, IMoveAction):
         return self._action.id
 
     @property
-    def labware(self) -> Labware:
+    def labware(self) -> LabwareInstance:
         return self._action.labware
 
     @property

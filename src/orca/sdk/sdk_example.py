@@ -17,7 +17,7 @@ from orca.sdk.events.execution_context import ExecutionContext, ThreadExecutionC
 from orca.system.resource_registry import ResourceRegistry
 from orca.system.system_map import SystemMap
 from orca.workflow_models.action_template import MethodActionTemplate
-from orca.workflow_models.labware_thread import LabwareThread
+from orca.workflow_models.labware_thread import ExecutingLabwareThread, LabwareThreadInstance
 from orca.workflow_models.method_template import JunctionMethodTemplate, MethodTemplate
 from orca.workflow_models.status_enums import LabwareThreadStatus
 from orca.workflow_models.thread_template import ThreadTemplate
@@ -199,14 +199,14 @@ sample_to_bead_plate_method = MethodTemplate(
 
 incubate_2hrs = MethodTemplate("incubate_2hrs",
     [
-    MethodActionTemplate(
-        resource=shaker_collection,
-        command="shake",
-        inputs=[plate_1],
-        options={
-            "shake_time": 7200
-        }
-    )
+        MethodActionTemplate(
+            resource=shaker_collection,
+            command="shake",
+            inputs=[plate_1],
+            options={
+                "shake_time": 7200
+            }
+        )
 ])
 
 post_capture_wash = MethodTemplate("post_capture_wash", [
@@ -438,24 +438,14 @@ smc_workflow.add_thread(tips_96_thread)
 smc_workflow.add_thread(tips_384_thread)
 
 
-smc_workflow.set_spawn_point(sample_plate_thread, plate_1_thread, sample_to_bead_plate_method)
-smc_workflow.set_spawn_point(tips_96_thread, plate_1_thread, sample_to_bead_plate_method)
-smc_workflow.set_spawn_point(tips_384_thread, plate_1_thread, add_detection_antibody)
-smc_workflow.set_spawn_point(tips_384_thread, plate_1_thread, add_elution_buffer_b)
-smc_workflow.set_spawn_point(tips_384_thread, plate_1_thread, add_buffer_d)
-smc_workflow.set_spawn_point(tips_384_thread, plate_1_thread, combine_plates)
-smc_workflow.set_spawn_point(final_plate_thread, plate_1_thread, combine_plates)
-
-smc_workflow.join(sample_plate_thread, plate_1_thread, sample_to_bead_plate_method)
-smc_workflow.join(tips_96_thread, plate_1_thread, sample_to_bead_plate_method)
-smc_workflow.join(tips_96_thread, plate_1_thread, add_detection_antibody)
-smc_workflow.join(tips_384_thread, plate_1_thread, add_elution_buffer_b)
-smc_workflow.join(tips_384_thread, plate_1_thread, add_buffer_d)
-
-smc_workflow.join(final_plate_thread, plate_1_thread, combine_plates)
-smc_workflow.join(tips_384_thread, plate_1_thread, combine_plates)
-
-smc_workflow.join(tips_384_thread, final_plate_thread, transfer_eluate)
+smc_workflow.set_spawn_point(sample_plate_thread, plate_1_thread, sample_to_bead_plate_method, True)
+smc_workflow.set_spawn_point(tips_96_thread, plate_1_thread, sample_to_bead_plate_method, True)
+smc_workflow.set_spawn_point(tips_384_thread, plate_1_thread, add_detection_antibody, True)
+smc_workflow.set_spawn_point(tips_384_thread, plate_1_thread, add_elution_buffer_b, True)
+smc_workflow.set_spawn_point(tips_384_thread, plate_1_thread, add_buffer_d, True)
+smc_workflow.set_spawn_point(tips_384_thread, plate_1_thread, combine_plates, True)
+smc_workflow.set_spawn_point(final_plate_thread, plate_1_thread, combine_plates, True)
+smc_workflow.set_spawn_point(tips_384_thread, final_plate_thread, transfer_eluate, True)
 
 
 # class SpawnNewOnFourthPlateOld(SystemBoundEventHandler):
@@ -483,7 +473,7 @@ smc_workflow.join(tips_384_thread, final_plate_thread, transfer_eluate)
 class SpawnNewOnFourthPlate(SystemBoundEventHandler):
     def __init__(self, attach_thread: ThreadTemplate):
         self._attach_thread = attach_thread
-        self._previous_thread: LabwareThread | None = None
+        self._previous_thread: ExecutingLabwareThread | None = None
         self._num_of_spawns = 0
     
     def handle(self, event: str, context: ExecutionContext) -> None:
@@ -492,17 +482,13 @@ class SpawnNewOnFourthPlate(SystemBoundEventHandler):
             self._handle_thread_created_event(context)
     
     def _handle_thread_created_event(self, context: ThreadExecutionContext):
-        thread = self.system.get_thread(context.thread_id)
+        workflow = self.system.get_executing_workflow(context.workflow_id)
+        thread = workflow.thread_manager.get_thread(context.thread_id)
         if self._num_of_spawns % 4 != 0:
             self._await_previous_thread_completion()
-            thread.start_location = thread.end_location
-        self._allow_thread_to_spawn(thread)
-
-
-    def _allow_thread_to_spawn(self, thread: LabwareThread):
+            thread.update_start_location(thread.end_location)
         self._num_of_spawns += 1
         self._previous_thread = thread
-        return
     
     def _await_previous_thread_completion(self):
         if self._previous_thread is None:
@@ -532,9 +518,9 @@ builder = SdkToSystemBuilder(
 )
 
 system = builder.get_system()
-workflow = system.create_workflow_instance(smc_workflow)
-system.add_workflow(workflow)
-
+workflow_instance = system.create_and_register_workflow_instance(smc_workflow)
+system.add_workflow(workflow_instance)
+workflow = system.get_executing_workflow(workflow_instance.id)
 
 
 async def run():

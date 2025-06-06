@@ -31,5 +31,11 @@ class LabwareThreadStatus(Enum):
     STOPPING = auto()
     STOPPED = auto()
 
+class WorkflowStatus(Enum):
+    CREATED = auto()
+    IN_PROGRESS = auto()
+    COMPLETED = auto()
+    ERRORED = auto()
+
 
 

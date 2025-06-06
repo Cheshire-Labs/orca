@@ -6,14 +6,14 @@ import sys
 from pathlib import Path
 from orca.helper import FilepathReconciler
 from orca.system.system_interface import ISystem
-from orca.workflow_models.labware_thread import LabwareThread
+from orca.workflow_models.labware_thread import LabwareThreadInstance
 from orca.workflow_models.labware_thread import IThreadObserver
 from orca.yml_config_builder.configs import ScriptBaseConfigModel
 
 
 class IThreadScript(IThreadObserver, ABC):
     @abstractmethod
-    def thread_notify(self, event: str, thread: LabwareThread) -> None:
+    def thread_notify(self, event: str, thread: LabwareThreadInstance) -> None:
         raise NotImplementedError
     
 
@@ -28,7 +28,7 @@ class ThreadScript(IThreadScript, ABC):
         return self._system
 
     @abstractmethod
-    def thread_notify(self, event: str, thread: LabwareThread) -> None:
+    def thread_notify(self, event: str, thread: LabwareThreadInstance) -> None:
         raise NotImplementedError
 
 class IScriptRegistry(ABC):

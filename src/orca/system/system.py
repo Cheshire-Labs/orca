@@ -1,56 +1,30 @@
 from types import MappingProxyType
-from typing import Dict, List
-import uuid
+from typing import List
 from orca.resource_models.location import Location
 from orca.resource_models.resource_pool import EquipmentResourcePool
 from orca.resource_models.transporter_resource import TransporterEquipment
 from orca.resource_models.base_resource import Equipment, IResource
 
-from orca.resource_models.labware import Labware, LabwareTemplate
+from orca.resource_models.labware import LabwareInstance, LabwareTemplate
 from orca.sdk.events.execution_context import ThreadExecutionContext, WorkflowExecutionContext
+from orca.system.system_info import SystemInfo
 from orca.system.system_interface import ISystem
-from orca.system.interfaces import IMethodRegistry, ISystemInfo
+from orca.system.interfaces import IMethodRegistry
 from orca.system.interfaces import IWorkflowRegistry
 from orca.system.resource_registry import IResourceRegistry, IResourceRegistryObesrver
 from orca.system.system_map import SystemMap
 from orca.system.registries import LabwareRegistry, TemplateRegistry
-from orca.system.workflow_registry import WorkflowRegistry
-from orca.workflow_models.method import Method
+from orca.workflow_models.workflows.executing_workflow import ExecutingWorkflow, IExecutingWorkflowRegistry
+from orca.workflow_models.workflows.workflow_factories import ThreadFactory
+from orca.system.thread_registry_interface import IThreadRegistry
+from orca.workflow_models.workflows.workflow_registry import WorkflowRegistry
+from orca.workflow_models.method import MethodInstance
 from orca.workflow_models.method_template import MethodTemplate
 from orca.workflow_models.thread_template import ThreadTemplate
-from orca.workflow_models.labware_thread import LabwareThread
-from orca.workflow_models.workflow import Workflow
+from orca.workflow_models.labware_thread import LabwareThreadInstance
+from orca.workflow_models.workflows.workflow import WorkflowInstance
 from orca.workflow_models.workflow_templates import WorkflowTemplate
 from orca.system.thread_manager_interface import IThreadManager
-
-class SystemInfo(ISystemInfo):
-    def __init__(self, name: str, version: str, description: str, model_extra: Dict[str, str]) -> None:
-        self._id = str(uuid.uuid4())
-        self._name = name
-        self._version = version
-        self._description = description
-        self._model_extra = model_extra
-    
-    @property
-    def id(self) -> str:
-        return self._id
-    
-    @property
-    def name(self) -> str:
-        return self._name
-
-    @property
-    def version(self) -> str:
-        return self._version
-
-    @property
-    def description(self) -> str:
-        return self._description
-
-    @property
-    def model_extra(self) -> Dict[str, str]:
-        return self._model_extra
-    
 
 class System(ISystem):
     def __init__(self, 
@@ -58,10 +32,13 @@ class System(ISystem):
                  system_map: SystemMap, 
                  resource_registry: IResourceRegistry, 
                  template_registry: TemplateRegistry, 
-                 labware_registry: LabwareRegistry, 
+                 labware_registry: LabwareRegistry,
+                 thread_registry: IThreadRegistry[LabwareThreadInstance], 
+                 thread_factory: ThreadFactory,
                  thread_manager: IThreadManager,
                  method_registry: IMethodRegistry,
-                 workflow_registry: IWorkflowRegistry) -> None:
+                 workflow_registry: IWorkflowRegistry,
+                 executing_workflow_registry: IExecutingWorkflowRegistry) -> None:
         self._info = info
         self._resources = resource_registry
         self._system_map = system_map
@@ -70,6 +47,9 @@ class System(ISystem):
         self._method_registry = method_registry
         self._workflow_registry = workflow_registry
         self._thread_manager = thread_manager
+        self._thread_registry = thread_registry
+        self._thread_factory = thread_factory
+        self._executing_workflow_registry = executing_workflow_registry
 
     @property
     def id(self) -> str:
@@ -97,7 +77,7 @@ class System(ISystem):
         return self._system_map.locations
 
     @property
-    def labwares(self) -> List[Labware]:
+    def labwares(self) -> List[LabwareInstance]:
         return self._labwares.labwares
     
     @property
@@ -117,8 +97,8 @@ class System(ISystem):
         return self._resources.resource_pools
     
     @property
-    def threads(self) -> List[LabwareThread]:
-        return self._thread_manager.threads
+    def threads(self) -> List[LabwareThreadInstance]:
+        return self._thread_registry.threads
 
     def get_resource(self, name: str) -> IResource:
         return self._resources.get_resource(name)
@@ -135,7 +115,7 @@ class System(ISystem):
     def get_location(self, name: str) -> Location:
         return self._system_map.get_location(name)
 
-    def get_labware(self, name: str) -> Labware:
+    def get_labware(self, name: str) -> LabwareInstance:
         return self._labwares.get_labware(name)
 
     def add_resource(self, resource: IResource) -> None:
@@ -147,7 +127,7 @@ class System(ISystem):
     def add_resource_pool(self, resource_pool: EquipmentResourcePool) -> None:
         self._resources.add_resource_pool(resource_pool)
 
-    def add_labware(self, labware: Labware) -> None:
+    def add_labware(self, labware: LabwareInstance) -> None:
         self._labwares.add_labware(labware)
 
     def get_labware_template(self, name: str) -> LabwareTemplate:
@@ -180,38 +160,43 @@ class System(ISystem):
     def add_workflow_template(self, workflow: WorkflowTemplate) -> None:
         self._templates.add_workflow_template(workflow)
 
-    def get_workflow(self, id: str) -> Workflow:
+    def get_workflow(self, id: str) -> WorkflowInstance:
         return self._workflow_registry.get_workflow(id)
     
-    def add_workflow(self, workflow: Workflow) -> None:
+    def add_workflow(self, workflow: WorkflowInstance) -> None:
         self._workflow_registry.add_workflow(workflow)
 
-    def get_thread(self, id: str) -> LabwareThread:
-        return self._thread_manager.get_thread(id)
+    def get_executing_workflow(self, workflow_id: str) -> ExecutingWorkflow:
+        return self._executing_workflow_registry.get_executing_workflow(workflow_id)
+
+    def get_thread(self, id: str) -> LabwareThreadInstance:
+        return self._thread_registry.get_thread(id)
     
-    def get_thread_by_labware(self, labware_id: str) -> LabwareThread:
-        return self._thread_manager.get_thread_by_labware(labware_id)
+    def get_thread_by_labware(self, labware_id: str) -> LabwareThreadInstance:
+        return self._thread_registry.get_thread_by_labware(labware_id)
 
-    def add_thread(self, labware_thread: LabwareThread) -> None:
-        self._thread_manager.add_thread(labware_thread)
+    def add_thread(self, labware_thread: LabwareThreadInstance) -> None:
+        self._thread_registry.add_thread(labware_thread)
 
-    def get_method(self, id: str) -> Method:
+    def create_and_register_thread_instance(self, template: ThreadTemplate) -> LabwareThreadInstance:
+        thread = self._thread_factory.create_instance(template)
+        self._thread_registry.add_thread(thread)
+        return thread
+
+    def get_method(self, id: str) -> MethodInstance:
         return self._method_registry.get_method(id)
     
-    def add_method(self, method: Method) -> None:
+    def add_method(self, method: MethodInstance) -> None:
         self._method_registry.add_method(method)
 
     def add_observer(self, observer: IResourceRegistryObesrver) -> None:
         return self._resources.add_observer(observer)
     
-    def create_method_instance(self, template: MethodTemplate) -> Method:
-        return self._method_registry.create_method_instance(template)
-    
-    def create_thread_instance(self, template: ThreadTemplate) -> LabwareThread:
-        return self._thread_manager.create_thread_instance(template)
-    
-    def create_workflow_instance(self, template: WorkflowTemplate) -> Workflow:
-        return self._workflow_registry.create_workflow_instance(template)
+    def create_and_register_method_instance(self, template: MethodTemplate) -> MethodInstance:
+        return self._method_registry.create_and_register_method_instance(template)
+        
+    def create_and_register_workflow_instance(self, template: WorkflowTemplate) -> WorkflowInstance:
+        return self._workflow_registry.create_and_register_workflow_instance(template)
     
     async def start_all_threads(self) -> None:
         return await self._thread_manager.start_all_threads()

@@ -2,7 +2,7 @@ from orca.resource_models.labware import AnyLabwareTemplate, LabwareTemplate
 from typing import Any, Dict, List, Set, Union
 from orca.sdk.events.execution_context import WorkflowExecutionContext
 from orca.workflow_models.action_template import MethodActionTemplate
-from orca.workflow_models.method import Method
+from orca.workflow_models.method import MethodInstance
 
 
 from abc import ABC, abstractmethod
@@ -61,15 +61,15 @@ class MethodTemplate(IMethodTemplate):
 
 class JunctionMethodTemplate(IMethodTemplate):
     def __init__(self) -> None:
-        self._method: Method | None = None
+        self._method: MethodInstance | None = None
 
     @property
-    def method(self) -> Method:
+    def method(self) -> MethodInstance:
         if self._method is None:
             raise NotImplementedError("Method has not been set")
         return self._method
 
-    def set_method(self, method: Method) -> None:
+    def set_method(self, method: MethodInstance) -> None:
         self._method = method
 
     # def get_instance(self, labware_reg: ILabwareRegistry, event_bus: IEventBus) -> Method:
