@@ -40,16 +40,9 @@ class ExecutingWorkflow(IWorkflow):
         self._context = WorkflowExecutionContext(self._workflow.id, self._workflow.name)
         self._entry_threads: List[ExecutingLabwareThread] = []
         for entry_thread in self._workflow.entry_threads:
-            executing_thread = ExecutingLabwareThread(entry_thread,
-                                        self._event_bus,
-                                        self._move_handler,
-                                        self._status_manager,
-                                        self._reservation_manager,
-                                        self._system_map,
-                                        self._context)
+            executing_thread = self._thread_manager.create_executing_thread(entry_thread.id, self._context)
             self._entry_threads.append(executing_thread)
         self._subscribe_events()
-        self.status = WorkflowStatus.CREATED
 
     @property
     def id(self) -> str:
@@ -86,14 +79,7 @@ class ExecutingWorkflow(IWorkflow):
             self._event_bus.subscribe(event.event_name, event.handler)
 
     def add_and_start_thread(self, thread: LabwareThreadInstance) -> None:
-        executing_thread = ExecutingLabwareThread(thread,
-                            self._event_bus,
-                            self._move_handler,
-                            self._status_manager, 
-                            self._reservation_manager,
-                            self._system_map,
-                            self._context)
-
+        executing_thread = self._thread_manager.create_executing_thread(thread.id, self._context)
         event_loop = asyncio.get_event_loop()
         event_loop.create_task(executing_thread.start())
 
@@ -151,6 +137,7 @@ class ExecutingWorkflowRegistry(IExecutingWorkflowRegistry):
             workflow_instance = self._workflow_registry.get_workflow(workflow_instance_id)
             executing_workflow = self._factory.create_instance(workflow_instance)
             self._executing_registry[executing_workflow.id] = executing_workflow
+            executing_workflow.status = WorkflowStatus.CREATED
             return executing_workflow
 
 

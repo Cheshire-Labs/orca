@@ -48,7 +48,6 @@ class ExecutingLabwareThread(ILabwareThread):
         # self._assigned_action: ILocationAction | None = None
         self._move_action: MoveAction | None = None
         self._stop_event = asyncio.Event()
-        self.status = LabwareThreadStatus.CREATED
 
     @property
     def id(self) -> str:
@@ -312,6 +311,7 @@ class ExecutingThreadRegistry(IExecutingThreadRegistry):
             instance = self._thread_registry.get_thread(thread_id)
             executing_thread = self._factory.create_instance(instance, context)
             self._executing_registry[thread_id] = executing_thread
+            executing_thread.status = LabwareThreadStatus.CREATED
             return executing_thread
         
 
