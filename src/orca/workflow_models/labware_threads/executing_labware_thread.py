@@ -40,7 +40,9 @@ class ExecutingLabwareThread(ILabwareThread):
         self._context: WorkflowExecutionContext = context
         self._event_bus = event_bus
         self._action_resolver = DynamicResourceActionResolver(reservation_manager, system_map)
-        self._methods: List[ExecutingMethod] = [ExecutingMethod(m, self._event_bus, status_manager, self._context) for m in thread._method_sequence]
+        self._pending_methods: List[ExecutingMethod] = [ExecutingMethod(m, self._event_bus, status_manager, self._context) for m in thread._method_sequence]
+        self._assigned_method: ExecutingMethod | None = None
+        self._completed_methods: List[ExecutingMethod] = []
         # set current_location is after self._status assignment to accommodate scripts changing start location
         # TODO: source of truth needs to be changed to a labware manager
         self._current_location: Location = self._thread.start_location
@@ -78,21 +80,19 @@ class ExecutingLabwareThread(ILabwareThread):
 
     @property
     def pending_methods(self) -> List[ExecutingMethod]:
-        return [m for m in self._methods if not m.has_completed()]
+        return self._pending_methods
 
     @property
     def completed_methods(self) -> List[ExecutingMethod]:
-        return [m for m in self._methods if m.has_completed()]
+        return self._completed_methods
 
     @property
     def assigned_method(self) -> ExecutingMethod | None:
-        if len(self.pending_methods) == 0:
-            return None
-        return self.pending_methods[0]
+        return self._assigned_method
 
     @property
     def assigned_action(self) -> ILocationAction | None:
-        return self.assigned_method.current_action if self.assigned_method else None
+        return self._assigned_action
 
     @property
     def move_action(self) -> MoveAction | None:
@@ -138,29 +138,6 @@ class ExecutingLabwareThread(ILabwareThread):
         labware = self._thread.labware
         start_location.initialize_labware(labware)
 
-    async def start(self) -> None:
-        # initialization check
-        if self.status == LabwareThreadStatus.CREATED:
-            self.initialize_labware()
-
-        if self.assigned_action is None:
-            await self._start_next_method()
-
-    async def _advance_thread(self) -> None:
-
-        if self._stop_event.is_set():
-            self._handle_thread_stop()
-            return
-
-        assert self.assigned_action is not None, "Assigned action should not be None when advancing thread"
-        while self.current_location != self.assigned_action.location:
-            await self._assign_and_execute_move_action_to_location_action()
-
-        await self._handle_thread_at_assigned_location()
-
-    def handle_method_complete(self, event: str, context: ExecutionContext) -> None:
-        asyncio.create_task(self._start_next_method())
-
     def stop(self) -> None:
         self.status = LabwareThreadStatus.STOPPING
         self._stop_event.set()
@@ -169,16 +146,58 @@ class ExecutingLabwareThread(ILabwareThread):
         self._stop_event.clear()
         self.status = LabwareThreadStatus.STOPPED
 
-    async def _start_next_method(self) -> None:
-        if len(self.pending_methods) == 0:
-            orca_logger.info(f"No pending methods for thread {self._thread.name}. Sending thread to end location {self.end_location.name}.")
-            await self._handle_thread_completion()
+    async def start(self) -> None:
+        # initialization check
+        if self.status == LabwareThreadStatus.CREATED:
+            self.initialize_labware()
+
+        if self._stop_event.is_set():
+            self._handle_thread_stop()
             return
-        next_method = self.pending_methods[0]
-        orca_logger.info(f"Starting next method: {next_method.name} in thread {self._thread.name}")
-        await next_method.resolve_next_action(self.current_location, self._action_resolver)
-        self._event_bus.subscribe(f"METHOD.{next_method.id}.{MethodStatus.COMPLETED.name}", self.handle_method_complete)
-        await self._advance_thread()
+        
+        # loop through all methods in the thread
+        while len(self._pending_methods) > 0:
+            self._assigned_method = self._pending_methods.pop(0)
+
+            # loop through method's actions until all actions are completed
+            while True:
+                self._assigned_action = await self._assigned_method.resolve_next_action(
+                    self.current_location, self._action_resolver
+                )
+
+                if self._assigned_action is None:
+                    self._completed_methods.append(self._assigned_method)
+                    self._assigned_method = None
+                    break  # go to next method
+
+                # move to the assigned action's location
+                while self.current_location != self._assigned_action.location:
+                    await self._assign_and_execute_move_action_to_location_action()
+
+                await self._handle_thread_at_assigned_location()
+
+        # all methods in the thread are completed, now move to end location
+        await self._handle_thread_completion()
+
+
+
+    # def handle_method_complete(self, event: str, context: ExecutionContext) -> None:
+    #     asyncio.create_task(self._advance_thread())
+
+
+
+    # async def _start_next_method(self) -> None:
+    #     if len(self.pending_methods) == 0:
+    #         orca_logger.info(f"No pending methods for thread {self._thread.name}. Sending thread to end location {self.end_location.name}.")
+    #         await self._handle_thread_completion()
+    #         return
+    #     next_method = self.pending_methods[0]
+
+
+    #     orca_logger.info(f"Starting next method: {next_method.name} in thread {self._thread.name}")
+    #     await next_method.resolve_next_action(self.current_location, self._action_resolver)
+    #     self._event_bus.subscribe(f"METHOD.{next_method.id}.{MethodStatus.COMPLETED.name}", self.handle_method_complete)
+    #     await self._advance_thread()
 
     async def _assign_and_execute_move_action_to_location_action(self) -> None:
         assert self.assigned_action is not None, "Assigned action should not be None when moving to assigned location"
