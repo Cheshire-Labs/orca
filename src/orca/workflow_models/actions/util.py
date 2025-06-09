@@ -1,60 +1,100 @@
 import asyncio
+import logging
 from orca.resource_models.labware import AnyLabwareTemplate, LabwareInstance, LabwareTemplate
 from orca.resource_models.location import Location
 from orca.resource_models.resource_pool import EquipmentResourcePool
-from orca.system.reservation_manager import IReservationManager, LocationReservation
+from orca.system.reservation_manager import IReservationCollection, IReservationManager, IThreadReservationCoordinator, LocationReservation
 from orca.system.system_map import IResourceLocator, SystemMap
 
 
 from typing import Dict, List, Set, Union
+orca_logger = logging.getLogger("orca")
 
-
-class LocationCollectionReservationRequest:
-    def __init__(self, locations: List[LocationReservation]) -> None:
+class LocationCollectionReservationRequest(IReservationCollection):
+    def __init__(self, locations: List[LocationReservation], system_map: SystemMap, reference_point: Location) -> None:
         self._action_location_requests = locations
         self._reserved_action_location: LocationReservation | None = None
+        self._system_map: SystemMap = system_map
+        self._reference_point: Location = reference_point
+        self._processed = asyncio.Event()
+        self._granted = asyncio.Event()
+        self._rejected = asyncio.Event()
+        self._deadlocked = asyncio.Event()
 
-    async def reserve_location(self,
-                               reservation_manager: IReservationManager,
-                               reference_point: Location,
-                               system_map: SystemMap) -> LocationReservation:
-        requests = self._sort_locations(reference_point, system_map)
-        for request in requests:
-            request.request_reservation(reservation_manager)
+    @property
+    def processed(self) -> asyncio.Event:
+        return self._processed
 
-        # await first location reservation completed
-        done, pending = await asyncio.wait([asyncio.create_task(r.completed.wait()) for r in requests], return_when=asyncio.FIRST_COMPLETED)
-
-        # cancel all pending tasks
-        for task in pending:
-            task.cancel()
-
-        # get first completed route, release all completed, and cancel the rest
-        for request in requests:
-            if request.completed.is_set():
-                if self._reserved_action_location is None:
-                    self._reserved_action_location = request
-                else:
-                    reservation_manager.release_reservation(request.reserved_location.teachpoint_name)
-            else:
-                request.cancelled.set()
-
+    @property
+    def granted(self) -> asyncio.Event:
+        return self._granted
+    
+    @property
+    def rejected(self) -> asyncio.Event:
+        return self._rejected
+    
+    @property
+    def deadlocked(self) -> asyncio.Event:
+        return self._deadlocked
+    
+    @property
+    def reserved_action_location(self) -> LocationReservation:
         if self._reserved_action_location is None:
-            raise ValueError("No location reserved")
+            raise ValueError("No action location reserved")
         return self._reserved_action_location
 
-    def release_reservation(self) -> None:
-        if self._reserved_action_location:
-            self._reserved_action_location.release_reservation()
-            self._reserved_action_location = None
-        else:
-            raise ValueError("No reservation to release")
+    # async def reserve_location(self,
+    #                            thread_reservation_manager: IThreadReservationCoordinator,
+    #                            reference_point: Location,
+    #                            system_map: SystemMap) -> LocationReservation:
+    #     self._system_map = system_map
+    #     self._reference_point = reference_point
+    #     thread_reservation_manager.add_reservation_collection(self)
+    #     for request in self._action_location_requests:
+    #         request.submit_reservation_request(thread_reservation_manager)
+
+    #     # await first location reservation completed
+    #     done, pending = await asyncio.wait([asyncio.create_task(r.granted.wait()) for r in requests], return_when=asyncio.FIRST_COMPLETED)
+
+    #     # cancel all pending tasks
+    #     for task in pending:
+    #         task.cancel()
+
+    #     # get first completed route, release all completed, and cancel the rest
+    #     for request in requests:
+    #         if request.granted.is_set():
+    #             if self._reserved_action_location is None:
+    #                 self._reserved_action_location = request
+    #             else:
+    #                 thread_reservation_manager.release_reservation(request.reserved_location.teachpoint_name)
+    #         else:
+    #             request.rejected.set()
+
+    #     if self._reserved_action_location is None:
+    #         raise ValueError("No location reserved")
+    #     return self._reserved_action_location
+    
+
+    def resolve_final_reservation(self, reservation_manager: IReservationManager) -> None:
+        sorted_requests = self._sort_requests(self._reference_point, self._system_map)
+        granted_reservations = [r for r in sorted_requests if r.granted.is_set()]
+        if len(granted_reservations) == 0:
+            self._rejected.set()
+
+        # choose the first granted reservation as the final reservation
+        self._reserved_action_location = granted_reservations[0] if granted_reservations else None
+
+        # release all other reservations
+        for reservation in granted_reservations[1:]:
+            reservation_manager.release_reservation(reservation.reserved_location.name)
 
 
-    def _sort_locations(self, reference_point: Location, system_map: SystemMap) -> List[LocationReservation]:
+    def _sort_requests(self, reference_point: Location, system_map: SystemMap) -> List[LocationReservation]:
         return sorted(self._action_location_requests,
                       key=lambda x: system_map.get_distance(reference_point.teachpoint_name, x.requested_location.teachpoint_name))
-
+    
+    def get_reservations(self) -> List:
+        return self._action_location_requests
 
     def __str__(self) -> str:
         output =  f"Location Action Reservation: Resource Pool: {[r.requested_location.teachpoint_name for r in self._action_location_requests]}"
@@ -72,14 +112,29 @@ class ResourcePoolResolver:
         self._resolved_location: LocationReservation | None = None
 
     async def resolve_action_location(self,
+                            thread_id: str,
                              reference_point: Location,
-                             reservation_manager: IReservationManager,
+                             thread_reservation_manager: IThreadReservationCoordinator,
                              system_map: SystemMap) -> LocationReservation:
         if self._resolved_location is not None:
             return self._resolved_location
-        reservation_request = LocationCollectionReservationRequest(self._get_potential_action_locations(system_map))
-        self._resolved_location = await reservation_request.reserve_location(reservation_manager, reference_point, system_map)
-        return self._resolved_location
+        reservation_request_collection = LocationCollectionReservationRequest(
+                                                                               self._get_potential_action_locations(system_map),
+                                                                               system_map, 
+                                                                               reference_point)
+        await thread_reservation_manager.submit_reservation_request(thread_id, reservation_request_collection)
+        await reservation_request_collection.processed.wait()
+        if reservation_request_collection.deadlocked.is_set():
+            await asyncio.sleep(0.2)
+            orca_logger.info("Reservation request collection is deadlocked, retrying")
+            return await self.resolve_action_location(thread_id, reference_point, thread_reservation_manager, system_map)
+        if reservation_request_collection.rejected.is_set():
+            await asyncio.sleep(0.2)
+            orca_logger.info("Reservation request collection was rejected, retrying")
+            return await self.resolve_action_location(thread_id, reference_point, thread_reservation_manager, system_map)
+        if reservation_request_collection.granted.is_set():
+            return reservation_request_collection.reserved_action_location
+        raise ValueError("Reservation request collection was not granted")
 
     def _get_potential_action_locations(self, resource_locator: IResourceLocator) -> List[LocationReservation]:
         potential_locations: Set[Location] = set()

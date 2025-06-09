@@ -114,7 +114,7 @@ class ExecutingMethod(IMethod):
         if len(self.pending_actions) == 0:
             self.status = MethodStatus.COMPLETED
 
-    async def resolve_next_action(self, current_location: Location, action_resolver: DynamicResourceActionResolver) -> LocationAction | None:
+    async def resolve_next_action(self, thread_id: str, current_location: Location, action_resolver: DynamicResourceActionResolver) -> LocationAction | None:
         self.status = MethodStatus.IN_PROGRESS
         if len(self.pending_actions) == 0:
             self.status = MethodStatus.COMPLETED
@@ -124,7 +124,7 @@ class ExecutingMethod(IMethod):
             if self._current_action is None:
                 self._action_ready_event.clear()
                 current_dynamic_action = self.pending_actions.pop(0)
-                self._current_action = await action_resolver.resolve_action(current_dynamic_action, current_location)
+                self._current_action = await action_resolver.resolve_action(thread_id, current_dynamic_action, current_location)
                 self._event_bus.subscribe(f"ACTION.{self._current_action.id}.{ActionStatus.COMPLETED.name}", self._handle_action_completed)
                 self._action_ready_event.set()
 

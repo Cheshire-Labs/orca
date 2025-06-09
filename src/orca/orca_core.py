@@ -15,7 +15,7 @@ from orca.resource_models.base_resource import IInitializableResource
 from orca.resource_models.labware import LabwareTemplate
 from orca.resource_models.location import Location
 from orca.system.registries import LabwareRegistry, TemplateRegistry
-from orca.system.reservation_manager import ReservationManager
+from orca.system.reservation_manager import LocationReservationManager
 from orca.system.resource_registry import ResourceRegistry
 from orca.system.system_info import SystemInfo
 from orca.system.system_map import SystemMap
@@ -72,7 +72,7 @@ class OrcaCore:
         template_registry = TemplateRegistry()
         labware_registry = LabwareRegistry()
         event_bus = EventBus()
-        reservation_manager = ReservationManager(system_map) 
+        reservation_manager = LocationReservationManager(system_map) 
 
         thread_manager = ThreadManager()
         workflow_factory = WorkflowFactory(thread_manager, labware_registry, event_bus, system_map)

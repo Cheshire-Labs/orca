@@ -8,7 +8,7 @@ from orca.system.system_info import SystemInfo
 from orca.system.thread_manager_interface import IThreadManager
 from orca.system.move_handler import MoveHandler
 from orca.system.registries import LabwareRegistry, TemplateRegistry
-from orca.system.reservation_manager import ReservationManager
+from orca.system.reservation_manager import LocationReservationManager
 from orca.system.resource_registry import ResourceRegistry
 from orca.system.system import System
 from orca.system.system_map import ILocationRegistry, SystemMap
@@ -56,7 +56,7 @@ class SdkToSystemBuilder:
         workflow_factory = WorkflowFactory(self._thread_factory)
         self._workflow_registry = WorkflowRegistry(workflow_factory, self._thread_registry)
 
-        self._reservation_manager = ReservationManager(self._system_map)
+        self._reservation_manager = LocationReservationManager(self._system_map)
         self._status_manager = StatusManager(self._event_bus)
 
 

@@ -4,7 +4,7 @@ from orca.resource_models.location import Location
 from orca.sdk.events.event_bus_interface import IEventBus
 from orca.sdk.events.execution_context import ExecutionContext, MethodExecutionContext, ThreadExecutionContext, WorkflowExecutionContext
 from orca.system.move_handler import MoveHandler
-from orca.system.reservation_manager import IReservationManager, ReservationManager
+from orca.system.reservation_manager import IThreadReservationCoordinator
 from orca.system.system_map import SystemMap
 from orca.workflow_models.actions.dynamic_resource_action import DynamicResourceActionResolver
 from orca.workflow_models.actions.location_action import ExecutingLocationAction, ILocationAction
@@ -12,7 +12,7 @@ from orca.workflow_models.actions.move_action import ExecutingMoveAction, MoveAc
 from orca.workflow_models.interfaces import ILabwareThread
 from orca.workflow_models.labware_threads.labware_thread import LabwareThreadInstance, orca_logger
 from orca.workflow_models.method import ExecutingMethod, MethodInstance
-from orca.workflow_models.status_enums import LabwareThreadStatus, MethodStatus
+from orca.workflow_models.status_enums import LabwareThreadStatus
 from orca.workflow_models.status_manager import StatusManager
 
 
@@ -29,7 +29,7 @@ class ExecutingLabwareThread(ILabwareThread):
                  event_bus: IEventBus,
                  move_handler: MoveHandler,
                  status_manager: StatusManager,
-                 reservation_manager: IReservationManager,
+                 reservation_coordinator: IThreadReservationCoordinator,
                  system_map: SystemMap,
                  context: WorkflowExecutionContext,
                  ) -> None:
@@ -39,7 +39,7 @@ class ExecutingLabwareThread(ILabwareThread):
         self._status_manager = status_manager
         self._context: WorkflowExecutionContext = context
         self._event_bus = event_bus
-        self._action_resolver = DynamicResourceActionResolver(reservation_manager, system_map)
+        self._action_resolver = DynamicResourceActionResolver(reservation_coordinator, system_map)
         self._pending_methods: List[ExecutingMethod] = [ExecutingMethod(m, self._event_bus, status_manager, self._context) for m in thread._method_sequence]
         self._assigned_method: ExecutingMethod | None = None
         self._completed_methods: List[ExecutingMethod] = []
@@ -162,7 +162,9 @@ class ExecutingLabwareThread(ILabwareThread):
             # loop through method's actions until all actions are completed
             while True:
                 self._assigned_action = await self._assigned_method.resolve_next_action(
-                    self.current_location, self._action_resolver
+                    self._thread.id,
+                    self.current_location, 
+                    self._action_resolver
                 )
 
                 if self._assigned_action is None:
@@ -204,6 +206,7 @@ class ExecutingLabwareThread(ILabwareThread):
         self.status = LabwareThreadStatus.AWAITING_MOVE_RESERVATION
 
         self._move_action = await self._move_handler.resolve_move_action(
+                                            self._thread.id,
                                             self._thread.labware,
                                             self.current_location,
                                             self.assigned_action.location,
@@ -237,7 +240,8 @@ class ExecutingLabwareThread(ILabwareThread):
                                                             self._context.workflow_name,
                                                             self._thread.id,
                                                             self._thread.name)
-            self._move_action = await self._move_handler.resolve_move_action(self._thread.labware,
+            self._move_action = await self._move_handler.resolve_move_action(self._thread.id,
+                                                                    self._thread.labware,
                                                                     self.current_location,
                                                                     self._thread.end_location,
                                                                     None)
@@ -270,7 +274,7 @@ class ExecutingLabwareThread(ILabwareThread):
         assert self._move_action is not None
         orca_logger.info(f"Thread {self._thread.name} - Deadlock detected")
         old_target = self._move_action.target
-        self._move_action = await self._move_handler.handle_deadlock(self._move_action)
+        self._move_action = await self._move_handler.handle_deadlock(self._thread.id, self._move_action)
         orca_logger.info(f"Thread {self._thread.name} - Deadlock resolved - reroute target {old_target.name} to {self._move_action.target.name}")
 
 
@@ -279,12 +283,12 @@ class ExecutingThreadFactory:
                  event_bus: IEventBus,
                  move_handler: MoveHandler,
                  status_manager: StatusManager,
-                 reservation_manager: ReservationManager,
+                 reservation_coordinator: IThreadReservationCoordinator,
                  system_map: SystemMap) -> None:
         self._event_bus = event_bus
         self._move_handler = move_handler
         self._status_manager = status_manager
-        self._reservation_manager = reservation_manager
+        self._reservation_coordinator = reservation_coordinator
         self._system_map = system_map
 
     def create_instance(self,
@@ -295,7 +299,7 @@ class ExecutingThreadFactory:
             self._event_bus,
             self._move_handler,
             self._status_manager,
-            self._reservation_manager,
+            self._reservation_coordinator,
             self._system_map,
             context
         )

@@ -7,7 +7,7 @@ from orca.resource_models.resource_pool import EquipmentResourcePool
 
 from typing import Any, Dict, List, Union
 
-from orca.system.reservation_manager import IReservationManager
+from orca.system.reservation_manager import IReservationManager, IThreadReservationCoordinator
 from orca.system.system_map import SystemMap
 from orca.workflow_models.actions.location_action import LocationAction
 from orca.workflow_models.actions.util import AssignedLabwareManager, ResourcePoolResolver
@@ -70,15 +70,16 @@ class UnresolvedLocationAction:
         self._assigned_labware_manager.assign_input(template_slot, input)
     
 class DynamicResourceActionResolver:
-    def __init__(self, reservation_manager: IReservationManager, system_map: SystemMap) -> None:
-        self._reservation_manager = reservation_manager
+    def __init__(self, reservation_coordinator: IThreadReservationCoordinator, system_map: SystemMap) -> None:
+        self._reservation_coordinator = reservation_coordinator
         self._system_map = system_map
 
-    async def resolve_action(self, dynamic_action: UnresolvedLocationAction, reference_point: Location,) -> LocationAction:
+    async def resolve_action(self, thread_id: str, dynamic_action: UnresolvedLocationAction, reference_point: Location) -> LocationAction:
         resolver = ResourcePoolResolver(dynamic_action.resource_pool)
         location_reservation = await resolver.resolve_action_location(
+            thread_id,
             reference_point,
-            self._reservation_manager,
+            self._reservation_coordinator,
             self._system_map
         )
         location_action = LocationAction(
