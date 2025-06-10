@@ -53,7 +53,6 @@ class ExecutingMethod(IMethod):
         self._completed_actions: List[LocationAction] = []
         self.status = MethodStatus.CREATED
         self._resolving_action_lock = asyncio.Lock()
-        self._action_ready_event = asyncio.Event()
 
     @property
     def id(self) -> str:
@@ -103,31 +102,38 @@ class ExecutingMethod(IMethod):
                                         self._method.id,
                                         status.name,
                                         context)
-
     def _handle_action_completed(self, event: str, context: ExecutionContext) -> None:
-        assert self._current_action is not None, "Current action should not be None when handling action completion."
-        self._event_bus.unsubscribe(event, self._handle_action_completed)
-        self._current_action.release_reservation()  # TODO: Ensure this is the correct spot to release the reservation -- this was previously in labware thread
-        self._completed_actions.append(self._current_action)
-        self._current_action = None
+            asyncio.create_task( self._handle_action_completed_async(event, context))
 
-        if len(self.pending_actions) == 0:
-            self.status = MethodStatus.COMPLETED
+    
+    async def _handle_action_completed_async(self, event: str, context: ExecutionContext) -> None:
+        async with self._resolving_action_lock:
+            assert self._current_action is not None, "Current action should not be None when handling action completion."
+            self._event_bus.unsubscribe(event, self._handle_action_completed)
+            self._current_action.release_reservation()  # TODO: Ensure this is the correct spot to release the reservation -- this was previously in labware thread
+            self._completed_actions.append(self._current_action)
+            self._current_action = None
+
+            if len(self.pending_actions) == 0:
+                self._current_action = None
+                self.status = MethodStatus.COMPLETED
 
     async def resolve_next_action(self, thread_id: str, current_location: Location, action_resolver: DynamicResourceActionResolver) -> LocationAction | None:
-        self.status = MethodStatus.IN_PROGRESS
-        if len(self.pending_actions) == 0:
-            self.status = MethodStatus.COMPLETED
-            return None
-
+        
         async with self._resolving_action_lock:
             if self._current_action is None:
-                self._action_ready_event.clear()
+            
+                if len(self.pending_actions) == 0:
+                    # method has completed
+                    self.status = MethodStatus.COMPLETED
+                    self._current_action = None
+                    return None
+                
+                # resolve the next action
+                self.status = MethodStatus.IN_PROGRESS
                 current_dynamic_action = self.pending_actions.pop(0)
                 self._current_action = await action_resolver.resolve_action(thread_id, current_dynamic_action, current_location)
                 self._event_bus.subscribe(f"ACTION.{self._current_action.id}.{ActionStatus.COMPLETED.name}", self._handle_action_completed)
-                self._action_ready_event.set()
 
-        await self._action_ready_event.wait()
-        return self._current_action
+            return self._current_action
     

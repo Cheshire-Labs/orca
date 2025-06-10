@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional
 import logging
 from orca_driver_interface.driver_interfaces import IDriver
 from orca_driver_interface.driver_interfaces import ILabwarePlaceableDriver
+from orca.resource_models.device_error import DeviceBusyError
 from orca.resource_models.labware import LabwareInstance
 
 orca_logger = logging.getLogger("orca")
@@ -180,6 +181,8 @@ class EquipmentLabwareRegistry:
         self._loaded_labware.append(labware)
 
     def set_stage(self, labware: LabwareInstance | None) -> None:
+        if self._stage_labware is not None and labware is not None:
+            raise DeviceBusyError(f"{self} - Stage already contains labware: {self._stage_labware}.  Unable to set stage to {labware}")
         self._stage_labware = labware
  
 class Device(Equipment, ILabwarePlaceable):

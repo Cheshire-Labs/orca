@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from orca.resource_models.device_error import DeviceBusyError
 from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.location import Location
 from orca.sdk.events.event_bus_interface import IEventBus
@@ -133,10 +134,15 @@ class ExecutingLabwareThread(ILabwareThread):
     def has_completed(self) -> bool:
         return self.status == LabwareThreadStatus.COMPLETED
 
-    def initialize_labware(self) -> None:
+    async def initialize_labware(self) -> None:
         start_location = self._thread.start_location
         labware = self._thread.labware
-        start_location.initialize_labware(labware)
+        try:
+            start_location.initialize_labware(labware)
+        except DeviceBusyError as e:
+            orca_logger.warning(f"Thread {self._thread.name} - Failed to initialize labware {labware.name} at start location {start_location.name}. Retrying...")
+            await asyncio.sleep(0.5)
+            await self.initialize_labware()
 
     def stop(self) -> None:
         self.status = LabwareThreadStatus.STOPPING
@@ -149,7 +155,7 @@ class ExecutingLabwareThread(ILabwareThread):
     async def start(self) -> None:
         # initialization check
         if self.status == LabwareThreadStatus.CREATED:
-            self.initialize_labware()
+            await self.initialize_labware()
 
         if self._stop_event.is_set():
             self._handle_thread_stop()
@@ -216,18 +222,18 @@ class ExecutingLabwareThread(ILabwareThread):
     async def _handle_thread_at_assigned_location(self) -> None:
         assert self.assigned_action is not None
         assert self.current_location == self.assigned_action.location
-        current_method = self.pending_methods[0]
         self.status = LabwareThreadStatus.AWAITING_CO_THREADS
         await self.assigned_action.all_labware_is_present.wait()
         self.status = LabwareThreadStatus.EXECUTING_ACTION
         context = MethodExecutionContext(self._context.workflow_id,
                                         self._context.workflow_name,
-                                        current_method.id if current_method else None,
-                                        current_method.name if current_method else None)
+                                        self._assigned_method.id if self._assigned_method else None,
+                                        self._assigned_method.name if self._assigned_method else None)
         executing_action = ExecutingLocationAction(self._status_manager,
                                                    self.assigned_action,
                                                    context)
         await executing_action.execute()
+        await asyncio.sleep(0)  # <-- give the event loop time to run newly scheduled tasks
 
         self._previous_action = executing_action
         self._assigned_action = None
