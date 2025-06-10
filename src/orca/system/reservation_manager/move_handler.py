@@ -1,26 +1,35 @@
+import asyncio
+import logging
+from typing import List
 from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.location import Location
-from orca.system.reservation_manager import IReservationCollection, IReservationManager, IThreadReservationCoordinator, LocationReservation
+from orca.system.reservation_manager.interfaces import IReservationCollection, IThreadReservationCoordinator
+from orca.system.reservation_manager.location_reservation import LocationReservation
 from orca.system.system_map import SystemMap
 from orca.workflow_models.actions.location_action import ILocationAction
 
-import asyncio
-from typing import List
 
 from orca.workflow_models.actions.move_action import MoveAction
+orca_logger = logging.getLogger("orca")
+
 
 class MoveActionCollectionReservationRequest(IReservationCollection):
-    def __init__(self, requested_move_actions: List[MoveAction]):
+    def __init__(self, thread_id: str, requested_move_actions: List[MoveAction]):
         # ensure all the labware in each routestep is the same
         for move_action in requested_move_actions:
             if move_action.labware != requested_move_actions[0].labware:
                 raise ValueError("All labware in a route must be the same")
+        self._thread_id = thread_id
         self._requested_move_actions = requested_move_actions
         self._reserved_move_action: MoveAction | None = None
         self._processed = asyncio.Event()
         self._rejected = asyncio.Event()
         self._granted = asyncio.Event()
         self._deadlocked = asyncio.Event()
+
+    @property
+    def thread_id(self) -> str:
+        return self._thread_id
 
     @property
     def processed(self) -> asyncio.Event:
@@ -77,8 +86,35 @@ class MoveActionCollectionReservationRequest(IReservationCollection):
     def get_reservations(self) -> List[LocationReservation]:
         return [action.reservation for action in self._requested_move_actions]
 
-    def resolve_final_reservation(self, reservation_manager: IReservationManager) -> None:
-        raise NotImplementedError("This method is not implemented for MoveActionCollectionReservationRequest")
+    def resolve_final_reservation(self) -> None:
+        granted_reservations = [r for r in self._requested_move_actions if r.reservation.granted.is_set()]
+        if len(granted_reservations) == 0:
+            self._rejected.set()
+            self._processed.set()
+            return
+        
+        # choose the first granted reservation as the reserved move action
+        self._reserved_move_action = granted_reservations[0] if len(granted_reservations) > 0 else None
+
+        # release all other reservations
+        for action in granted_reservations[1:]:
+            action.reservation.release_reservation()
+
+        self._granted.set()
+        self._processed.set()
+
+    def clear(self) -> None:
+        """Clears the reservation collection, resetting all events and states."""
+        if self.granted.is_set():
+            # May re-examine if this should be allowed - I haven't looked into the implications yet
+            raise ValueError("Cannot clear a reservation that has been granted")
+        for action in self._requested_move_actions:
+            action.reservation.clear()
+        self._processed.clear()
+        self._rejected.clear()
+        self._deadlocked.clear()
+        
+
 
     def __str__(self) -> str:
         output =  f"Route Reservation: Requested Route Steps: {self._requested_move_actions}"
@@ -116,14 +152,6 @@ class MoveHandler:
         # even though it is set as completed, it is also deadlocked.  This may lead to confusion and may need to be changed
         # due to this, this handling may work better else where
         
-
-        # print out what is at each location in the system map
-        print("System Map Locations:")
-        for location in self._system_map.locations:
-            print(f"{location.name}: {location.labware.name if location.labware else 'None'}")
-
-
-
         potential_paths = self._system_map.get_shortest_paths_to_deadlock_resolution(move_action.source.teachpoint_name)
         # if move_action.target is in the potential_paths, remove it
         potential_paths = [path for path in potential_paths if move_action.target.teachpoint_name not in path]
@@ -134,14 +162,18 @@ class MoveHandler:
 
 
     async def _resolve_reservation_from_move_action_collection(self, thread_id: str, potential_moves: List[MoveAction]) -> MoveAction:
-        reservation_request_collection = MoveActionCollectionReservationRequest(potential_moves)
+        reservation_request_collection = MoveActionCollectionReservationRequest(thread_id, potential_moves)
         await self._thread_reservation_coordinator.submit_reservation_request(thread_id, reservation_request_collection)
         await reservation_request_collection.processed.wait()
         if reservation_request_collection.rejected.is_set():
-            raise ValueError("Route reservation was rejected")
+            await asyncio.sleep(0.2)
+            orca_logger.info("Reservation request collection was rejected, retrying")
+            reservation_request_collection.clear()
+            return await self._resolve_reservation_from_move_action_collection(thread_id, potential_moves)
         if reservation_request_collection.deadlocked.is_set():
+            reservation_request_collection.clear()
             return await self.handle_deadlock(thread_id, potential_moves[0])
-        if not reservation_request_collection.granted.is_set():
+        if reservation_request_collection.granted.is_set():
             return reservation_request_collection.reserved_move_action
         raise ValueError("Route reservation was not granted")
    

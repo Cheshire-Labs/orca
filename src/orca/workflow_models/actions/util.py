@@ -3,7 +3,8 @@ import logging
 from orca.resource_models.labware import AnyLabwareTemplate, LabwareInstance, LabwareTemplate
 from orca.resource_models.location import Location
 from orca.resource_models.resource_pool import EquipmentResourcePool
-from orca.system.reservation_manager import IReservationCollection, IReservationManager, IThreadReservationCoordinator, LocationReservation
+from orca.system.reservation_manager.interfaces import IReservationCollection, IThreadReservationCoordinator
+from orca.system.reservation_manager.location_reservation import LocationReservation
 from orca.system.system_map import IResourceLocator, SystemMap
 
 
@@ -11,7 +12,8 @@ from typing import Dict, List, Set, Union
 orca_logger = logging.getLogger("orca")
 
 class LocationCollectionReservationRequest(IReservationCollection):
-    def __init__(self, locations: List[LocationReservation], system_map: SystemMap, reference_point: Location) -> None:
+    def __init__(self, thread_id: str, locations: List[LocationReservation], system_map: SystemMap, reference_point: Location) -> None:
+        self._thread_id = thread_id
         self._action_location_requests = locations
         self._reserved_action_location: LocationReservation | None = None
         self._system_map: SystemMap = system_map
@@ -20,6 +22,10 @@ class LocationCollectionReservationRequest(IReservationCollection):
         self._granted = asyncio.Event()
         self._rejected = asyncio.Event()
         self._deadlocked = asyncio.Event()
+
+    @property
+    def thread_id(self) -> str:
+        return self._thread_id
 
     @property
     def processed(self) -> asyncio.Event:
@@ -75,18 +81,24 @@ class LocationCollectionReservationRequest(IReservationCollection):
     #     return self._reserved_action_location
     
 
-    def resolve_final_reservation(self, reservation_manager: IReservationManager) -> None:
+    def resolve_final_reservation(self) -> None:
         sorted_requests = self._sort_requests(self._reference_point, self._system_map)
         granted_reservations = [r for r in sorted_requests if r.granted.is_set()]
         if len(granted_reservations) == 0:
             self._rejected.set()
+            self._processed.set()
+            return
 
         # choose the first granted reservation as the final reservation
         self._reserved_action_location = granted_reservations[0] if granted_reservations else None
 
         # release all other reservations
         for reservation in granted_reservations[1:]:
-            reservation_manager.release_reservation(reservation.reserved_location.name)
+            reservation.release_reservation()
+
+        # set the granted event
+        self._granted.set()
+        self._processed.set()
 
 
     def _sort_requests(self, reference_point: Location, system_map: SystemMap) -> List[LocationReservation]:
@@ -95,6 +107,17 @@ class LocationCollectionReservationRequest(IReservationCollection):
     
     def get_reservations(self) -> List:
         return self._action_location_requests
+    
+    def clear(self) -> None:
+        """Clears the reservation collection, resetting all events and states."""
+        if self.granted.is_set():
+            # May re-examine if this should be allowed - I haven't looked into the implications yet
+            raise ValueError("Cannot clear a reservation that has been granted")
+        for action in self._action_location_requests:
+            action.clear()
+        self._processed.clear()
+        self._rejected.clear()
+        self._deadlocked.clear()
 
     def __str__(self) -> str:
         output =  f"Location Action Reservation: Resource Pool: {[r.requested_location.teachpoint_name for r in self._action_location_requests]}"
@@ -118,7 +141,7 @@ class ResourcePoolResolver:
                              system_map: SystemMap) -> LocationReservation:
         if self._resolved_location is not None:
             return self._resolved_location
-        reservation_request_collection = LocationCollectionReservationRequest(
+        reservation_request_collection = LocationCollectionReservationRequest(thread_id,
                                                                                self._get_potential_action_locations(system_map),
                                                                                system_map, 
                                                                                reference_point)
@@ -127,10 +150,12 @@ class ResourcePoolResolver:
         if reservation_request_collection.deadlocked.is_set():
             await asyncio.sleep(0.2)
             orca_logger.info("Reservation request collection is deadlocked, retrying")
+            reservation_request_collection.clear()
             return await self.resolve_action_location(thread_id, reference_point, thread_reservation_manager, system_map)
         if reservation_request_collection.rejected.is_set():
             await asyncio.sleep(0.2)
             orca_logger.info("Reservation request collection was rejected, retrying")
+            reservation_request_collection.clear()
             return await self.resolve_action_location(thread_id, reference_point, thread_reservation_manager, system_map)
         if reservation_request_collection.granted.is_set():
             return reservation_request_collection.reserved_action_location

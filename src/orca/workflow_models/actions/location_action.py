@@ -1,14 +1,14 @@
 from abc import ABC
 import asyncio
 import logging
-from typing import Any, Dict, List, Union, cast
+from typing import Any, Dict, List, cast
 import uuid
 
 from orca.resource_models.base_resource import Device
 from orca.resource_models.labware import LabwareInstance, LabwareTemplate
 from orca.resource_models.location import Location
 from orca.sdk.events.execution_context import LocationActionExecutionContext, MethodExecutionContext
-from orca.system.reservation_manager import LocationReservation
+from orca.system.reservation_manager.location_reservation import LocationReservation
 from orca.workflow_models.actions.base_executor import ExecutingActionDecorator
 from orca.workflow_models.actions.util import AssignedLabwareManager
 from orca.workflow_models.status_enums import ActionStatus
@@ -92,8 +92,8 @@ class LocationAction(ILocationAction):
         self._id: str = str(uuid.uuid4())
         self._command: str = command
         self._options: Dict[str, Any] = options
-        self._reservation: LocationReservation = location_reservation
-        self._assigned_labware_manager: AssignedLabwareManager = assigned_labware_manager
+        self._reservation = location_reservation
+        self._assigned_labware_manager = assigned_labware_manager
         self._all_labware_is_present = asyncio.Event()
 
     @property

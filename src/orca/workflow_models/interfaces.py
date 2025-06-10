@@ -2,11 +2,12 @@ from typing import List
 import typing
 from orca.resource_models.labware import LabwareInstance, LabwareTemplate
 from orca.resource_models.location import Location
-from orca.workflow_models.actions.dynamic_resource_action import UnresolvedLocationAction
+
 
 if typing.TYPE_CHECKING:
     from orca.workflow_models.labware_threads.labware_thread import LabwareThreadInstance
     from orca.workflow_models.method import MethodInstance
+    from orca.workflow_models.actions.dynamic_resource_action import UnresolvedLocationAction
 
 
 from abc import ABC, abstractmethod
@@ -56,11 +57,11 @@ class IMethod(ABC):
 
     @property
     @abstractmethod
-    def actions(self) -> List[UnresolvedLocationAction]:
+    def actions(self) -> List["UnresolvedLocationAction"]:
         raise NotImplementedError
 
     @abstractmethod
-    def append_action(self, action: UnresolvedLocationAction) -> None:
+    def append_action(self, action: "UnresolvedLocationAction") -> None:
         raise NotImplementedError
 
     @abstractmethod

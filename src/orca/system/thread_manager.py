@@ -10,7 +10,7 @@ from orca.workflow_models.labware_threads.executing_labware_thread import Execut
 orca_logger = logging.getLogger("orca")
 
 class ThreadManager(IThreadManager, IExecutingThreadRegistry):
-    def __init__(self,  thread_registry: ExecutingThreadRegistry) -> None:
+    def __init__(self, thread_registry: ExecutingThreadRegistry) -> None:
         self._thread_registry = thread_registry
 
     @property

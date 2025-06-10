@@ -1,3 +1,4 @@
+import asyncio
 from typing import List
 import typing
 
@@ -6,9 +7,9 @@ from orca.sdk.events.event_bus_interface import IEventBus
 from orca.sdk.events.event_bus import SystemBoundEventBus
 from orca.system.system_info import SystemInfo
 from orca.system.thread_manager_interface import IThreadManager
-from orca.system.move_handler import MoveHandler
+from orca.system.reservation_manager.move_handler import MoveHandler
 from orca.system.registries import LabwareRegistry, TemplateRegistry
-from orca.system.reservation_manager import LocationReservationManager
+from orca.system.reservation_manager.reservation_manager import LocationReservationManager, ThreadReservationCoordinator
 from orca.system.resource_registry import ResourceRegistry
 from orca.system.system import System
 from orca.system.system_map import ILocationRegistry, SystemMap
@@ -59,22 +60,23 @@ class SdkToSystemBuilder:
         self._reservation_manager = LocationReservationManager(self._system_map)
         self._status_manager = StatusManager(self._event_bus)
 
-
-        self._move_hander = MoveHandler(self._reservation_manager, self._system_map)
+        self._thread_reservation_coordinator = ThreadReservationCoordinator(self._system_map,
+                                                                            self._thread_registry)
+        self._move_hander = MoveHandler(self._thread_reservation_coordinator, self._system_map)
         self._executing_thread_factory = ExecutingThreadFactory(self._event_bus,
                                                                 self._move_hander,
                                                                 self._status_manager, 
-                                                                self._reservation_manager,
+                                                                self._thread_reservation_coordinator,
                                                                 self._system_map)
         self._executing_thread_registry = ExecutingThreadRegistry(self._thread_registry,
                                                                   self._executing_thread_factory)
         
-        self._thread_manager: IThreadManager = ThreadManager(self._executing_thread_registry )
+        self._thread_manager: IThreadManager = ThreadManager(self._executing_thread_registry)
         executing_workflow_factory = ExecutingWorkflowFactory(self._thread_manager,
+                                                              self._thread_reservation_coordinator,
                                                             self._event_bus, 
                                                             self._move_hander, 
                                                             self._status_manager, 
-                                                            self._reservation_manager, 
                                                             self._system_map)
         self._executing_workflow_registry = ExecutingWorkflowRegistry(self._workflow_registry, executing_workflow_factory)
 
