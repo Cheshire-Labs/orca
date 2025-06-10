@@ -7,7 +7,7 @@ from orca.resource_models.resource_pool import EquipmentResourcePool
 
 from typing import Any, Dict, List, Union
 
-from orca.system.reservation_manager import IReservationManager, IThreadReservationCoordinator
+from orca.system.reservation_manager.interfaces import IThreadReservationCoordinator
 from orca.system.system_map import SystemMap
 from orca.workflow_models.actions.location_action import LocationAction
 from orca.workflow_models.actions.util import AssignedLabwareManager, ResourcePoolResolver

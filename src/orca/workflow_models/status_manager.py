@@ -18,4 +18,4 @@ class StatusManager:
             return
         self._event_bus.emit(f"{entity_type}.{entity_id}.{status}", context)
         self._status_registry[entity_id] = status
-        print(f"Status updated for {entity_type} {entity_id}: {status}: {context}")
+        # print(f"Status updated for {entity_type} {entity_id}: {status}: {context}")

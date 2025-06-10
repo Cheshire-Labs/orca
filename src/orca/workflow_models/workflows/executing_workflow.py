@@ -2,8 +2,8 @@ from abc import ABC, abstractmethod
 from orca.sdk.events.event_bus_interface import IEventBus
 from orca.sdk.events.event_handlers import Spawn
 from orca.sdk.events.execution_context import WorkflowExecutionContext
-from orca.system.move_handler import MoveHandler
-from orca.system.reservation_manager import IReservationManager
+from orca.system.reservation_manager.move_handler import MoveHandler
+from orca.system.reservation_manager.interfaces import IThreadReservationCoordinator
 from orca.system.system_map import SystemMap
 from orca.system.thread_manager import ThreadManager
 from orca.system.thread_manager_interface import IThreadManager
@@ -23,19 +23,19 @@ from orca.workflow_models.workflows.workflow_registry import WorkflowRegistry
 class ExecutingWorkflow(IWorkflow):
     def __init__(self,
                  workflow: WorkflowInstance,
+                 thread_reservation_coordinator: IThreadReservationCoordinator,
                  system_thread_manager: ThreadManager,
                  event_bus: IEventBus,
                  move_handler: MoveHandler,
                  status_manager: StatusManager,
-                reservation_manager: IReservationManager,
                 system_map: SystemMap
                  ) -> None:
         self._workflow = workflow
         self._event_bus = event_bus
+        self._thread_reservation_coordinator = thread_reservation_coordinator
         self._thread_manager = system_thread_manager
         self._status_manager = status_manager
         self._move_handler = move_handler
-        self._reservation_manager = reservation_manager
         self._system_map = system_map
         self._context = WorkflowExecutionContext(self._workflow.id, self._workflow.name)
         self._entry_threads: List[ExecutingLabwareThread] = []
@@ -66,6 +66,7 @@ class ExecutingWorkflow(IWorkflow):
         self._status_manager.set_status("WORKFLOW", self._workflow.id, status.name, self._context)
 
     async def start(self) -> None:
+        asyncio.create_task(self._thread_reservation_coordinator.start_tick_loop(0.3))
         if self.status != WorkflowStatus.CREATED:
             raise RuntimeError(f"Workflow {self._workflow.name} is already started or completed.")
         await asyncio.gather(*[thread.start() for thread in self._entry_threads])
@@ -95,28 +96,28 @@ class ExecutingWorkflow(IWorkflow):
 
 class ExecutingWorkflowFactory:
     def __init__(self, 
-                system_thread_manager: ThreadManager, 
+                system_thread_manager: ThreadManager,
+                thread_reservation_coordinator: IThreadReservationCoordinator,
                 event_bus: IEventBus,
                 move_handler: MoveHandler,
                 status_manager: StatusManager,
-            reservation_manager: IReservationManager,
             system_map: SystemMap
                 ) -> None:
+        self._thread_reservation_coordinator = thread_reservation_coordinator
         self._system_thread_manager = system_thread_manager
         self._event_bus = event_bus
         self._move_handler = move_handler
         self._status_manager = status_manager
-        self._reservation_manager = reservation_manager
         self._system_map = system_map
 
     def create_instance(self, workflow: WorkflowInstance) -> ExecutingWorkflow:
         return ExecutingWorkflow(workflow,
-                 self._system_thread_manager,
-                 self._event_bus,
-                 self._move_handler,
-                 self._status_manager,
-                self._reservation_manager,
-                self._system_map)
+                                self._thread_reservation_coordinator,
+                                self._system_thread_manager,
+                                self._event_bus,
+                                self._move_handler,
+                                self._status_manager,
+                                self._system_map)
     
 class IExecutingWorkflowRegistry(ABC):
 
