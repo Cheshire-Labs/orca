@@ -14,17 +14,19 @@ from orca.system.interfaces import IWorkflowRegistry
 from orca.system.resource_registry import IResourceRegistry, IResourceRegistryObesrver
 from orca.system.system_map import SystemMap
 from orca.system.registries import LabwareRegistry, TemplateRegistry
+from orca.workflow_models.interfaces import IMethod
 from orca.workflow_models.labware_threads.executing_labware_thread import ExecutingLabwareThread, IExecutingThreadRegistry
 from orca.workflow_models.workflows.executing_workflow import ExecutingWorkflow, IExecutingWorkflowRegistry
 from orca.workflow_models.workflows.workflow_factories import ThreadFactory
 from orca.system.thread_registry_interface import IThreadRegistry
-from orca.workflow_models.method import MethodInstance
+from orca.workflow_models.method import ExecutingMethod, MethodInstance
 from orca.workflow_models.method_template import MethodTemplate
 from orca.workflow_models.thread_template import ThreadTemplate
 from orca.workflow_models.labware_threads.labware_thread import LabwareThreadInstance
 from orca.workflow_models.workflows.workflow import WorkflowInstance
 from orca.workflow_models.workflow_templates import WorkflowTemplate
 from orca.system.thread_manager_interface import IThreadManager
+from orca.workflow_models.workflows.workflow_registry import IExecutingMethodRegistry
 
 class System(ISystem):
     def __init__(self, 
@@ -34,6 +36,7 @@ class System(ISystem):
                  template_registry: TemplateRegistry, 
                  labware_registry: LabwareRegistry,
                  thread_registry: IThreadRegistry,
+                 executing_method_registry: IExecutingMethodRegistry,
                  executing_thread_registry: IExecutingThreadRegistry, 
                  thread_factory: ThreadFactory,
                  thread_manager: IThreadManager,
@@ -50,6 +53,7 @@ class System(ISystem):
         self._thread_manager = thread_manager
         self._thread_registry = thread_registry
         self._thread_factory = thread_factory
+        self._executing_method_registry = executing_method_registry
         self._executing_thread_registry = executing_thread_registry
         self._executing_workflow_registry = executing_workflow_registry
 
@@ -185,22 +189,28 @@ class System(ISystem):
         self._thread_registry.add_thread(thread)
         return thread
     
+    def get_executing_method(self, id: str) -> ExecutingMethod:
+        return self._executing_method_registry.get_executing_method(id)
+    
+    def create_executing_method(self, method_id: str, context: WorkflowExecutionContext) -> ExecutingMethod:
+        return self._executing_method_registry.create_executing_method(method_id, context)
+
     def create_executing_thread(self, thread_id: str, context: WorkflowExecutionContext) -> ExecutingLabwareThread:
         return self._executing_thread_registry.create_executing_thread(thread_id, context)
     
     def get_executing_thread(self, thread_id: str) -> ExecutingLabwareThread:
         return self._executing_thread_registry.get_executing_thread(thread_id)
 
-    def get_method(self, id: str) -> MethodInstance:
+    def get_method(self, id: str) -> IMethod:
         return self._method_registry.get_method(id)
     
-    def add_method(self, method: MethodInstance) -> None:
+    def add_method(self, method: IMethod) -> None:
         self._method_registry.add_method(method)
 
     def add_observer(self, observer: IResourceRegistryObesrver) -> None:
         return self._resources.add_observer(observer)
     
-    def create_and_register_method_instance(self, template: MethodTemplate) -> MethodInstance:
+    def create_and_register_method_instance(self, template: MethodTemplate) -> IMethod:
         return self._method_registry.create_and_register_method_instance(template)
         
     def create_and_register_workflow_instance(self, template: WorkflowTemplate) -> WorkflowInstance:

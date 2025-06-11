@@ -1,11 +1,11 @@
 from abc import ABC, abstractmethod
+import asyncio
 import uuid
 from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.location import Location
 from orca.resource_models.transporter_resource import TransporterEquipment
 from orca.sdk.events.execution_context import MoveActionExecutionContext, ThreadExecutionContext
 from orca.system.reservation_manager.location_reservation import LocationReservation
-from orca.workflow_models.actions.base_executor import ExecutingActionDecorator
 from orca.workflow_models.status_manager import StatusManager
 from orca.workflow_models.status_enums import ActionStatus
 
@@ -104,7 +104,7 @@ class MoveAction(IMoveAction):
         self._release_reservation_on_place = release
 
 
-class ExecutingMoveAction(ExecutingActionDecorator, IMoveAction):
+class ExecutingMoveAction(IMoveAction):
     def __init__(self,
                  status_manager: StatusManager,
                  context: ThreadExecutionContext,
@@ -115,6 +115,7 @@ class ExecutingMoveAction(ExecutingActionDecorator, IMoveAction):
         self._context = context
         self.status = ActionStatus.CREATED
         self.status = ActionStatus.AWAITING_MOVE_RESERVATION
+        self._is_executing = asyncio.Lock()
 
     @property
     def status(self) -> ActionStatus:
@@ -159,6 +160,19 @@ class ExecutingMoveAction(ExecutingActionDecorator, IMoveAction):
         if self._action.release_reservation_on_place:
             # TODO: This should be handled elsewhere and the reservation manager shouldn't be within this class
             self._action.reservation.release_reservation()
+
+    async def execute(self) -> None:
+        async with self._is_executing:
+            if self.status == ActionStatus.COMPLETED:
+                return
+            if self.status == ActionStatus.ERRORED:
+                raise ValueError("Action has errored, cannot execute")
+            try:
+                await self._execute_action()
+            except Exception as e:
+                self.status = ActionStatus.ERRORED
+                raise e
+            self.status = ActionStatus.COMPLETED
 
     @property
     def id(self) -> str:

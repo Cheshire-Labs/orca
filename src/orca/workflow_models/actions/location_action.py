@@ -9,7 +9,6 @@ from orca.resource_models.labware import LabwareInstance, LabwareTemplate
 from orca.resource_models.location import Location
 from orca.sdk.events.execution_context import LocationActionExecutionContext, MethodExecutionContext
 from orca.system.reservation_manager.location_reservation import LocationReservation
-from orca.workflow_models.actions.base_executor import ExecutingActionDecorator
 from orca.workflow_models.actions.util import AssignedLabwareManager
 from orca.workflow_models.status_enums import ActionStatus
 from orca.workflow_models.status_manager import StatusManager
@@ -175,7 +174,7 @@ class LocationAction(ILocationAction):
         return self._all_labware_is_present
 
 
-class ExecutingLocationAction(ExecutingActionDecorator, ILocationAction):
+class ExecutingLocationAction(ILocationAction):
     def __init__(self,
                  status_manager: StatusManager,
                  action: ILocationAction,
@@ -186,6 +185,7 @@ class ExecutingLocationAction(ExecutingActionDecorator, ILocationAction):
         self._context = context
         self._action = action
         self.status = ActionStatus.CREATED
+        self._is_executing = asyncio.Lock()
 
     @property
     def status(self) -> ActionStatus:
@@ -210,9 +210,23 @@ class ExecutingLocationAction(ExecutingActionDecorator, ILocationAction):
         await self.all_labware_is_present.wait()
         self._status = ActionStatus.EXECUTING_ACTION
         self._ensure_all_labware_present()
-        # Execute the action
-        if self._action.resource is not None:
-            await self._action.resource.execute(self._action.command, self._action.options)
+
+        await self._action.resource.execute(self._action.command, self._action.options)
+    
+
+    async def execute(self) -> None:
+
+        async with self._is_executing:
+            if self.status == ActionStatus.COMPLETED:
+                return
+            if self.status == ActionStatus.ERRORED:
+                raise ValueError("Action has errored, cannot execute")
+            try:
+                await self._execute_action()
+            except Exception as e:
+                self.status = ActionStatus.ERRORED
+                raise e
+            self.status = ActionStatus.COMPLETED
 
     def _ensure_all_labware_present(self) -> None:
         missing_labware = self._action.get_missing_input_labware()

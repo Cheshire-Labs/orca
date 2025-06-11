@@ -1,7 +1,7 @@
 from orca.resource_models.labware import LabwareTemplate
 from orca.resource_models.location import Location
 from orca.workflow_models.method_template import IMethodTemplate
-from orca.workflow_models.method import MethodInstance
+from orca.workflow_models.method import ExecutingMethod, MethodInstance
 from orca.workflow_models.method_template import JunctionMethodTemplate
 
 
@@ -41,7 +41,7 @@ class ThreadTemplate:
     def method_resolvers(self) -> List[IMethodTemplate]:
         return self._methods
 
-    def set_wrapped_method(self, wrapped_method: MethodInstance) -> None:
+    def set_wrapped_method(self, wrapped_method: ExecutingMethod) -> None:
         if not any([isinstance(m, JunctionMethodTemplate) for m in self._methods]):
             raise ValueError(f"No wrapper methods found to wrap {wrapped_method.name} within thread {self.name}")
         for m in self._methods:

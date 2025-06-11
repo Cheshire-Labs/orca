@@ -43,7 +43,7 @@ class MethodInstance(IMethod):
 
 
 class ExecutingMethod(IMethod):
-    def __init__(self, method: MethodInstance, event_bus: IEventBus, status_manager: StatusManager, context: WorkflowExecutionContext) -> None:
+    def __init__(self, method: IMethod, event_bus: IEventBus, status_manager: StatusManager, context: WorkflowExecutionContext) -> None:
         self._event_bus = event_bus
         self._status_manager = status_manager
         self._context = context
@@ -51,6 +51,7 @@ class ExecutingMethod(IMethod):
         self._pending_actions: List[UnresolvedLocationAction] = method.actions
         self._current_action: LocationAction | None = None
         self._completed_actions: List[LocationAction] = []
+        self._index = 0
         self.status = MethodStatus.CREATED
         self._resolving_action_lock = asyncio.Lock()
 
@@ -118,17 +119,12 @@ class ExecutingMethod(IMethod):
                 self._current_action = None
                 self.status = MethodStatus.COMPLETED
 
-    async def resolve_next_action(self, thread_id: str, current_location: Location, action_resolver: DynamicResourceActionResolver) -> LocationAction | None:
+    async def resolve_next_action(self, thread_id: str, current_location: Location, action_resolver: DynamicResourceActionResolver) -> LocationAction:
         
         async with self._resolving_action_lock:
             if self._current_action is None:
-            
-                if len(self.pending_actions) == 0:
-                    # method has completed
-                    self.status = MethodStatus.COMPLETED
-                    self._current_action = None
-                    return None
-                
+                assert len(self.pending_actions) > 0, "Method has completed.  No pending actions to resolve."
+
                 # resolve the next action
                 self.status = MethodStatus.IN_PROGRESS
                 current_dynamic_action = self.pending_actions.pop(0)
@@ -136,4 +132,3 @@ class ExecutingMethod(IMethod):
                 self._event_bus.subscribe(f"ACTION.{self._current_action.id}.{ActionStatus.COMPLETED.name}", self._handle_action_completed)
 
             return self._current_action
-    

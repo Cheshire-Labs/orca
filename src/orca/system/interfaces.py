@@ -1,10 +1,10 @@
 from abc import ABC, abstractmethod
 from types import MappingProxyType
+from orca.workflow_models.interfaces import IMethod
 from orca.workflow_models.method_template import MethodTemplate
 from orca.workflow_models.thread_template import ThreadTemplate
 from orca.workflow_models.workflows.workflow import WorkflowInstance
 from orca.workflow_models.workflow_templates import WorkflowTemplate
-from orca.workflow_models.method import MethodInstance
 
 
 
@@ -73,16 +73,16 @@ class IThreadTemplateRegistry(ABC):
 
 class IMethodRegistry(ABC):
     @abstractmethod
-    def get_method(self, id: str) -> MethodInstance:
+    def get_method(self, id: str) -> IMethod:
         raise NotImplementedError
 
     @abstractmethod
-    def add_method(self, method: MethodInstance) -> None:
+    def add_method(self, method: IMethod) -> None:
         raise NotImplementedError
     
     
     @abstractmethod
-    def create_and_register_method_instance(self, template: MethodTemplate) -> MethodInstance:
+    def create_and_register_method_instance(self, template: MethodTemplate) -> IMethod:
         raise NotImplementedError
 
 class IWorkflowRegistry(ABC):

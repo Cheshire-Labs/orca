@@ -13,25 +13,26 @@ from orca.workflow_models.actions.move_action import ExecutingMoveAction, MoveAc
 from orca.workflow_models.interfaces import ILabwareThread
 from orca.workflow_models.labware_threads.labware_thread import LabwareThreadInstance, orca_logger
 from orca.workflow_models.method import ExecutingMethod, MethodInstance
-from orca.workflow_models.status_enums import LabwareThreadStatus
+from orca.workflow_models.method_template import JunctionMethodInstance
+from orca.workflow_models.status_enums import LabwareThreadStatus, MethodStatus
 from orca.workflow_models.status_manager import StatusManager
 
 
 import asyncio
 from typing import Dict, List
 
-from orca.workflow_models.workflows.workflow_registry import ThreadRegistry
+from orca.workflow_models.workflows.workflow_registry import ExecutingMethodRegistry, ThreadRegistry
 
 
 class ExecutingLabwareThread(ILabwareThread):
 
     def __init__(self,
                  thread: LabwareThreadInstance,
+                 methods: List[ExecutingMethod],
                  event_bus: IEventBus,
                  move_handler: MoveHandler,
                  status_manager: StatusManager,
-                 reservation_coordinator: IThreadReservationCoordinator,
-                 system_map: SystemMap,
+                 actions_resolver: DynamicResourceActionResolver,
                  context: WorkflowExecutionContext,
                  ) -> None:
 
@@ -40,9 +41,10 @@ class ExecutingLabwareThread(ILabwareThread):
         self._status_manager = status_manager
         self._context: WorkflowExecutionContext = context
         self._event_bus = event_bus
-        self._action_resolver = DynamicResourceActionResolver(reservation_coordinator, system_map)
-        self._pending_methods: List[ExecutingMethod] = [ExecutingMethod(m, self._event_bus, status_manager, self._context) for m in thread._method_sequence]
+        self._action_resolver = actions_resolver
+        self._pending_methods: List[ExecutingMethod] = methods # [ExecutingMethod(m, self._event_bus, status_manager, self._context) for m in thread._method_sequence]
         self._assigned_method: ExecutingMethod | None = None
+        self._assigned_action: ILocationAction | None = None
         self._completed_methods: List[ExecutingMethod] = []
         # set current_location is after self._status assignment to accommodate scripts changing start location
         # TODO: source of truth needs to be changed to a labware manager
@@ -160,54 +162,40 @@ class ExecutingLabwareThread(ILabwareThread):
         if self._stop_event.is_set():
             self._handle_thread_stop()
             return
-        
+        self._assigned_method = self._pending_methods.pop(0)
         # loop through all methods in the thread
         while len(self._pending_methods) > 0:
-            self._assigned_method = self._pending_methods.pop(0)
+            
 
             # loop through method's actions until all actions are completed
             while True:
+                assert self._assigned_method is not None, "Assigned method should not be None when starting thread"
+                
+                if self._assigned_method.status == MethodStatus.COMPLETED:
+                    self._completed_methods.append(self._assigned_method)
+                    if len(self._pending_methods) == 0:
+                        self._assigned_method = None
+                        break
+                    self._assigned_method = self._pending_methods.pop(0)
+                   
+
                 self._assigned_action = await self._assigned_method.resolve_next_action(
                     self._thread.id,
                     self.current_location, 
                     self._action_resolver
                 )
 
-                if self._assigned_action is None:
-                    self._completed_methods.append(self._assigned_method)
-                    self._assigned_method = None
-                    break  # go to next method
 
                 # move to the assigned action's location
                 while self.current_location != self._assigned_action.location:
-                    await self._assign_and_execute_move_action_to_location_action()
+                    await self._resolve_and_execute_move()
 
-                await self._handle_thread_at_assigned_location()
+                await self._handle_thread_at_assigned_action_location()
 
         # all methods in the thread are completed, now move to end location
         await self._handle_thread_completion()
 
-
-
-    # def handle_method_complete(self, event: str, context: ExecutionContext) -> None:
-    #     asyncio.create_task(self._advance_thread())
-
-
-
-    # async def _start_next_method(self) -> None:
-    #     if len(self.pending_methods) == 0:
-    #         orca_logger.info(f"No pending methods for thread {self._thread.name}. Sending thread to end location {self.end_location.name}.")
-    #         await self._handle_thread_completion()
-    #         return
-    #     next_method = self.pending_methods[0]
-
-
-    #     orca_logger.info(f"Starting next method: {next_method.name} in thread {self._thread.name}")
-    #     await next_method.resolve_next_action(self.current_location, self._action_resolver)
-    #     self._event_bus.subscribe(f"METHOD.{next_method.id}.{MethodStatus.COMPLETED.name}", self.handle_method_complete)
-    #     await self._advance_thread()
-
-    async def _assign_and_execute_move_action_to_location_action(self) -> None:
+    async def _resolve_and_execute_move(self) -> None:
         assert self.assigned_action is not None, "Assigned action should not be None when moving to assigned location"
         self.status = LabwareThreadStatus.AWAITING_MOVE_RESERVATION
 
@@ -219,7 +207,7 @@ class ExecutingLabwareThread(ILabwareThread):
                                              self.assigned_action)
         await self._execute_move_action()
 
-    async def _handle_thread_at_assigned_location(self) -> None:
+    async def _handle_thread_at_assigned_action_location(self) -> None:
         assert self.assigned_action is not None
         assert self.current_location == self.assigned_action.location
         self.status = LabwareThreadStatus.AWAITING_CO_THREADS
@@ -290,23 +278,38 @@ class ExecutingThreadFactory:
                  move_handler: MoveHandler,
                  status_manager: StatusManager,
                  reservation_coordinator: IThreadReservationCoordinator,
+                 actions_resolver: DynamicResourceActionResolver,
+                 executing_method_registry: ExecutingMethodRegistry,
                  system_map: SystemMap) -> None:
         self._event_bus = event_bus
+        self._actions_resolver = actions_resolver
         self._move_handler = move_handler
         self._status_manager = status_manager
         self._reservation_coordinator = reservation_coordinator
         self._system_map = system_map
+        self._executing_method_registry = executing_method_registry
 
     def create_instance(self,
                         instance: LabwareThreadInstance,
                         context: WorkflowExecutionContext) -> ExecutingLabwareThread:
+        methods: List[ExecutingMethod] = []
+        for m in instance.methods:
+            executing_method: ExecutingMethod
+            if isinstance(m, JunctionMethodInstance):
+                if m.id in self._executing_method_registry:
+                    executing_method = self._executing_method_registry.get_executing_method(m.id)
+                else:
+                    executing_method = self._executing_method_registry.create_executing_method(m.id, context)
+            if isinstance(m, MethodInstance):
+                executing_method = self._executing_method_registry.create_executing_method(m.id, context)
+            methods.append(executing_method)
         return ExecutingLabwareThread(
             instance,
+            methods,
             self._event_bus,
             self._move_handler,
             self._status_manager,
-            self._reservation_coordinator,
-            self._system_map,
+            self._actions_resolver,
             context
         )
 
