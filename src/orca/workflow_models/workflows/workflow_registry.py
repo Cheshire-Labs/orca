@@ -1,12 +1,17 @@
+from abc import ABC, abstractmethod
 from typing import Dict, List
+from orca.sdk.events.event_bus_interface import IEventBus
+from orca.sdk.events.execution_context import WorkflowExecutionContext
 from orca.system.interfaces import IMethodRegistry, IWorkflowRegistry
 from orca.system.labware_registry_interfaces import ILabwareRegistry
 from orca.system.thread_registry_interface import IThreadRegistry
+from orca.workflow_models.interfaces import IMethod
+from orca.workflow_models.status_manager import StatusManager
 from orca.workflow_models.workflows.workflow_factories import ThreadFactory
 from orca.workflow_models.workflows.workflow_factories import MethodFactory
 from orca.workflow_models.workflows.workflow_factories import WorkflowFactory
 from orca.workflow_models.labware_threads.labware_thread import LabwareThreadInstance
-from orca.workflow_models.method import MethodInstance
+from orca.workflow_models.method import ExecutingMethod, MethodInstance
 from orca.workflow_models.method_template import MethodTemplate
 from orca.workflow_models.thread_template import ThreadTemplate
 from orca.workflow_models.workflows.workflow import WorkflowInstance
@@ -15,21 +20,64 @@ from orca.workflow_models.workflow_templates import WorkflowTemplate
 class MethodRegistry(IMethodRegistry):
     def __init__(self, method_factory: MethodFactory) -> None:
         self._method_factory = method_factory
-        self._methods: Dict[str, MethodInstance] = {}
+        self._methods: Dict[str, IMethod] = {}
 
-    def get_method(self, id: str) -> MethodInstance:
+    def get_method(self, id: str) -> IMethod:
         return self._methods[id]
     
-    def add_method(self, method: MethodInstance) -> None:
+    def add_method(self, method: IMethod) -> None:
         self._methods[method.id] = method
 
-    def create_and_register_method_instance(self, template: MethodTemplate) -> MethodInstance:
+    def create_and_register_method_instance(self, template: MethodTemplate) -> IMethod:
         method = self._method_factory.create_instance(template)
         self.add_method(method)
         return method
     
     def clear(self) -> None:
         self._methods.clear()
+
+
+class ExecutingMethodFactory:
+    def __init__(self, event_bus: IEventBus, status_manager: StatusManager) -> None:
+        self._event_bus = event_bus
+        self._status_manager = status_manager
+
+    def create_instance(self, method: IMethod, context: WorkflowExecutionContext) -> ExecutingMethod:
+        executing_method = ExecutingMethod(
+            method,
+            self._event_bus,
+            self._status_manager,
+            context
+        )
+        return executing_method
+    
+class IExecutingMethodRegistry(ABC):
+
+    @abstractmethod
+    def get_executing_method(self, id: str) -> ExecutingMethod:
+        raise NotImplementedError("This method should be implemented by subclasses.")
+    
+    @abstractmethod
+    def create_executing_method(self, method_id: str, context: WorkflowExecutionContext) -> ExecutingMethod:
+         raise NotImplementedError("This method should be implemented by subclasses.")
+    
+class ExecutingMethodRegistry(IExecutingMethodRegistry):
+    def __init__(self, method_registry: IMethodRegistry, method_factory: ExecutingMethodFactory) -> None:
+        self._method_registry = method_registry
+        self._method_factory = method_factory
+        self._executing_registry: Dict[str, ExecutingMethod] = {}
+
+    def get_executing_method(self, id: str) -> ExecutingMethod:
+        return self._executing_registry[id]
+
+    def create_executing_method(self, method_id: str, context: WorkflowExecutionContext) -> ExecutingMethod:
+        method = self._method_registry.get_method(method_id)
+        executing_method = self._method_factory.create_instance(method, context)
+        self._executing_registry[executing_method.id] = executing_method
+        return executing_method
+    
+    def __contains__(self, id: str) -> bool:
+        return id in self._executing_registry
 
 class ThreadRegistry(IThreadRegistry):
     def __init__(self,

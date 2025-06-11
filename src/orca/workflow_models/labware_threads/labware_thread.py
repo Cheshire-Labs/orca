@@ -6,7 +6,7 @@ from typing import Callable, List
 from orca.resource_models.location import Location
 from orca.resource_models.labware import LabwareInstance
 from orca.sdk.events.execution_context import ExecutionContext
-from orca.workflow_models.interfaces import ILabwareThread
+from orca.workflow_models.interfaces import ILabwareThread, IMethod
 from orca.workflow_models.method import MethodInstance
 
 from orca.workflow_models.status_enums import ActionStatus
@@ -48,7 +48,7 @@ class LabwareThreadInstance(ILabwareThread):
         self._labware: LabwareInstance = labware
         self._start_location: Location = start_location
         self._end_location: Location = end_location
-        self._method_sequence: List[MethodInstance] = []
+        self._method_sequence: List[IMethod] = []
         # self._status: LabwareThreadStatus = LabwareThreadStatus.UNCREATED
         # self.status = LabwareThreadStatus.CREATED
         # set current_location is after self._status assignment to accommodate scripts changing start location
@@ -81,10 +81,10 @@ class LabwareThreadInstance(ILabwareThread):
         return self._labware
     
     @property
-    def methods(self) -> List[MethodInstance]:
+    def methods(self) -> List[IMethod]:
         return self._method_sequence
 
-    def append_method_sequence(self, method: MethodInstance) -> None:
+    def append_method_sequence(self, method: IMethod) -> None:
         self._method_sequence.append(method)
 
 

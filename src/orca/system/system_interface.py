@@ -13,6 +13,7 @@ from orca.workflow_models.workflows.executing_workflow import IExecutingWorkflow
 
 from orca.workflow_models.labware_threads.labware_thread import LabwareThreadInstance
 from orca.workflow_models.thread_template import ThreadTemplate
+from orca.workflow_models.workflows.workflow_registry import IExecutingMethodRegistry
 
 
 class ISystem(ISystemInfo,
@@ -29,6 +30,7 @@ class ISystem(ISystemInfo,
               IWorkflowRegistry,
               IExecutingWorkflowRegistry,
               IThreadManager,
+              IExecutingMethodRegistry,
               ABC):
 
     @property

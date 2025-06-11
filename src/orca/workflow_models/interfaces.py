@@ -65,5 +65,5 @@ class IMethod(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def assign_thread(self, input_template: LabwareTemplate, thread: "LabwareThreadInstance") -> None:
+    def assign_thread(self, input_template: LabwareTemplate, thread: ILabwareThread) -> None:
         raise NotImplementedError

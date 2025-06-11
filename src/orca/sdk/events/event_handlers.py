@@ -31,7 +31,7 @@ class Spawn(SystemBoundEventHandler):
         if event == "METHOD.IN_PROGRESS":
             workflow = self.system.get_executing_workflow(self._parent_workflow_id)
             if self._join_method:
-                method = self.system.get_method(context.method_id)
+                method = self.system.get_executing_method(context.method_id)
                 self._spawn_thread.set_wrapped_method(method)
             thread_instance = self.system.create_and_register_thread_instance(self._spawn_thread)
             workflow.add_and_start_thread(thread_instance)
@@ -55,5 +55,5 @@ class Join(SystemBoundEventHandler):
         if event == "METHOD.IN_PROGRESS":
             if context.method_id is None:
                 raise ValueError("Method ID must be provided in the context for Join event handler")
-            method = self.system.get_method(context.method_id)
+            method = self.system.get_executing_method(context.method_id)
             self._attaching_thread.set_wrapped_method(method)

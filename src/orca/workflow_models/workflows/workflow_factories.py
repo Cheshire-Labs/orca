@@ -1,8 +1,9 @@
 from orca.workflow_models.action_template import MethodActionTemplate
 from orca.workflow_models.actions.dynamic_resource_action import UnresolvedLocationAction
+from orca.workflow_models.interfaces import IMethod
 from orca.workflow_models.labware_threads.labware_thread import LabwareThreadInstance
 from orca.workflow_models.method import MethodInstance
-from orca.workflow_models.method_template import IMethodTemplate, JunctionMethodTemplate, MethodTemplate
+from orca.workflow_models.method_template import IMethodTemplate, JunctionMethodInstance, JunctionMethodTemplate, MethodTemplate
 from orca.workflow_models.thread_template import ThreadTemplate
 from orca.workflow_models.workflows.workflow import WorkflowInstance
 from orca.workflow_models.workflow_templates import WorkflowTemplate
@@ -26,9 +27,9 @@ class MethodActionFactory:
 
 class MethodFactory:
 
-    def create_instance(self, template: IMethodTemplate) -> MethodInstance:
+    def create_instance(self, template: IMethodTemplate) -> IMethod:
         if isinstance(template, JunctionMethodTemplate):
-            return template.method
+            return JunctionMethodInstance(template.method)
         elif isinstance(template, MethodTemplate):
             method = MethodInstance( template.name)
             for action_template in template.actions:
@@ -55,6 +56,7 @@ class ThreadFactory:
                                 template.start_location,
                                 template.end_location,
                                 )
+        
         for method_template in template.method_resolvers:
             method = self._method_factory.create_instance(method_template)
             method.assign_thread(template.labware_template, thread)
