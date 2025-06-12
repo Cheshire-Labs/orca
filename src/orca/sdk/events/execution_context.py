@@ -15,13 +15,19 @@ class ThreadExecutionContext(WorkflowExecutionContext):
 
 
 @dataclass(frozen=True)
-class MethodExecutionContext(ThreadExecutionContext):
+class MethodExecutionContext(WorkflowExecutionContext):
     method_id: Optional[str]
     method_name: Optional[str]
 
 
 @dataclass(frozen=True)
-class ActionExecutionContext(MethodExecutionContext):
+class LocationActionExecutionContext(MethodExecutionContext):
+    action_id: str
+    action_status: str
+    action_name: Optional[str] = None
+
+@dataclass(frozen=True)
+class MoveActionExecutionContext(ThreadExecutionContext):
     action_id: str
     action_status: str
     action_name: Optional[str] = None
@@ -32,5 +38,5 @@ ExecutionContext = Union[
     WorkflowExecutionContext,
     ThreadExecutionContext,
     MethodExecutionContext,
-    ActionExecutionContext
+    LocationActionExecutionContext
 ]

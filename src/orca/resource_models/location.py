@@ -3,7 +3,7 @@ from typing import Optional
 from typing import Any, Dict
 from orca.resource_models.plate_pad import PlatePad
 from orca.resource_models.base_resource import ILabwarePlaceable
-from orca.resource_models.labware import Labware
+from orca.resource_models.labware import LabwareInstance
 
 
 from abc import ABC
@@ -18,7 +18,7 @@ class IResourceLocationObserver(ABC):
         pass
 
 class ILabwareLocationObserver(ABC):
-    def notify_labware_location_change(self, event: str, location: "Location", labware: Labware) -> None:
+    def notify_labware_location_change(self, event: str, location: "Location", labware: LabwareInstance) -> None:
         pass
 
 class Location(ILabwarePlaceable):
@@ -39,10 +39,10 @@ class Location(ILabwarePlaceable):
         return self._teachpoint_name
 
     @property
-    def labware(self) -> Optional[Labware]:
+    def labware(self) -> Optional[LabwareInstance]:
         return self._resource.labware
     
-    def initialize_labware(self, labware: Labware) -> None:
+    def initialize_labware(self, labware: LabwareInstance) -> None:
         # TODO: this will need to be restricted to only initilaizing the labware
         self._resource.initialize_labware(labware)
 
@@ -59,18 +59,18 @@ class Location(ILabwarePlaceable):
     def set_options(self, options: Dict[str, Any]) -> None:
         self._options = options
 
-    async def prepare_for_place(self, labware: Labware) -> None:
+    async def prepare_for_place(self, labware: LabwareInstance) -> None:
         await self._resource.prepare_for_place(labware)
 
-    async def prepare_for_pick(self, labware: Labware) -> None:
+    async def prepare_for_pick(self, labware: LabwareInstance) -> None:
         await self._resource.prepare_for_pick(labware)
 
-    async def notify_picked(self, labware: Labware) -> None:
+    async def notify_picked(self, labware: LabwareInstance) -> None:
         await self._resource.notify_picked(labware)
         for observer in self._labware_observers:
             observer.notify_labware_location_change("picked", self, labware)
     
-    async def notify_placed(self, labware: Labware) -> None:
+    async def notify_placed(self, labware: LabwareInstance) -> None:
         await self._resource.notify_placed(labware)
         for observer in self._labware_observers:
             observer.notify_labware_location_change("placed", self, labware)

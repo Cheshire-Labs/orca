@@ -59,7 +59,7 @@ class StandaloneMethodExecutor:
                                              self._end_mapping[labware_template])
             thread_template.add_method(JunctionMethodTemplate())
             thread_template.set_wrapped_method(method)
-            thread = self._thread_manager.create_thread_instance(thread_template)
+            thread = self._thread_manager.start_labware_thread(thread_template)
             
     @property
     def id(self) -> str:
