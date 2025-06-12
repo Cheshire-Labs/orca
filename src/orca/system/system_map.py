@@ -223,7 +223,7 @@ class SystemMap(ILocationRegistry, IResourceLocator, IResourceLocationObserver, 
             if isinstance(resource, ILabwarePlaceable):
                 self._equipment_map[resource.name] = location
 
-    def _get_available_graph(self, include_nodes: List[str] = []) -> _NetworkXHandler:
+    def _get_available_graph(self, include_nodes: Optional[List[str]] = None) -> _NetworkXHandler:
         subgraph = self._graph.get_subgraph([name for name, _ in self._get_available_locations(include_nodes).items()])
         available_edges: List[Tuple[str, str, Dict[str, Any]]] = []
         for edge in subgraph.get_all_edges():
@@ -239,8 +239,9 @@ class SystemMap(ILocationRegistry, IResourceLocator, IResourceLocationObserver, 
         return available_graph
 
 
-    def _get_available_locations(self, include_nodes: List[str] = []) -> Dict[str, Dict[str, Any]]:
+    def _get_available_locations(self, include_nodes: Optional[List[str]] = None) -> Dict[str, Dict[str, Any]]:
         nodes = {}
+        include_nodes = include_nodes if include_nodes is not None else []
         for node, nodedata in self._graph.get_nodes().items():
             location: Location = nodedata["location"]
             if node in include_nodes or location.labware is None:

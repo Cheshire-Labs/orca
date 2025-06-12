@@ -45,9 +45,10 @@ class MockEquipmentResource(Device):
 
 
 class MockRoboticArm(TransporterEquipment):
-    def __init__(self, name: str, mocking_type: Optional[str] = None, positions: List[str] = []) -> None:
+    def __init__(self, name: str, mocking_type: Optional[str] = None, positions: Optional[List[str]] = None) -> None:
         file_reconciler = MagicMock(FilepathReconciler)
         driver = LegacySimulationRoboticArmDriver(name, file_reconciler, mocking_type)
+        positions = positions if positions is not None else []
         driver.set_init_options({"positions": positions})
         super().__init__(name, driver)
         self._on_pick: Callable[[LabwareInstance, Location], None] = lambda x, y: None

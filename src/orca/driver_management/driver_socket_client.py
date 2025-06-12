@@ -58,7 +58,8 @@ class RemoteDriverClient(IDriver):
         assert self._sio is not None
         return await self._sio.send(action, data)
         
-    def _run_async_task(self, action: str, data: Dict[str, Any] = {}) -> Dict[str, Any]:
+    def _run_async_task(self, action: str, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        data = data if data is not None else {}
         try:
             loop = asyncio.get_running_loop()
             future = asyncio.run_coroutine_threadsafe(self.send(action, data), loop)

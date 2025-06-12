@@ -5,7 +5,7 @@ from orca.resource_models.labware import AnyLabwareTemplate, LabwareInstance, La
 from orca.resource_models.location import Location
 from orca.resource_models.resource_pool import EquipmentResourcePool
 
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Optional, Union
 
 from orca.system.reservation_manager.interfaces import IThreadReservationCoordinator
 from orca.system.system_map import SystemMap
@@ -19,7 +19,7 @@ class UnresolvedLocationAction:
                  command: str, 
                  expected_input_templates: List[Union[LabwareTemplate, AnyLabwareTemplate]], 
                  expected_output_templates: List[Union[LabwareTemplate, AnyLabwareTemplate]], 
-                 options: Dict[str, Any] = {}) -> None:
+                 options: Optional[Dict[str, Any]] = None) -> None:
         self._id = str(uuid.uuid4())
         if isinstance(resource, EquipmentResourcePool):
             self._resource_pool: EquipmentResourcePool = resource
@@ -33,7 +33,7 @@ class UnresolvedLocationAction:
         self._assigned_labware_manager = AssignedLabwareManager(
             self._expected_input_templates, 
             self._expected_output_templates)
-        self._options = options
+        self._options = options if options is not None else {}
     @property
     def id(self) -> str:
         return self._id
