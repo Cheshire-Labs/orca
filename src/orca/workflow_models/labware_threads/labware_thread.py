@@ -68,6 +68,10 @@ class LabwareThreadInstance(ILabwareThread):
     def start_location(self) -> Location:
         return self._start_location
     
+    @start_location.setter
+    def start_location(self, location: Location) -> None:
+        self._start_location = location
+    
     @property
     def end_location(self) -> Location:
         return self._end_location
