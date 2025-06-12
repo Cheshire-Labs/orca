@@ -15,6 +15,7 @@ from orca.sdk.events.event_bus import EventBus
 from orca.sdk.events.event_handlers import Spawn, SystemBoundEventHandler
 from orca.sdk.events.execution_context import ExecutionContext, ThreadExecutionContext, WorkflowExecutionContext
 from orca.system.resource_registry import ResourceRegistry
+from orca.system.standalone_method_executor import NewStandalonMethodExecutor
 from orca.system.system_map import SystemMap
 from orca.workflow_models.action_template import MethodActionTemplate
 from orca.workflow_models.labware_threads.executing_labware_thread import ExecutingLabwareThread
@@ -447,29 +448,6 @@ smc_workflow.set_spawn_point(tips_384_thread, plate_1_thread, combine_plates, Tr
 smc_workflow.set_spawn_point(final_plate_thread, plate_1_thread, combine_plates, True)
 smc_workflow.set_spawn_point(tips_384_thread, final_plate_thread, transfer_eluate, True)
 
-
-# class SpawnNewOnFourthPlateOld(SystemBoundEventHandler):
-#     def __init__(self, spawn_thread: ThreadTemplate, parent_threads: List[ThreadTemplate], parent_methods: List[MethodTemplate]) -> None:
-#         self._spawn_thread = spawn_thread
-#         self._parent_threads = parent_threads
-#         self._parent_methods = parent_methods
-#         self._num_of_spawns = 0
-    
-#     def handle(self, event: str, context: Any) -> None:
-#         assert isinstance(context, MethodExecutionContext), "Context must be of type MethodExecutionContext"
-#         if context.thread_name not in [t.name for t in self._parent_threads]:
-#             return
-#         if context.method_name not in [m.name for m in self._parent_methods]:
-#             return
-#         if event == "METHOD.IN_PROGRESS":
-#             thread = self.system.create_thread_instance(self._spawn_thread, context)
-#             if self._num_of_spawns % 4 != 0:
-#                 thread.start_location = thread.end_location
-#             self.system.add_thread(thread)
-#             self._num_of_spawns += 1
-
-
-
 class SpawnNewOnFourthPlate(SystemBoundEventHandler):
     def __init__(self, attach_thread: ThreadTemplate):
         self._attach_thread = attach_thread
@@ -533,7 +511,41 @@ async def run():
     await workflow.start()
     orca_logger.info("SMC Assay workflow completed.")
 
+async def run_method():
+    # await sample_to_bead_plate_method.run_standalone(
+    #     labware_start_mapping={
+    #         sample_plate: map.get_location("stacker_sample_start"),
+    #         tips_96: map.get_location("stacker_96_tips"),
+    #         plate_1: map.get_location("stacker_plate_1_start")
+    #     },
+    #     labware_end_mapping={
+    #         sample_plate: map.get_location("stacker_sample_end"),
+    #         tips_96: map.get_location("waste_1"),
+    #         plate_1: map.get_location("stacker_plate_1_start")
+    #     }
+    # )
+    executor = NewStandalonMethodExecutor(
+        sample_to_bead_plate_method,
+        {
+            sample_plate: map.get_location("stacker_4"),
+            tips_96: map.get_location("stacker_5"),
+            plate_1: map.get_location("stacker_3")
+        },
+        {
+            sample_plate: map.get_location("stacker_2"),
+            tips_96: map.get_location("waste_1"),
+            plate_1: map.get_location("stacker_3")
+        },
+        system,
+        system,
+        system,
+        system
+    )
+    await executor.start()
+    orca_logger.info("Sample to Bead Plate method completed.")
+
 if __name__ == "__main__":
-    asyncio.run(run())
+    # asyncio.run(run())
+    asyncio.run(run_method())
     orca_logger.info("Run completed successfully.")
     time.sleep(2)  # Allow time for logging to complete before exiting

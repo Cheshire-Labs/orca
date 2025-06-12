@@ -1,36 +1,39 @@
-from typing import Dict
+from typing import Dict, List, Optional
 import uuid
 from orca.resource_models.labware import LabwareTemplate
 from orca.resource_models.location import Location
-from orca.system.labware_registry_interfaces import ILabwareRegistry
-from orca.system.thread_manager_interface import IThreadManager
+from orca.sdk.events.execution_context import WorkflowExecutionContext
+from orca.system.interfaces import IMethodRegistry, IWorkflowRegistry
 from orca.workflow_models.method_template import MethodTemplate
 from orca.workflow_models.thread_template import ThreadTemplate
-from orca.workflow_models.spawn_thread_action import SpawnThreadAction
 from orca.workflow_models.method_template import JunctionMethodTemplate
+from orca.workflow_models.workflow_templates import EventHookInfo, WorkflowTemplate
+from orca.workflow_models.workflows.executing_workflow import IExecutingWorkflowRegistry
+from orca.workflow_models.workflows.workflow_registry import IExecutingMethodRegistry
 
-class StandaloneMethodExecutor:
+class NewStandalonMethodExecutor:
     def __init__(self, 
                  template: MethodTemplate, 
                  labware_start_mapping: Dict[LabwareTemplate, Location], 
                  labware_end_mapping: Dict[LabwareTemplate, Location],
-                 thread_manager: IThreadManager,
-                 labware_registry: ILabwareRegistry) -> None: 
-        self._id: str = str(uuid.uuid4())
+                 method_registry: IMethodRegistry,
+                 executing_method_registry: IExecutingMethodRegistry,
+                 workflow_registry: IWorkflowRegistry,
+                 executing_workflow_registry: IExecutingWorkflowRegistry,
+                 name: str | None = None,
+                 event_hooks: Optional[List[EventHookInfo]] = None) -> None:
+        self._id = str(uuid.uuid4())
         self._method_template = template
-
-        # TODO:  Obviously an atrocious fix here to remove any spawn thread actions from the method observers
-        # TODO: needs to be replaced after refactoring the registry to make a distinction between 
-        # stand alone method template definitonss and method templates defined as part of workflows
-        replacement_observers = [o for o in self._method_template._method_observers if not isinstance(o, SpawnThreadAction)]
-        self._method_template._method_observers = replacement_observers
-
+        self._name = name or f"{self._method_template.name}_standalone_{self._id}"
+        self._workflow_registry = workflow_registry
         self._start_mapping = labware_start_mapping
         self._end_mapping = labware_end_mapping
-        self._thread_manager = thread_manager
-        self._labware_registry = labware_registry
+        self._method_registry = method_registry
+        self._executing_method_registry = executing_method_registry
+        self._executing_workflow_registry = executing_workflow_registry
+        self._event_hooks = event_hooks if event_hooks is not None else []
         self._validate_labware_location_mappings()
-        self._create_labware_threads()
+        self._thread_templates = self._get_labware_threads()
 
     def _validate_labware_location_mappings(self) -> None:
         # simple check that the AnyLabware wildcard is satisfied
@@ -48,25 +51,41 @@ class StandaloneMethodExecutor:
         for labware_template in self._method_template.outputs:
             if isinstance(labware_template, LabwareTemplate) and labware_template not in self._end_mapping.keys():
                 raise ValueError(f"Labware {labware_template.name} is expected as an output but its ending location is not in the end_map")
-
-    def _create_labware_threads(self) -> None:
-        # TODO: mappings won't work here for labwares that end or start within a method action
-        method = self._method_template.get_instance(self._labware_registry)
-        
+    
+    def _get_labware_threads(self) -> List[ThreadTemplate]:
+        # TODO: mappings won't work here for labwares that end or start within a method action      
+        method = self._method_registry.create_and_register_method_instance(self._method_template)
+        context = WorkflowExecutionContext(
+            self._id,
+            self._name)
+        executing_method = self._executing_method_registry.create_executing_method(method.id, context)
+        threads: List[ThreadTemplate] = []
         for idx, labware_template in enumerate(self._start_mapping.keys()):
             thread_template = ThreadTemplate(labware_template, 
                                              self._start_mapping[labware_template],
                                              self._end_mapping[labware_template])
-            thread_template.add_method(JunctionMethodTemplate())
-            thread_template.set_wrapped_method(method)
-            thread = self._thread_manager.start_labware_thread(thread_template)
             
-    @property
-    def id(self) -> str:
-        return self._id
+            thread_template.add_method(JunctionMethodTemplate())
+            thread_template.set_wrapped_method(executing_method)
+            threads.append(thread_template)
+        return threads
     
-    async def start(self):
-        await self._thread_manager.start_all_threads()
+    def _get_workflow_template(self) -> WorkflowTemplate:
+        workflow_template = WorkflowTemplate(
+            self._name,
+            )
 
+        for thread_template in self._thread_templates:
+            workflow_template.add_thread(thread_template, True)
 
+        for handler in self._event_hooks:
+            workflow_template.add_event_hook(handler.event_name, handler.handler)
 
+        return workflow_template
+    
+    async def start(self) -> None:
+        workflow_template = self._get_workflow_template()
+        workflow_instance = self._workflow_registry.create_and_register_workflow_instance(workflow_template)
+        self._workflow_registry.add_workflow(workflow_instance)
+        workflow = self._executing_workflow_registry.get_executing_workflow(workflow_instance.id)
+        await workflow.start()    
