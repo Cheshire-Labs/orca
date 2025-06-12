@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 import uuid
 
 class LabwareTemplate:
-    def __init__(self, name: str, type: str, options: Dict[str, Any] = {}) -> None:
+    def __init__(self, name: str, type: str, options: Optional[Dict[str, Any]] = None) -> None:
         self._name = name
         self._labware_type = type
-        self._options = options
+        self._options = options if options is not None else {}
     
     @property
     def name(self) -> str:

@@ -1,5 +1,5 @@
 from orca.resource_models.labware import AnyLabwareTemplate, LabwareTemplate
-from typing import Any, Dict, List, Set, Tuple, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 from orca.workflow_models.action_template import MethodActionTemplate
 from orca.workflow_models.actions.dynamic_resource_action import UnresolvedLocationAction
 from orca.workflow_models.interfaces import ILabwareThread, IMethod
@@ -16,10 +16,10 @@ class IMethodTemplate(ABC):
 
 class MethodTemplate(IMethodTemplate):
 
-    def __init__(self, name: str, actions: List[MethodActionTemplate] = [], options: Dict[str, Any] = {}):
+    def __init__(self, name: str, actions: Optional[List[MethodActionTemplate]] = None, options: Optional[Dict[str, Any]] = None):
         self._name = name
-        self._actions: List[MethodActionTemplate] = actions
-        self._options = options
+        self._actions: List[MethodActionTemplate] = actions if actions is not None else []
+        self._options = options if options is not None else {}
 
     @property
     def name(self) -> str:

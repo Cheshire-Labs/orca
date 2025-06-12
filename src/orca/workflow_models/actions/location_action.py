@@ -1,7 +1,7 @@
 from abc import ABC
 import asyncio
 import logging
-from typing import Any, Dict, List, cast
+from typing import Any, Dict, List, Optional, cast
 import uuid
 
 from orca.resource_models.base_resource import Device
@@ -87,10 +87,10 @@ class LocationAction(ILocationAction):
                  location_reservation: LocationReservation, 
                  assigned_labware_manager: AssignedLabwareManager,
                  command: str, 
-                 options: Dict[str, Any] = {}) -> None:
+                 options: Optional[Dict[str, Any]] = None) -> None:
         self._id: str = str(uuid.uuid4())
         self._command: str = command
-        self._options: Dict[str, Any] = options
+        self._options: Dict[str, Any] = options if options is not None else {}
         self._reservation = location_reservation
         self._assigned_labware_manager = assigned_labware_manager
         self._all_labware_is_present = asyncio.Event()
