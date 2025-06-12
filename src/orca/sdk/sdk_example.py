@@ -3,7 +3,6 @@ import os
 import logging
 import sys
 import time
-from typing import Any, List
 from orca.driver_management.drivers.simulation_labware_placeable.simulation_labware_placeable import SimulationDeviceDriver
 from orca.driver_management.drivers.simulation_robotic_arm.simulation_robotic_arm import SimulationRoboticArmDriver
 from orca.resource_models.base_resource import Device
@@ -12,14 +11,14 @@ from orca.resource_models.resource_pool import EquipmentResourcePool
 from orca.resource_models.transporter_resource import TransporterEquipment
 from orca.sdk.SdkToSystemBuilder import SdkToSystemBuilder
 from orca.sdk.events.event_bus import EventBus
-from orca.sdk.events.event_handlers import Spawn, SystemBoundEventHandler
+from orca.sdk.events.event_handlers import SystemBoundEventHandler
 from orca.sdk.events.execution_context import ExecutionContext, ThreadExecutionContext, WorkflowExecutionContext
+from orca.sdk.executors import WorkflowExecutor
 from orca.system.resource_registry import ResourceRegistry
-from orca.system.standalone_method_executor import NewStandalonMethodExecutor
+from orca.sdk.executors import StandalonMethodExecutor
 from orca.system.system_map import SystemMap
 from orca.workflow_models.action_template import MethodActionTemplate
 from orca.workflow_models.labware_threads.executing_labware_thread import ExecutingLabwareThread
-from orca.workflow_models.labware_threads.labware_thread import LabwareThreadInstance
 from orca.workflow_models.method_template import JunctionMethodTemplate, MethodTemplate
 from orca.workflow_models.status_enums import LabwareThreadStatus
 from orca.workflow_models.thread_template import ThreadTemplate
@@ -422,22 +421,12 @@ tips_384_thread = ThreadTemplate(
     JunctionMethodTemplate(),
 ])
 
-
-threads = [
-    plate_1_thread,
-    sample_plate_thread,
-    final_plate_thread,
-    tips_96_thread,
-    tips_384_thread
-]
-
 smc_workflow = WorkflowTemplate("smc_assay")
 smc_workflow.add_thread(plate_1_thread, True)
 smc_workflow.add_thread(sample_plate_thread)
 smc_workflow.add_thread(final_plate_thread)
 smc_workflow.add_thread(tips_96_thread)
 smc_workflow.add_thread(tips_384_thread)
-
 
 smc_workflow.set_spawn_point(sample_plate_thread, plate_1_thread, sample_to_bead_plate_method, True)
 smc_workflow.set_spawn_point(tips_96_thread, plate_1_thread, sample_to_bead_plate_method, True)
@@ -497,55 +486,45 @@ builder = SdkToSystemBuilder(
     map,
     methods,
     [smc_workflow],
-    threads,    
     event_bus
 )
-
 system = builder.get_system()
-workflow_instance = system.create_and_register_workflow_instance(smc_workflow)
-system.add_workflow(workflow_instance)
-workflow = system.get_executing_workflow(workflow_instance.id)
 
 
 async def run():
-    await workflow.start()
+    orca_logger.info("Starting SMC Assay workflow execution.")
+    executor = WorkflowExecutor(smc_workflow, system)
+    await executor.start()
     orca_logger.info("SMC Assay workflow completed.")
 
 async def run_method():
-    # await sample_to_bead_plate_method.run_standalone(
-    #     labware_start_mapping={
-    #         sample_plate: map.get_location("stacker_sample_start"),
-    #         tips_96: map.get_location("stacker_96_tips"),
-    #         plate_1: map.get_location("stacker_plate_1_start")
-    #     },
-    #     labware_end_mapping={
-    #         sample_plate: map.get_location("stacker_sample_end"),
-    #         tips_96: map.get_location("waste_1"),
-    #         plate_1: map.get_location("stacker_plate_1_start")
-    #     }
-    # )
-    executor = NewStandalonMethodExecutor(
+    orca_logger.info("Starting Sample to Bead Plate method execution.")
+    executor = StandalonMethodExecutor(
         sample_to_bead_plate_method,
         {
-            sample_plate: map.get_location("stacker_4"),
-            tips_96: map.get_location("stacker_5"),
-            plate_1: map.get_location("stacker_3")
+            sample_plate: "stacker_4",
+            tips_96: "stacker_5",
+            plate_1: "stacker_3"
         },
         {
-            sample_plate: map.get_location("stacker_2"),
-            tips_96: map.get_location("waste_1"),
-            plate_1: map.get_location("stacker_3")
+            sample_plate: "stacker_2",
+            tips_96: "waste_1",
+            plate_1: "stacker_3"
         },
         system,
-        system,
-        system,
-        system
     )
     await executor.start()
     orca_logger.info("Sample to Bead Plate method completed.")
 
+async def run_both_in_parallel() -> None:
+    await asyncio.gather(
+        run(),
+        run_method()
+    )
+
 if __name__ == "__main__":
-    # asyncio.run(run())
+    asyncio.run(run())
     asyncio.run(run_method())
+    # asyncio.run(run_both_in_parallel())
     orca_logger.info("Run completed successfully.")
     time.sleep(2)  # Allow time for logging to complete before exiting

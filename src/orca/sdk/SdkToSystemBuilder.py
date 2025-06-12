@@ -1,6 +1,4 @@
-import asyncio
 from typing import List
-import typing
 
 from orca.resource_models.labware import LabwareTemplate
 from orca.sdk.events.event_bus_interface import IEventBus
@@ -12,7 +10,7 @@ from orca.system.registries import LabwareRegistry, TemplateRegistry
 from orca.system.reservation_manager.reservation_manager import LocationReservationManager, ThreadReservationCoordinator
 from orca.system.resource_registry import ResourceRegistry
 from orca.system.system import System
-from orca.system.system_map import ILocationRegistry, SystemMap
+from orca.system.system_map import SystemMap
 from orca.system.thread_manager import ThreadManager
 from orca.workflow_models.actions.dynamic_resource_action import DynamicResourceActionResolver
 from orca.workflow_models.labware_threads.executing_labware_thread import ExecutingThreadFactory, ExecutingThreadRegistry
@@ -22,7 +20,6 @@ from orca.workflow_models.workflows.executing_workflow import ExecutingWorkflowF
 from orca.workflow_models.workflows.workflow_registry import ExecutingMethodFactory, ExecutingMethodRegistry, MethodRegistry, ThreadRegistry, WorkflowRegistry
 from orca.workflow_models.workflows.workflow_factories import MethodFactory, WorkflowFactory
 from orca.workflow_models.method_template import MethodTemplate
-from orca.workflow_models.thread_template import ThreadTemplate
 from orca.workflow_models.workflow_templates import WorkflowTemplate
 
 
@@ -39,7 +36,6 @@ class SdkToSystemBuilder:
                  system_map: SystemMap,
                  methods: List[MethodTemplate],
                  workflows: List[WorkflowTemplate],
-                 threads: List[ThreadTemplate],
                  event_bus: IEventBus,
                  ) -> None:
         self._system_info: SystemInfo = SystemInfo(name, description=description, version="0.1.0", model_extra={})
@@ -47,7 +43,8 @@ class SdkToSystemBuilder:
         self._labware_registry: LabwareRegistry = self._get_labware_registry(labwares)
         self._system_map: SystemMap = system_map
         self._event_bus = SystemBoundEventBus(event_bus)
-        self._template_registry: TemplateRegistry = self._get_template_registry(methods, workflows, threads, self._system_map)
+
+        self._template_registry: TemplateRegistry = self._get_template_registry(methods, workflows)
         self._method_factory = MethodFactory()
         self._thread_factory = ThreadFactory(self._method_factory)
         self._method_registry = MethodRegistry(self._method_factory)
@@ -94,15 +91,17 @@ class SdkToSystemBuilder:
                 reg.add_labware_template(l)
         return reg
     
-    def _get_template_registry(self, methods: List[MethodTemplate], workflows: List[WorkflowTemplate], threads: List[ThreadTemplate], location_reg: ILocationRegistry) -> TemplateRegistry:
+    def _get_template_registry(self, methods: List[MethodTemplate], workflows: List[WorkflowTemplate]) -> TemplateRegistry:
         reg = TemplateRegistry()
  
         for m in methods:
             reg.add_method_template(m)
         for w in workflows:
             reg.add_workflow_template(w)
-        for t in threads:
-            reg.add_labware_thread_template(t)
+        for workflow in workflows:
+            for thread in workflow.thread_templates:
+                reg.add_labware_thread_template(thread)
+
         return reg
 
     def get_system(self):
