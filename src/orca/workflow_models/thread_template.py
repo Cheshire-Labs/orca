@@ -5,7 +5,7 @@ from orca.workflow_models.method import ExecutingMethod, MethodInstance
 from orca.workflow_models.method_template import JunctionMethodTemplate
 
 
-from typing import List
+from typing import List, Optional
 
 
 class ThreadTemplate:
@@ -14,12 +14,12 @@ class ThreadTemplate:
                  labware_template: LabwareTemplate, 
                  start: Location, 
                  end: Location, 
-                 methods: List[IMethodTemplate] = [],                  
+                 methods: Optional[List[IMethodTemplate]] = None,                  
                  ) -> None:
         self._labware_template: LabwareTemplate = labware_template
         self._start: Location = start
         self._end: Location = end
-        self._methods: List[IMethodTemplate] = methods
+        self._methods: List[IMethodTemplate] = methods if methods is not None else []
         
     @property
     def name(self) -> str:
