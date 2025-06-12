@@ -13,7 +13,7 @@ from orca.resource_models.transporter_resource import TransporterEquipment
 from orca.sdk.SdkToSystemBuilder import SdkToSystemBuilder
 from orca.sdk.events.event_bus import EventBus
 from orca.sdk.events.event_handlers import Spawn, SystemBoundEventHandler
-from orca.sdk.events.execution_context import ExecutionContext, ThreadExecutionContext
+from orca.sdk.events.execution_context import ExecutionContext, ThreadExecutionContext, WorkflowExecutionContext
 from orca.system.resource_registry import ResourceRegistry
 from orca.system.system_map import SystemMap
 from orca.workflow_models.action_template import MethodActionTemplate
@@ -30,8 +30,7 @@ logging.basicConfig(
     stream=sys.stdout 
 )
 
-logger = logging.getLogger("orca")
-logger.info("This should show up in the terminal/output panel")
+orca_logger = logging.getLogger("orca")
 
 sample_plate = LabwareTemplate(name="sample_plate", type="Matrix 96 Well")
 plate_1 = LabwareTemplate(name="plate_1", type="Corning 96 Well")
@@ -486,17 +485,23 @@ class SpawnNewOnFourthPlate(SystemBoundEventHandler):
         workflow = self.system.get_executing_workflow(context.workflow_id)
         thread = workflow.thread_manager.get_executing_thread(context.thread_id)
         if self._num_of_spawns % 4 != 0:
-            self._await_previous_thread_completion()
-            thread.update_start_location(thread.end_location)
-        self._num_of_spawns += 1
-        self._previous_thread = thread
+            asyncio.create_task(self._await_previous_thread_completion_and_set_start(thread, context))
+        else:
+            # if this is the first spawn, we don't have a previous thread
+            # or if this is the fourth spawn, we allow the thread to end normally
+            self._previous_thread = thread
+        self._num_of_spawns += 1        
     
-    def _await_previous_thread_completion(self):
+    async def _await_previous_thread_completion_and_set_start(self, thread: ExecutingLabwareThread, context: ThreadExecutionContext):
         if self._previous_thread is None:
             return
         while self._previous_thread.status != LabwareThreadStatus.COMPLETED:
-            time.sleep(1)
-        self._previous_thread = None
+            await asyncio.sleep(1)
+        thread_instance = self.system.create_and_register_thread_instance(self._attach_thread)
+        thread_instance.start_location = self._previous_thread.end_location
+        workflow_context = WorkflowExecutionContext(context.workflow_id, context.workflow_name)
+        new_thread = self.system.create_executing_thread(thread_instance.id, workflow_context)
+        self._previous_thread = new_thread
 
         
             
@@ -526,6 +531,9 @@ workflow = system.get_executing_workflow(workflow_instance.id)
 
 async def run():
     await workflow.start()
+    orca_logger.info("SMC Assay workflow completed.")
 
 if __name__ == "__main__":
     asyncio.run(run())
+    orca_logger.info("Run completed successfully.")
+    time.sleep(2)  # Allow time for logging to complete before exiting
