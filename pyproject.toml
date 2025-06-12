@@ -26,7 +26,7 @@ dependencies = [
     "matplotlib>=3.9.0",
     "PyYAML>=6.0.1",
     "requests>=2.32.3", 
-    "orca-interfaces>=0.1.0",
+    "orca-interfaces==0.1.0",
     "fastapi>=0.70.0",
     "uvicorn>=0.15.0",
 ]
