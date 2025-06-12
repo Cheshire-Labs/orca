@@ -7,7 +7,7 @@ from orca.resource_models.location import Location
 from orca.sdk.events.event_bus_interface import IEventBus
 from orca.sdk.events.execution_context import ExecutionContext, MethodExecutionContext, WorkflowExecutionContext
 from orca.workflow_models.actions.dynamic_resource_action import DynamicResourceActionResolver, UnresolvedLocationAction
-from orca.workflow_models.actions.location_action import LocationAction
+from orca.workflow_models.actions.location_action import ExecutingLocationAction, LocationAction
 from orca.workflow_models.interfaces import ILabwareThread, IMethod
 from orca.workflow_models.status_enums import ActionStatus, MethodStatus
 from orca.workflow_models.status_manager import StatusManager
@@ -49,8 +49,8 @@ class ExecutingMethod(IMethod):
         self._context = context
         self._method = method
         self._pending_actions: List[UnresolvedLocationAction] = method.actions
-        self._current_action: LocationAction | None = None
-        self._completed_actions: List[LocationAction] = []
+        self._current_action: ExecutingLocationAction | None = None
+        self._completed_actions: List[ExecutingLocationAction] = []
         self._index = 0
         self.status = MethodStatus.CREATED
         self._resolving_action_lock = asyncio.Lock()
@@ -78,11 +78,11 @@ class ExecutingMethod(IMethod):
         return self._pending_actions
 
     @property
-    def completed_actions(self) -> List[LocationAction]:
+    def completed_actions(self) -> List[ExecutingLocationAction]:
         return self._completed_actions
 
     @property
-    def current_action(self) -> LocationAction | None:
+    def current_action(self) -> ExecutingLocationAction | None:
         return self._current_action
 
     def has_completed(self) -> bool:
@@ -119,7 +119,7 @@ class ExecutingMethod(IMethod):
                 self._current_action = None
                 self.status = MethodStatus.COMPLETED
 
-    async def resolve_next_action(self, thread_id: str, current_location: Location, action_resolver: DynamicResourceActionResolver) -> LocationAction:
+    async def resolve_next_action(self, thread_id: str, current_location: Location, action_resolver: DynamicResourceActionResolver) -> ExecutingLocationAction:
         
         async with self._resolving_action_lock:
             if self._current_action is None:
@@ -128,7 +128,18 @@ class ExecutingMethod(IMethod):
                 # resolve the next action
                 self.status = MethodStatus.IN_PROGRESS
                 current_dynamic_action = self.pending_actions.pop(0)
-                self._current_action = await action_resolver.resolve_action(thread_id, current_dynamic_action, current_location)
+                location_action = await action_resolver.resolve_action(thread_id, current_dynamic_action, current_location)
+                self._current_action = self._create_executing_action(location_action)
                 self._event_bus.subscribe(f"ACTION.{self._current_action.id}.{ActionStatus.COMPLETED.name}", self._handle_action_completed)
 
             return self._current_action
+        
+    def _create_executing_action(self, action: LocationAction) -> ExecutingLocationAction:
+        context = MethodExecutionContext(self._context.workflow_id,
+                                        self._context.workflow_name,
+                                        self._method.id,
+                                        self._method.name)
+        executing_action = ExecutingLocationAction(self._status_manager,
+                                                   action,
+                                                   context)
+        return executing_action

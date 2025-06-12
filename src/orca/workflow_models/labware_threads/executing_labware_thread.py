@@ -44,12 +44,13 @@ class ExecutingLabwareThread(ILabwareThread):
         self._action_resolver = actions_resolver
         self._pending_methods: List[ExecutingMethod] = methods # [ExecutingMethod(m, self._event_bus, status_manager, self._context) for m in thread._method_sequence]
         self._assigned_method: ExecutingMethod | None = None
-        self._assigned_action: ILocationAction | None = None
+
         self._completed_methods: List[ExecutingMethod] = []
         # set current_location is after self._status assignment to accommodate scripts changing start location
         # TODO: source of truth needs to be changed to a labware manager
         self._current_location: Location = self._thread.start_location
         self._previous_action: ExecutingLocationAction | None = None
+        self._assigned_action: ExecutingLocationAction | None = None
         # self._assigned_action: ILocationAction | None = None
         self._move_action: MoveAction | None = None
         self._stop_event = asyncio.Event()
@@ -208,22 +209,16 @@ class ExecutingLabwareThread(ILabwareThread):
         await self._execute_move_action()
 
     async def _handle_thread_at_assigned_action_location(self) -> None:
-        assert self.assigned_action is not None
-        assert self.current_location == self.assigned_action.location
+        assert self._assigned_action is not None
+        assert self.current_location == self._assigned_action.location
         self.status = LabwareThreadStatus.AWAITING_CO_THREADS
-        await self.assigned_action.all_labware_is_present.wait()
+        await self._assigned_action.all_labware_is_present.wait()
         self.status = LabwareThreadStatus.EXECUTING_ACTION
-        context = MethodExecutionContext(self._context.workflow_id,
-                                        self._context.workflow_name,
-                                        self._assigned_method.id if self._assigned_method else None,
-                                        self._assigned_method.name if self._assigned_method else None)
-        executing_action = ExecutingLocationAction(self._status_manager,
-                                                   self.assigned_action,
-                                                   context)
-        await executing_action.execute()
+
+        await self._assigned_action.execute()
         await asyncio.sleep(0)  # <-- give the event loop time to run newly scheduled tasks
 
-        self._previous_action = executing_action
+        self._previous_action = self._assigned_action
         self._assigned_action = None
 
 
@@ -346,7 +341,6 @@ class ExecutingThreadRegistry(IExecutingThreadRegistry):
             executing_thread.status = LabwareThreadStatus.CREATED
             return executing_thread
         
-
     def get_executing_thread(self, thread_id: str) -> ExecutingLabwareThread:
         if thread_id not in self._executing_registry:
             raise ValueError(f"Thread {thread_id} has not been created yet.")
