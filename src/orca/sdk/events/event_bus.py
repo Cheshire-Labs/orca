@@ -40,7 +40,7 @@ class EventBus(IEventBus):
 
     def emit(self, event_name: str, context: ExecutionContext) -> None:
         # Call handlers for the exact event_name
-        handled_event_names = {event_name}
+        handled_event_names = set([event_name])
         for handler in self._subscribers.get(event_name, []):
             if callable(handler):
                 handler(event_name, context)

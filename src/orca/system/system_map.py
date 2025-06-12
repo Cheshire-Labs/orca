@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 import itertools
 from typing import Any, Dict, List, Optional, Set, Tuple
 from orca.resource_models.base_resource import IResource, ILabwarePlaceable
-from orca.resource_models.labware import Labware
+from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.location import IResourceLocationObserver, Location
 import networkx as nx # type: ignore
 import matplotlib.pyplot as plt
@@ -173,7 +173,7 @@ class SystemMap(ILocationRegistry, IResourceLocator, IResourceLocationObserver, 
                 blocking_locs.add(location)
         return list(blocking_locs)
 
-    def _get_blocking_transporter(self, labware: Labware, source: str, target: str) -> List[TransporterEquipment]:
+    def _get_blocking_transporter(self, labware: LabwareInstance, source: str, target: str) -> List[TransporterEquipment]:
         blocking_transporters: Set[TransporterEquipment] = set()
         for path in self.get_all_shortest_any_paths(source, target):
             for i in range(len(path) - 1):

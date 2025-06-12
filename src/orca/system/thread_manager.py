@@ -1,80 +1,29 @@
 import asyncio
 import logging
-from typing import Dict, List
-from orca.sdk.events.execution_context import ThreadExecutionContext, WorkflowExecutionContext
-from orca.sdk.events.event_bus_interface import IEventBus
-from orca.system.interfaces import IMethodRegistry
-from orca.system.thread_registry_interface import IThreadRegistry
+from typing import List
+from orca.sdk.events.execution_context import WorkflowExecutionContext
 from orca.system.thread_manager_interface import IThreadManager
-from orca.system.labware_registry_interfaces import ILabwareRegistry
-from orca.system.move_handler import MoveHandler
-from orca.system.reservation_manager import IReservationManager
-from orca.system.system_map import SystemMap
-from orca.system.workflow_registry import MethodFactory
 from orca.workflow_models.status_enums import LabwareThreadStatus
-from orca.workflow_models.labware_thread import LabwareThread
-from orca.workflow_models.thread_template import ThreadTemplate
+from orca.workflow_models.labware_threads.executing_labware_thread import ExecutingLabwareThread, ExecutingThreadRegistry, IExecutingThreadRegistry
 
 
 orca_logger = logging.getLogger("orca")
 
-class ThreadFactory:
-    def __init__(self, 
-                 labware_registry: ILabwareRegistry, 
-                 move_handler: MoveHandler, 
-                 reservation_manager: IReservationManager, 
-                 system_map: SystemMap,
-                 event_bus: IEventBus) -> None:
-        self._labware_registry: ILabwareRegistry = labware_registry
-        self._system_map: SystemMap = system_map
-        self._method_factory = MethodFactory(labware_registry, event_bus)
-        self._move_handler = move_handler
-        self._reservation_manager = reservation_manager
-        self._event_bus = event_bus
-
-    def create_instance(self, template: ThreadTemplate, context: WorkflowExecutionContext) -> LabwareThread:
-
-        # Instantiate labware
-        labware_instance = template.labware_template.create_instance()
-        self._labware_registry.add_labware(labware_instance)
-
-        # create the thread
-        thread = LabwareThread(labware_instance,
-                                template.start_location,
-                                template.end_location,
-                                self._move_handler,
-                                self._reservation_manager,
-                                self._system_map,
-                                self._event_bus,
-                                context,
-                                )
-        thread.initialize_labware()
-        for method_template in template.method_resolvers:
-            method = self._method_factory.create_instance(method_template, ThreadExecutionContext(context.workflow_id, context.workflow_name, thread.id, thread.name))
-            method.assign_thread(template.labware_template, thread)
-            thread.append_method_sequence(method)
-
-        return thread
-
-
-class ThreadRegistry(IThreadRegistry):
-    def __init__(self, 
-                 labware_registry: ILabwareRegistry, 
-                 method_reg: IMethodRegistry,
-                 thread_factory: ThreadFactory) -> None:
-        self._threads: Dict[str, LabwareThread] = {}
-        self._labware_registry = labware_registry
-        self._thread_factory = thread_factory
-        self._method_reg = method_reg
+class ThreadManager(IThreadManager, IExecutingThreadRegistry):
+    def __init__(self, thread_registry: ExecutingThreadRegistry) -> None:
+        self._thread_registry = thread_registry
 
     @property
-    def threads(self) -> List[LabwareThread]:
-        return list(self._threads.values())
+    def threads(self) -> List[ExecutingLabwareThread]:
+        return self._thread_registry.threads
 
-    def get_thread(self, id: str) -> LabwareThread:
-        return self._threads[id]
+    def create_executing_thread(self, thread_id: str, context: WorkflowExecutionContext) -> ExecutingLabwareThread:
+        return self._thread_registry.create_executing_thread(thread_id, context)
 
-    def get_thread_by_labware(self, labware_id: str) -> LabwareThread:
+    def get_executing_thread(self, id: str) -> ExecutingLabwareThread:
+        return self._thread_registry.get_executing_thread(id)
+
+    def get_thread_by_labware(self, labware_id: str) -> ExecutingLabwareThread:
         matches = list(filter(lambda thread: thread.labware.id == labware_id, self.threads))
         if len(matches) == 0:
             raise KeyError(f"No thread found for labware {labware_id}")
@@ -82,53 +31,17 @@ class ThreadRegistry(IThreadRegistry):
             raise KeyError(f"Multiple threads found for labware {labware_id}")
         return matches[0]
 
-    def add_thread(self, labware_thread: LabwareThread) -> None:
-        self._threads[labware_thread.id] = labware_thread
-        for method in labware_thread.pending_methods:   # TODO: change this once things are refactored
-            self._method_reg.add_method(method)
-
-
-    def create_thread_instance(self, template: ThreadTemplate, context: WorkflowExecutionContext) -> LabwareThread:
-        thread = self._thread_factory.create_instance(template, context)
-        self.add_thread(thread)
-        return thread
-
-
-class ThreadManager(IThreadManager):
-    def __init__(self,
-                 thread_registry: IThreadRegistry,
-                 system_map: SystemMap,
-                 move_handler: MoveHandler) -> None:
-        self._thread_registry = thread_registry
-        self._system_map = system_map
-        self._move_handler = move_handler
-
-    @property
-    def threads(self) -> List[LabwareThread]:
-        return self._thread_registry.threads
-
-    def get_thread(self, id: str) -> LabwareThread:
-        return self._thread_registry.get_thread(id)
-
-    def get_thread_by_labware(self, labware_id: str) -> LabwareThread:
-        return self._thread_registry.get_thread_by_labware(labware_id)
-
-    def add_thread(self, labware_thread: LabwareThread) -> None:
-        return self._thread_registry.add_thread(labware_thread)
-
-    def create_thread_instance(self, template: ThreadTemplate, context: WorkflowExecutionContext) -> LabwareThread:
-        return self._thread_registry.create_thread_instance(template, context)
 
     def has_completed(self) -> bool:
-        return all([thread.has_completed() for thread in self._thread_registry.threads])
+        return all([thread.has_completed() for thread in self.threads])
 
     @property
-    def active_threads(self) -> List[LabwareThread]:
-        return [thread for thread in self._thread_registry.threads if not thread.has_completed()]
+    def active_threads(self) -> List[ExecutingLabwareThread]:
+        return [thread for thread in self.threads if not thread.has_completed()]
 
     @property
-    def unstarted_threads(self) -> List[LabwareThread]:
-        return [thread for thread in self._thread_registry.threads if thread.status == LabwareThreadStatus.CREATED]
+    def unstarted_threads(self) -> List[ExecutingLabwareThread]:
+        return [thread for thread in self.threads if thread.status == LabwareThreadStatus.CREATED]
 
     async def start_all_threads(self) -> None:
         # # self._loop.set_debug(True)
@@ -149,10 +62,3 @@ class ThreadManager(IThreadManager):
                     loop.create_task(thread.start())
                 await asyncio.sleep(0.2)
         orca_logger.info("All threads have completed execution.")
-
-class ThreadManagerFactory:
-    @staticmethod
-    def create_instance(labware_registry: ILabwareRegistry, method_registry: IMethodRegistry, reservation_manager: IReservationManager, system_map: SystemMap, move_handler: MoveHandler, event_bus: IEventBus) -> IThreadManager:
-        thread_factory = ThreadFactory(labware_registry, move_handler, reservation_manager,system_map, event_bus)
-        thread_registry = ThreadRegistry(labware_registry, method_registry, thread_factory)
-        return ThreadManager(thread_registry, system_map, move_handler)

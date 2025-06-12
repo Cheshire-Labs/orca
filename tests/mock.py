@@ -6,36 +6,36 @@ from orca.helper import FilepathReconciler
 from orca.resource_models.transporter_resource import TransporterEquipment
 from orca.resource_models.base_resource import Device
 from orca.resource_models.location import Location
-from orca.resource_models.labware import Labware
+from orca.resource_models.labware import LabwareInstance
 
 
 class MockEquipmentResource(Device):
     def __init__(self, name: str, mocking_type: Optional[str] = None):
         super().__init__(name, SimulationDeviceDriver(name, mocking_type))
         self._on_intialize: Callable[[], None] = lambda: None
-        self._on_prepare_for_place: Callable[[Labware], None] = lambda x: None
-        self._on_prepare_for_pick: Callable[[Labware], None] = lambda x: None
-        self._on_notify_picked: Callable[[Labware], None] = lambda x: None
-        self._on_notify_placed: Callable[[Labware], None] = lambda x: None
+        self._on_prepare_for_place: Callable[[LabwareInstance], None] = lambda x: None
+        self._on_prepare_for_pick: Callable[[LabwareInstance], None] = lambda x: None
+        self._on_notify_picked: Callable[[LabwareInstance], None] = lambda x: None
+        self._on_notify_placed: Callable[[LabwareInstance], None] = lambda x: None
         self._on_execute: Callable[[str], None] = lambda x: None
 
     async def initialize(self) -> None:
         await super().initialize()
         self._on_intialize()
 
-    async def prepare_for_place(self, labware: Labware) -> None:
+    async def prepare_for_place(self, labware: LabwareInstance) -> None:
         await super().prepare_for_place(labware)
         self._on_prepare_for_place(labware)
         
-    async def prepare_for_pick(self, labware: Labware) -> None:
+    async def prepare_for_pick(self, labware: LabwareInstance) -> None:
         await super().prepare_for_pick(labware)
         self._on_prepare_for_pick(labware)
         
-    async def notify_picked(self, labware: Labware) -> None:
+    async def notify_picked(self, labware: LabwareInstance) -> None:
         await super().notify_picked(labware)
         self._on_notify_picked(labware)
             
-    async def notify_placed(self, labware: Labware) -> None:
+    async def notify_placed(self, labware: LabwareInstance) -> None:
         await super().notify_placed(labware)
         self._on_notify_placed(labware)
 
@@ -50,8 +50,8 @@ class MockRoboticArm(TransporterEquipment):
         driver = LegacySimulationRoboticArmDriver(name, file_reconciler, mocking_type)
         driver.set_init_options({"positions": positions})
         super().__init__(name, driver)
-        self._on_pick: Callable[[Labware, Location], None] = lambda x, y: None
-        self._on_place: Callable[[Labware, Location], None] = lambda x, y: None
+        self._on_pick: Callable[[LabwareInstance, Location], None] = lambda x, y: None
+        self._on_place: Callable[[LabwareInstance, Location], None] = lambda x, y: None
 
     async def pick(self, location: Location) -> None:
         await super().pick(location)
