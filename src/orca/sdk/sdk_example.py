@@ -441,7 +441,7 @@ smc_workflow.add_thread(tips_384_thread)
 
 smc_workflow.set_spawn_point(sample_plate_thread, plate_1_thread, sample_to_bead_plate_method, True)
 smc_workflow.set_spawn_point(tips_96_thread, plate_1_thread, sample_to_bead_plate_method, True)
-smc_workflow.set_spawn_point(tips_384_thread, plate_1_thread, add_detection_antibody, True)
+smc_workflow.set_spawn_point(tips_96_thread, plate_1_thread, add_detection_antibody, True)
 smc_workflow.set_spawn_point(tips_384_thread, plate_1_thread, add_elution_buffer_b, True)
 smc_workflow.set_spawn_point(tips_384_thread, plate_1_thread, add_buffer_d, True)
 smc_workflow.set_spawn_point(tips_384_thread, plate_1_thread, combine_plates, True)
