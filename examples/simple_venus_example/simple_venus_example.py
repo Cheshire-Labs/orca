@@ -6,10 +6,11 @@ from orca.driver_management.drivers.simulation_robotic_arm.human_transfer import
 from orca.sdk.devices import Device, TransporterEquipment
 from orca.sdk.labware import LabwareTemplate
 from orca.sdk.system import ResourceRegistry, SystemMap, SdkToSystemBuilder, WorkflowExecutor
-from orca.sdk.workflow import MethodTemplate, ActionTemplate, WorkflowTemplate, ThreadTemplate
+from orca.sdk.workflow import MethodTemplate, ActionTemplate, WorkflowTemplate, ThreadTemplate, JunctionMethodTemplate
 from orca.sdk.events import EventBus
 
-# venus driver may need to be installed separately and requires Hamilton Venus to be installed
+# Venus driver will need to be installed separately (available on Cheshire Labs' GitHub)
+# This driver requires Hamilton Venus to be installed
 from venus_driver.venus_driver import VenusProtocolDriver
 
 logging.basicConfig(
@@ -20,9 +21,11 @@ logging.basicConfig(
 orca_logger = logging.getLogger("orca")
 
 sample_plate = LabwareTemplate("sample_plate", "Matrix 96-well plate")
+transfer_plate = LabwareTemplate("transfer_plate", "Matrix 96-well plate")
 
 labwares = [
-    sample_plate
+    sample_plate,
+    transfer_plate
     ]
 venus_driver = VenusProtocolDriver("venus")
 
@@ -74,8 +77,32 @@ example_method_1 = MethodTemplate(
     ]
 )
 
+transfer_method = MethodTemplate(
+    "transfer_method",
+    actions=[
+        ActionTemplate(
+            ml_star,
+            "run",
+            inputs=[sample_plate, transfer_plate],
+            outputs=[sample_plate, transfer_plate],
+            options={
+                "method": "Cheshire Labs\\SimplePlateStamp.hsl",
+                "params": {
+                    "numOfPlates": 1,
+                    "waterVol": 30,
+                    "dyeVol": 10,
+                    "wait": 1,
+                    "tipEjectPos": 2,
+                    "clld": 1
+                }
+            }
+        )
+    ]
+)
+
 methods = [
-    example_method_1
+    example_method_1,
+    transfer_method
 ]
 
 sample_plate_thread = ThreadTemplate(
@@ -83,13 +110,25 @@ sample_plate_thread = ThreadTemplate(
     map.get_location("plate_pad_1"),
     map.get_location("plate_pad_2"),
     [
-        example_method_1
+        example_method_1,
+        transfer_method
+    ]
+)
+
+transfer_plate_thread = ThreadTemplate(
+    transfer_plate,
+    map.get_location("plate_pad_3"),
+    map.get_location("plate_pad_4"),
+    [
+        JunctionMethodTemplate()
     ]
 )
     
 
 example_workflow = WorkflowTemplate("example_workflow")
 example_workflow.add_thread(sample_plate_thread, True)
+example_workflow.add_thread(transfer_plate_thread)
+example_workflow.set_spawn_point(transfer_plate_thread, sample_plate_thread, transfer_method, True)
 
 event_bus = EventBus()
 builder = SdkToSystemBuilder(
