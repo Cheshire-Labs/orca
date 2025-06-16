@@ -163,10 +163,10 @@ class ExecutingLabwareThread(ILabwareThread):
         if self._stop_event.is_set():
             self._handle_thread_stop()
             return
-        self._assigned_method = self._pending_methods.pop(0)
+        
         # loop through all methods in the thread
         while len(self._pending_methods) > 0:
-            
+            self._assigned_method = self._pending_methods.pop(0)
 
             # loop through method's actions until all actions are completed
             while True:
