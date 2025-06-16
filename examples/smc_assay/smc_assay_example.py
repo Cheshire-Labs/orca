@@ -526,6 +526,7 @@ system = builder.get_system()
 # Use the WorkflowExecutor to run the workflow
 async def run():
     orca_logger.info("Starting SMC Assay workflow execution.")
+    # await system.initialize_all() if this weren't a simulation, we would initialize all the devices here
     executor = WorkflowExecutor(smc_workflow, system)
     await executor.start()
     orca_logger.info("SMC Assay workflow completed.")
@@ -535,6 +536,7 @@ async def run():
 # You can use this to run a method independently of the workflow, which is useful for testing or debugging purposes
 async def run_method():
     orca_logger.info("Starting Sample to Bead Plate method execution.")
+    # await system.initialize_all() if this weren't a simulation, we would initialize all the devices here
     executor = StandalonMethodExecutor(
         sample_to_bead_plate_method,
         {
