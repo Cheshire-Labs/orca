@@ -1,0 +1,74 @@
+#include "VariableAccessTesting.res"
+global device ML_STAR ("VariableAccessTesting.lay", "ML_STAR", hslTrue);
+ namespace _Method { #include "C:\\Users\\miike\\source\\repos\\orca\\drivers\\orca-driver-venus\\venus_submethod\\Orca.hs_" } 
+ namespace _Method { #include "HSLTrcLib.hsl" } 
+/* {{ 2 "LibraryInsertLine" "" */ // }} ""
+variable flt_value;
+variable int_value;
+variable str_value;
+dialog dialogHandle1;
+/* {{ 2 "VariableInsertLine" "" */ // }} ""
+// {{ 2 "TemplateIncludeBlock" ""
+ namespace _Method { #include "HSLMETEDLib.hs_" } 
+ namespace _Method { #include "HSLMECCLib.hs_" } 
+ namespace _Method { #include "HSLPTLLib.hsl" } 
+ namespace _Method { #include "templates\\HSLPipetteWizard.hsl" } 
+ namespace _Method { #include "HSLSchedCCLib.hs_" } 
+// }} ""
+// {{{ 2 "LocalSubmethodInclude" ""
+ namespace _Method {  #include __filename__ ".sub"  } 
+// }} ""
+/* {{ 2 "ProcessInsertLine" "" */ // }} ""
+// {{{ 5 "main" "Begin"
+namespace _Method { method main(  ) void {
+// }} ""
+// {{ 5 "main" "InitLocals"
+// }} ""
+// {{ 2 "AutoInitBlock" ""
+PTL::SetWashingStateDefault("RinseTime1", 5);
+PTL::SetWashingStateDefault("SoakTime1", 5);
+PTL::SetWashingStateDefault("FlowRate1", 11);
+PTL::SetWashingStateDefault("RinseTime2", 0);
+PTL::SetWashingStateDefault("SoakTime2", 0);
+PTL::SetWashingStateDefault("FlowRate2", 11);
+PTL::SetWashingStateDefault("DrainingTime", 10);
+PTL::SetWashingStateDefault("StartWashLiquid", 0);
+PTL::SetLoadingStateDefault("RecoveryOptionContinue", hslTrue);
+PTL::SetLoadingStateDefault("RecoveryOptionExclude", hslTrue);
+PTL::SetLoadingStateDefault("RecoveryOptionDefault", 0);
+PTL::SetLoadingStateDefault("KitLotCheckEnabled", hslFalse);
+ORCA::_InitLibrary();
+::RegisterAbortHandler( "OnAbort");
+// }} ""
+// {{{ 1 1 0 "a70a2469_e6ca_4943_93cd766d3bbdf01a" "{7C4EF7A7-39BE-406a-897F-71F3A35B4093}"
+ORCA::Initialize(0);
+// }} ""
+// {{{ 2 1 0 "8cf1ef49_0b89_4277_a7e0acc70c4c4858" "{7C4EF7A7-39BE-406a-897F-71F3A35B4093}"
+ORCA::GetConfigProperty_String(Translate("strParam"), Translate("default"), str_value);
+// }} ""
+// {{{ 3 1 0 "755b9279_27cf_4fa0_8bfd0f562ee16a77" "{C1F3C015-47B3-4514-9407-AC2E65043419}"
+TrcTrace(Translate("str Param: "), str_value);
+// }} ""
+// {{{ 4 1 0 "d70c8c5e_14e5_4b9b_ba615ce1790d1ea1" "{7C4EF7A7-39BE-406a-897F-71F3A35B4093}"
+ORCA::GetConfigProperty_Integer(Translate("intParam"), 0, int_value);
+// }} ""
+// {{{ 5 1 0 "2b56d9a7_1770_4b0a_ab53f9f095bac522" "{C1F3C015-47B3-4514-9407-AC2E65043419}"
+TrcTrace(Translate("int Param: "), int_value);
+// }} ""
+// {{{ 6 1 0 "5fda2fa1_76be_40b1_8451b16ba67b6bd3" "{7C4EF7A7-39BE-406a-897F-71F3A35B4093}"
+ORCA::GetConfigProperty_Float(Translate("fltParam"), 0, flt_value);
+// }} ""
+// {{{ 7 1 0 "d6ab8a47_1a0a_4bc9_bebb776f1ea000c7" "{C1F3C015-47B3-4514-9407-AC2E65043419}"
+TrcTrace(Translate("flt Param: "), flt_value);
+// }} ""
+// {{ 8 1 0 "79f54378_dffe_4c06_b04bbba255aab4b5" "{21E07B31-8D2E-11d4-A3B8-002035848439}"
+dialogHandle1.SetOutput(Translate("String: "), str_value, "\n", Translate("Integer: "), int_value, "\n", Translate("Float: "), flt_value, "\n");
+dialogHandle1.ShowOutput("", hslOKOnly | hslInformation | hslDefButton1, hslInfinite);
+// }} ""
+// {{ 2 "AutoExitBlock" ""
+ORCA::_ExitLibrary();
+// }} ""
+// {{{ 5 "main" "End"
+} }
+// }} ""
+// $$author=miike$$valid=0$$time=2025-01-31 11:06$$checksum=48e35a0b$$length=084$$
