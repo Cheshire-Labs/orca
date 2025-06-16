@@ -46,7 +46,7 @@ labwares = [
 # Setup your devices, each device needs a driver assigneed to it
 # Transorter equipment are devices capable of moving labwaare
 # For this simulation, the teachpoints are saved within a local file
-teachpoints_dir = "examples\\smc_assay"
+teachpoints_dir = "examples\\smc_assay\\teachpoints"
 ddr1_points = os.path.join(teachpoints_dir, "ddr1.xml")
 ddr2_points = os.path.join(teachpoints_dir, "ddr2.xml")
 ddr3_points = os.path.join(teachpoints_dir, "ddr3.xml")
@@ -532,7 +532,7 @@ async def run_both_in_parallel() -> None:
 
 if __name__ == "__main__":
     asyncio.run(run())
-    asyncio.run(run_method())
+    # asyncio.run(run_method())
     # asyncio.run(run_both_in_parallel())
     orca_logger.info("Run completed successfully.")
     time.sleep(2)  # Allow time for logging to complete before exiting
