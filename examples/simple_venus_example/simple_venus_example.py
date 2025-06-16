@@ -132,8 +132,8 @@ example_workflow.set_spawn_point(transfer_plate_thread, sample_plate_thread, tra
 
 event_bus = EventBus()
 builder = SdkToSystemBuilder(
-    "SMC Assay",
-    "SMC Assay",
+    "Venus Example",
+    "Venus Example System",
     labwares,
     resource_registry,
     map,
@@ -144,11 +144,12 @@ builder = SdkToSystemBuilder(
 system = builder.get_system()
 
 async def run():
-    orca_logger.info("Starting SMC Assay workflow execution.")
+    orca_logger.info("Starting Venus workflow execution.")
     await system.initialize_all()
     executor = WorkflowExecutor(example_workflow, system)
     await executor.start()
-    orca_logger.info("SMC Assay workflow completed.")
+    orca_logger.info("Venus workflow completed.")
 
 if __name__ == "__main__":
     asyncio.run(run())
+    orca_logger.info("Workflow execution finished.")
