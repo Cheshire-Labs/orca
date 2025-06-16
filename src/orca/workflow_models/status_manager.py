@@ -1,6 +1,6 @@
 from typing import Dict
-from orca.sdk.events.event_bus_interface import IEventBus
-from orca.sdk.events.execution_context import ExecutionContext
+from orca.events.event_bus_interface import IEventBus
+from orca.events.execution_context import ExecutionContext
 
 
 class StatusManager:

@@ -3,35 +3,23 @@ import os
 import logging
 import sys
 import time
-from orca.driver_management.drivers.simulation_labware_placeable.simulation_labware_placeable import SimulationDeviceDriver
-from orca.driver_management.drivers.simulation_robotic_arm.simulation_robotic_arm import SimulationRoboticArmDriver
-from orca.resource_models.base_resource import Device
-from orca.resource_models.labware import AnyLabwareTemplate, LabwareTemplate
-from orca.resource_models.resource_pool import EquipmentResourcePool
-from orca.resource_models.transporter_resource import TransporterEquipment
-from orca.sdk.SdkToSystemBuilder import SdkToSystemBuilder
-from orca.sdk.events.event_bus import EventBus
-from orca.sdk.events.event_handlers import SystemBoundEventHandler
-from orca.sdk.events.execution_context import ExecutionContext, ThreadExecutionContext, WorkflowExecutionContext
-from orca.sdk.executors import WorkflowExecutor
-from orca.system.resource_registry import ResourceRegistry
-from orca.sdk.executors import StandalonMethodExecutor
-from orca.system.system_map import SystemMap
-from orca.workflow_models.action_template import MethodActionTemplate
-from orca.workflow_models.labware_threads.executing_labware_thread import ExecutingLabwareThread
-from orca.workflow_models.method_template import JunctionMethodTemplate, MethodTemplate
-from orca.workflow_models.status_enums import LabwareThreadStatus
-from orca.workflow_models.thread_template import ThreadTemplate
-from orca.workflow_models.workflow_templates import WorkflowTemplate
+from orca.sdk.system import SdkToSystemBuilder, WorkflowExecutor, ResourceRegistry, SystemMap, ExecutingLabwareThread, StandalonMethodExecutor
+from orca.sdk.workflow import WorkflowTemplate, ThreadTemplate, MethodTemplate, MethodActionTemplate, JunctionMethodTemplate
+from orca.sdk.events import EventBus, SystemBoundEventHandler, ExecutionContext, ThreadExecutionContext, WorkflowExecutionContext, LabwareThreadStatus
+from orca.sdk.devices import Device, EquipmentResourcePool, TransporterEquipment
+from orca.sdk.labware import AnyLabwareTemplate, LabwareTemplate
+from orca.sdk.drivers import SimulationDeviceDriver, SimulationRoboticArmDriver
 
+# Setup a logger (Optional)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     stream=sys.stdout 
 )
-
 orca_logger = logging.getLogger("orca")
 
+
+# Create your labware
 sample_plate = LabwareTemplate(name="sample_plate", type="Matrix 96 Well")
 plate_1 = LabwareTemplate(name="plate_1", type="Corning 96 Well")
 final_plate = LabwareTemplate(name="final_plate", type="SMC 384 plate")
@@ -42,6 +30,7 @@ detection_reservoir = LabwareTemplate(name="detection_reservoir", type="reservoi
 tips_96 = LabwareTemplate(name="tips_96", type="96 Tips")
 tips_384 = LabwareTemplate(name="tips_384", type="384 Tips")
 
+# Add your labware to a list
 labwares = [
     sample_plate,
     plate_1,
@@ -54,7 +43,9 @@ labwares = [
     tips_384
 ]
 
-# TRANSPORTERS
+# Setup your devices, each device needs a driver assigneed to it
+# Transorter equipment are devices capable of moving labwaare
+# For this simulation, the teachpoints are saved within a local file
 teachpoints_dir = "examples\\smc_assay"
 ddr1_points = os.path.join(teachpoints_dir, "ddr1.xml")
 ddr2_points = os.path.join(teachpoints_dir, "ddr2.xml")
@@ -67,7 +58,7 @@ ddr_3 = TransporterEquipment(name="ddr_3", driver=SimulationRoboticArmDriver(nam
 translator_1 = TransporterEquipment(name="translator_1", driver=SimulationRoboticArmDriver(name="translator_1_driver", mocking_type="translator", teachpoints_filepath=translator1_points))
 translator_2 = TransporterEquipment(name="translator_2", driver=SimulationRoboticArmDriver(name="translator_2_driver", mocking_type="translator", teachpoints_filepath=translator2_points))
 
-# EQUIPMENT
+# These are devices capable of reciving labware
 biotek_1 = Device(name="biotek_1", driver=SimulationDeviceDriver(name="biotek_1_driver", mocking_type="biotek"))
 biotek_2 = Device(name="biotek_2", driver=SimulationDeviceDriver(name="biotek_2_driver", mocking_type="biotek"))
 bravo_96 = Device(name="bravo_96_head", driver=SimulationDeviceDriver(name="bravo_96_head_driver", mocking_type="bravo"))
@@ -96,9 +87,10 @@ shaker_9 = Device(name="shaker_9", driver=SimulationDeviceDriver(name="shaker_9_
 shaker_10 = Device(name="shaker_10", driver=SimulationDeviceDriver(name="shaker_10_driver", mocking_type="shaker"))
 waste_1 = Device(name="waste_1", driver=SimulationDeviceDriver(name="waste_1_driver", mocking_type="waste"))
 
-# COLLECTIONS
+# Build any resource pools - Orca will resolve what resource to use once it reaches that step
 shaker_collection = EquipmentResourcePool(name="shaker_collection", resources=[shaker_1, shaker_2, shaker_3, shaker_4, shaker_5, shaker_6, shaker_7, shaker_8, shaker_9, shaker_10])
 
+# Initialize a resource registry and add all the equipment to it
 resource_registry = ResourceRegistry()
 resource_registry.add_resources([
     biotek_1,
@@ -135,6 +127,9 @@ resource_registry.add_resources([
     shaker_collection
 ])
 
+
+# This function initializes the transporting equipment in order to get all the teachpoints 
+# from the equipment to build a map of the system locations from them
 def initialize_all_transporters(resource_registry: ResourceRegistry):
     async def _run_all():
         await asyncio.gather(*(t.initialize() for t in resource_registry.transporters))
@@ -142,7 +137,10 @@ def initialize_all_transporters(resource_registry: ResourceRegistry):
 
 initialize_all_transporters(resource_registry)
 
+# Use the resource registry to build a system map of locations via teachpoints each robot can reach
 map = SystemMap(resource_registry)
+
+# Assign resources to their respective locations on the system map
 map.assign_resources({
     "biotek_1": biotek_1,
     "biotek_2": biotek_2,
@@ -173,11 +171,10 @@ map.assign_resources({
 })
 
 
-
-
-
-# METHODS
-
+# Build your methods
+# Methods are a collection of actions
+# Each action takes in set of labware and then run a command on the labware
+# All labware must be present at the resource before the actions runs
 sample_to_bead_plate_method = MethodTemplate(
     name="sample_to_bead_plate",
     actions=[
@@ -344,7 +341,7 @@ delid = MethodTemplate("delid", [
     )
 ])
 
-
+# create a list of all the methods to later build the system with
 methods = [
     sample_to_bead_plate_method,
     incubate_2hrs,
@@ -363,7 +360,10 @@ methods = [
     delid
 ]
 
-
+# Build your labware threadds
+# Labware threads are the set of methods which you expect your labware to pass through
+# If your labware interactes with another piece of labware, use a JunctionMethodTemplate() at that step, you will then define this interaction further within the workflow
+# Labware threads can usually be throught of as a single piece of labware from which other labwares spawn
 plate_1_thread = ThreadTemplate(
     plate_1,
     map.get_location("stacker_3"),
@@ -421,13 +421,21 @@ tips_384_thread = ThreadTemplate(
     JunctionMethodTemplate(),
 ])
 
+
+# Define your workflow
+# Your workflow defines how your labware threads interact with each other
 smc_workflow = WorkflowTemplate("smc_assay")
-smc_workflow.add_thread(plate_1_thread, True)
+
+# Add each other your labware threads to the workflow
+# Be sure to define which threads should start when the workflow starts
+smc_workflow.add_thread(plate_1_thread, True) # Starts when the workflow starts
 smc_workflow.add_thread(sample_plate_thread)
 smc_workflow.add_thread(final_plate_thread)
 smc_workflow.add_thread(tips_96_thread)
 smc_workflow.add_thread(tips_384_thread)
 
+# Define the spawn points of the workflow
+# A spawn point is 
 smc_workflow.set_spawn_point(sample_plate_thread, plate_1_thread, sample_to_bead_plate_method, True)
 smc_workflow.set_spawn_point(tips_96_thread, plate_1_thread, sample_to_bead_plate_method, True)
 smc_workflow.set_spawn_point(tips_96_thread, plate_1_thread, add_detection_antibody, True)

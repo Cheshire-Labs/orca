@@ -1,8 +1,8 @@
 from typing import List
 
 from orca.resource_models.labware import LabwareTemplate
-from orca.sdk.events.event_bus_interface import IEventBus
-from orca.sdk.events.event_bus import SystemBoundEventBus
+from orca.events.event_bus_interface import IEventBus
+from orca.events.event_bus import SystemBoundEventBus
 from orca.system.system_info import SystemInfo
 from orca.system.thread_manager_interface import IThreadManager
 from orca.system.reservation_manager.move_handler import MoveHandler

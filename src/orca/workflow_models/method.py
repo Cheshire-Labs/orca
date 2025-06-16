@@ -4,8 +4,8 @@ from typing import List
 
 from orca.resource_models.labware import AnyLabwareTemplate, LabwareTemplate
 from orca.resource_models.location import Location
-from orca.sdk.events.event_bus_interface import IEventBus
-from orca.sdk.events.execution_context import ExecutionContext, MethodExecutionContext, WorkflowExecutionContext
+from orca.events.event_bus_interface import IEventBus
+from orca.events.execution_context import ExecutionContext, MethodExecutionContext, WorkflowExecutionContext
 from orca.workflow_models.actions.dynamic_resource_action import DynamicResourceActionResolver, UnresolvedLocationAction
 from orca.workflow_models.actions.location_action import ExecutingLocationAction, LocationAction
 from orca.workflow_models.interfaces import ILabwareThread, IMethod

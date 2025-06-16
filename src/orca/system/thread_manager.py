@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from typing import List
-from orca.sdk.events.execution_context import WorkflowExecutionContext
+from orca.events.execution_context import WorkflowExecutionContext
 from orca.system.thread_manager_interface import IThreadManager
 from orca.workflow_models.status_enums import LabwareThreadStatus
 from orca.workflow_models.labware_threads.executing_labware_thread import ExecutingLabwareThread, ExecutingThreadRegistry, IExecutingThreadRegistry

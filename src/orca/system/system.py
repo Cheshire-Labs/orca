@@ -6,7 +6,7 @@ from orca.resource_models.transporter_resource import TransporterEquipment
 from orca.resource_models.base_resource import Equipment, IResource
 
 from orca.resource_models.labware import LabwareInstance, LabwareTemplate
-from orca.sdk.events.execution_context import WorkflowExecutionContext
+from orca.events.execution_context import WorkflowExecutionContext
 from orca.system.system_info import SystemInfo
 from orca.system.system_interface import ISystem
 from orca.system.interfaces import IMethodRegistry
