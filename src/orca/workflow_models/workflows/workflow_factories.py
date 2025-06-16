@@ -1,4 +1,4 @@
-from orca.workflow_models.action_template import MethodActionTemplate
+from orca.workflow_models.action_template import ActionTemplate
 from orca.workflow_models.actions.dynamic_resource_action import UnresolvedLocationAction
 from orca.workflow_models.interfaces import IMethod
 from orca.workflow_models.labware_threads.labware_thread import LabwareThreadInstance
@@ -11,8 +11,8 @@ from orca.workflow_models.workflow_templates import WorkflowTemplate
 
 class MethodActionFactory:
 
-    def __init__(self, template: MethodActionTemplate) -> None:
-        self._template: MethodActionTemplate = template
+    def __init__(self, template: ActionTemplate) -> None:
+        self._template: ActionTemplate = template
 
     def create_instance(self) -> UnresolvedLocationAction:
 

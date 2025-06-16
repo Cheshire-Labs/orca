@@ -16,7 +16,7 @@ from orca.system.system import System
 from orca.system.system_map import ILocationRegistry, IResourceLocator, SystemMap
 from orca.system.registries import TemplateRegistry
 from orca.system.interfaces import IThreadTemplateRegistry
-from orca.workflow_models.action_template import MethodActionTemplate
+from orca.workflow_models.action_template import ActionTemplate
 from orca.workflow_models.method_template import IMethodTemplate, JunctionMethodTemplate, MethodTemplate
 from orca.workflow_models.thread_template import ThreadTemplate
 from orca.workflow_models.spawn_thread_action import SpawnThreadAction
@@ -42,7 +42,7 @@ class MethodActionConfigToTemplate:
         self._resource_reg: IResourceRegistry = resource_reg
         self._labware_temp_reg: ILabwareTemplateRegistry = labware_temp_reg
 
-    def get_template(self, name: str, config: IMethodActionConfig)  -> MethodActionTemplate:
+    def get_template(self, name: str, config: IMethodActionConfig)  -> ActionTemplate:
         # Get the resource name
         resource_name = config.resource
         if resource_name is None:
@@ -77,7 +77,7 @@ class MethodActionConfigToTemplate:
         else:
             outputs = [self._labware_temp_reg.get_labware_template(name) for name in config.outputs]
         
-        return MethodActionTemplate(resource,
+        return ActionTemplate(resource,
                                     config.command,
                                     inputs,
                                     outputs, 

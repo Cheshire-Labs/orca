@@ -4,7 +4,7 @@ import logging
 import sys
 import time
 from orca.sdk.system import SdkToSystemBuilder, WorkflowExecutor, ResourceRegistry, SystemMap, ExecutingLabwareThread, StandalonMethodExecutor
-from orca.sdk.workflow import WorkflowTemplate, ThreadTemplate, MethodTemplate, MethodActionTemplate, JunctionMethodTemplate
+from orca.sdk.workflow import WorkflowTemplate, ThreadTemplate, MethodTemplate, ActionTemplate, JunctionMethodTemplate
 from orca.sdk.events import EventBus, SystemBoundEventHandler, ExecutionContext, ThreadExecutionContext, WorkflowExecutionContext, LabwareThreadStatus
 from orca.sdk.devices import Device, EquipmentResourcePool, TransporterEquipment
 from orca.sdk.labware import AnyLabwareTemplate, LabwareTemplate
@@ -178,7 +178,7 @@ map.assign_resources({
 sample_to_bead_plate_method = MethodTemplate(
     name="sample_to_bead_plate",
     actions=[
-        MethodActionTemplate(
+        ActionTemplate(
             resource=bravo_96,
             command="run",
             inputs=[sample_plate, tips_96, plate_1],
@@ -196,7 +196,7 @@ sample_to_bead_plate_method = MethodTemplate(
 
 incubate_2hrs = MethodTemplate("incubate_2hrs",
     [
-        MethodActionTemplate(
+        ActionTemplate(
             resource=shaker_collection,
             command="shake",
             inputs=[plate_1],
@@ -207,7 +207,7 @@ incubate_2hrs = MethodTemplate("incubate_2hrs",
 ])
 
 post_capture_wash = MethodTemplate("post_capture_wash", [
-    MethodActionTemplate(
+    ActionTemplate(
         resource=biotek_1,
         command="run",
         inputs=[plate_1],
@@ -218,7 +218,7 @@ post_capture_wash = MethodTemplate("post_capture_wash", [
 ])
 
 add_detection_antibody = MethodTemplate("add_detection_antibody", [
-    MethodActionTemplate(
+    ActionTemplate(
         resource=bravo_96,
         command="run",
         inputs=[plate_1, tips_96],
@@ -229,7 +229,7 @@ add_detection_antibody = MethodTemplate("add_detection_antibody", [
 ])
 
 incubate_1hr = MethodTemplate("incubate_1hr", [
-    MethodActionTemplate(resource=shaker_collection,
+    ActionTemplate(resource=shaker_collection,
         command="shake",
         inputs=[plate_1],
         options={
@@ -238,7 +238,7 @@ incubate_1hr = MethodTemplate("incubate_1hr", [
     )])
 
 pre_transfer_wash = MethodTemplate("pre_transfer_wash", [
-    MethodActionTemplate(resource=biotek_2,
+    ActionTemplate(resource=biotek_2,
         command="run",
         inputs=[plate_1],
         options={
@@ -247,7 +247,7 @@ pre_transfer_wash = MethodTemplate("pre_transfer_wash", [
     )])
 
 discard_supernatant = MethodTemplate("discard_supernatant", [
-    MethodActionTemplate(resource=biotek_2,
+    ActionTemplate(resource=biotek_2,
            command="run",
         inputs=[plate_1],
         options={
@@ -256,7 +256,7 @@ discard_supernatant = MethodTemplate("discard_supernatant", [
     )
 ])
 add_elution_buffer_b = MethodTemplate("add_elution_buffer_b", [
-    MethodActionTemplate(resource=bravo_384,
+    ActionTemplate(resource=bravo_384,
         command="run",
         inputs=[plate_1, tips_384],
         options={
@@ -268,7 +268,7 @@ add_elution_buffer_b = MethodTemplate("add_elution_buffer_b", [
         }
     )])
 incubate_10min = MethodTemplate("incubate_10min", [
-    MethodActionTemplate(resource=shaker_collection,
+    ActionTemplate(resource=shaker_collection,
         command="shake",
         inputs=[plate_1],
         options={
@@ -279,7 +279,7 @@ incubate_10min = MethodTemplate("incubate_10min", [
 
 
 add_buffer_d = MethodTemplate("add_buffer_d", [
-    MethodActionTemplate(resource=bravo_384,
+    ActionTemplate(resource=bravo_384,
         command="run",
         inputs=[plate_1, tips_384],
         options={
@@ -291,7 +291,7 @@ add_buffer_d = MethodTemplate("add_buffer_d", [
     )])
 
 combine_plates = MethodTemplate("combine_plates", [
-    MethodActionTemplate(resource=bravo_384,
+    ActionTemplate(resource=bravo_384,
         command="run",
         inputs=[plate_1, final_plate, tips_384],
         options={
@@ -304,7 +304,7 @@ combine_plates = MethodTemplate("combine_plates", [
     )])
 
 transfer_eluate = MethodTemplate("transfer_eluate", [
-    MethodActionTemplate(resource=bravo_384,
+    ActionTemplate(resource=bravo_384,
            command="run",
         inputs=[final_plate, tips_384],
         options={
@@ -313,7 +313,7 @@ transfer_eluate = MethodTemplate("transfer_eluate", [
     )])
 
 centrifuge_method = MethodTemplate("centrifuge", [
-    MethodActionTemplate(resource=centrifuge,
+    ActionTemplate(resource=centrifuge,
         command="spin",
         inputs=[final_plate],
         options={
@@ -324,7 +324,7 @@ centrifuge_method = MethodTemplate("centrifuge", [
 ])
 
 read = MethodTemplate("read", [
-    MethodActionTemplate(resource=smc_pro,
+    ActionTemplate(resource=smc_pro,
         command="read",
         inputs=[final_plate],
         options={
@@ -335,7 +335,7 @@ read = MethodTemplate("read", [
 )
 
 delid = MethodTemplate("delid", [
-    MethodActionTemplate(resource=delidder,   
+    ActionTemplate(resource=delidder,   
         command="delid",
         inputs=[AnyLabwareTemplate()],
     )

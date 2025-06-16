@@ -6,7 +6,7 @@ from orca.resource_models.resource_pool import EquipmentResourcePool
 from typing import Any, Dict, List, Optional, Union
 
 
-class MethodActionTemplate:
+class ActionTemplate:
     def __init__(self, resource: Equipment | EquipmentResourcePool,
                  command: Any,
                  inputs: List[Union[LabwareTemplate, AnyLabwareTemplate]],
