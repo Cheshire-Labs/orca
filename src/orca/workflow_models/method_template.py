@@ -1,6 +1,6 @@
 from orca.resource_models.labware import AnyLabwareTemplate, LabwareTemplate
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
-from orca.workflow_models.action_template import MethodActionTemplate
+from orca.workflow_models.action_template import ActionTemplate
 from orca.workflow_models.actions.dynamic_resource_action import UnresolvedLocationAction
 from orca.workflow_models.interfaces import ILabwareThread, IMethod
 from orca.workflow_models.labware_threads.labware_thread import LabwareThreadInstance
@@ -16,9 +16,9 @@ class IMethodTemplate(ABC):
 
 class MethodTemplate(IMethodTemplate):
 
-    def __init__(self, name: str, actions: Optional[List[MethodActionTemplate]] = None, options: Optional[Dict[str, Any]] = None):
+    def __init__(self, name: str, actions: Optional[List[ActionTemplate]] = None, options: Optional[Dict[str, Any]] = None):
         self._name = name
-        self._actions: List[MethodActionTemplate] = actions if actions is not None else []
+        self._actions: List[ActionTemplate] = actions if actions is not None else []
         self._options = options if options is not None else {}
 
     @property
@@ -26,7 +26,7 @@ class MethodTemplate(IMethodTemplate):
         return self._name
 
     @property
-    def actions(self) -> List[MethodActionTemplate]:
+    def actions(self) -> List[ActionTemplate]:
         return self._actions
 
 
@@ -44,10 +44,10 @@ class MethodTemplate(IMethodTemplate):
             outputs.update(action.outputs)
         return list(outputs)
 
-    def append_action(self, action: MethodActionTemplate):
+    def append_action(self, action: ActionTemplate):
         self._actions.append(action)
 
-    def add_actions(self, actions: List[MethodActionTemplate]) -> None:
+    def add_actions(self, actions: List[ActionTemplate]) -> None:
         for action in actions:
             self.append_action(action)
 
