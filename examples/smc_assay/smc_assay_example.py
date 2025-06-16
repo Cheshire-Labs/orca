@@ -435,7 +435,10 @@ smc_workflow.add_thread(tips_96_thread)
 smc_workflow.add_thread(tips_384_thread)
 
 # Define the spawn points of the workflow
-# A spawn point is 
+# A spawn point is a point in the workflow where a new thread is created
+# Spawn points are attached to another running thread, in this case, the plate_1_thread - the main thread of the workflow
+# The spawn point will create a new thread when the main thread reaches the method defined in the spawn point
+# The 'join' parameter here tells the workflow whether or not to join the newly created thread to the main thread via a JunctionMethodTemplate
 smc_workflow.set_spawn_point(sample_plate_thread, plate_1_thread, sample_to_bead_plate_method, True)
 smc_workflow.set_spawn_point(tips_96_thread, plate_1_thread, sample_to_bead_plate_method, True)
 smc_workflow.set_spawn_point(tips_96_thread, plate_1_thread, add_detection_antibody, True)
@@ -445,18 +448,34 @@ smc_workflow.set_spawn_point(tips_384_thread, plate_1_thread, combine_plates, Tr
 smc_workflow.set_spawn_point(final_plate_thread, plate_1_thread, combine_plates, True)
 smc_workflow.set_spawn_point(tips_384_thread, final_plate_thread, transfer_eluate, True)
 
+
+# This an example of an event handler - An event handler subscribes to events in the system and can perform actions when those events occur.
+# Event handlers have access to the system API and can modify the system state.
+# These are not a requirement, but they can be useful for more complex workflows and for creating your own plugins in the future, a powerful feature of Orca for integrating and building out your automation system.
+# In this case, we are creating a system bound event handler that spawns a new thread on the fourth spawn of the tips_384_thread. 
 class SpawnNewOnFourthPlate(SystemBoundEventHandler):
+    """A system bound event handler that spawns a new thread on the fourth spawn of the tips_384_thread.
+    This handler is attached to the THREAD.CREATED event and checks if the thread created is the tips_384_thread.
+    If it is, it will wait for the previous thread to complete before setting the start location of the new thread to the end location of the previous thread.
+    This allows the workflow to spawn a new thread on the fourth spawn of the tips_384_thread, which is used to transfer the eluate from the final plate to the waste.
+
+    Args:
+        SystemBoundEventHandler (_type_): A base class for event handlers that are bound to the system.
+        attach_thread (ThreadTemplate): The thread template to attach to the event handler. This is the thread that will be spawned on the fourth spawn of the tips_384_thread.
+    """
     def __init__(self, attach_thread: ThreadTemplate):
         self._attach_thread = attach_thread
         self._previous_thread: ExecutingLabwareThread | None = None
         self._num_of_spawns = 0
     
     def handle(self, event: str, context: ExecutionContext) -> None:
+        """Handles the THREAD.CREATED event by checking if the created thread is the one we are interested in."""
         assert isinstance(context, ThreadExecutionContext), "Context must be of type ThreadExecutionContext"
         if event == "THREAD.CREATED" and context.thread_name == self._attach_thread.name:
             self._handle_thread_created_event(context)
     
     def _handle_thread_created_event(self, context: ThreadExecutionContext):
+        """Handles the THREAD.CREATED event by checking if the thread is the one we are interested in and setting the start location of the new thread."""
         workflow = self.system.get_executing_workflow(context.workflow_id)
         thread = workflow.thread_manager.get_executing_thread(context.thread_id)
         if self._num_of_spawns % 4 != 0:
@@ -468,6 +487,7 @@ class SpawnNewOnFourthPlate(SystemBoundEventHandler):
         self._num_of_spawns += 1        
     
     async def _await_previous_thread_completion_and_set_start(self, thread: ExecutingLabwareThread, context: ThreadExecutionContext):
+        """Awaits the completion of the previous thread and sets the start location of the new thread to the end location of the previous thread."""
         if self._previous_thread is None:
             return
         while self._previous_thread.status != LabwareThreadStatus.COMPLETED:
@@ -480,12 +500,15 @@ class SpawnNewOnFourthPlate(SystemBoundEventHandler):
 
         
             
-
+# Create an instance of the SpawnNewOnFourthPlate event handler and add it to the workflow 
 tips_384_spawner = SpawnNewOnFourthPlate(tips_384_thread)
+# Add all event hooks to the workflow by subscribing to the THREAD.CREATED event
 smc_workflow.add_event_hook("THREAD.CREATED", tips_384_spawner)
 smc_workflow.add_event_hook("THREAD.CREATED", SpawnNewOnFourthPlate(final_plate_thread))
 
+# Create an event bus to handle events in the system
 event_bus = EventBus()
+# Set all the components to build the system
 builder = SdkToSystemBuilder(
     "SMC Assay",
     "SMC Assay",
@@ -496,15 +519,20 @@ builder = SdkToSystemBuilder(
     [smc_workflow],
     event_bus
 )
+# Build the system
 system = builder.get_system()
 
 
+# Use the WorkflowExecutor to run the workflow
 async def run():
     orca_logger.info("Starting SMC Assay workflow execution.")
     executor = WorkflowExecutor(smc_workflow, system)
     await executor.start()
     orca_logger.info("SMC Assay workflow completed.")
 
+# Use the StandalonMethodExecutor to run a single method of your workflow
+# You must define where each plate starts and ends to be able to run the method independently of the workflow
+# You can use this to run a method independently of the workflow, which is useful for testing or debugging purposes
 async def run_method():
     orca_logger.info("Starting Sample to Bead Plate method execution.")
     executor = StandalonMethodExecutor(
@@ -524,6 +552,8 @@ async def run_method():
     await executor.start()
     orca_logger.info("Sample to Bead Plate method completed.")
 
+# Orca supports parallel processing
+# Here we run both the workflow and the method in parallel
 async def run_both_in_parallel() -> None:
     await asyncio.gather(
         run(),
