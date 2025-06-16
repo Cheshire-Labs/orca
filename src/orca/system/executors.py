@@ -3,7 +3,7 @@ import uuid
 
 from orca.resource_models.labware import LabwareTemplate
 from orca.resource_models.location import Location
-from orca.sdk.events.execution_context import WorkflowExecutionContext
+from orca.events.execution_context import WorkflowExecutionContext
 from orca.system.interfaces import IMethodRegistry, IWorkflowRegistry
 from typing import Dict, List
 from orca.system.system_interface import ISystem

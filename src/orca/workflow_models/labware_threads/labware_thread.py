@@ -5,7 +5,7 @@ import logging
 from typing import Callable, List
 from orca.resource_models.location import Location
 from orca.resource_models.labware import LabwareInstance
-from orca.sdk.events.execution_context import ExecutionContext
+from orca.events.execution_context import ExecutionContext
 from orca.workflow_models.interfaces import ILabwareThread, IMethod
 from orca.workflow_models.method import MethodInstance
 

@@ -4,7 +4,7 @@ import uuid
 from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.location import Location
 from orca.resource_models.transporter_resource import TransporterEquipment
-from orca.sdk.events.execution_context import MoveActionExecutionContext, ThreadExecutionContext
+from orca.events.execution_context import MoveActionExecutionContext, ThreadExecutionContext
 from orca.system.reservation_manager.location_reservation import LocationReservation
 from orca.workflow_models.status_manager import StatusManager
 from orca.workflow_models.status_enums import ActionStatus

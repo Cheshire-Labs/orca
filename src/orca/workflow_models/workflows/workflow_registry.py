@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Dict, List
-from orca.sdk.events.event_bus_interface import IEventBus
-from orca.sdk.events.execution_context import WorkflowExecutionContext
+from orca.events.event_bus_interface import IEventBus
+from orca.events.execution_context import WorkflowExecutionContext
 from orca.system.interfaces import IMethodRegistry, IWorkflowRegistry
 from orca.system.labware_registry_interfaces import ILabwareRegistry
 from orca.system.thread_registry_interface import IThreadRegistry

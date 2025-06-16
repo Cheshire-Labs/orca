@@ -1,10 +1,10 @@
-from orca.sdk.events.event_handler_interface import IEventHandler
+from orca.events.event_handler_interface import IEventHandler
 
 
 from abc import ABC, abstractmethod
 from typing import Callable, Dict, List, Union
 
-from orca.sdk.events.execution_context import ExecutionContext
+from orca.events.execution_context import ExecutionContext
 
 EventHandlerType = Union[
     IEventHandler,

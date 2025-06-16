@@ -2,7 +2,7 @@
 from dataclasses import dataclass
 from typing import Dict, List
 
-from orca.sdk.events.event_bus_interface import EventHandlerType
+from orca.events.event_bus_interface import EventHandlerType
 from orca.workflow_models.method_template import MethodTemplate
 from orca.workflow_models.thread_template import ThreadTemplate
 

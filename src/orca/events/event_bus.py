@@ -1,9 +1,9 @@
-from orca.sdk.events.event_bus_interface import EventHandlerType, IEventBus
+from orca.events.event_bus_interface import EventHandlerType, IEventBus
 
 from typing import TYPE_CHECKING, Dict, List
 
-from orca.sdk.events.event_handlers import SystemBoundEventHandler
-from orca.sdk.events.execution_context import ExecutionContext
+from orca.events.event_handlers import SystemBoundEventHandler
+from orca.events.execution_context import ExecutionContext
 
 if TYPE_CHECKING:
     from orca.system.system_interface import ISystem

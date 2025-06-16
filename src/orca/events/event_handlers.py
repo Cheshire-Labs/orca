@@ -1,6 +1,6 @@
 import typing
-from orca.sdk.events.event_handler_interface import IEventHandler
-from orca.sdk.events.execution_context import ExecutionContext, MethodExecutionContext
+from orca.events.event_handler_interface import IEventHandler
+from orca.events.execution_context import ExecutionContext, MethodExecutionContext
 from orca.workflow_models.method_template import MethodTemplate
 from orca.workflow_models.thread_template import ThreadTemplate
 

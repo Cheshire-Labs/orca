@@ -4,10 +4,10 @@ import logging
 from typing import Any, Dict, List, Optional, cast
 import uuid
 
+from orca.events.execution_context import LocationActionExecutionContext, MethodExecutionContext
 from orca.resource_models.base_resource import Device
 from orca.resource_models.labware import LabwareInstance, LabwareTemplate
 from orca.resource_models.location import Location
-from orca.sdk.events.execution_context import LocationActionExecutionContext, MethodExecutionContext
 from orca.system.reservation_manager.location_reservation import LocationReservation
 from orca.workflow_models.actions.util import AssignedLabwareManager
 from orca.workflow_models.status_enums import ActionStatus
