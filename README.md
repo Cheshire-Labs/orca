@@ -78,7 +78,10 @@ Did you write an amazing Orca protocol?  Since it's python you can just share it
 
 <h1 id="quick-start">⚡ Demo Quick Start</h1>
 
-An example [SMC Assay](./examples/smc_assay/smc_assay_example.py) and [Simple Venus Method](./examples/simple_venus_example/simple_venus_example.py) are provided to quickly run via python.
+Be sure to reach through the prevoided examples:
+
+- [SMC Assay](./examples/smc_assay/smc_assay_example.py) 
+- [Simple Venus Method](./examples/simple_venus_example/simple_venus_example.py) 
 
 
 
@@ -87,7 +90,7 @@ To see a quick demo of how orca works:
 1. Be sure to read our [Warning](#warning) regarding Orca before running
 2. Install Orca ``` pip install cheshire-orca ```
 3. Install Orca's Venus driver ```pip install orca-driver-venus```
-3. Open the demo and run via python
+3. Run the provided example python files using python
 
 
 
@@ -415,11 +418,6 @@ event_bus.subscribe("ACTION.1134ce0c-ea25-4c93-929a-4d1a4f07509a.CREATED", your_
 - **ITransporterDriver(IDriver)** - Equipment capable of transporting labware items.
 
 
-**Adding Drivers**
-
-Drivers must be manually added to the [ResourceFactory](./src/yml_config_builder/resource_factory.py)
-
-In the future, a ```driver``` command will be added to the command line to install and uninstall drivers.
 
 <h1 id="contributing">🤝 Contributing</h1>
 
