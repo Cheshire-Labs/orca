@@ -16,11 +16,20 @@ from orca.workflow_models.workflows.workflow_registry import IExecutingMethodReg
 
 
 class WorkflowExecutor:
+    """ Executes a workflow template in the context of a system.
+    This class is responsible for starting the workflow and managing its execution."""
     def __init__(self, workflow: WorkflowTemplate, system: ISystem) -> None:
+        """ Initializes the WorkflowExecutor with a workflow template and a system.
+        Args:
+            workflow (WorkflowTemplate): The workflow template to be executed.
+            system (ISystem): The system in which the workflow will be executed.
+        """
         self._workflow_template = workflow
         self._system = system
 
     async def start(self):
+        """ Starts the execution of the workflow.
+        This method creates a workflow instance, registers it with the system, and starts the execution."""
         executing_workflow = self._get_executing_workflow()
         await executing_workflow.start()
 
@@ -97,7 +106,7 @@ class StandalonMethodExecutor:
             workflow_template.add_thread(thread_template, True)
 
         for handler in self._event_hooks:
-            workflow_template.add_event_hook(handler.event_name, handler.handler)
+            workflow_template.add_event_handler(handler.event_name, handler.handler)
 
         return workflow_template
 

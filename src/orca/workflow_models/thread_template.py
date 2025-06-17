@@ -1,7 +1,7 @@
 from orca.resource_models.labware import LabwareTemplate
 from orca.resource_models.location import Location
 from orca.workflow_models.method_template import IMethodTemplate
-from orca.workflow_models.method import ExecutingMethod, MethodInstance
+from orca.workflow_models.method import ExecutingMethod
 from orca.workflow_models.method_template import JunctionMethodTemplate
 
 
@@ -9,13 +9,20 @@ from typing import List, Optional
 
 
 class ThreadTemplate:
-
+    """ Creates a template for a thread.  A thread is a sequence of methods to be operated on a specific labware. """
     def __init__(self, 
                  labware_template: LabwareTemplate, 
                  start: Location, 
                  end: Location, 
                  methods: Optional[List[IMethodTemplate]] = None,                  
                  ) -> None:
+        """ Initializes a ThreadTemplate instance.
+        Args:
+            labware_template (LabwareTemplate): The labware template that this thread will operate on.
+            start (Location): The starting location of the thread.
+            end (Location): The ending location of the thread.
+            methods (Optional[List[IMethodTemplate]], optional): A list of method templates that define the methods in the thread. Defaults to None.
+        """
         self._labware_template: LabwareTemplate = labware_template
         self._start: Location = start
         self._end: Location = end

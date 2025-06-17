@@ -223,6 +223,7 @@ class System(ISystem):
         return self._thread_manager.stop_all_threads()
     
     async def initialize_all(self) -> None:
+        """ Initializes all resources in the system. This is typically called at the start of a workflow or method execution."""
         return await self._resources.initialize_all()
 
     def clear_resources(self) -> None:

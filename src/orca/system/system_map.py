@@ -90,8 +90,12 @@ class ILocationRegistry(ABC):
     
 
 class SystemMap(ILocationRegistry, IResourceLocator, IResourceLocationObserver, IResourceRegistryObesrver):
-
+    """ SystemMap is a representation of the system's locations and their connections."""
     def __init__(self, resource_registry: IResourceRegistry) -> None:
+        """Initialize the SystemMap with a resource registry
+        Args:
+            resource_registry (IResourceRegistry): The resource registry that contains the resources and transporters.
+        """
         self._graph: _NetworkXHandler = _NetworkXHandler()
         self._equipment_map: Dict[str, Location] = {}
         self._resource_registry = resource_registry

@@ -9,7 +9,15 @@ from orca.resource_models.labware import LabwareInstance
 orca_logger = logging.getLogger("orca")
 
 class TransporterEquipment(Equipment):
+    """
+    Represents a transporter equipment capable of picking and placing labware between locations.
+    """
     def __init__(self, name: str, driver: ITransporterDriver) -> None:
+        """Initialize the transporter equipment with a name and a driver.
+        Args:
+            name (str): The name of the transporter equipment.
+            driver (ITransporterDriver): The driver that implements the transporter's functionality.
+        """
         super().__init__(name, driver)
         self._driver: ITransporterDriver = driver
         self._labware: Optional[LabwareInstance] = None

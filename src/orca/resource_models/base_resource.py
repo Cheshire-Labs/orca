@@ -186,7 +186,13 @@ class EquipmentLabwareRegistry:
         self._stage_labware = labware
  
 class Device(Equipment, ILabwarePlaceable):
+    """A class that represents a device that can operate on labware."""
     def __init__(self, name: str, driver: ILabwarePlaceableDriver) -> None:
+        """Initialize the device with a name and a driver.
+        Args:
+            name (str): The name of the device.
+            driver (ILabwarePlaceableDriver): The driver for the device.
+        """
         super().__init__(name, driver)
         self._driver: ILabwarePlaceableDriver = driver
         self._labware_reg = EquipmentLabwareRegistry()

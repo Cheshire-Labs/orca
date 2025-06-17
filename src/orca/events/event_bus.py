@@ -11,7 +11,11 @@ if TYPE_CHECKING:
 
 
 class EventBus(IEventBus):
+    """ A simple event bus implementation that allows subscribing to events, unsubscribing, and emitting events.
+    It supports both callable handlers and instances of `SystemBoundEventHandler`."""
     def __init__(self) -> None:
+        """ Initializes the EventBus instance.
+        """
         self._subscribers: Dict[str, List[EventHandlerType]] = {}
 
     @property

@@ -7,11 +7,20 @@ from typing import Any, Dict, List, Optional, Union
 
 
 class ActionTemplate:
-    def __init__(self, resource: Equipment | EquipmentResourcePool,
-                 command: Any,
+    """ Creates a template for an action.  An action is a single operation that can be performed on a set of labware using a resource or resource pool."""
+    def __init__(self, 
+                 resource: Equipment | EquipmentResourcePool,
+                 command: str,
                  inputs: List[Union[LabwareTemplate, AnyLabwareTemplate]],
                  outputs: Optional[List[Union[LabwareTemplate, AnyLabwareTemplate]]] = None,
                  options: Optional[Dict[str, Any]] = None):
+        """ Initializes an ActionTemplate instance.
+        Args:
+            resource (Equipment | EquipmentResourcePool): The resource or resource pool that will be used for the action.
+            command (str): The command to be executed by the resource.
+            inputs (List[Union[LabwareTemplate, AnyLabwareTemplate]]): A list of labware templates that will be used as inputs for the action.
+            outputs (Optional[List[Union[LabwareTemplate, AnyLabwareTemplate]]], optional): A list of labware templates that will be used as outputs for the action. Defaults to None.
+            options (Optional[Dict[str, Any]], optional): A dictionary of options to configure the action. Defaults to None."""
         if isinstance(resource, Equipment):
             self._resource_pool: EquipmentResourcePool = EquipmentResourcePool(resource.name, [resource])
         else:

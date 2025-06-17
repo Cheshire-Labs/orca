@@ -73,6 +73,7 @@ class IResourceRegistry(ABC):
 
 
 class ResourceRegistry(IResourceRegistry):
+    """ A class that manages resources and resource pools in the system."""
     def __init__(self) -> None:
         self._resources: Dict[str, IResource] = {}
         self._resource_pools: Dict[str, EquipmentResourcePool] = {}
@@ -117,6 +118,7 @@ class ResourceRegistry(IResourceRegistry):
         [observer.resource_registry_notify("resource_added", resource) for observer in self._observers]
 
     def add_resources(self, resources: List[IResource | EquipmentResourcePool]) -> None:
+        """Adds a list of resources or resource pools to the registry."""
         for resource in resources:
             if isinstance(resource, EquipmentResourcePool):
                 self.add_resource_pool(resource)
