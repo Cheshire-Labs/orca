@@ -1,13 +1,24 @@
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 import uuid
 
 class LabwareTemplate:
-    def __init__(self, name: str, type: str, options: Dict[str, Any] = {}) -> None:
+    """
+    Creates a template for a labware. A labware is a container that can hold samples or reagents.
+    """
+    def __init__(self, name: str, type: str, options: Optional[Dict[str, Any]] = None) -> None:
+        """
+        Initializes a LabwareTemplate instance.
+
+        Args:
+            name (str): _Name of the labware template._
+            type (str): _Labware Type.  This name should match internal labware defintions of software, such as in robotic arm software._
+            options (Optional[Dict[str, Any]], optional): _options to set unique properties_. Defaults to None.
+        """
         self._name = name
         self._labware_type = type
-        self._options = options
+        self._options = options if options is not None else {}
     
     @property
     def name(self) -> str:
@@ -21,8 +32,8 @@ class LabwareTemplate:
     def labware_type(self, value: str) -> None:
         self._labware_type = value
 
-    def create_instance(self) -> Labware:
-        return Labware(self.name, self.labware_type)
+    def create_instance(self) -> LabwareInstance:
+        return LabwareInstance(self.name, self.labware_type)
 
 class AnyLabwareTemplate:
     """A class that represents any labware template"""
@@ -49,7 +60,7 @@ class AnyLabware:
         return "$AnyLabware"
 
 
-class Labware:
+class LabwareInstance:
     
     def __init__(self, name: str, labware_type: str) -> None:
         self._id = str(uuid.uuid4())
