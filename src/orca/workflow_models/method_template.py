@@ -15,8 +15,14 @@ class IMethodTemplate(ABC):
     pass
 
 class MethodTemplate(IMethodTemplate):
-
+    """ Creates a template for a method. A method is a sequence of actions"""
     def __init__(self, name: str, actions: Optional[List[ActionTemplate]] = None, options: Optional[Dict[str, Any]] = None):
+        """ Initializes a MethodTemplate instance.
+        Args:
+            name (str): The name of the method template.
+            actions (Optional[List[ActionTemplate]], optional): A list of action templates that define the actions in the method. Defaults to None.
+            options (Optional[Dict[str, Any]], optional): A dictionary of options to configure the method. Defaults to None.
+        """
         self._name = name
         self._actions: List[ActionTemplate] = actions if actions is not None else []
         self._options = options if options is not None else {}
@@ -62,9 +68,11 @@ class MethodTemplate(IMethodTemplate):
 
 
 class JunctionMethodTemplate(IMethodTemplate):
+    """ Creates a template for a junction method. A junction method is a placeholder for a method that will be defined later in the workflow."""
     def __init__(self) -> None:
         self._method: ExecutingMethod | None = None
         self._thread_assignments: List[Tuple[LabwareTemplate, ILabwareThread]] = []
+    
 
     @property
     def method(self) -> ExecutingMethod:

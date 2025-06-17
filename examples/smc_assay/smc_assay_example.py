@@ -503,8 +503,8 @@ class SpawnNewOnFourthPlate(SystemBoundEventHandler):
 # Create an instance of the SpawnNewOnFourthPlate event handler and add it to the workflow 
 tips_384_spawner = SpawnNewOnFourthPlate(tips_384_thread)
 # Add all event hooks to the workflow by subscribing to the THREAD.CREATED event
-smc_workflow.add_event_hook("THREAD.CREATED", tips_384_spawner)
-smc_workflow.add_event_hook("THREAD.CREATED", SpawnNewOnFourthPlate(final_plate_thread))
+smc_workflow.add_event_handler("THREAD.CREATED", tips_384_spawner)
+smc_workflow.add_event_handler("THREAD.CREATED", SpawnNewOnFourthPlate(final_plate_thread))
 
 # Create an event bus to handle events in the system
 event_bus = EventBus()

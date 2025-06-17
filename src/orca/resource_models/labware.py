@@ -4,7 +4,18 @@ from typing import Any, Dict, Optional
 import uuid
 
 class LabwareTemplate:
+    """
+    Creates a template for a labware. A labware is a container that can hold samples or reagents.
+    """
     def __init__(self, name: str, type: str, options: Optional[Dict[str, Any]] = None) -> None:
+        """
+        Initializes a LabwareTemplate instance.
+
+        Args:
+            name (str): _Name of the labware template._
+            type (str): _Labware Type.  This name should match internal labware defintions of software, such as in robotic arm software._
+            options (Optional[Dict[str, Any]], optional): _options to set unique properties_. Defaults to None.
+        """
         self._name = name
         self._labware_type = type
         self._options = options if options is not None else {}

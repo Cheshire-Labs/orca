@@ -38,6 +38,17 @@ class SdkToSystemBuilder:
                  workflows: List[WorkflowTemplate],
                  event_bus: IEventBus,
                  ) -> None:
+        """ Initializes the SdkToSystemBuilder with the necessary components to build a system.
+        Args:
+            name (str): The name of the system.
+            description (str): A description of the system.
+            labwares (List[LabwareTemplate]): A list of labware templates to be used in the system.
+            resources_registry (ResourceRegistry): The resource registry containing resources for the system.
+            system_map (SystemMap): The system map defining the locations and connections in the system.
+            methods (List[MethodTemplate]): A list of method templates to be used in the system.
+            workflows (List[WorkflowTemplate]): A list of workflow templates to be used in the system.
+            event_bus (IEventBus): The event bus to handle events in the system.
+        """
         self._system_info: SystemInfo = SystemInfo(name, description=description, version="0.1.0", model_extra={})
         self._resource_reg: ResourceRegistry = resources_registry
         self._labware_registry: LabwareRegistry = self._get_labware_registry(labwares)
@@ -105,7 +116,10 @@ class SdkToSystemBuilder:
         return reg
 
     def get_system(self):
-
+        """ Builds the system using the provided components and returns the system instance.
+        Returns:
+            System: The constructed system instance.
+        """
         
         system = System(self._system_info, 
                 self._system_map, 
