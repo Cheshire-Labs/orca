@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 import itertools
 from typing import Any, Dict, List, Optional, Set, Tuple
 from orca.resource_models.base_resource import IResource, ILabwarePlaceable
-from orca.resource_models.labware import Labware
+from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.location import IResourceLocationObserver, Location
 import networkx as nx # type: ignore
 import matplotlib.pyplot as plt
@@ -90,8 +90,12 @@ class ILocationRegistry(ABC):
     
 
 class SystemMap(ILocationRegistry, IResourceLocator, IResourceLocationObserver, IResourceRegistryObesrver):
-
+    """ SystemMap is a representation of the system's locations and their connections."""
     def __init__(self, resource_registry: IResourceRegistry) -> None:
+        """Initialize the SystemMap with a resource registry
+        Args:
+            resource_registry (IResourceRegistry): The resource registry that contains the resources and transporters.
+        """
         self._graph: _NetworkXHandler = _NetworkXHandler()
         self._equipment_map: Dict[str, Location] = {}
         self._resource_registry = resource_registry
@@ -109,7 +113,8 @@ class SystemMap(ILocationRegistry, IResourceLocator, IResourceLocationObserver, 
     def add_location(self, location: Location) -> None:
         self._graph.add_node(location.teachpoint_name, location=location)
         if isinstance(location.resource, ILabwarePlaceable):
-            self._equipment_map[location.resource.name] = location
+            self.assign_resource_to_location(location.name, location.resource)
+            
         location.add_observer(self)
 
     def get_resource_location(self, resource_name: str) -> Location:
@@ -172,7 +177,7 @@ class SystemMap(ILocationRegistry, IResourceLocator, IResourceLocationObserver, 
                 blocking_locs.add(location)
         return list(blocking_locs)
 
-    def _get_blocking_transporter(self, labware: Labware, source: str, target: str) -> List[TransporterEquipment]:
+    def _get_blocking_transporter(self, labware: LabwareInstance, source: str, target: str) -> List[TransporterEquipment]:
         blocking_transporters: Set[TransporterEquipment] = set()
         for path in self.get_all_shortest_any_paths(source, target):
             for i in range(len(path) - 1):
@@ -200,6 +205,18 @@ class SystemMap(ILocationRegistry, IResourceLocator, IResourceLocationObserver, 
             self.add_edge(edge[0], edge[1], transporter)
             self.add_edge(edge[1], edge[0], transporter)
 
+    def assign_resource_to_location(self, location_name: str, resource: ILabwarePlaceable) -> None:
+        try:
+            location = self.get_location(location_name)
+        except KeyError:
+            raise ValueError(f"Location {location_name} does not exist")
+        location.resource = resource
+        self._equipment_map[resource.name] = location
+
+    def assign_resources(self, resources: Dict[str, ILabwarePlaceable]) -> None:
+        for name, resource in resources.items():
+            self.assign_resource_to_location(name, resource)
+        
     def resource_registry_notify(self, event: str, resource: IResource) -> None:
         if event == "resource_added":
             if isinstance(resource, TransporterEquipment):
@@ -210,7 +227,7 @@ class SystemMap(ILocationRegistry, IResourceLocator, IResourceLocationObserver, 
             if isinstance(resource, ILabwarePlaceable):
                 self._equipment_map[resource.name] = location
 
-    def _get_available_graph(self, include_nodes: List[str] = []) -> _NetworkXHandler:
+    def _get_available_graph(self, include_nodes: Optional[List[str]] = None) -> _NetworkXHandler:
         subgraph = self._graph.get_subgraph([name for name, _ in self._get_available_locations(include_nodes).items()])
         available_edges: List[Tuple[str, str, Dict[str, Any]]] = []
         for edge in subgraph.get_all_edges():
@@ -226,8 +243,9 @@ class SystemMap(ILocationRegistry, IResourceLocator, IResourceLocationObserver, 
         return available_graph
 
 
-    def _get_available_locations(self, include_nodes: List[str] = []) -> Dict[str, Dict[str, Any]]:
+    def _get_available_locations(self, include_nodes: Optional[List[str]] = None) -> Dict[str, Dict[str, Any]]:
         nodes = {}
+        include_nodes = include_nodes if include_nodes is not None else []
         for node, nodedata in self._graph.get_nodes().items():
             location: Location = nodedata["location"]
             if node in include_nodes or location.labware is None:
