@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 import cmd
 import traceback
 import colorama
@@ -340,6 +341,15 @@ class OrcaCmdShell(cmd.Cmd):
             for command in commands:
                 print(command)
             print("\nType 'help <command>' to get help on a specific command.")
+
+def run_interactive_shell():
+    shell = OrcaCmdShell()
+
+    async def main_loop():
+        loop = asyncio.get_running_loop()
+        shell.cmdloop()
+
+    asyncio.run(main_loop())
     
 if __name__ == "__main__":
     OrcaCmdShell().cmdloop()
