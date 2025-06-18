@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cheshire-orca"
-version = "0.1.0"
+version = "0.3.0"
 description = "Laboratory Automation Framework"
 authors = [
     { name = "Cheshire Labs", email = "support@cheshirelabs.io" }
@@ -26,6 +26,9 @@ dependencies = [
     "matplotlib>=3.9.0",
     "PyYAML>=6.0.1",
     "requests>=2.32.3", 
+    "orca-interfaces>=0.1.0",
+    "fastapi>=0.70.0",
+    "uvicorn>=0.15.0",
 ]
 
 [project.optional-dependencies]

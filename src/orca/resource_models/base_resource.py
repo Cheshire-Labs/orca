@@ -4,7 +4,8 @@ from typing import Any, Dict, List, Optional
 import logging
 from orca_driver_interface.driver_interfaces import IDriver
 from orca_driver_interface.driver_interfaces import ILabwarePlaceableDriver
-from orca.resource_models.labware import Labware
+from orca.resource_models.device_error import DeviceBusyError
+from orca.resource_models.labware import LabwareInstance
 
 orca_logger = logging.getLogger("orca")
 
@@ -70,28 +71,28 @@ class ILabwarePlaceable(ABC):
         raise NotImplementedError
     
     @property
-    def labware(self) -> Optional[Labware]:
+    def labware(self) -> Optional[LabwareInstance]:
         raise NotImplementedError
     
-    def initialize_labware(self, labware: Labware) -> None:
+    def initialize_labware(self, labware: LabwareInstance) -> None:
         # TODO: Make async in future
         # TODO: this will need to be restricted to only initilaizing the labware, probably with a LabwareManager service
         raise NotImplementedError
     
     @abstractmethod
-    async def prepare_for_pick(self, labware: Labware) -> None:
+    async def prepare_for_pick(self, labware: LabwareInstance) -> None:
         raise NotImplementedError
     
     @abstractmethod
-    async def prepare_for_place(self, labware: Labware) -> None:
+    async def prepare_for_place(self, labware: LabwareInstance) -> None:
         raise NotImplementedError
 
     @abstractmethod
-    async def notify_picked(self, labware: Labware) -> None:
+    async def notify_picked(self, labware: LabwareInstance) -> None:
         raise NotImplementedError
     
     @abstractmethod
-    async def notify_placed(self, labware: Labware) -> None:
+    async def notify_placed(self, labware: LabwareInstance) -> None:
         raise NotImplementedError
 
 
@@ -148,24 +149,24 @@ class Equipment(IEquipment):
 
 class EquipmentLabwareRegistry:
     def __init__(self) -> None:
-        self._stage_labware: Optional[Labware] = None
-        self._loaded_labware: List[Labware] = []
+        self._stage_labware: Optional[LabwareInstance] = None
+        self._loaded_labware: List[LabwareInstance] = []
     
     @property
-    def stage(self) -> Optional[Labware]:
+    def stage(self) -> Optional[LabwareInstance]:
         return self._stage_labware
     
     @property
-    def loaded_labware(self) -> List[Labware]:
+    def loaded_labware(self) -> List[LabwareInstance]:
         return self._loaded_labware
 
-    def initialize_labware(self, labware: Labware) -> None:
+    def initialize_labware(self, labware: LabwareInstance) -> None:
         if labware in self._loaded_labware:
             return
         else:
             self._loaded_labware.append(labware)
 
-    def unload_labware_to_stage(self, labware: Labware) -> None:
+    def unload_labware_to_stage(self, labware: LabwareInstance) -> None:
         if labware not in self._loaded_labware:
             raise ValueError(f"{self} - Labware {labware} not found in loaded labwares")
         if self._stage_labware is not None:
@@ -173,42 +174,50 @@ class EquipmentLabwareRegistry:
         self._loaded_labware.remove(labware)
         self._stage_labware = labware
 
-    def load_labware_from_stage(self, labware: Labware) -> None:
+    def load_labware_from_stage(self, labware: LabwareInstance) -> None:
         if self._stage_labware != labware:
             raise ValueError(f"{self} - Stage labware {self._stage_labware} does not match labware {labware} to load")
         self._stage_labware = None
         self._loaded_labware.append(labware)
 
-    def set_stage(self, labware: Labware | None) -> None:
+    def set_stage(self, labware: LabwareInstance | None) -> None:
+        if self._stage_labware is not None and labware is not None:
+            raise DeviceBusyError(f"{self} - Stage already contains labware: {self._stage_labware}.  Unable to set stage to {labware}")
         self._stage_labware = labware
  
-class LabwareLoadableEquipment(Equipment, ILabwarePlaceable):
+class Device(Equipment, ILabwarePlaceable):
+    """A class that represents a device that can operate on labware."""
     def __init__(self, name: str, driver: ILabwarePlaceableDriver) -> None:
+        """Initialize the device with a name and a driver.
+        Args:
+            name (str): The name of the device.
+            driver (ILabwarePlaceableDriver): The driver for the device.
+        """
         super().__init__(name, driver)
         self._driver: ILabwarePlaceableDriver = driver
         self._labware_reg = EquipmentLabwareRegistry()
 
     @property
-    def labware(self) -> Optional[Labware]:
+    def labware(self) -> Optional[LabwareInstance]:
         return self._labware_reg.stage
     
     @property
-    def loaded_labware(self) -> List[Labware]:
+    def loaded_labware(self) -> List[LabwareInstance]:
         return self._labware_reg.loaded_labware
     
-    def initialize_labware(self, labware: Labware) -> None:
+    def initialize_labware(self, labware: LabwareInstance) -> None:
         if labware in self._labware_reg.loaded_labware:
             return
         else:
             self._labware_reg.set_stage(labware)
 
-    async def prepare_for_place(self, labware: Labware) -> None:
+    async def prepare_for_place(self, labware: LabwareInstance) -> None:
         if self._labware_reg.stage is not None:
             raise ValueError(f"{self} - Stage already contains labware: {self._labware_reg.stage}.  Unable to place {labware}")
         orca_logger.info(f"{self} - preparing for place of {labware}")
         await self._driver.prepare_for_place(labware.name, labware.labware_type)
 
-    async def prepare_for_pick(self, labware: Labware) -> None:
+    async def prepare_for_pick(self, labware: LabwareInstance) -> None:
         if self._labware_reg.stage == labware:
             return
         else:
@@ -216,7 +225,7 @@ class LabwareLoadableEquipment(Equipment, ILabwarePlaceable):
             await self._driver.prepare_for_pick(labware.name, labware.labware_type)
             self._labware_reg.unload_labware_to_stage(labware)
 
-    async def notify_picked(self, labware: Labware) -> None:
+    async def notify_picked(self, labware: LabwareInstance) -> None:
         if self._labware_reg.stage != labware:
             raise ValueError(f"{self} - An error has ocurred.  The labware {labware} notified as picked does not match the previously staged labware. "
                               "The wrong labware may have been picked.")
@@ -224,7 +233,7 @@ class LabwareLoadableEquipment(Equipment, ILabwarePlaceable):
         self._labware_reg.set_stage(None)
         await self._driver.notify_picked(labware.name, labware.labware_type)
     
-    async def notify_placed(self, labware: Labware) -> None:
+    async def notify_placed(self, labware: LabwareInstance) -> None:
         if self._labware_reg.stage is not None:
             raise ValueError(f"{self} - An error has ocurred.  The labware {labware} notified as placed was placed with labware {self._labware_reg.stage} already on the stage.  "
                              "A crash may have occurred.")
