@@ -4,10 +4,10 @@ from orca.config_interfaces import IResourceConfig, IResourcePoolConfig
 from orca.driver_management.driver_installer import IDriverManager
 from orca.driver_management.driver_socket_client import RemoteLabwarePlaceableDriverClient
 from orca.driver_management.drivers.simulation_base.simulation_base import SimulationBaseDriver
-from orca.driver_management.drivers.simulation_robotic_arm.simulation_robotic_arm import SimulationRoboticArmDriver
-from orca.driver_management.drivers.simulation_labware_placeable.simulation_labware_placeable import SimulationLabwarePlaceableDriver
+from orca.driver_management.drivers.simulation_robotic_arm.simulation_robotic_arm import LegacySimulationRoboticArmDriver
+from orca.driver_management.drivers.simulation_labware_placeable.simulation_labware_placeable import SimulationDeviceDriver
 from orca.helper import FilepathReconciler
-from orca.resource_models.base_resource import Equipment, IEquipment, LabwareLoadableEquipment
+from orca.resource_models.base_resource import Equipment, IEquipment, Device
 
 from orca.resource_models.resource_pool import EquipmentResourcePool
 from orca.resource_models.transporter_resource import TransporterEquipment
@@ -55,9 +55,9 @@ class ResourceFactory(IResourceFactory):
 
     def create_venus(self, resource_name: str, resource_config: IResourceConfig) -> IEquipment:
         if resource_config.sim:
-            return LabwareLoadableEquipment(resource_name, SimulationLabwarePlaceableDriver("Venus", "Venus"))
+            return Device(resource_name, SimulationDeviceDriver("Venus", "Venus"))
         else:
-            return LabwareLoadableEquipment(resource_name, RemoteLabwarePlaceableDriverClient("venus"))
+            return Device(resource_name, RemoteLabwarePlaceableDriverClient("venus"))
 
     def create(self, resource_name: str, resource_config: IResourceConfig) -> IEquipment:
         driver_name = resource_config.type.lower()
@@ -77,7 +77,7 @@ class ResourceFactory(IResourceFactory):
         elif driver_base_type == "non-labware":
             equipment = Equipment(resource_name, driver)
         else:
-            equipment = LabwareLoadableEquipment(resource_name, cast(ILabwarePlaceableDriver, driver))
+            equipment = Device(resource_name, cast(ILabwarePlaceableDriver, driver))
 
         equipment.set_init_options(resource_config.options)
         return equipment
@@ -93,9 +93,9 @@ class ResourceFactory(IResourceFactory):
         if res_type == 'non-labware':
             return SimulationBaseDriver(name,res_type)
         elif res_type == 'transporter':
-            return SimulationRoboticArmDriver(name, self._filepath_reconciler, res_type)
+            return LegacySimulationRoboticArmDriver(name, self._filepath_reconciler, res_type)
         else:
-            return SimulationLabwarePlaceableDriver(name, res_type)
+            return SimulationDeviceDriver(name, res_type)
 
 
     

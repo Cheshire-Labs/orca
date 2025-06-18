@@ -8,18 +8,20 @@ import yaml
 from orca.driver_management.driver_installer import DriverInstaller, DriverLoader, DriverManager, InstalledDriverRegistry, RemoteAvailableDriverRegistry
 from orca.helper import FilepathReconciler
 from orca.scripting.scripting import IScriptFactory, IScriptRegistry, NullScriptFactory, ScriptFactory, ScriptRegistry
-from orca.system.method_executor import MethodExecutor
+from orca.sdk.events.event_bus import EventBus
+from orca.system.system_interface import ISystem
+from orca.system.standalone_method_executor import StandaloneMethodExecutor
 from orca.resource_models.base_resource import IInitializableResource
 from orca.resource_models.labware import LabwareTemplate
 from orca.resource_models.location import Location
-from orca.system.move_handler import MoveHandler
 from orca.system.registries import LabwareRegistry, TemplateRegistry
-from orca.system.reservation_manager import ReservationManager
+from orca.system.reservation_manager.reservation_manager import LocationReservationManager
 from orca.system.resource_registry import ResourceRegistry
-from orca.system.system import ISystem, SystemInfo
+from orca.system.system_info import SystemInfo
 from orca.system.system_map import SystemMap
-from orca.system.thread_manager import ThreadManagerFactory
-from orca.system.workflow_registry import WorkflowRegistry
+from orca.system.thread_manager import ThreadManager
+from orca.workflow_models.workflows.workflow_registry import WorkflowRegistry
+from orca.workflow_models.workflows.workflow_factories import WorkflowFactory
 from orca.yml_config_builder.configs import SystemConfigModel
 from orca.yml_config_builder.template_factories import ConfigToSystemBuilder, MethodTemplateFactory, ThreadTemplateFactory, WorkflowTemplateFactory
 from orca.yml_config_builder.resource_factory import IResourceFactory, ResourceFactory
@@ -69,10 +71,12 @@ class OrcaCore:
         system_map = SystemMap(resource_reg)
         template_registry = TemplateRegistry()
         labware_registry = LabwareRegistry()
-        reservation_manager = ReservationManager(system_map) 
-        move_handler = MoveHandler(reservation_manager, labware_registry, system_map)
-        thread_manager = ThreadManagerFactory.create_instance(labware_registry, reservation_manager, system_map, move_handler)
-        workflow_registry = WorkflowRegistry(thread_manager, labware_registry, system_map)
+        event_bus = EventBus()
+        reservation_manager = LocationReservationManager(system_map) 
+
+        thread_manager = ThreadManager()
+        workflow_factory = WorkflowFactory(thread_manager, labware_registry, event_bus, system_map)
+        workflow_registry = WorkflowRegistry(workflow_factory)
         system_info = SystemInfo(self._config.system.name, 
                                  self._config.system.version, 
                                  self._config.system.description, 
@@ -84,7 +88,7 @@ class OrcaCore:
                                                         template_registry, 
                                                         system_map,
                                                         thread_manager,
-                                                        self._scripting_registry)
+                                                        )
         workflow_template_factory = WorkflowTemplateFactory(thread_template_factory, template_registry)
 
         self._builder = ConfigToSystemBuilder()
@@ -100,7 +104,7 @@ class OrcaCore:
         self._builder.set_resource_factory(resource_factory)
         self._builder.set_method_template_factory(method_template_factory)
         self._builder.set_workflow_template_factory(workflow_template_factory)
-        self._method_executor_registry: Dict[str, MethodExecutor] = {}
+        self._method_executor_registry: Dict[str, StandaloneMethodExecutor] = {}
         self._system = self._builder.get_system(deployment_stage)
 
     @property
@@ -135,7 +139,7 @@ class OrcaCore:
             self._builder.clear_registries()
             self._system = self._builder.get_system(deployment_stage)
         workflow_template = self._system.get_workflow_template(workflow_name)
-        workflow = self._system.create_workflow_instance(workflow_template)
+        workflow = self._system.create_and_register_workflow_instance(workflow_template)
         self._system.add_workflow(workflow)
         return workflow.id
 
@@ -178,7 +182,7 @@ class OrcaCore:
         end_map_obj: Dict[LabwareTemplate, Location] = labware_location_hook(end_map)
 
         method_template = self._system.get_method_template(method_name)
-        executer = MethodExecutor(method_template,
+        executer = StandaloneMethodExecutor(method_template,
                                  start_map_obj,
                                  end_map_obj,
                                  self._system,

@@ -1,4 +1,4 @@
-from orca.resource_models.labware import Labware, LabwareTemplate
+from orca.resource_models.labware import LabwareInstance, LabwareTemplate
 
 from abc import ABC, abstractmethod
 from typing import List
@@ -8,15 +8,15 @@ class ILabwareRegistry(ABC):
 
     @property
     @abstractmethod
-    def labwares(self) -> List[Labware]:
+    def labwares(self) -> List[LabwareInstance]:
         pass
 
     @abstractmethod
-    def get_labware(self, name: str) -> Labware:
+    def get_labware(self, name: str) -> LabwareInstance:
         raise NotImplementedError
 
     @abstractmethod
-    def add_labware(self, labware: Labware) -> None:
+    def add_labware(self, labware: LabwareInstance) -> None:
         raise NotImplementedError
 
 

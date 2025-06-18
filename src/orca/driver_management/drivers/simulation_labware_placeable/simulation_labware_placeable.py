@@ -5,7 +5,7 @@ from orca.driver_management.drivers.simulation_base.simulation_base import Simul
 from orca_driver_interface.driver_interfaces import ILabwarePlaceableDriver
 
 orca_logger = logging.getLogger("orca")
-class SimulationLabwarePlaceableDriver(SimulationBaseDriver, ILabwarePlaceableDriver):
+class SimulationDeviceDriver(SimulationBaseDriver, ILabwarePlaceableDriver):
 
     async def prepare_for_pick(self, labware_name: str, labware_type: str, barcode: Optional[str] = None, alias: Optional[str] = None) -> None:
         orca_logger.info(f"Driver: {self._name} preparing for pick...")
