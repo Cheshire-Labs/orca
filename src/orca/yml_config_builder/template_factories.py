@@ -1,27 +1,31 @@
 from typing import Dict, List, Optional, Tuple, Union
 import logging
 from orca.config_interfaces import ILabwareConfig, ILabwareThreadConfig, IMethodActionConfig, IMethodConfig, IResourceConfig, IResourcePoolConfig, ISystemConfig, IThreadStepConfig, IWorkflowConfig
-from orca.resource_models.base_resource import Equipment, LabwareLoadableEquipment
+from orca.resource_models.base_resource import Equipment, Device
 from orca.resource_models.labware import AnyLabwareTemplate, LabwareTemplate
 from orca.resource_models.location import Location
-from orca.system.workflow_registry import WorkflowRegistry
+from orca.system.system_info import SystemInfo
+from orca.system.interfaces import IMethodTemplateRegistry, IWorkflowTemplateRegistry
+from orca.workflow_models.workflows.workflow_registry import WorkflowRegistry
 from orca.scripting.scripting import IScriptRegistry
 from orca.system.labware_registry_interfaces import ILabwareTemplateRegistry
-from orca.system.thread_manager import IThreadManager
+from orca.system.thread_manager_interface import IThreadManager
 from orca.system.registries import LabwareRegistry
 from orca.system.resource_registry import IResourceRegistry
-from orca.system.system import System, SystemInfo
+from orca.system.system import System
 from orca.system.system_map import ILocationRegistry, IResourceLocator, SystemMap
 from orca.system.registries import TemplateRegistry
-from orca.system.template_registry_interfaces import IThreadTemplateRegistry, IMethodTemplateRegistry, IWorkflowTemplateRegistry
+from orca.system.interfaces import IThreadTemplateRegistry
+from orca.workflow_models.action_template import ActionTemplate
+from orca.workflow_models.method_template import IMethodTemplate, JunctionMethodTemplate, MethodTemplate
+from orca.workflow_models.thread_template import ThreadTemplate
 from orca.workflow_models.spawn_thread_action import SpawnThreadAction
-from orca.workflow_models.labware_thread import IThreadObserver
 from orca.yml_config_builder.configs import SystemConfigModel
 from orca.yml_config_builder.dynamic_config import DynamicSystemConfigModel
 from orca.yml_config_builder.resource_factory import IResourceFactory, ResourcePoolFactory
 from orca.resource_models.resource_pool import EquipmentResourcePool
 from orca.resource_models.transporter_resource import TransporterEquipment
-from orca.workflow_models.workflow_templates import IMethodTemplate, JunctionMethodTemplate, ThreadTemplate, MethodActionTemplate, MethodTemplate, WorkflowTemplate
+from orca.workflow_models.workflow_templates import WorkflowTemplate
 from orca.yml_config_builder.special_yml_parsing import get_dynamic_yaml_keys, is_dynamic_yaml
 from orca.yml_config_builder.variable_resolution import VariablesRegistry
 
@@ -38,7 +42,7 @@ class MethodActionConfigToTemplate:
         self._resource_reg: IResourceRegistry = resource_reg
         self._labware_temp_reg: ILabwareTemplateRegistry = labware_temp_reg
 
-    def get_template(self, name: str, config: IMethodActionConfig)  -> MethodActionTemplate:
+    def get_template(self, name: str, config: IMethodActionConfig)  -> ActionTemplate:
         # Get the resource name
         resource_name = config.resource
         if resource_name is None:
@@ -73,7 +77,7 @@ class MethodActionConfigToTemplate:
         else:
             outputs = [self._labware_temp_reg.get_labware_template(name) for name in config.outputs]
         
-        return MethodActionTemplate(resource,
+        return ActionTemplate(resource,
                                     config.command,
                                     inputs,
                                     outputs, 
@@ -85,7 +89,7 @@ class MethodTemplateFactory:
         self._template_builder = MethodActionConfigToTemplate(resource_reg, labware_template_reg)
 
     def get_template(self, name: str, config: IMethodConfig) -> MethodTemplate:
-        method = MethodTemplate(name, config.options)
+        method = MethodTemplate(name, options=config.options)
         
         for action_item in config.actions:
             for action_name, action_config in action_item.items():
@@ -104,14 +108,13 @@ class ThreadTemplateFactory:
                 labware_thread_temp_reg: IThreadTemplateRegistry, 
                 resource_locator: IResourceLocator,
                 thread_manager: IThreadManager,
-                script_reg: IScriptRegistry) -> None:
+                ) -> None:
         self._labware_temp_reg: ILabwareTemplateRegistry = labware_temp_reg
         self._location_reg: ILocationRegistry = location_reg
         self._method_temp_reg: IMethodTemplateRegistry = method_temp_reg
         self._thread_temp_reg: IThreadTemplateRegistry = labware_thread_temp_reg
         self._resource_locator: IResourceLocator = resource_locator
         self._thread_manager: IThreadManager = thread_manager
-        self._script_reg: IScriptRegistry = script_reg
 
     def get_template(self, 
                 name: str, 
@@ -120,11 +123,9 @@ class ThreadTemplateFactory:
             labware = self._get_labware_template(config)
             start_location = self._get_location(self._location_reg, config.start)                                            
             end_location = self._get_location(self._location_reg, config.end)
-            observers: List[IThreadObserver] = [self._script_reg.get_script(script_name) for script_name in config.scripts]
             labware_thread = ThreadTemplate(labware, 
                                             start_location, 
-                                            end_location, 
-                                            observers)
+                                            end_location)
         except KeyError as e:
             raise KeyError(f"Error building labware thread {name}") from e
         return labware_thread
@@ -259,7 +260,7 @@ class LocationsBuilder:
         
         for res in self._resource_registry.resources:
             # skip resources like newtowrk switches, etc that don't have plate pad locations
-            if isinstance(res, LabwareLoadableEquipment) \
+            if isinstance(res, Device) \
                 and not isinstance(res, EquipmentResourcePool) \
                 and not isinstance(res, TransporterEquipment):
                 # set resource to each location

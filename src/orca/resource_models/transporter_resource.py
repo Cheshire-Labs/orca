@@ -4,19 +4,27 @@ from orca.resource_models.base_resource import Equipment
 from orca_driver_interface.transporter_interfaces import ITransporterDriver
 from orca.resource_models.location import Location
 from typing import List, Optional
-from orca.resource_models.labware import Labware
+from orca.resource_models.labware import LabwareInstance
 
 orca_logger = logging.getLogger("orca")
 
 class TransporterEquipment(Equipment):
+    """
+    Represents a transporter equipment capable of picking and placing labware between locations.
+    """
     def __init__(self, name: str, driver: ITransporterDriver) -> None:
+        """Initialize the transporter equipment with a name and a driver.
+        Args:
+            name (str): The name of the transporter equipment.
+            driver (ITransporterDriver): The driver that implements the transporter's functionality.
+        """
         super().__init__(name, driver)
         self._driver: ITransporterDriver = driver
-        self._labware: Optional[Labware] = None
+        self._labware: Optional[LabwareInstance] = None
         self._lock = asyncio.Lock()
 
     @property
-    def labware(self) -> Optional[Labware]:
+    def labware(self) -> Optional[LabwareInstance]:
         return self._labware
     
     async def pick(self, location: Location) -> None:
