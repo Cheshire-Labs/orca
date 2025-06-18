@@ -73,6 +73,7 @@ class IResourceRegistry(ABC):
 
 
 class ResourceRegistry(IResourceRegistry):
+    """ A class that manages resources and resource pools in the system."""
     def __init__(self) -> None:
         self._resources: Dict[str, IResource] = {}
         self._resource_pools: Dict[str, EquipmentResourcePool] = {}
@@ -115,6 +116,14 @@ class ResourceRegistry(IResourceRegistry):
             raise KeyError(f"Resource {name} is already defined in the system.  Each resource must have a unique name")
         self._resources[name] = resource
         [observer.resource_registry_notify("resource_added", resource) for observer in self._observers]
+
+    def add_resources(self, resources: List[IResource | EquipmentResourcePool]) -> None:
+        """Adds a list of resources or resource pools to the registry."""
+        for resource in resources:
+            if isinstance(resource, EquipmentResourcePool):
+                self.add_resource_pool(resource)
+            else:
+                self.add_resource(resource)
 
     def get_resource_pool(self, name: str) -> EquipmentResourcePool:
         return self._resource_pools[name]
