@@ -186,18 +186,7 @@ resource_registry.add_resources(resources=[
 
 The system map contains a mapping of all the locations, which transporters can get to those locations, and what resource is at each location.
 
-To build the system map, the transporters have to be initialized to get their teachpoints.  This function can be used to initialize all the transporters so the system can retrieve their teachpoints.
-
-```py
-def initialize_all_transporters(resource_registry: ResourceRegistry):
-    async def _run_all():
-        await asyncio.gather(*(t.initialize() for t in resource_registry.transporters))
-    asyncio.run(_run_all())
-
-initialize_all_transporters(resource_registry)
-```
-
-After the transporters are initialized, a system map can be created with their teachpoints.  The system map can be initialized using the resource registry.  Each teachpoint will create a location and name it after that teachpoint.
+The system map can be initialized using the resource registry.  Each teachpoint from the transporters will create a location and name it after the teachpoint.
 
 
 ```py
