@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 import asyncio
 from orca.resource_models.base_resource import Equipment, IInitializableResource, IResource
+from orca.resource_models.base_resource import ISimulationable
 from orca.resource_models.resource_pool import EquipmentResourcePool
 from orca.resource_models.transporter_resource import TransporterEquipment
 
@@ -11,7 +12,6 @@ class IResourceRegistryObesrver(ABC):
     @abstractmethod
     def resource_registry_notify(self, event: str, resource: IResource) -> None:
         raise NotImplementedError()
-
 
 class IResourceRegistry(ABC):
 
@@ -26,6 +26,11 @@ class IResourceRegistry(ABC):
 
     @abstractmethod
     def add_resource(self, resource: IResource) -> None:
+        raise NotImplementedError
+    
+    @abstractmethod
+    def set_simulating(self, simulating: bool) -> None:
+        """Sets the simulation state of the system."""
         raise NotImplementedError
 
     @property
@@ -136,6 +141,12 @@ class ResourceRegistry(IResourceRegistry):
 
     def add_observer(self, observer: IResourceRegistryObesrver) -> None:
         self._observers.append(observer)
+
+    def set_simulating(self, simulating: bool) -> None:
+        """Sets the simulation state of the system."""
+        for resource in self._resources.values():
+            if isinstance(resource, ISimulationable):
+                resource.set_simulating(simulating)
 
     async def initialize_all(self) -> None:
         await asyncio.gather(*[r.initialize() for r in self._resources.values() if isinstance(r, IInitializableResource)])

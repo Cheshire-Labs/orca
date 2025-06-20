@@ -9,15 +9,18 @@ from orca_driver_interface.transporter_interfaces import ITransporterDriver
 orca_logger = logging.getLogger("orca")
 
 class HumanTransferDriver(ITransporterDriver):
+    """ A driver that informs the user to pick and place labware manually."""
     def __init__(self, 
                  name: str, 
-                 teachpoints_filepath: str | None = None, 
-                 sim_time: float = 0.2
+                 teachpoints: str | List[str] | None = None 
                  ) -> None:
+        """ Initializes the HumanTransferDriver with a name and optional teachpoints.
+        Args:
+            name (str): The name of the driver.
+            teachpoints (str | List[str] | None): The teachpoints to use for the robotic arm, can be a file path or a list of position names."""
         self._name = name
-        self._teachpoints_filepath = teachpoints_filepath
         self._positions: List[str] = []
-        simulation_driver = SimulationBaseDriver(name, mocking_type="Human Driver", sim_time=sim_time)
+        self.set_teachpoints(teachpoints if teachpoints is not None else [])
 
     @property
     def is_initialized(self) -> bool:
@@ -46,18 +49,17 @@ class HumanTransferDriver(ITransporterDriver):
 
     async def initialize(self) -> None:
         self._is_initialized = True
-        self._load_taught_positions()
 
     async def pick(self, position_name: str, labware_type: str) -> None:
         self._validate_position(position_name)
         orca_logger.info(f"Driver: {self._name} picking from {position_name}, labware type: {labware_type} picking...")
-        input("Press Enter once the labware is picked up...")
+        input(f"Press Enter once the labware {labware_type} is picked up from {position_name}...")
         orca_logger.info(f"Driver: {self._name} picked from {position_name}, labware type: {labware_type} picked")
 
     async def place(self, position_name: str, labware_type: str) -> None:
         self._validate_position(position_name)
         orca_logger.info(f"Driver: {self._name} placing to {position_name}, labware type: {labware_type} placing...")
-        input("Press Enter once the labware is placed...")
+        input(f"Press Enter once the labware {labware_type} is placed to {position_name}...")
         orca_logger.info(f"Driver: {self._name} placed to {position_name}, labware type: {labware_type} placed")
 
     def _validate_position(self, position_name: str) -> None:
@@ -67,8 +69,12 @@ class HumanTransferDriver(ITransporterDriver):
     def get_taught_positions(self) -> List[str]:
         return self._positions
 
-    def _load_taught_positions(self) -> None:
-        if self._teachpoints_filepath:
-            self._positions = [t.name for t in Teachpoint.load_teachpoints_from_file(self._teachpoints_filepath)]
-        else:
-            raise ValueError(f"Teachpoints file path is not provided for {self._name}. Please provide a valid file path to load taught positions.")     
+    def set_teachpoints(self, teachpoints: str | List[str]) -> None:
+        if isinstance(teachpoints, str):
+            self._positions = self._load_taught_positions(teachpoints)
+        elif isinstance(teachpoints, list):
+            self._positions = teachpoints
+
+    def _load_taught_positions(self, filepath: str) -> List[str]:
+        return [t.name for t in Teachpoint.load_teachpoints_from_file(filepath)]
+   

@@ -27,9 +27,11 @@ class WorkflowExecutor:
         self._workflow_template = workflow
         self._system = system
 
-    async def start(self):
+    async def start(self, sim: bool = False) -> None:
         """ Starts the execution of the workflow.
         This method creates a workflow instance, registers it with the system, and starts the execution."""
+        if sim: 
+            self._system.set_simulating(True)
         executing_workflow = self._get_executing_workflow()
         await executing_workflow.start()
 
@@ -110,7 +112,7 @@ class StandalonMethodExecutor:
 
         return workflow_template
 
-    async def start(self) -> None:
+    async def start(self, sim: bool = False) -> None:
         workflow_template = self._get_workflow_template()
         executor = WorkflowExecutor(workflow_template, self._system)
-        await executor.start()
+        await executor.start(sim)

@@ -58,15 +58,6 @@ resource_registry.add_resources([
     ]
 )
 
-# This function initializes the transporting equipment in order to get all the teachpoints 
-# from the equipment to build a map of the system locations from them
-def initialize_all_transporters(resource_registry: ResourceRegistry):
-    async def _run_all():
-        await asyncio.gather(*(t.initialize() for t in resource_registry.transporters))
-    asyncio.run(_run_all())
-
-initialize_all_transporters(resource_registry)
-
 # Create a system map to define the locations of the devices
 # Teachpoints are in the examples\simple_venus_example\teachpoints folder
 map = SystemMap(resource_registry)
@@ -185,13 +176,13 @@ builder = SdkToSystemBuilder(
 system = builder.get_system()
 
 # Use the WorkflowExecutor to run the workflow
-async def run():
+async def run(sim: bool):
     orca_logger.info("Starting Venus workflow execution.")
     await system.initialize_all()
     executor = WorkflowExecutor(example_workflow, system)
-    await executor.start()
+    await executor.start(sim)
     orca_logger.info("Venus workflow completed.")
 
 if __name__ == "__main__":
-    asyncio.run(run())
+    asyncio.run(run(False))
     orca_logger.info("Workflow execution finished.")

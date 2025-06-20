@@ -52,11 +52,11 @@ ddr2_points = os.path.join(teachpoints_dir, "ddr2.xml")
 ddr3_points = os.path.join(teachpoints_dir, "ddr3.xml")
 translator1_points = os.path.join(teachpoints_dir, "translator1.xml")
 translator2_points = os.path.join(teachpoints_dir, "translator2.xml")
-ddr_1 = TransporterEquipment(name="ddr_1", driver=SimulationRoboticArmDriver(name="ddr_1_driver", mocking_type="ddr", teachpoints_filepath=ddr1_points))
-ddr_2 = TransporterEquipment(name="ddr_2", driver=SimulationRoboticArmDriver(name="ddr_2_driver", mocking_type="ddr", teachpoints_filepath=ddr2_points))
-ddr_3 = TransporterEquipment(name="ddr_3", driver=SimulationRoboticArmDriver(name="ddr_3_driver", mocking_type="ddr", teachpoints_filepath=ddr3_points))
-translator_1 = TransporterEquipment(name="translator_1", driver=SimulationRoboticArmDriver(name="translator_1_driver", mocking_type="translator", teachpoints_filepath=translator1_points))
-translator_2 = TransporterEquipment(name="translator_2", driver=SimulationRoboticArmDriver(name="translator_2_driver", mocking_type="translator", teachpoints_filepath=translator2_points))
+ddr_1 = TransporterEquipment(name="ddr_1", driver=SimulationRoboticArmDriver(name="ddr_1_driver", mocking_type="ddr", teachpoints=ddr1_points))
+ddr_2 = TransporterEquipment(name="ddr_2", driver=SimulationRoboticArmDriver(name="ddr_2_driver", mocking_type="ddr", teachpoints=ddr2_points))
+ddr_3 = TransporterEquipment(name="ddr_3", driver=SimulationRoboticArmDriver(name="ddr_3_driver", mocking_type="ddr", teachpoints=ddr3_points))
+translator_1 = TransporterEquipment(name="translator_1", driver=SimulationRoboticArmDriver(name="translator_1_driver", mocking_type="translator", teachpoints=translator1_points))
+translator_2 = TransporterEquipment(name="translator_2", driver=SimulationRoboticArmDriver(name="translator_2_driver", mocking_type="translator", teachpoints=translator2_points))
 
 # These are devices capable of reciving labware
 biotek_1 = Device(name="biotek_1", driver=SimulationDeviceDriver(name="biotek_1_driver", mocking_type="biotek"))
@@ -127,15 +127,6 @@ resource_registry.add_resources([
     shaker_collection
 ])
 
-
-# This function initializes the transporting equipment in order to get all the teachpoints 
-# from the equipment to build a map of the system locations from them
-def initialize_all_transporters(resource_registry: ResourceRegistry):
-    async def _run_all():
-        await asyncio.gather(*(t.initialize() for t in resource_registry.transporters))
-    asyncio.run(_run_all())
-
-initialize_all_transporters(resource_registry)
 
 # Use the resource registry to build a system map of locations via teachpoints each robot can reach
 map = SystemMap(resource_registry)
@@ -524,17 +515,17 @@ system = builder.get_system()
 
 
 # Use the WorkflowExecutor to run the workflow
-async def run():
+async def run(sim: bool):
     orca_logger.info("Starting SMC Assay workflow execution.")
     # await system.initialize_all() if this weren't a simulation, we would initialize all the devices here
     executor = WorkflowExecutor(smc_workflow, system)
-    await executor.start()
+    await executor.start(sim)
     orca_logger.info("SMC Assay workflow completed.")
 
 # Use the StandalonMethodExecutor to run a single method of your workflow
 # You must define where each plate starts and ends to be able to run the method independently of the workflow
 # You can use this to run a method independently of the workflow, which is useful for testing or debugging purposes
-async def run_method():
+async def run_method(sim: bool):
     orca_logger.info("Starting Sample to Bead Plate method execution.")
     # await system.initialize_all() if this weren't a simulation, we would initialize all the devices here
     executor = StandalonMethodExecutor(
@@ -551,20 +542,20 @@ async def run_method():
         },
         system,
     )
-    await executor.start()
+    await executor.start(sim)
     orca_logger.info("Sample to Bead Plate method completed.")
 
 # Orca supports parallel processing
 # Here we run both the workflow and the method in parallel
-async def run_both_in_parallel() -> None:
+async def run_both_in_parallel(sim: bool) -> None:
     await asyncio.gather(
-        run(),
-        run_method()
+        run(sim),
+        run_method(sim)
     )
 
 if __name__ == "__main__":
-    asyncio.run(run())
-    # asyncio.run(run_method())
-    # asyncio.run(run_both_in_parallel())
+    asyncio.run(run(True))
+    # asyncio.run(run_method(True))
+    # asyncio.run(run_both_in_parallel(True))
     orca_logger.info("Run completed successfully.")
     time.sleep(2)  # Allow time for logging to complete before exiting

@@ -1,27 +1,46 @@
 import asyncio
 import logging
+from orca.driver_management.drivers.simulation_robotic_arm.simulation_robotic_arm import SimulationRoboticArmDriver
 from orca.resource_models.base_resource import Equipment
 from orca_driver_interface.transporter_interfaces import ITransporterDriver
 from orca.resource_models.location import Location
 from typing import List, Optional
 from orca.resource_models.labware import LabwareInstance
+from orca.resource_models.base_resource import ISimulationable
 
 orca_logger = logging.getLogger("orca")
 
-class TransporterEquipment(Equipment):
+
+class TransporterEquipment(Equipment, ISimulationable):
     """
     Represents a transporter equipment capable of picking and placing labware between locations.
     """
-    def __init__(self, name: str, driver: ITransporterDriver) -> None:
+    def __init__(self, name: str, driver: ITransporterDriver, sim: bool = False) -> None:
         """Initialize the transporter equipment with a name and a driver.
         Args:
             name (str): The name of the transporter equipment.
-            driver (ITransporterDriver): The driver that implements the transporter's functionality.
+    `1 VBGR            driver (ITransporterDriver): The driver that implements the transporter's functionality.
         """
         super().__init__(name, driver)
-        self._driver: ITransporterDriver = driver
+        self._live_driver: ITransporterDriver = driver
+        self._sim_driver: ITransporterDriver = SimulationRoboticArmDriver(name, driver.name, driver.get_taught_positions())
+        self._driver: ITransporterDriver = self._live_driver
         self._labware: Optional[LabwareInstance] = None
         self._lock = asyncio.Lock()
+        self._is_simulating: bool = False
+        self.set_simulating(sim)
+
+    @property
+    def is_simulating(self) -> bool:
+        """Returns whether the transporter is simulating or not."""
+        return self._is_simulating
+
+    def set_simulating(self, simulating: bool) -> None:
+        self._is_simulating = simulating
+        if self._is_simulating:
+            self._driver = self._sim_driver
+        else:
+            self._driver = self._live_driver
 
     @property
     def labware(self) -> Optional[LabwareInstance]:
