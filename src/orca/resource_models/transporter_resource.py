@@ -1,12 +1,11 @@
 import asyncio
 import logging
 from orca.driver_management.drivers.simulation_robotic_arm.simulation_robotic_arm import SimulationRoboticArmDriver
-from orca.resource_models.base_resource import Equipment
+from orca.resource_models.base_resource import Equipment, ISimulationable
 from orca_driver_interface.transporter_interfaces import ITransporterDriver
 from orca.resource_models.location import Location
 from typing import List, Optional
 from orca.resource_models.labware import LabwareInstance
-from orca.resource_models.base_resource import ISimulationable
 
 orca_logger = logging.getLogger("orca")
 
