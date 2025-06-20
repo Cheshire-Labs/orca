@@ -2,7 +2,7 @@ import asyncio
 import logging
 import sys
 
-from orca.driver_management.drivers.simulation_robotic_arm.human_transfer import HumanTransferDriver
+from orca.sdk.drivers import HumanTransferDriver
 from orca.sdk.devices import Device, TransporterEquipment
 from orca.sdk.labware import LabwareTemplate
 from orca.sdk.system import ResourceRegistry, SystemMap, SdkToSystemBuilder, WorkflowExecutor
