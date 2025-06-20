@@ -117,6 +117,9 @@ class System(ISystem):
 
     def get_resource_pool(self, name: str) -> EquipmentResourcePool:
         return self._resources.get_resource_pool(name)
+    
+    def set_simulating(self, simulating: bool) -> None:
+        return self._resources.set_simulating(simulating)
 
     def get_location(self, name: str) -> Location:
         return self._system_map.get_location(name)

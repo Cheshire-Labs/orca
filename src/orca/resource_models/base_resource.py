@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional
 import logging
 from orca_driver_interface.driver_interfaces import IDriver
 from orca_driver_interface.driver_interfaces import ILabwarePlaceableDriver
+from orca.driver_management.drivers.simulation_labware_placeable.simulation_labware_placeable import SimulationDeviceDriver
 from orca.resource_models.device_error import DeviceBusyError
 from orca.resource_models.labware import LabwareInstance
 
@@ -184,18 +185,48 @@ class EquipmentLabwareRegistry:
         if self._stage_labware is not None and labware is not None:
             raise DeviceBusyError(f"{self} - Stage already contains labware: {self._stage_labware}.  Unable to set stage to {labware}")
         self._stage_labware = labware
+
+
+class ISimulationable(ABC):
+    @property
+    @abstractmethod
+    def is_simulating(self) -> bool:
+        """Returns whether the resource is simulating or not."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def set_simulating(self, simulating: bool) -> None:
+        """Sets the simulation state of the resource."""
+        raise NotImplementedError
  
-class Device(Equipment, ILabwarePlaceable):
+class Device(Equipment, ILabwarePlaceable, ISimulationable):
     """A class that represents a device that can operate on labware."""
-    def __init__(self, name: str, driver: ILabwarePlaceableDriver) -> None:
+    def __init__(self, name: str, driver: ILabwarePlaceableDriver, sim: bool = False) -> None:
         """Initialize the device with a name and a driver.
         Args:
             name (str): The name of the device.
             driver (ILabwarePlaceableDriver): The driver for the device.
         """
         super().__init__(name, driver)
+        self._live_driver: ILabwarePlaceableDriver = driver
+        self._sim_driver: ILabwarePlaceableDriver = SimulationDeviceDriver(name, driver.name)
         self._driver: ILabwarePlaceableDriver = driver
         self._labware_reg = EquipmentLabwareRegistry()
+        self._sim = False
+        self.set_simulating(sim)
+
+    @property
+    def is_simulating(self) -> bool:
+        """Returns whether the device is simulating or not."""
+        return self._sim
+    
+    def set_simulating(self, simulating: bool) -> None:
+        """Sets the simulation state of the device."""
+        self._sim = simulating
+        if simulating:
+            self._driver = self._sim_driver
+        else:
+            self._driver = self._live_driver
 
     @property
     def labware(self) -> Optional[LabwareInstance]:
