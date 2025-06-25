@@ -23,4 +23,5 @@
         "**/.pytest_cache": true,
         "**/.VSCodeCounter": true
     },
+    "python.envFile": "${workspaceFolder}/.env",
 }

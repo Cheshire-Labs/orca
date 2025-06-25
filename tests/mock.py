@@ -4,7 +4,7 @@ from orca.driver_management.drivers.simulation_labware_placeable.simulation_labw
 from orca.driver_management.drivers.simulation_robotic_arm.simulation_robotic_arm import LegacySimulationRoboticArmDriver
 from orca.helper import FilepathReconciler
 from orca.resource_models.transporter_resource import TransporterEquipment
-from orca.resource_models.base_resource import Device
+from orca.resource_models.devices import Device
 from orca.resource_models.location import Location
 from orca.resource_models.labware import LabwareInstance
 

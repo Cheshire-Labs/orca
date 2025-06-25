@@ -3,10 +3,11 @@ import os
 import logging
 import sys
 import time
+from orca.resource_models.devices import Device
 from orca.sdk.system import SdkToSystemBuilder, WorkflowExecutor, ResourceRegistry, SystemMap, ExecutingLabwareThread, StandalonMethodExecutor
 from orca.sdk.workflow import WorkflowTemplate, ThreadTemplate, MethodTemplate, ActionTemplate, JunctionMethodTemplate
 from orca.sdk.events import EventBus, SystemBoundEventHandler, ExecutionContext, ThreadExecutionContext, WorkflowExecutionContext, LabwareThreadStatus
-from orca.sdk.devices import Device, EquipmentResourcePool, TransporterEquipment
+from orca.sdk.devices import EquipmentResourcePool, TransporterEquipment
 from orca.sdk.labware import AnyLabwareTemplate, LabwareTemplate
 from orca.sdk.drivers import SimulationDeviceDriver, SimulationRoboticArmDriver
 
@@ -517,7 +518,8 @@ system = builder.get_system()
 # Use the WorkflowExecutor to run the workflow
 async def run(sim: bool):
     orca_logger.info("Starting SMC Assay workflow execution.")
-    # await system.initialize_all() if this weren't a simulation, we would initialize all the devices here
+    if not sim:
+        await system.initialize_all()
     executor = WorkflowExecutor(smc_workflow, system)
     await executor.start(sim)
     orca_logger.info("SMC Assay workflow completed.")
@@ -527,7 +529,8 @@ async def run(sim: bool):
 # You can use this to run a method independently of the workflow, which is useful for testing or debugging purposes
 async def run_method(sim: bool):
     orca_logger.info("Starting Sample to Bead Plate method execution.")
-    # await system.initialize_all() if this weren't a simulation, we would initialize all the devices here
+    if not sim:
+        await system.initialize_all()
     executor = StandalonMethodExecutor(
         sample_to_bead_plate_method,
         {
