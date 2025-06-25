@@ -8,3 +8,4 @@ __pycache__
 .VSCodeCounter/
 *.egg-info
 .pytest_cache
+.env

@@ -38,6 +38,13 @@ dev = [
     "types-setuptools",
     "black",
 ]
+pylabrobot = [
+    "pylabrobot @ git+https://github.com/Cheshire-Labs/pylabrobot.git"
+]
+
+venus_driver = [
+    "venus_driver @ git+https://github.com/Cheshire-Labs/orca-driver-venus.git"
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
