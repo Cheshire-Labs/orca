@@ -7,7 +7,8 @@ from orca.driver_management.drivers.simulation_base.simulation_base import Simul
 from orca.driver_management.drivers.simulation_robotic_arm.simulation_robotic_arm import LegacySimulationRoboticArmDriver
 from orca.driver_management.drivers.simulation_labware_placeable.simulation_labware_placeable import SimulationDeviceDriver
 from orca.helper import FilepathReconciler
-from orca.resource_models.base_resource import Equipment, IEquipment, Device
+from orca.resource_models.devices import Device
+from orca.resource_models.base_resource import Equipment, IEquipment
 
 from orca.resource_models.resource_pool import EquipmentResourcePool
 from orca.resource_models.transporter_resource import TransporterEquipment

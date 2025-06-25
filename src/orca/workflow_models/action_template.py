@@ -1,9 +1,7 @@
+from typing import Any, Dict, List, Optional, Union
 from orca.resource_models.base_resource import Equipment
 from orca.resource_models.labware import AnyLabwareTemplate, LabwareTemplate
 from orca.resource_models.resource_pool import EquipmentResourcePool
-
-
-from typing import Any, Dict, List, Optional, Union
 
 
 class ActionTemplate:
@@ -50,3 +48,50 @@ class ActionTemplate:
     @property
     def options(self) -> Dict[str, Any]:
         return self._options
+
+
+class Shake(ActionTemplate):
+    def __init__(self,
+                 resource: Equipment | EquipmentResourcePool,
+                 duration: int,
+                 speed: int,
+                 inputs: List[LabwareTemplate | AnyLabwareTemplate],
+                 outputs: List[LabwareTemplate | AnyLabwareTemplate],
+                 options: Dict[str, Any] | None = None
+                 ):
+        options = options or {}
+        options["speed"] = speed
+        options["duration"] = duration
+        super().__init__(resource, "shake", inputs, outputs, options)
+
+
+class RunProtocol(ActionTemplate):
+    def __init__(self,
+                 resource: Equipment | EquipmentResourcePool,
+                 protocol_filepath: str,
+                 parameters: Dict[str, Any],
+                 inputs: List[LabwareTemplate | AnyLabwareTemplate],
+                 outputs: List[LabwareTemplate | AnyLabwareTemplate],
+                 options: Dict[str, Any] | None = None
+                 ):
+        options = options or {}
+        options["run"] = protocol_filepath
+        options["params"] = parameters
+        super().__init__(resource, "run", inputs, outputs, options)
+
+
+class Seal(ActionTemplate):
+    def __init__(self,
+                 resource: Equipment | EquipmentResourcePool,
+                 temperature: int,
+                 duration: float,
+                 inputs: List[LabwareTemplate | AnyLabwareTemplate],
+                 outputs: List[LabwareTemplate | AnyLabwareTemplate],
+                 options: Dict[str, Any] | None = None
+                 ):
+        options = options or {}
+        options["temperature"] = temperature
+        options["duration"] = duration
+        super().__init__(resource, "seal", inputs, outputs, options)
+        self.temperature = temperature
+        self.duration = duration

@@ -2,8 +2,9 @@ import asyncio
 import logging
 import sys
 
+from orca.resource_models.devices import Device
 from orca.sdk.drivers import HumanTransferDriver
-from orca.sdk.devices import Device, TransporterEquipment
+from orca.sdk.devices import TransporterEquipment
 from orca.sdk.labware import LabwareTemplate
 from orca.sdk.system import ResourceRegistry, SystemMap, SdkToSystemBuilder, WorkflowExecutor
 from orca.sdk.workflow import MethodTemplate, ActionTemplate, WorkflowTemplate, ThreadTemplate, JunctionMethodTemplate
@@ -11,7 +12,7 @@ from orca.sdk.events import EventBus
 
 # Venus driver will need to be installed separately (available on Cheshire Labs' GitHub)
 # This driver requires Hamilton Venus to be installed
-from venus_driver.venus_driver import VenusProtocolDriver
+from orca.sdk.drivers import VenusProtocolDriver
 
 
 
@@ -178,7 +179,8 @@ system = builder.get_system()
 # Use the WorkflowExecutor to run the workflow
 async def run(sim: bool):
     orca_logger.info("Starting Venus workflow execution.")
-    await system.initialize_all()
+    if not sim:
+        await system.initialize_all()
     executor = WorkflowExecutor(example_workflow, system)
     await executor.start(sim)
     orca_logger.info("Venus workflow completed.")
