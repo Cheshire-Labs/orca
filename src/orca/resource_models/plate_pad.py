@@ -1,7 +1,8 @@
 from typing import Any, Dict, Optional
 from orca_driver_interface.driver_interfaces import ILabwarePlaceableDriver
 from orca.driver_management.drivers.null_plate_pad.null_plate_pad import NullPlatePadDriver
-from orca.resource_models.base_resource import ILabwarePlaceable, Device
+from orca.resource_models.devices import Device
+from orca.resource_models.base_resource import ILabwarePlaceable
 from orca.resource_models.labware import LabwareInstance
 
 
