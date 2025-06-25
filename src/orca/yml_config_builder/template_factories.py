@@ -1,7 +1,8 @@
 from typing import Dict, List, Optional, Tuple, Union
 import logging
 from orca.config_interfaces import ILabwareConfig, ILabwareThreadConfig, IMethodActionConfig, IMethodConfig, IResourceConfig, IResourcePoolConfig, ISystemConfig, IThreadStepConfig, IWorkflowConfig
-from orca.resource_models.base_resource import Equipment, Device
+from orca.resource_models.devices import Device
+from orca.resource_models.base_resource import Equipment
 from orca.resource_models.labware import AnyLabwareTemplate, LabwareTemplate
 from orca.resource_models.location import Location
 from orca.system.system_info import SystemInfo

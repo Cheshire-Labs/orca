@@ -19,6 +19,7 @@ Cheshire Labs is actively seeking laboratories interested in using Orca.  Please
 # 📚 Table of Contents
 
 - [🚀 Features](#features)
+- [🤖 Drivers List](#drivers-list)
 - [⚡ Demo Quick Start](#quick-start)
 - [💾 Installation](#installation)
 - [🧰 Usage](#usage)
@@ -29,10 +30,10 @@ Cheshire Labs is actively seeking laboratories interested in using Orca.  Please
     - [Defining Workflow](#defining-workflow)
     - [Building the System](#building-the-system)
     - [Running a Workflow or Method](#running-a-workflow-or-method)
-- [🤖 Drivers List](#drivers-list)
 - [🔨 Development](#development)
     - [Scripting](#scripting)
     - [Drivers](#drivers)
+- [🙏 Acknowledgements](#acknowledgements)
 - [🤝 Contributing](#contributing)
 - [📜 License](#license)
 - [⭐ Need More?](#need-more)
@@ -77,21 +78,52 @@ No scheduler software fits every need. Orca offers powerful Python scripting to 
 
 Did you write an amazing Orca protocol?  Since it's python you can just share it with others and they can easily swap out your device setup for their own.
 
+<h1 id="drivers-list">🤖 Drivers List</h1>
+
+| Driver Name             | Description <br> Import Example               | Equipment <br> Manufacturer          | Status     | Driver Repo                                                                 |
+|-------------------------|-----------------------------------------------|--------------------------------------|------------|---------------------------------------------------------------------------|
+| Venus Protocol          | Driver for Hamilton Venus software <br> `VenusProtocolDriver` | **MLSTAR, Vantage, etc** <br> Hamilton | 🟢 Stable  | [Orca Venus Driver](https://github.com/cheshire-labs/orca-driver-venus)   |
+| A4S Sealer              | Azenta A4S Sealer (pyLabRobot) <br> `A4Sealer` | **A4S Sealer** <br> Azenta          | ⚪ Untested | [pyLabRobot (orca fork)](https://github.com/Cheshire-Labs/pylabrobot)     |
+| Human Transfer          | Requests a human to move labware <br> `HumanTransferDriver` | **Human** <br> TBD                  | 🟢 Stable  | [orca (built-in)](https://github.com/cheshire-labs/orca-core)             |
+| Simulation Robotic Arm  | Mock driver to simulate a robotic arm <br> `SimulationRoboticArmDriver` | **Robotic Arm** <br> N/A (Simulation) | 🟢 Stable  | [orca (built-in)](https://github.com/cheshire-labs/orca-core)             |
+| Simulation Device       | Mock driver to simulate a device <br> `SimulationDeviceDriver` | **Device** <br> N/A (Simulation)    | 🟢 Stable  | [orca (built-in)](https://github.com/cheshire-labs/orca-core)             |
+
+
+
+
 <h1 id="quick-start">⚡ Demo Quick Start</h1>
 
 Be sure to reach through the prevoided examples:
 
 - [SMC Assay](./examples/smc_assay/smc_assay_example.py) 
 - [Simple Venus Method](./examples/simple_venus_example/simple_venus_example.py) 
+- [PyLabRobot Driver Example](./examples/pylabrobot_example/pylabrobot_example.py)
 
 
 
 ### Demo
 To see a quick demo of how orca works:
 1. Be sure to read our [Warning](#warning) regarding Orca before running
-2. Install Orca ``` pip install cheshire-orca ```
-3. Install Orca's Venus driver ```pip install orca-driver-venus```
-3. Run the provided example python files using python
+2. Clone this repository and install Orca locally (we recommend this over pip for now, as things are changing frequently):
+    ```bash
+        git clone https://github.com/Cheshire-Labs/orca.git
+        cd orca
+        pip install -e .
+    ```
+3. If you need specific drivers or optional tools, install them using the provided optional dependencies. For example:
+
+    - To install the Venus driver:
+    ```bash
+        pip install -e .[venus_driver]
+    ```
+    - To install PyLabRobot compatibility:
+    ```bash
+        pip install -e .[pylabrobot]
+    ```
+4. Run the provided example python files using python
+    ```bash
+    python <path_to_example>.py
+    ```
 
 
 
@@ -102,22 +134,43 @@ To see a quick demo of how orca works:
     python -m venv <env-name>
     <env-name>\Scripts\activate
     ```
-2. Install via pip
-    - Install from github
+2. Install Orca
+    - __It's recommended to install Orca directly from the repo as it's in rapid development__
+
+    - Clone the repository and install locally:
+    
+        ```bash
+        git clone https://github.com/Cheshire-Labs/orca.git
+        cd orca
+        pip install -e .
+        ```
+
+    - To include optional dependencies:
+    
+        - Install Venus driver:
+            ```bash
+            pip install -e .[venus_driver]
+            ```
+        - Install PyLabRobot compatibility:
+            ```bash
+            pip install -e .[pylabrobot]
+            ```
+        - Install both:
+            ```bash
+            pip install -e .[venus_driver,pylabrobot]
+            ```
+
+    - **OR** Install the latest published version from PyPI (may be behind the latest updates):
+    
         ```bash
         pip install cheshire-orca
         ```
 
-    - OR Download/Clone repo and install locally
-        ```
-        pip install -e <orca-root-directory>
-        ```
-
-To uninstall:
+3. To uninstall Orca:
     
-```bash
-pip uninstall cheshire-orca
-```
+    ```bash
+    pip uninstall cheshire-orca
+    ```
 
 <h1 id="usage">🧰 Usage</h1> 
 
@@ -334,14 +387,7 @@ async def run_both_in_parallel() -> None:
     )
 asyncio.run(run_both_in_parallel())
 ```
-<h1 id="drivers-list">🤖 Drivers List</h1>
 
-| Driver Name             | Description                                   | Repo                                                                 | Equipment                | Manufacturer      | Python Import Example                                                                                   |
-|-------------------------|-----------------------------------------------|----------------------------------------------------------------------|--------------------------|-------------------|---------------------------------------------------------------------------------------------------------|
-| Venus Protocol          | Driver for Hamilton Venus software            | [orca-driver-venus](https://github.com/cheshire-labs/orca-driver-venus) | MLSTAR, Vantage, etc     | Hamilton          | `from venus_driver.venus_driver import VenusProtocolDriver`                                             |
-| Human Transfer          | Transporter that requests a human to move the labware | [orca-core (built-in)](https://github.com/cheshire-labs/orca-core)   | Human                    | Perhaps god? TBD  | `from orca.driver_management.drivers.simulation_robotic_arm.human_transfer import HumanTransferDriver`   |
-| Simulation Robotic Arm  | Mock driver to simulate a robotic arm       | [orca-core (built-in)](https://github.com/cheshire-labs/orca-core)   | Robotic Arm              | N/A (Simulation)  | `from orca.driver_management.drivers.simulation_robotic_arm.simulation_robotic_arm import SimulationRoboticArmDriver` |
-| Simulation Device       | Mock driver to simulate a device              | [orca-core (built-in)](https://github.com/cheshire-labs/orca-core)   | Device                   | N/A (Simulation)  | `from orca.driver_management.drivers.simulation_device.simulation_device import SimulationDeviceDriver`   |
 
 
 <h1 id="development">🔨 Development</h1>
@@ -415,7 +461,23 @@ event_bus.subscribe("ACTION.1134ce0c-ea25-4c93-929a-4d1a4f07509a.CREATED", your_
 - **ILabwarePlaceableDriver(IDriver)** - Equipment that may have labware placed at the equipment.
 - **ITransporterDriver(IDriver)** - Equipment capable of transporting labware items.
 
+<h1 id="acknowledgements">🙏 Acknowledgements</h1>
 
+Orca builds on the work of the [PyLabRobot](https://github.com/PyLabRobot/pylabrobot) community, who have been doing an excellent job standardizing and open-sourcing drivers and labware for laboratory automation. Orca recognizes and appreciates their commitment to open standards and interoperability.
+
+If you use Orca in research, we encourage you to credit PyLabRobot with the following citation:
+```
+@article{WIERENGA2023100111,
+    title = {PyLabRobot: An open-source, hardware-agnostic interface for liquid-handling robots and accessories},
+    journal = {Device},
+    volume = {1},
+    number = {4},
+    pages = {100111},
+    year = {2023},
+    author = {Rick P. Wierenga and Stefan M. Golas and Wilson Ho and Connor W. Coley and Kevin M. Esvelt},
+    doi = {https://doi.org/10.1016/j.device.2023.100111},
+}
+```
 
 <h1 id="contributing">🤝 Contributing</h1>
 
