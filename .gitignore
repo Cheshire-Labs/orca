@@ -1,6 +1,7 @@
 .idea
 .mypy_cache
 .venv
+.env
 build
 **/~*.tmp
 __pycache__
