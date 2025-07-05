@@ -93,11 +93,11 @@ Did you write an amazing Orca protocol?  Since it's python you can just share it
 
 <h1 id="quick-start">⚡ Demo Quick Start</h1>
 
-Be sure to reach through the prevoided examples:
+Be sure to read through the provided examples.  Each contains comments about how the workflow is set up:
 
-- [SMC Assay](./examples/smc_assay/smc_assay_example.py) 
-- [Simple Venus Method](./examples/simple_venus_example/simple_venus_example.py) 
-- [PyLabRobot Driver Example](./examples/pylabrobot_example/pylabrobot_example.py)
+- [SMC Assay](./examples/smc_assay/smc_assay_example.py) - A large workflow that simulates an SMC assay using simulated devices and drivers
+- [Simple Venus Method](./examples/simple_venus_example/simple_venus_example.py) - A workflow that uses an active Venus driver (_requires the Venus driver to be installed_)
+- [PyLabRobot Driver Example](./examples/pylabrobot_example/pylabrobot_example.py) - A workflow that uses a pyLabRobot driver (_requires pyLabRobot to be installed_)
 
 
 
@@ -123,6 +123,10 @@ To see a quick demo of how orca works:
 4. Run the provided example python files using python
     ```bash
     python <path_to_example>.py
+    ```
+    - SMC Assay example 
+    ```bash
+    python ./examples/smc_assay/smc_assay_example.py
     ```
 
 

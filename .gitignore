@@ -1,7 +1,6 @@
 .idea
 .mypy_cache
 .venv
-.env
 build
 **/~*.tmp
 __pycache__
@@ -9,3 +8,4 @@ __pycache__
 *.egg-info
 .pytest_cache
 .env
+mypy.ini
