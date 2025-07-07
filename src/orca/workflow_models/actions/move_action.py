@@ -3,8 +3,8 @@ import asyncio
 import uuid
 from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.location import Location
-from orca.resource_models.transporter_resource import TransporterEquipment
 from orca.events.execution_context import MoveActionExecutionContext, ThreadExecutionContext
+from orca.resource_models.transporter import Transporter
 from orca.system.reservation_manager.location_reservation import LocationReservation
 from orca.workflow_models.status_manager import StatusManager
 from orca.workflow_models.status_enums import ActionStatus
@@ -34,7 +34,7 @@ class IMoveAction(ABC):
 
     @property
     @abstractmethod
-    def transporter(self) -> TransporterEquipment:
+    def transporter(self) -> Transporter:
         pass
 
     @property
@@ -60,7 +60,7 @@ class MoveAction(IMoveAction):
                  labware: LabwareInstance,
                  source: Location,
                  target: Location,
-                 transporter: TransporterEquipment):
+                 transporter: Transporter):
         self._id = str(uuid.uuid4())
         self._labware = labware
         self._source = source
@@ -86,7 +86,7 @@ class MoveAction(IMoveAction):
         return self._target
 
     @property
-    def transporter(self) -> TransporterEquipment:
+    def transporter(self) -> Transporter:
         return self._transporter
 
     @property
@@ -115,7 +115,6 @@ class ExecutingMoveAction(IMoveAction):
         self._context = context
         self.status = ActionStatus.CREATED
         self.status = ActionStatus.AWAITING_MOVE_RESERVATION
-        self._is_executing = asyncio.Lock()
 
     @property
     def status(self) -> ActionStatus:
@@ -136,25 +135,26 @@ class ExecutingMoveAction(IMoveAction):
         self._status_manager.set_status("ACTION", id, status.name, context)
 
     async def _execute_action(self) -> None:
-        if self._action.reservation is None:
-            raise ValueError("Reservation must be set before performing action")
-        if self._action.labware is None:
-            raise ValueError("Labware must be set before performing action")
-        if self._action.target.labware is not None:
-            raise ValueError("Target location is occupied")
+        async with self._action.transporter.lock:
+            if self._action.reservation is None:
+                raise ValueError("Reservation must be set before performing action")
+            if self._action.labware is None:
+                raise ValueError("Labware must be set before performing action")
+            if self._action.target.labware is not None:
+                raise ValueError("Target location is occupied")
 
-        self.status = ActionStatus.PREPARING_TO_MOVE
-        # move the labware
-        await self._action.source.prepare_for_pick(self._action.labware)
-        await self._action.target.prepare_for_place(self._action.labware)
+            self.status = ActionStatus.PREPARING_TO_MOVE
+            # move the labware
+            await self._action.source.prepare_for_pick(self._action.labware)
+            await self._action.target.prepare_for_place(self._action.labware)
 
-        self.status = ActionStatus.PICKING
-        await self._action.transporter.pick(self._action.source)
-        await self._action.source.notify_picked(self._action.labware)
+            self.status = ActionStatus.PICKING
+            await self._action.transporter.pick(self._action.source)
+            await self._action.source.notify_picked(self._action.labware)
 
-        self.status = ActionStatus.PLACING
-        await self._action.transporter.place(self._action.target)
-        await self._action.target.notify_placed(self._action.labware)
+            self.status = ActionStatus.PLACING
+            await self._action.transporter.place(self._action.target)
+            await self._action.target.notify_placed(self._action.labware)
 
         # await notify_picked
         if self._action.release_reservation_on_place:
@@ -162,17 +162,16 @@ class ExecutingMoveAction(IMoveAction):
             self._action.reservation.release_reservation()
 
     async def execute(self) -> None:
-        async with self._is_executing:
-            if self.status == ActionStatus.COMPLETED:
-                return
-            if self.status == ActionStatus.ERRORED:
-                raise ValueError("Action has errored, cannot execute")
-            try:
-                await self._execute_action()
-            except Exception as e:
-                self.status = ActionStatus.ERRORED
-                raise e
-            self.status = ActionStatus.COMPLETED
+        if self.status == ActionStatus.COMPLETED:
+            return
+        if self.status == ActionStatus.ERRORED:
+            raise ValueError("Action has errored, cannot execute")
+        try:
+            await self._execute_action()
+        except Exception as e:
+            self.status = ActionStatus.ERRORED
+            raise e
+        self.status = ActionStatus.COMPLETED
 
     @property
     def id(self) -> str:
@@ -191,7 +190,7 @@ class ExecutingMoveAction(IMoveAction):
         return self._action.target
 
     @property
-    def transporter(self) -> TransporterEquipment:
+    def transporter(self) -> Transporter:
         return self._action.transporter
 
     @property

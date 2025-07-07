@@ -1,0 +1,20 @@
+
+// this ALWAYS GENERATED file contains the sub-method library header
+// Generated at 1/29/2025 4:19:35 PM
+
+#pragma once
+#ifndef HSL_RUNTIME
+namespace ORCA {
+function _InitLibrary() { }
+function _ExitLibrary() { }
+function GetConfigProperty_Float( variable i_str_propertyName, variable i_flt_defaultValue, variable & o_flt_value ) void { }
+function GetConfigProperty_Integer( variable i_str_propertyName, variable i_int_defaultValue, variable & o_int_value ) void { }
+function GetConfigProperty_String( variable i_str_propertyName, variable i_str_defaultValue, variable & o_str_value ) void { }
+function Initialize( variable i_int_useDefaultValues ) void { }
+} // namespace
+#endif
+
+#ifdef HSL_RUNTIME
+#include __filename__ ".hsi"
+#endif
+// $$author=miike$$valid=0$$time=2025-01-29 16:19$$checksum=cad14875$$length=082$$

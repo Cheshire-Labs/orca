@@ -1,21 +1,20 @@
 from typing import List, Optional
-from orca.resource_models.base_resource import Equipment
-from orca.resource_models.location import Location
+from orca.resource_models.resources import IResource
 
     
-class EquipmentResourcePool:
+class ResourcePool:
 
-    def __init__(self, name: str, resources: Optional[List[Equipment]] = None):
+    def __init__(self, name: str, resources: Optional[List[IResource]] = None):
         self._name = name
-        self._resources: List[Equipment] = resources if resources is not None else []
+        self._resources: List[IResource] = resources if resources is not None else []
 
     @property
     def name(self) -> str:
         return self._name
     
     @property
-    def resources(self) -> List[Equipment]:
+    def resources(self) -> List[IResource]:
         return self._resources
 
-    def add_resource(self, resource: Equipment) -> None:
+    def add_resource(self, resource: IResource) -> None:
         self._resources.append(resource)

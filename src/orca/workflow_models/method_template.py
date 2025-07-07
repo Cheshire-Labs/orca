@@ -1,13 +1,14 @@
 from orca.resource_models.labware import AnyLabwareTemplate, LabwareTemplate
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
-from orca.workflow_models.action_template import ActionTemplate
+from orca.workflow_models.action_template import ActionTemplate, Device, Any
 from orca.workflow_models.actions.dynamic_resource_action import UnresolvedLocationAction
 from orca.workflow_models.interfaces import ILabwareThread, IMethod
-from orca.workflow_models.labware_threads.labware_thread import LabwareThreadInstance
-from orca.workflow_models.method import ExecutingMethod, MethodInstance
+
 
 
 from abc import ABC
+
+from orca.workflow_models.method import ExecutingMethod
 
 
 
@@ -37,20 +38,20 @@ class MethodTemplate(IMethodTemplate):
 
 
     @property
-    def inputs(self) -> List[Union[LabwareTemplate, AnyLabwareTemplate]]:
-        inputs: Set[Union[LabwareTemplate, AnyLabwareTemplate]] = set()
+    def inputs(self) -> List[ LabwareTemplate | AnyLabwareTemplate]:
+        inputs: Set[LabwareTemplate | AnyLabwareTemplate] = set()
         for action in self._actions:
             inputs.update(action.inputs)
         return list(inputs)
 
     @property
-    def outputs(self) -> List[Union[LabwareTemplate, AnyLabwareTemplate]]:
-        outputs: Set[Union[LabwareTemplate, AnyLabwareTemplate]] = set()
+    def outputs(self) -> List[ LabwareTemplate | AnyLabwareTemplate]:
+        outputs: Set[ LabwareTemplate | AnyLabwareTemplate] = set()
         for action in self._actions:
             outputs.update(action.outputs)
         return list(outputs)
 
-    def append_action(self, action: ActionTemplate):
+    def append_action(self, action: ActionTemplate) -> None:
         self._actions.append(action)
 
     def add_actions(self, actions: List[ActionTemplate]) -> None:
@@ -67,7 +68,7 @@ class MethodTemplate(IMethodTemplate):
     #     return method
 
 
-class JunctionMethodTemplate(IMethodTemplate):
+class SharedMethodTemplate(IMethodTemplate):
     """ Creates a template for a junction method. A junction method is a placeholder for a method that will be defined later in the workflow."""
     def __init__(self) -> None:
         self._method: ExecutingMethod | None = None
@@ -97,7 +98,7 @@ class JunctionMethodTemplate(IMethodTemplate):
     #     return self._method
 
 
-class JunctionMethodInstance(IMethod):
+class SharedMethodInstance(IMethod):
     def __init__(self, method: ExecutingMethod) -> None:
         self._method = method
 

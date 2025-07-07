@@ -1,5 +1,5 @@
 from types import MappingProxyType
-from orca.resource_models.base_resource import IResource
+from orca.resource_models.resources import IResource
 from orca.resource_models.location import Location
 from orca.system.interfaces import IMethodTemplateRegistry, IWorkflowTemplateRegistry
 from orca.system.labware_registry_interfaces import ILabwareRegistry, ILabwareTemplateRegistry
@@ -106,11 +106,11 @@ class TemplateRegistry(IThreadTemplateRegistry, IWorkflowTemplateRegistry, IMeth
     def get_method_template(self, name: str) -> MethodTemplate:
         return self._method_templates[name]
 
-    def add_labware_thread_template(self, thread_template: ThreadTemplate) -> None:
-        name = thread_template.name
+    def add_labware_thread_template(self, labware_thread: ThreadTemplate) -> None:
+        name = labware_thread.name
         if name in self._labware_thread_templates.keys():
             raise KeyError(f"Labware {name} is already defined in the system.  Each labware must have a unique name")
-        self._labware_thread_templates[name] = thread_template
+        self._labware_thread_templates[name] = labware_thread
 
     def add_method_template(self, method: MethodTemplate) -> None:
         name = method.name

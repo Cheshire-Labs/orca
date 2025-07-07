@@ -1,0 +1,213 @@
+// {{{ 2 "IncludeGuard" "PragmaOnce"
+#pragma once
+// }} ""
+#include "HSLJson\\HSLJson.hsl"
+#include "HSLTrcLib.hsl"
+#include "HSLUtilLib.hsl"
+#include "HSLStrLib.hsl"
+#include "HSLML_STARLib.hsl"
+#include "HSLVantageLib.hsl"
+#include "HSLDevLib.hsl"
+/* {{ 2 "LibraryInsertLine" "" */ // }} ""
+// {{ 2 "TemplateIncludeBlock" ""
+#include "HSLMETEDLib.hs_"
+#include "HSLMECCLib.hs_"
+#include "templates\\HSLPipetteWizard.hsl"
+#include "HSLSchedCCLib.hs_"
+// }} ""
+// {{{ 2 "LibraryNamespace" "Begin"
+namespace ORCA {
+// }} ""
+object obj_baseConfig;
+object obj_params;
+variable int_useDefaultValues;
+/* {{ 2 "VariableInsertLine" "" */ // }} ""
+// {{{ 2 "SubmethodForwardDeclaration" ""
+function GetConfigProperty_Float( variable i_str_propertyName, variable i_flt_defaultValue, variable & o_flt_value ) void ;
+function GetConfigProperty_Integer( variable i_str_propertyName, variable i_int_defaultValue, variable & o_int_value ) void ;
+function GetConfigProperty_String( variable i_str_propertyName, variable i_str_defaultValue, variable & o_str_value ) void ;
+function Initialize( variable i_int_useDefaultValues ) void ;
+// }} ""
+function _InitLibrary() {
+// {{ 2 "AutoInitBlock" ""
+// }} ""
+}
+function _ExitLibrary() {
+// {{ 2 "AutoExitBlock" ""
+// }} ""
+}
+// {{{ 5 "Initialize" "Begin"
+function Initialize( variable i_int_useDefaultValues ) void {
+// }} ""
+private variable int_retCode;
+private variable int_paramsPropertyType;
+private variable str_paramsBaseName;
+private variable str_orcaConfigFilepath;
+private variable str_systemUserName;
+// {{ 5 "Initialize" "InitLocals"
+// }} ""
+// {{ 19 1 0 "6d922eec_5ede_49a0_9e4c3fb87bb0f3d1" "{B31F3543-5D80-11d4-A5EB-0050DA737D89}"
+int_useDefaultValues = i_int_useDefaultValues;
+// }} ""
+// {{ 20 1 0 "b492d35a_b4b7_4ad4_89d05d74c379c90c" "{B31F3531-5D80-11d4-A5EB-0050DA737D89}"
+if (int_useDefaultValues == 1)
+{
+// }} ""
+// {{{ 21 1 0 "1f3d660f_ea80_4b78_934a94eedcdbda1b" "{9EC997CD-FD3B-4280-811B-49E99DCF062C}"
+return;
+// }} ""
+// {{ 22 1 0 "b492d35a_b4b7_4ad4_89d05d74c379c90c" "{B31F3531-5D80-11d4-A5EB-0050DA737D89}"
+}
+// }} ""
+// {{ 23 1 0 "ae113559_70e9_4bbc_976866e5b7816f30" "{B31F3543-5D80-11d4-A5EB-0050DA737D89}"
+str_paramsBaseName = Translate("params");
+// }} ""
+// {{{ 24 1 0 "8a0e2f5f_0b8c_4039_8800206b1cb2fbd2" "{C1F3C015-47B3-4514-9407-AC2E65043419}"
+str_systemUserName = Util::GetUserName();
+// }} ""
+// {{{ 25 1 0 "82c68e22_23ec_480b_8cbe1619785a94b7" "{C1F3C015-47B3-4514-9407-AC2E65043419}"
+str_orcaConfigFilepath = StrConcat4(Translate("C:\\Users\\"), str_systemUserName, Translate("\\AppData\\Local\\Temp\\CheshireLabs\\Orca\\"), Translate("actionConfig.json"));
+// }} ""
+// {{{ 26 1 0 "0c12181f_89ef_4a86_a408bc896f17ee76" "{C1F3C015-47B3-4514-9407-AC2E65043419}"
+int_retCode = HSLJsonLib::Create(obj_baseConfig);
+// }} ""
+// {{ 27 1 0 "35731342_304f_4596_9a992aaa71e7ca2d" "{B31F3531-5D80-11d4-A5EB-0050DA737D89}"
+if (int_retCode != 0)
+{
+// }} ""
+// {{{ 28 1 0 "8df6c922_36e9_4e03_b05331e99ff1a257" "{C1F3C015-47B3-4514-9407-AC2E65043419}"
+TrcTrace(Translate("Error Creating Object"), Translate(""));
+// }} ""
+// {{ 29 1 0 "35731342_304f_4596_9a992aaa71e7ca2d" "{B31F3531-5D80-11d4-A5EB-0050DA737D89}"
+}
+// }} ""
+// {{{ 30 1 0 "3bab80b1_9dcb_4868_88ac533facc532b6" "{C1F3C015-47B3-4514-9407-AC2E65043419}"
+int_retCode = HSLJsonLib::Load(obj_baseConfig, str_orcaConfigFilepath);
+// }} ""
+// {{ 31 1 0 "c54d5a43_7251_429a_a982ac731aa99205" "{B31F3531-5D80-11d4-A5EB-0050DA737D89}"
+if (int_retCode != 0)
+{
+// }} ""
+// {{{ 32 1 0 "c7dbc442_7c4a_4404_9236c45ec6038f90" "{C1F3C015-47B3-4514-9407-AC2E65043419}"
+TrcTrace(Translate("Error loading Orca Config JSON from file: "), str_orcaConfigFilepath);
+// }} ""
+// {{ 33 1 0 "c54d5a43_7251_429a_a982ac731aa99205" "{B31F3531-5D80-11d4-A5EB-0050DA737D89}"
+}
+// }} ""
+// {{{ 34 1 0 "a5c60fb3_db71_4d83_97b2f8b9da40b1ee" "{C1F3C015-47B3-4514-9407-AC2E65043419}"
+int_retCode = HSLJsonLib::GetPropertyType(obj_baseConfig, str_paramsBaseName, int_paramsPropertyType);
+// }} ""
+// {{ 35 1 0 "a4996def_e005_4553_80d0dd4a07512d6b" "{B31F3531-5D80-11d4-A5EB-0050DA737D89}"
+if (int_retCode != 0)
+{
+// }} ""
+// {{{ 36 1 0 "23bc69b8_ce2b_4600_aac9696c92839e4e" "{C1F3C015-47B3-4514-9407-AC2E65043419}"
+TrcTrace4(Translate("Actions parameter '"), str_paramsBaseName, Translate("' not found in Orca config object ."), Translate("An empty param object was returned"));
+// }} ""
+// {{ 37 1 0 "a4996def_e005_4553_80d0dd4a07512d6b" "{B31F3531-5D80-11d4-A5EB-0050DA737D89}"
+}
+// }} ""
+// {{ 38 1 0 "0f0a4e04_11de_4709_bf082466bc59e17f" "{B31F3531-5D80-11d4-A5EB-0050DA737D89}"
+if (int_paramsPropertyType != 1)
+{
+// }} ""
+// {{{ 39 1 0 "0e1dde99_f7ab_4fa4_a004488ec80e0bf1" "{C1F3C015-47B3-4514-9407-AC2E65043419}"
+TrcTrace4(Translate("Actions parameter object is not of type JSON object.  Property type code is: "), int_paramsPropertyType, Translate(" An empty param object was returned."), Translate(""));
+// }} ""
+// {{{ 40 1 0 "5e179f80_4a4f_493e_9848b5f30e689aca" "{C1F3C015-47B3-4514-9407-AC2E65043419}"
+HSLJsonLib::Create(obj_params);
+// }} ""
+// {{ 41 1 0 "0f0a4e04_11de_4709_bf082466bc59e17f" "{B31F3531-5D80-11d4-A5EB-0050DA737D89}"
+}
+else
+{
+// }} ""
+// {{{ 42 1 0 "79ee28dc_6d8f_4f1d_9d1893da3e44692e" "{C1F3C015-47B3-4514-9407-AC2E65043419}"
+HSLJsonLib::GetJsonProperty(obj_baseConfig, str_paramsBaseName, obj_params);
+// }} ""
+// {{ 43 1 0 "0f0a4e04_11de_4709_bf082466bc59e17f" "{B31F3531-5D80-11d4-A5EB-0050DA737D89}"
+}
+// }} ""
+// {{{ 5 "Initialize" "End"
+}
+// }} ""
+// {{{ 5 "GetConfigProperty_String" "Begin"
+function GetConfigProperty_String( variable i_str_propertyName, variable i_str_defaultValue, variable & o_str_value ) void {
+// }} ""
+// {{ 5 "GetConfigProperty_String" "InitLocals"
+o_str_value = 0;
+// }} ""
+// {{ 13 1 0 "221d9a79_eb6d_40c7_b83407dfcea5be66" "{B31F3531-5D80-11d4-A5EB-0050DA737D89}"
+if (int_useDefaultValues == 1)
+{
+// }} ""
+// {{ 14 1 0 "460bad03_7bf0_4809_82890f67daa279d7" "{B31F3543-5D80-11d4-A5EB-0050DA737D89}"
+o_str_value = i_str_defaultValue;
+// }} ""
+// {{{ 15 1 0 "3ea443d2_4158_4ca3_97a9e94aa05cfb1b" "{9EC997CD-FD3B-4280-811B-49E99DCF062C}"
+return;
+// }} ""
+// {{ 16 1 0 "221d9a79_eb6d_40c7_b83407dfcea5be66" "{B31F3531-5D80-11d4-A5EB-0050DA737D89}"
+}
+// }} ""
+// {{{ 17 1 0 "84617829_73ea_4123_b80f30b921675d36" "{C1F3C015-47B3-4514-9407-AC2E65043419}"
+HSLJsonLib::GetStringProperty(obj_params, i_str_propertyName, o_str_value);
+// }} ""
+// {{{ 5 "GetConfigProperty_String" "End"
+}
+// }} ""
+// {{{ 5 "GetConfigProperty_Float" "Begin"
+function GetConfigProperty_Float( variable i_str_propertyName, variable i_flt_defaultValue, variable & o_flt_value ) void {
+// }} ""
+// {{ 5 "GetConfigProperty_Float" "InitLocals"
+o_flt_value = 0;
+// }} ""
+// {{ 1 1 0 "98aa3717_dd15_4365_97b08a8881d33513" "{B31F3531-5D80-11d4-A5EB-0050DA737D89}"
+if (int_useDefaultValues == 1)
+{
+// }} ""
+// {{ 2 1 0 "af3f8762_a47a_4ee3_9433dc82f868c8c9" "{B31F3543-5D80-11d4-A5EB-0050DA737D89}"
+o_flt_value = i_flt_defaultValue;
+// }} ""
+// {{{ 3 1 0 "ac45abb2_effb_4f31_832d8347a678e403" "{9EC997CD-FD3B-4280-811B-49E99DCF062C}"
+return;
+// }} ""
+// {{ 4 1 0 "98aa3717_dd15_4365_97b08a8881d33513" "{B31F3531-5D80-11d4-A5EB-0050DA737D89}"
+}
+// }} ""
+// {{{ 5 1 0 "f578b8ed_cbba_4684_97b464ac4027f675" "{C1F3C015-47B3-4514-9407-AC2E65043419}"
+HSLJsonLib::GetFloatProperty(obj_params, i_str_propertyName, o_flt_value);
+// }} ""
+// {{{ 5 "GetConfigProperty_Float" "End"
+}
+// }} ""
+// {{{ 5 "GetConfigProperty_Integer" "Begin"
+function GetConfigProperty_Integer( variable i_str_propertyName, variable i_int_defaultValue, variable & o_int_value ) void {
+// }} ""
+// {{ 5 "GetConfigProperty_Integer" "InitLocals"
+o_int_value = 0;
+// }} ""
+// {{ 7 1 0 "96f214e5_ad59_4249_aa722b67379be75b" "{B31F3531-5D80-11d4-A5EB-0050DA737D89}"
+if (int_useDefaultValues == 1)
+{
+// }} ""
+// {{ 8 1 0 "61eb71bf_c44c_4a57_80d83c887d8b887c" "{B31F3543-5D80-11d4-A5EB-0050DA737D89}"
+o_int_value = i_int_defaultValue;
+// }} ""
+// {{{ 9 1 0 "4c0faadb_7e45_4ca0_a787f3181bbc1405" "{9EC997CD-FD3B-4280-811B-49E99DCF062C}"
+return;
+// }} ""
+// {{ 10 1 0 "96f214e5_ad59_4249_aa722b67379be75b" "{B31F3531-5D80-11d4-A5EB-0050DA737D89}"
+}
+// }} ""
+// {{{ 11 1 0 "cc4a3f1f_d72f_4ee3_81a254c366933404" "{C1F3C015-47B3-4514-9407-AC2E65043419}"
+HSLJsonLib::GetIntegerProperty(obj_params, i_str_propertyName, o_int_value);
+// }} ""
+// {{{ 5 "GetConfigProperty_Integer" "End"
+}
+// }} ""
+/* {{ 2 "SubmethodInsertLine" "" */ // }} ""
+// {{{ 2 "LibraryNamespace" "End"
+} // library namespace
+// }} ""
+// $$author=miike$$valid=0$$time=2025-01-29 16:19$$checksum=4a0ef469$$length=084$$

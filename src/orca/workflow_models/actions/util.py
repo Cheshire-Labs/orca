@@ -2,7 +2,7 @@ import asyncio
 import logging
 from orca.resource_models.labware import AnyLabwareTemplate, LabwareInstance, LabwareTemplate
 from orca.resource_models.location import Location
-from orca.resource_models.resource_pool import EquipmentResourcePool
+from orca.resource_models.resource_pool import ResourcePool
 from orca.system.reservation_manager.interfaces import IReservationCollection, IThreadReservationCoordinator
 from orca.system.reservation_manager.location_reservation import LocationReservation
 from orca.system.system_map import IResourceLocator, SystemMap
@@ -130,7 +130,7 @@ class LocationCollectionReservationRequest(IReservationCollection):
 
 class ResourcePoolResolver:
     def __init__(self,
-                resource_pool: EquipmentResourcePool) -> None:
+                resource_pool: ResourcePool) -> None:
         self._resource_pool = resource_pool
         self._resolved_location: LocationReservation | None = None
 

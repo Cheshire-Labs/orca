@@ -6,7 +6,7 @@ from orca.resource_models.location import Location
 from orca.system.reservation_manager.interfaces import IReservationCollection, IThreadReservationCoordinator
 from orca.system.reservation_manager.location_reservation import LocationReservation
 from orca.system.system_map import SystemMap
-from orca.workflow_models.actions.location_action import ILocationAction
+from orca.workflow_models.actions.location_action_interface import ILocationAction
 
 
 from orca.workflow_models.actions.move_action import MoveAction
