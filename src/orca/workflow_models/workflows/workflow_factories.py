@@ -1,9 +1,9 @@
-from orca.workflow_models.action_template import ActionTemplate
+from orca.workflow_models.action_template import ActionTemplate, Device, Any
 from orca.workflow_models.actions.dynamic_resource_action import UnresolvedLocationAction
 from orca.workflow_models.interfaces import IMethod
 from orca.workflow_models.labware_threads.labware_thread import LabwareThreadInstance
 from orca.workflow_models.method import MethodInstance
-from orca.workflow_models.method_template import IMethodTemplate, JunctionMethodInstance, JunctionMethodTemplate, MethodTemplate
+from orca.workflow_models.method_template import IMethodTemplate, SharedMethodInstance, SharedMethodTemplate, MethodTemplate
 from orca.workflow_models.thread_template import ThreadTemplate
 from orca.workflow_models.workflows.workflow import WorkflowInstance
 from orca.workflow_models.workflow_templates import WorkflowTemplate
@@ -12,12 +12,12 @@ from orca.workflow_models.workflow_templates import WorkflowTemplate
 class MethodActionFactory:
 
     def __init__(self, template: ActionTemplate) -> None:
-        self._template: ActionTemplate = template
+        self._template = template
 
     def create_instance(self) -> UnresolvedLocationAction:
 
         instance = UnresolvedLocationAction(self._template.resource_pool,
-                                        self._template.command,
+                                        self._template.get_location_action(),
                                         self._template.inputs,
                                         self._template.outputs,
                                         self._template.options,
@@ -28,8 +28,8 @@ class MethodActionFactory:
 class MethodFactory:
 
     def create_instance(self, template: IMethodTemplate) -> IMethod:
-        if isinstance(template, JunctionMethodTemplate):
-            return JunctionMethodInstance(template.method)
+        if isinstance(template, SharedMethodTemplate):
+            return SharedMethodInstance(template.method)
         elif isinstance(template, MethodTemplate):
             method = MethodInstance( template.name)
             for action_template in template.actions:

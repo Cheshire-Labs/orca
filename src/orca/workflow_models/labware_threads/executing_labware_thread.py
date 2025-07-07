@@ -1,28 +1,29 @@
 from abc import ABC, abstractmethod
+import logging
+import asyncio
+from typing import Dict, List
 from orca.events.event_bus_interface import IEventBus
-from orca.events.execution_context import ExecutionContext, MethodExecutionContext, ThreadExecutionContext, WorkflowExecutionContext
+from orca.events.execution_context import ThreadExecutionContext, WorkflowExecutionContext
 from orca.resource_models.device_error import DeviceBusyError
 from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.location import Location
 from orca.system.reservation_manager.move_handler import MoveHandler
 from orca.system.reservation_manager.interfaces import IThreadReservationCoordinator
 from orca.system.system_map import SystemMap
+from orca.workflow_models.actions.location_action_interface import ILocationAction
 from orca.workflow_models.actions.dynamic_resource_action import DynamicResourceActionResolver
-from orca.workflow_models.actions.location_action import ExecutingLocationAction, ILocationAction
+from orca.workflow_models.actions.executing_location_action import ExecutingLocationAction
 from orca.workflow_models.actions.move_action import ExecutingMoveAction, MoveAction
 from orca.workflow_models.interfaces import ILabwareThread
-from orca.workflow_models.labware_threads.labware_thread import LabwareThreadInstance, orca_logger
+from orca.workflow_models.labware_threads.labware_thread import LabwareThreadInstance
 from orca.workflow_models.method import ExecutingMethod, MethodInstance
-from orca.workflow_models.method_template import JunctionMethodInstance
+from orca.workflow_models.method_template import SharedMethodInstance
 from orca.workflow_models.status_enums import LabwareThreadStatus, MethodStatus
 from orca.workflow_models.status_manager import StatusManager
 
-
-import asyncio
-from typing import Dict, List
-
 from orca.workflow_models.workflows.workflow_registry import ExecutingMethodRegistry, ThreadRegistry
 
+orca_logger = logging.getLogger("orca")
 
 class ExecutingLabwareThread(ILabwareThread):
 
@@ -290,13 +291,15 @@ class ExecutingThreadFactory:
         methods: List[ExecutingMethod] = []
         for m in instance.methods:
             executing_method: ExecutingMethod
-            if isinstance(m, JunctionMethodInstance):
+            if isinstance(m, SharedMethodInstance):
                 if m.id in self._executing_method_registry:
                     executing_method = self._executing_method_registry.get_executing_method(m.id)
                 else:
                     executing_method = self._executing_method_registry.create_executing_method(m.id, context)
-            if isinstance(m, MethodInstance):
+            elif isinstance(m, MethodInstance):
                 executing_method = self._executing_method_registry.create_executing_method(m.id, context)
+            else:
+                raise TypeError(f"Unknown method type: {type(m)}")
             methods.append(executing_method)
         return ExecutingLabwareThread(
             instance,

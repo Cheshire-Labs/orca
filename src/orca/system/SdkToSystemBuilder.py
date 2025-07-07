@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Sequence
 
 from orca.resource_models.labware import LabwareTemplate
 from orca.events.event_bus_interface import IEventBus
@@ -31,7 +31,7 @@ class SdkToSystemBuilder:
     def __init__(self,
                  name: str,
                  description: str,
-                 labwares: List[LabwareTemplate],
+                 labwares: Sequence[LabwareTemplate],
                  resources_registry: ResourceRegistry,
                  system_map: SystemMap,
                  methods: List[MethodTemplate],
@@ -51,7 +51,7 @@ class SdkToSystemBuilder:
         """
         self._system_info: SystemInfo = SystemInfo(name, description=description, version="0.1.0", model_extra={})
         self._resource_reg: ResourceRegistry = resources_registry
-        self._labware_registry: LabwareRegistry = self._get_labware_registry(labwares)
+        self._labware_registry: LabwareRegistry = self._get_labware_registry(list(labwares))
         self._system_map: SystemMap = system_map
         self._event_bus = SystemBoundEventBus(event_bus)
 

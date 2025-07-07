@@ -68,8 +68,8 @@ class WorkflowTemplate:
         Args:
             spawn_thread (ThreadTemplate): The thread that will be spawned.
             from_thread (ThreadTemplate): The thread from which the spawn occurs.
-            at (MethodTemplate): The method at which the spawn occurs.  The spawn will occur when the parent thread reaches this method and when the method emits the CREATED event.
-            join (bool): If True, the spawned thread will be joined to the parent thread at the spawned thread's JunctionMethod. Defaults to False.
+            at (MethodTemplate): The method at which the spawn occurs.  The spawn will occur when the parent thread reaches this method.
+            join (bool): If True, the spawned thread will be joined to the parent thread.  The join will occur where the SharedMethod is set within the spawned thread. Defaults to False.
         """
         if spawn_thread.name not in self._threads:
             raise ValueError(f"Thread {spawn_thread.name} not found in workflow")

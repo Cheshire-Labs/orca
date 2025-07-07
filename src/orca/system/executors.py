@@ -8,7 +8,7 @@ from orca.system.interfaces import IMethodRegistry, IWorkflowRegistry
 from typing import Dict, List
 from orca.system.system_interface import ISystem
 from orca.system.system_map import ILocationRegistry
-from orca.workflow_models.method_template import JunctionMethodTemplate, MethodTemplate
+from orca.workflow_models.method_template import SharedMethodTemplate, MethodTemplate
 from orca.workflow_models.thread_template import ThreadTemplate
 from orca.workflow_models.workflow_templates import EventHookInfo, WorkflowTemplate
 from orca.workflow_models.workflows.executing_workflow import IExecutingWorkflowRegistry
@@ -94,7 +94,7 @@ class StandalonMethodExecutor:
                                              self._start_mapping[labware_template],
                                              self._end_mapping[labware_template])
 
-            thread_template.add_method(JunctionMethodTemplate())
+            thread_template.add_method(SharedMethodTemplate())
             thread_template.set_wrapped_method(executing_method)
             threads.append(thread_template)
         return threads

@@ -1,6 +1,6 @@
 import pytest
 
-from orca.resource_models.transporter_resource import TransporterEquipment
+from orca.resource_models.transporter_resource import Transporter
 from orca.system.registries import LabwareRegistry
 from orca.system.resource_registry import ResourceRegistry
 from orca.system.system_map import SystemMap
@@ -9,7 +9,7 @@ from tests.mock import MockEquipmentResource, MockRoboticArm
 
 
 @pytest.fixture
-def robot1(request) -> TransporterEquipment:
+def robot1(request) -> Transporter:
     robot1 = MockRoboticArm("robot1", "robot", ["loc1", "loc2", "loc3", "stacker1", "shaker1"]) # loc1, loc2, loc3, stacker1, shaker1
     return robot1
 

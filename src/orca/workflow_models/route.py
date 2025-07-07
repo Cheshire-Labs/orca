@@ -1,17 +1,17 @@
 from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.location import Location
-from orca.resource_models.transporter_resource import TransporterEquipment
+from orca.resource_models.transporter_resource import Transporter
 
 
 from typing import Iterator, List
 
 
 class RouteStep:
-    def __init__(self, labware: LabwareInstance, source: Location, target: Location, transporter: TransporterEquipment) -> None:
+    def __init__(self, labware: LabwareInstance, source: Location, target: Location, transporter: Transporter) -> None:
         self.labware: LabwareInstance = labware 
         self.source: Location = source
         self.target: Location = target
-        self.transporter: TransporterEquipment = transporter
+        self.transporter: Transporter = transporter
         self.target_loc_reservation_id: str | None = None
 
     def __str__(self) -> str:
@@ -22,7 +22,7 @@ class Route:
         self._steps: List[RouteStep] = []
         self._labware: LabwareInstance = labware
 
-    def add_step(self, source: Location, target: Location, transporter: TransporterEquipment) -> None:
+    def add_step(self, source: Location, target: Location, transporter: Transporter) -> None:
         """Add a new step to the route."""
         step = RouteStep(self._labware, source, target, transporter)
         self._steps.append(step)

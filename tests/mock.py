@@ -1,12 +1,11 @@
 from typing import Optional, Dict, Any, Callable, List
 from unittest.mock import MagicMock
-from orca.driver_management.drivers.simulation_labware_placeable.simulation_labware_placeable import SimulationDeviceDriver
+from orca.driver_management.drivers.simulation_device_driver import SimulationDeviceDriver
 from orca.driver_management.drivers.simulation_robotic_arm.simulation_robotic_arm import SimulationRoboticArmDriver
-from orca.resource_models.transporter_resource import TransporterEquipment
+from orca.resource_models.transporter_resource import Transporter
 from orca.resource_models.devices import Device
 from orca.resource_models.location import Location
 from orca.resource_models.labware import LabwareInstance
-
 
 class MockEquipmentResource(Device):
     def __init__(self, name: str, mocking_type: Optional[str] = None):
@@ -43,7 +42,7 @@ class MockEquipmentResource(Device):
         self._on_execute(command)
 
 
-class MockRoboticArm(TransporterEquipment):
+class MockRoboticArm(Transporter):
     def __init__(self, name: str, mocking_type: Optional[str] = None, positions: Optional[List[str]] = None) -> None:
         driver = SimulationRoboticArmDriver(name,  mocking_type)
         positions = positions if positions is not None else []
@@ -65,4 +64,7 @@ class MockRoboticArm(TransporterEquipment):
         labware = self._labware
         await super().place(location)
         self._on_place(labware, location)
+
+
+
 

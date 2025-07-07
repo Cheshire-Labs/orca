@@ -6,20 +6,25 @@ Orca is a laboratory automation scheduler designed from the ground up with devel
 
 Orca is currently in development, so stay tuned for frequent updates.
 
+***HAVE FEEDBACK?***
+
+***NEED A DEVICE SUPPORTED?***
+
+[Contact Us](#contact)
+
 <h1 id="warning"> ⚠️ WARNING ⚠️</h1>
 
-Orca is currently in it's early beta release with limited functionality and without integrated drivers.  ***This code has only been tested with mocked drivers and has not been run on a live system.*** 
+***This code has only been tested with mocked drivers and has not been run on a live system.*** 
 
 ⚠️ **Live System Usage**: Connecting Orca to a driver running a live instrument is done at your own risk.  Please exercise caution to protect your personnel and equipment.
 
 ⚠️ **Stopping Orca**: To stop Orca, you need to terminate the program.  (Ctrl+C) 
 
-Cheshire Labs is actively seeking laboratories interested in using Orca.  Please [contact Cheshire Labs](https://cheshirelabs.io/contact/) if you may be interested.
+Cheshire Labs is seeking laboratories interested in using Orca.  Please [contact Cheshire Labs](https://cheshirelabs.io/contact/) if you may be interested.
 
 # 📚 Table of Contents
 
 - [🚀 Features](#features)
-- [🤖 Drivers List](#drivers-list)
 - [⚡ Demo Quick Start](#quick-start)
 - [💾 Installation](#installation)
 - [🧰 Usage](#usage)
@@ -28,8 +33,17 @@ Cheshire Labs is actively seeking laboratories interested in using Orca.  Please
     - [Defining Devices](#defining-devices)
     - [Defining System](#defining-system)
     - [Defining Workflow](#defining-workflow)
+        - [Actions](#actions)
+            - [Actions Lits](#actions-list)
+        - [Methods](#methods)
+        - [Labware Threads](#labware-threads)
+        - [Workflows](#workflows)
     - [Building the System](#building-the-system)
     - [Running a Workflow or Method](#running-a-workflow-or-method)
+- [🤖 Device List](#device-list)
+    - [Venus](#venus)
+    - [Human Transfer](#human-transfer)
+    - [pyLabRobot](#pylabrobot-device)
 - [🔨 Development](#development)
     - [Scripting](#scripting)
     - [Drivers](#drivers)
@@ -78,17 +92,6 @@ No scheduler software fits every need. Orca offers powerful Python scripting to 
 
 Did you write an amazing Orca protocol?  Since it's python you can just share it with others and they can easily swap out your device setup for their own.
 
-<h1 id="drivers-list">🤖 Drivers List</h1>
-
-| Driver Name             | Description <br> Import Example               | Equipment <br> Manufacturer          | Status     | Driver Repo                                                                 |
-|-------------------------|-----------------------------------------------|--------------------------------------|------------|---------------------------------------------------------------------------|
-| Venus Protocol          | Driver for Hamilton Venus software <br> `VenusProtocolDriver` | **MLSTAR, Vantage, etc** <br> Hamilton | 🟢 Stable  | [Orca Venus Driver](https://github.com/cheshire-labs/orca-driver-venus)   |
-| A4S Sealer              | Azenta A4S Sealer (pyLabRobot) <br> `A4Sealer` | **A4S Sealer** <br> Azenta          | ⚪ Untested | [pyLabRobot (orca fork)](https://github.com/Cheshire-Labs/pylabrobot)     |
-| Human Transfer          | Requests a human to move labware <br> `HumanTransferDriver` | **Human** <br> TBD                  | 🟢 Stable  | [orca (built-in)](https://github.com/cheshire-labs/orca-core)             |
-| Simulation Robotic Arm  | Mock driver to simulate a robotic arm <br> `SimulationRoboticArmDriver` | **Robotic Arm** <br> N/A (Simulation) | 🟢 Stable  | [orca (built-in)](https://github.com/cheshire-labs/orca-core)             |
-| Simulation Device       | Mock driver to simulate a device <br> `SimulationDeviceDriver` | **Device** <br> N/A (Simulation)    | 🟢 Stable  | [orca (built-in)](https://github.com/cheshire-labs/orca-core)             |
-
-
 
 
 <h1 id="quick-start">⚡ Demo Quick Start</h1>
@@ -110,17 +113,7 @@ To see a quick demo of how orca works:
         cd orca
         pip install -e .
     ```
-3. If you need specific drivers or optional tools, install them using the provided optional dependencies. For example:
-
-    - To install the Venus driver:
-    ```bash
-        pip install -e .[venus_driver]
-    ```
-    - To install PyLabRobot compatibility:
-    ```bash
-        pip install -e .[pylabrobot]
-    ```
-4. Run the provided example python files using python
+3. Run the provided example python files using python
     ```bash
     python <path_to_example>.py
     ```
@@ -149,22 +142,7 @@ To see a quick demo of how orca works:
         pip install -e .
         ```
 
-    - To include optional dependencies:
-    
-        - Install Venus driver:
-            ```bash
-            pip install -e .[venus_driver]
-            ```
-        - Install PyLabRobot compatibility:
-            ```bash
-            pip install -e .[pylabrobot]
-            ```
-        - Install both:
-            ```bash
-            pip install -e .[venus_driver,pylabrobot]
-            ```
-
-    - **OR** Install the latest published version from PyPI (may be behind the latest updates):
+    - **OR** Install the latest published version from PyPI (***This method is not kept up-to-date***):
     
         ```bash
         pip install cheshire-orca
@@ -200,35 +178,56 @@ To see a quick demo of how orca works:
 
 
 ## Defining Labware
-Define your labware using the Labware template and then add it to list of labwares.
-```py
-sample_plate = LabwareTemplate(
-    name="sample_plate", 
-    type="Matrix 96-well plate")
-labwares = [
-    sample_plate
-    ]
+Orca uses pyLabRobot's Labware standard.  Labwares are created using a Labware template.  These can be PlateTemplate, TipRackTemplate, etc.
 
+Labware Templates create a new labware instance when labware thread spawns.
+
+To create a Labware template, select the pyLabRobot labware type you want to create and pass a reference to PLR's labware function.  The labware template will create and instance of that labware type when a labware thread is created.
+```py
+from orca.sdk.labware import PlateTemplate, TipRackTemplate
+
+from pylabrobot.resources.corning.falcon.plates import Cor_Falcon_96_wellplate_340ul_Fb_Black
+from pylabrobot.resources.hamilton.tip_racks import LTF
+
+sample_plate = PlateTemplate("sample_plate",  Cor_Falcon_96_wellplate_340ul_Fb_Black)
+tips_96 = TipRackTemplate("tips_96",  LTF, True) 
+labwares = [
+    sample_plate,
+    tips_96
+    ]
 ```
 
 ## Defining Devices
-Create the devices on your system.  Each device will need a driver.  Robotic arms, transporters, and other devics capable of moving devices need to be added as TransporterEquipment.
-```py
-venus_driver = VenusProtocolDriver(name="venus")
-ml_star = Device(name="ml_star", driver=venus_driver)
+Theres 2 types of equipment within Orca
+- **Transporters** - Equipment capable of moving labware.  Orca builds a map from the teachpoints of transporters and will automatically use them to build  routes and move your labware around your system.
+- **Devices** - Equipment capable of recieving labware and performing an operation on them.
 
-sim_robotic_arm_driver = SimulationRoboticArmDriver(name="ddr_1_driver" mocking_type="ddr", teachpoints_filepath="ddr1_teachpoints.xml")
-ddr_1 = TransporterEquipment(name="ddr_1", driver=sim_robotic_arm_driver)
+Devices are setup as follows:
+
+```py
+from orca.sdk.devices import A4SSealer, MockDevice, MockTransporter
+
+sealer = A4SSealer("sealer", "COM3", sim=True)
+centrifuge = MockDevice("centrifuge", "centrifuge")
+ddr_1 = MockTransporter("ddr_1", "ddr", "examples\\smc_assay\\teachpoints\\ddr1.xml")
 
 ```
+ Generic devices (`Sealer`, `Shaker`, etc) can use pyLabRobot drivers.
 
+```py
+from orca.sdk.devices import Sealer
+from pylabrobot.sealing.a4s_backend import A4SBackend
+
+a4s_sealer_driver = A4SBackend(port="/dev/tty.usbserial-0001", timeout=10)
+sealer = Sealer("a4s_sealer", a4s_sealer_driver)
+```
 
 Resource pools can also be created.  These are a colletion of resources that an action can be performed on.  The system will decide which resource to use once the labware gets to that step.
 ```py
-shaker_collection = EquipmentResourcePool(name="shaker_collection", resources=[shaker_1, shaker_2, shaker_3, shaker_4, shaker_5, shaker_6, shaker_7, shaker_8, shaker_9, shaker_10])
+shaker_collection = ResourcePool(name="shaker_collection", resources=[shaker_1, shaker_2, shaker_3, shaker_4, shaker_5, shaker_6, shaker_7, shaker_8, shaker_9, shaker_10])
 ```
 
-Add all the resources and resource pools as a list to the resource registry
+Register the resources within the system by adding them to the Resource Registry
 
 ```py
 resource_registry = ResourceRegistry()
@@ -249,7 +248,7 @@ The system map can be initialized using the resource registry.  Each teachpoint 
 ```py
 map = SystemMap(resource_registry)
 ```
-However, the map also needs to know what devices are located at each teach point.  Those must be defined using a dictionary.
+However, the map also needs to know what devices are located at each teach point.  Those must be defined using a dictionary.  These teachpoints must match the names of the teachpoints in your robotic arms and other transporting devices.
 
 ```py
 map.assign_resource({
@@ -262,11 +261,22 @@ map.assign_resource({
 
 ## Defining Workflow
 
-**Actions are the base unit of an operation on a single plate or collection of plates.**  The require a device or resource pool that operate a command on a single plate or collection labwares.  Inputs are plates that enter the device and the outputs are plates coming off the device.  If no outputs are entered, it's assuemd they are the same as the inputs, unless an empty list is provided.  Extra parameters may be delivered to the command via the options parameter.  
+### Actions
 
-If a resource pool is provided to the action, the system will determine the resource to use at the time of execution.
+**Actions are the base unit of an operation on a single plate or collection of plates.**  
+
+The device paramater tells the system what device will perform the action.  It also tells the system map where to perform the action.  If a resource pool is provided to the action, the system will determine the resource to use at runtime.
+
+The input parameter defines plates that are needed to arrive at the resource to perform the action.  The action awaits all the labwares to arrive at the resource before executing the action.
+
+The output parameter defines plates that are expected to leave the resource after the action is performed.  If no outputs are entered, it's assuemd they are the same as the inputs, unless an empty list is provided. 
+
+The basic action is an ExecuteCommand action.  A list of actions can be find in the [Actions List](#actions-list) section:
+
 ```py
-ActionTemplate(
+from orca.sdk.actions import ExecuteCommand
+
+execute_run = ExecuteCommand(
             resource=ml_star,
             command="run",
             inputs=[sample_plate],
@@ -274,20 +284,66 @@ ActionTemplate(
             options={}
             )
 ```
+### Actions List
 
-**Actions make up a Method.  A method is just a collection of actions.**  These are used to build labware threads.  Methods can also be run by themselves.
+ **ExecuteCommand** - Sends a command string and options dictionary to the resource's driver.  This is the generic action to allow users to just send a string and dictionary to a device driver.
+    
+- **command** (str) - string to be sent to the device's driver 
+- **options** (dict) - key value pairs to be sent with the command string
+
+ **Centrifuge** - Spins the labware using the provided resource.
+- **speed** (int) - how fast to spin the centrifuge (rpm)
+- **duration** (int) - how long to spin the centrifuge (seconds)
+ 
+ **Delid** - Delids the labware using the provided resource.
+
+ **Read** - Reads the plate using the provided resource.
+ - **protocol_filepath** (str) - filepath to method/protocol to run on the device
+ - **output_filepath** (str) - where to output the instrument's results
+ 
+ **RunProtocol** - Runs a protocol file at the specified file path on the resource provided.
+ - **protocol_filepath** (str) - path to a method/protocol to run
+ - **parameters** (dict) - Dictionary of key-value pairs to pass to the method.  Different than options.  Options get passed to the device driver.  Parameters, in this case, get passed into the device's method. 
+ 
+ **Shake** - Shakes the labware using the resource provided.
+ - **speed** (int) - speed to shake the device (rpm)
+ - **duration** (int) - how long to shake (seconds)
+ 
+ **Seal** - Seals the labware using the resource provided.
+ - **temperature** (int) - temperature at which to seal the plate (Celsius)
+ - **duration** (float) - length of time to apply the seal (seconds)
+ 
+ **PythonMethod** - Runs a python method once the labware gets to the specified device.
+ - **method** (function) - This is the python function that will be executed once all input labware arrives at the device.  The python method should be written to accept the following paramaters at the time of execution:
+    - **Device** - the device at which the function is being executed.
+    - **List[LabwareInstance]** - the list of input labware instances
+    - **List[LabwareInstance]** - the list of output labware instances
+    - **Dict[str, Any]** - the action's options parameter
+
+
+### Methods
+
+
+**A method is just a sequence of actions.**  These are used to build labware threads.  Methods can also be run by themselves.
 ```py
 example_method_1 = MethodTemplate(
     name="example_method_1",
-    actions=[]
+    actions=[
+        execute_run, 
+        seal
+        ]
     )
 ```
 
-**A labware thread defines what methods an instance of labware must complete.**  Labware threads determine the path which a labware instance takes.  A starting location and ending location should also be provided.
+### Labware Threads
+
+**A labware thread is a sequence of methods that need to be performed on a specified labware item.** 
+
+A start location and end location is provided to a labware thread and then the labware travels through all the methods to get to the end position.  The route the labware travels is dynamically determined by the actions within the methods.
 
 When building labware threads, it's usually best to think of a main thread and other threads spawning from that thread.
 
-If a labware instance needs to interact with another labware instance (such as tips, a transfer, etc), then one of the labware instances should include a 'JunctionMethodTemplate' where they interact.  At runtime, the workflow will replace the 'JunctionMethodTemplate' with an instance of the shared method.
+If a labware instance needs to interact with another labware instance (such as for a plate transfer), then one of the labware instances should include a 'SharedMethodTemplate' where they interact.  At runtime, the workflow will replace the 'SharedMethodTemplate' object with an instance of the shared method.
 
 ```py
 sample_plate_thread = ThreadTemplate(
@@ -305,15 +361,20 @@ transfer_plate_thread = ThreadTemplate(
     end=map.get_location("plate_pad_4"),
     methods=[
         delid,
-        JunctionMethodTemplate()
+        SharedMethodTemplate()
     ]
 )
 ```
-**The workflow defines how different labware threads interact with each other.**  Workflows are collection of threads with 1 or more threads set as start or main threads.  These threads start when the workflow starts.  They are set with the 'is_start' option set to True.
+
+### Workflow
+
+**A workflow is a collection of labware threads with instructions on how they interact with each other.** 
+
+Workflows must have 1 or more threads set as a start thread.  These threads start when the workflow starts.  They are set with the 'is_start' option set to True.
 
 Spawn points and workflow-level event handlers are also set here.
 
-Spawn points are set with a thread to spawn when another thread reaches a designated method.  When this happens, the method will emit a 'created' event and the thread will spawn.  If you set the 'join' option, the spawning thread will set the method to be shared between the threads.  The 'JunctionMethodTemplate' needs to be on the spawning thread.
+Spawn points are set with a thread to spawn when another thread reaches a designated method.  If you set the 'join' option, the spawning thread will set the method to be shared between the threads.  The 'SharedMethodTemplate' needs to be on the spawning thread.
 
 Event handlers can also be set here.  These are custom functions or EventHandler class that run based on emitted events.
 ```py
@@ -391,6 +452,112 @@ async def run_both_in_parallel() -> None:
     )
 asyncio.run(run_both_in_parallel())
 ```
+<h1 id="device-list">🤖 Device List</h1>
+
+| Driver Name            | Description                           | Equipment <br> Manufacturer            | Status     | Import Example               |
+| ---------------------- | ------------------------------------- | -------------------------------------- | ---------- | ---------------------------- |
+| [Venus](#venus)        | Runs a Venus method.  Can also inject parameters to Benus.  | **MLSTAR, Vantage, etc** <br> Hamilton | 🟢 Stable  | `Venus`        |
+| A4S Sealer | Azenta A4S Sealer (pyLabRobot)        | **A4S Sealer** <br> Azenta             | ⚪ Untested | `A4Sealer`                   |
+| [Sealer](#pylabrobot-device) | Generic sealer that works with pyLabRobot Sealer backends | **Generic Sealer** <br> Any PLR SealerBackend | ⚪ Untested | `Sealer` |
+| [Shaker](#pylabrobot-device) | Generic shaker that works with pyLabRobot Shaker backends | **Generic Shaker** <br> Any PLR ShakerBackend | ⚪ Untested | `Shaker` |
+| [Human Transfer](#human-transfer)         | Requests a human to manually move labware      | **Human** <br> TBD                     | 🟢 Stable  | `HumanTransfer`        |
+| Mock Transporter | Mocks a device capable of moving labware | **Robotic Arm** <br> N/A (Simulation)  | 🟢 Stable  | `MockTransporter` |
+| Mock Device     | Mocks a Device     | **Device** <br> N/A (Simulation)       | 🟢 Stable  | `MockDevice`     |
+
+**Need a device to be supported? [Reach out](#contact)**
+
+## Venus
+The Venus device driver will run a Hamilton Venus method to operate a Hamilton MLSTAR, MLSTARlet, Vantage, etc
+
+The Venus device driver can also pass parameters to be used within your Venus method.  The parameters can be retrieved using the [Orca Venus Submethod](./src/orca/driver_management/drivers/venus/venus_submethod/)
+
+**Venus Initialization**
+
+- name (str): The name of the Venus device.
+
+- init_protocol (Optional[str]): The protocol to run when Orca initializes the device.
+
+- picked_protocol (Optional[str]): The protocol to run when labware is picked.
+
+- placed_protocol (Optional[str]): The protocol to run when labware is placed.
+
+- prepare_pick_protocol (Optional[str]): The protocol to prepare for picking labware.
+
+- prepare_place_protocol (Optional[str]): The protocol to prepare for placing labware.
+
+- exe_path (str): Path to the HxRun executable on your computer. Defaults: `C:\Program Files (x86)\HAMILTON\Bin\HxRun.exe`
+
+- methods_folder (str): Path to the folder containing Venus methods.  This is prepended to the protocol paths.  Defaults: `C:\Program Files (x86)\HAMILTON\Methods`
+
+- sim (bool): Whether to use simulation mode.
+
+**Orca Venus Submethod** 
+
+Once Orca starts your Venus Method, this submethod can be used to get the values of the parameter dictionary that was passed by Orca.
+
+
+
+- Initialize(useDefaultValues: int) - initializes the submethod
+    - useDefaultValues (int) 
+        - 0 = Use values set by Orca.  Will throw an error if the value is not found.
+        - 1 = Use the default values set for each GetConfigProperty - this is useful for when you want to run the Venus method without Orca integrated
+    
+- GetConfigProperty_Float(propertyName: string, defaultValue: float, out value: float)
+- GetConfigProperty_Integer(propertyName: string, defaultValue: int, out value: int)
+- GetConfigProperty_String(propertyName: string, defaultValue: string, out value: string)
+    - propertyName (string) - name of the parameter passed by Orca
+    - defaultValue (T) - defaults to this value when Submethod is initialized with 1
+    - value (out T) - retrieved value of the parameter passed in by Orca
+
+**Example**
+
+In Orca:
+```py
+example_method_1 = MethodTemplate(
+    "example_method_1",
+    actions=[
+        RunProtocol(resource=ml_star,
+            method="Cheshire Labs\\VariableAccessTesting.hsl",
+            parameters={
+                    "strParam": "strParam value transmitted",
+                    "intParam": 123,
+                    "fltParam": 1.003
+                },
+            inputs=[sample_plate],
+            outputs=[sample_plate])
+    ]
+)
+```
+In this example, the method VariableAccessTesting.hsl would be executed.  The parameter values can then be retrieve using the following methods in the submethod library within Venus.
+- ORCA::GetConfigProperty_String("strParam", "default", value)
+    - Result: value = "strParam value transmitted"
+- ORCA::GetConfigProperty_Integer("intParam", "default", value)
+    - Result: value = 123
+- ORCA::GetConfigProperty_Float("fltParam", "default", value)
+    - Result: value = 1.003
+
+## Human Transfer
+The human transfer device driver will wait print a prompt request the plate to be manually picked and place by the user.
+
+It will then wait for the user to press Enter confirming they have picked or placed the plate the labware before continuing the workflow.
+
+## pyLabRobot Device
+
+Generic Devices accept pyLabRobot Backends.
+
+Generic Devices:
+- Sealer
+- Shaker
+
+
+Example:
+```py
+from orca.sdk.devices import Sealer
+from pylabrobot.sealing.a4s_backend import A4SBackend
+
+a4s_sealer_driver = A4SBackend(port="/dev/tty.usbserial-0001", timeout=10)
+sealer = Sealer("a4s_sealer", a4s_sealer_driver)
+```
 
 
 
@@ -398,11 +565,13 @@ asyncio.run(run_both_in_parallel())
 
 ## Scripting
 
-Scripting is necessary in lab automation for situations involving fine control over the process.
+Scripting is necessary in lab automation for situations involving fine control over the process.  
+
+__If you need help here please reach out.  Scripting will be simplified with future releases.__
 
 Scripting is done via event handlers.  These can either be a function or a class that inherits from the EventHandler base class.
 
-Functions must take in a string and event context and return None.  
+Functions must take in a string and event context and return None.
 
 ```py
 def method_in_progress_handler(self, event: str, context: ExecutionContext) -> None:
@@ -457,13 +626,7 @@ event_bus.subscribe("ACTION.1134ce0c-ea25-4c93-929a-4d1a4f07509a.CREATED", your_
 
 ## Drivers
 
-***These drivers have now been moved to a new repo... more information to follow soon***
-
-**Driver Types**
-- **IInitializeableDriver(ABC)** - Base class for drivers that can only be initialized.
-- **IDriver(IInitializeableDriver)** - Base class for drivers that can execute commands.
-- **ILabwarePlaceableDriver(IDriver)** - Equipment that may have labware placed at the equipment.
-- **ITransporterDriver(IDriver)** - Equipment capable of transporting labware items.
+More information will be provided for writing drivers once the interface is settled more.  If you need a driver, please reach out.
 
 <h1 id="acknowledgements">🙏 Acknowledgements</h1>
 
@@ -502,7 +665,7 @@ To obtain an alternative license [contact Cheshire Labs](https://cheshirelabs.io
 
 <h1 id="need-more">⭐ Need More?</h1>
 
-Please [contact Cheshire Labs](https://cheshirelabs.io/contact/t) if you're looking for:
+Please [contact Cheshire Labs](https://cheshirelabs.io/contact/) if you're looking for:
 - More Features
 - A Graphical Interface
 - Driver Development

@@ -1,17 +1,8 @@
-from typing import Optional
-
-from typing import Any, Dict
-from orca.resource_models.plate_pad import PlatePad
-from orca.resource_models.base_resource import ILabwarePlaceable
-from orca.resource_models.labware import LabwareInstance
-
-
 from abc import ABC
-
-
-from typing import List
-
-
+from typing import List, Optional, Any, Dict
+from orca.resource_models.plate_pad import PlatePad
+from orca.resource_models.labware_placeable_interface import ILabwarePlaceable
+from orca.resource_models.labware import LabwareInstance
 
 class IResourceLocationObserver(ABC):
     def location_notify(self, event: str, location: "Location", resource: ILabwarePlaceable) -> None:

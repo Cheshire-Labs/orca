@@ -1,12 +1,13 @@
 from types import MappingProxyType
 from typing import List
+from orca.resource_models.devices import Device
 from orca.resource_models.location import Location
-from orca.resource_models.resource_pool import EquipmentResourcePool
-from orca.resource_models.transporter_resource import TransporterEquipment
-from orca.resource_models.base_resource import Equipment, IResource
+from orca.resource_models.resource_pool import ResourcePool
+from orca.resource_models.resources import IResource
 
 from orca.resource_models.labware import LabwareInstance, LabwareTemplate
 from orca.events.execution_context import WorkflowExecutionContext
+from orca.resource_models.transporter import Transporter
 from orca.system.system_info import SystemInfo
 from orca.system.system_interface import ISystem
 from orca.system.interfaces import IMethodRegistry
@@ -91,15 +92,15 @@ class System(ISystem):
         return self._resources.resources
 
     @property
-    def equipments(self) -> List[Equipment]:
-        return self._resources.equipments
+    def devices(self) -> List[Device]:
+        return self._resources.devices
     
     @property
-    def transporters(self) -> List[TransporterEquipment]:
+    def transporters(self) -> List[Transporter]:
         return self._resources.transporters
     
     @property
-    def resource_pools(self) -> List[EquipmentResourcePool]:
+    def resource_pools(self) -> List[ResourcePool]:
         return self._resources.resource_pools
     
     @property
@@ -109,13 +110,13 @@ class System(ISystem):
     def get_resource(self, name: str) -> IResource:
         return self._resources.get_resource(name)
 
-    def get_equipment(self, name: str) -> Equipment:
-        return self._resources.get_equipment(name)
+    def get_device(self, name: str) -> Device:
+        return self._resources.get_device(name)
 
-    def get_transporter(self, name: str) -> TransporterEquipment:
+    def get_transporter(self, name: str) -> Transporter:
         return self._resources.get_transporter(name)
 
-    def get_resource_pool(self, name: str) -> EquipmentResourcePool:
+    def get_resource_pool(self, name: str) -> ResourcePool:
         return self._resources.get_resource_pool(name)
     
     def set_simulating(self, simulating: bool) -> None:
@@ -133,7 +134,7 @@ class System(ISystem):
     def add_location(self, location: Location) -> None:
         self._system_map.add_location(location)
 
-    def add_resource_pool(self, resource_pool: EquipmentResourcePool) -> None:
+    def add_resource_pool(self, resource_pool: ResourcePool) -> None:
         self._resources.add_resource_pool(resource_pool)
 
     def add_labware(self, labware: LabwareInstance) -> None:
@@ -148,8 +149,8 @@ class System(ISystem):
     def get_labware_thread_template(self, name: str) -> ThreadTemplate:
         return self._templates.get_labware_thread_template(name)
     
-    def add_labware_thread_template(self, thread: ThreadTemplate) -> None:
-        self._templates.add_labware_thread_template(thread)
+    def add_labware_thread_template(self, labware_thread: ThreadTemplate) -> None:
+        self._templates.add_labware_thread_template(labware_thread)
 
     def get_method_templates(self) -> MappingProxyType[str, MethodTemplate]:
         return self._templates.get_method_templates()
@@ -175,8 +176,8 @@ class System(ISystem):
     def add_workflow(self, workflow: WorkflowInstance) -> None:
         self._workflow_registry.add_workflow(workflow)
 
-    def get_executing_workflow(self, workflow_id: str) -> ExecutingWorkflow:
-        return self._executing_workflow_registry.get_executing_workflow(workflow_id)
+    def get_executing_workflow(self, workflow_instance_id: str) -> ExecutingWorkflow:
+        return self._executing_workflow_registry.get_executing_workflow(workflow_instance_id)
 
     def get_thread(self, id: str) -> LabwareThreadInstance:
         return self._thread_registry.get_thread(id)

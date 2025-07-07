@@ -1,12 +1,14 @@
 from abc import ABC, abstractmethod
 import asyncio
-from orca.resource_models.base_resource import Equipment, IInitializableResource, IResource
-from orca.resource_models.base_resource import ISimulationable
-from orca.resource_models.resource_pool import EquipmentResourcePool
-from orca.resource_models.transporter_resource import TransporterEquipment
+from orca.resource_models.devices import Device
+from orca.resource_models.resources import IInitializable, IResource
+from orca.resource_models.resources import ISimulationable
+from orca.resource_models.resource_pool import ResourcePool
 
 
 from typing import Dict, List
+
+from orca.resource_models.transporter import Transporter
 
 class IResourceRegistryObesrver(ABC):
     @abstractmethod
@@ -35,33 +37,33 @@ class IResourceRegistry(ABC):
 
     @property
     @abstractmethod
-    def equipments(self) -> List[Equipment]:
+    def devices(self) -> List[Device]:
         raise NotImplementedError
 
     @abstractmethod
-    def get_equipment(self, name: str) -> Equipment:
-        raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def transporters(self) -> List[TransporterEquipment]:
-        raise NotImplementedError
-
-    @abstractmethod
-    def get_transporter(self, name: str) -> TransporterEquipment:
+    def get_device(self, name: str) -> Device:
         raise NotImplementedError
 
     @property
     @abstractmethod
-    def resource_pools(self) -> List[EquipmentResourcePool]:
+    def transporters(self) -> List[Transporter]:
         raise NotImplementedError
 
     @abstractmethod
-    def get_resource_pool(self, name: str) -> EquipmentResourcePool:
+    def get_transporter(self, name: str) -> Transporter:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def resource_pools(self) -> List[ResourcePool]:
         raise NotImplementedError
 
     @abstractmethod
-    def add_resource_pool(self, resource_pool: EquipmentResourcePool) -> None:
+    def get_resource_pool(self, name: str) -> ResourcePool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def add_resource_pool(self, resource_pool: ResourcePool) -> None:
         raise NotImplementedError
 
     @abstractmethod
@@ -81,7 +83,7 @@ class ResourceRegistry(IResourceRegistry):
     """ A class that manages resources and resource pools in the system."""
     def __init__(self) -> None:
         self._resources: Dict[str, IResource] = {}
-        self._resource_pools: Dict[str, EquipmentResourcePool] = {}
+        self._resource_pools: Dict[str, ResourcePool] = {}
         self._observers: List[IResourceRegistryObesrver] = []
 
     @property
@@ -89,29 +91,29 @@ class ResourceRegistry(IResourceRegistry):
         return list(self._resources.values())
 
     @property
-    def equipments(self) -> List[Equipment]:
-        return [r for r in self._resources.values() if isinstance(r, Equipment)]
+    def devices(self) -> List[Device]:
+        return [r for r in self._resources.values() if isinstance(r, Device)]
 
     @property
-    def transporters(self) -> List[TransporterEquipment]:
-        return [r for r in self._resources.values() if isinstance(r, TransporterEquipment)]
+    def transporters(self) -> List[Transporter]:
+        return [r for r in self._resources.values() if isinstance(r, Transporter)]
 
     @property
-    def resource_pools(self) -> List[EquipmentResourcePool]:
+    def resource_pools(self) -> List[ResourcePool]:
         return list(self._resource_pools.values())
 
     def get_resource(self, name: str) -> IResource:
         return self._resources[name]
 
-    def get_equipment(self, name: str) -> Equipment:
+    def get_device(self, name: str) -> Device:
         resource = self.get_resource(name)
-        if not isinstance(resource, Equipment):
+        if not isinstance(resource, Device):
             raise ValueError(f"Resource {name} is not an Equipment resource")
         return resource
 
-    def get_transporter(self, name: str) -> TransporterEquipment:
+    def get_transporter(self, name: str) -> Transporter:
         resource = self.get_resource(name)
-        if not isinstance(resource, TransporterEquipment):
+        if not isinstance(resource, Transporter):
             raise ValueError(f"Resource {name} is not an Equipment resource")
         return resource
 
@@ -122,18 +124,18 @@ class ResourceRegistry(IResourceRegistry):
         self._resources[name] = resource
         [observer.resource_registry_notify("resource_added", resource) for observer in self._observers]
 
-    def add_resources(self, resources: List[IResource | EquipmentResourcePool]) -> None:
+    def add_resources(self, resources: List[IResource | ResourcePool]) -> None:
         """Adds a list of resources or resource pools to the registry."""
         for resource in resources:
-            if isinstance(resource, EquipmentResourcePool):
+            if isinstance(resource, ResourcePool):
                 self.add_resource_pool(resource)
             else:
                 self.add_resource(resource)
 
-    def get_resource_pool(self, name: str) -> EquipmentResourcePool:
+    def get_resource_pool(self, name: str) -> ResourcePool:
         return self._resource_pools[name]
 
-    def add_resource_pool(self, resource_pool: EquipmentResourcePool) -> None:
+    def add_resource_pool(self, resource_pool: ResourcePool) -> None:
         name = resource_pool.name
         if name in self._resource_pools.keys():
             raise KeyError(f"Resource Pool {name} is already defined in the system.  Each resource pool must have a unique name")
@@ -149,7 +151,7 @@ class ResourceRegistry(IResourceRegistry):
                 resource.set_simulating(simulating)
 
     async def initialize_all(self) -> None:
-        await asyncio.gather(*[r.initialize() for r in self._resources.values() if isinstance(r, IInitializableResource)])
+        await asyncio.gather(*[r.initialize() for r in self._resources.values() if isinstance(r, IInitializable)])
 
     def clear_resources(self) -> None:
         self._resources.clear()

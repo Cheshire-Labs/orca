@@ -2,24 +2,20 @@ import asyncio
 import logging
 import sys
 
-from orca.resource_models.devices import Device
-from orca.sdk.drivers import HumanTransferDriver
-from orca.sdk.devices import TransporterEquipment
-from orca.sdk.labware import LabwareTemplate
+from orca.sdk.labware import PlateTemplate
+from orca.sdk.devices import HumanTransfer, Venus
 from orca.sdk.system import ResourceRegistry, SystemMap, SdkToSystemBuilder, WorkflowExecutor
-from orca.sdk.workflow import MethodTemplate, ActionTemplate, WorkflowTemplate, ThreadTemplate, JunctionMethodTemplate
+from orca.sdk.workflow import MethodTemplate, WorkflowTemplate, ThreadTemplate, SharedMethodTemplate
 from orca.sdk.events import EventBus
+from orca.sdk.actions import RunProtocol
 
-# Venus driver will need to be installed separately (available on Cheshire Labs' GitHub)
-# This driver requires Hamilton Venus to be installed
-from orca.sdk.drivers import VenusProtocolDriver
-
+from pylabrobot.resources.thermo_fisher.plates import Thermo_Nunc_96_well_plate_1300uL_Rb
 
 
 ## This example demonstrates how to use the Venus Protocol Driver with ORCA SDK.
 # It includes a simple workflow that runs a method on a Venus device and transfers labware using a human transporter.
 # Meaning that the user will need to pick up and place the labware manually.
-# The Venus Protocol Driver is used to run methods via the Hamilton Venus software.
+# The Venus device is used to run methods via the Hamilton Venus software.
 
 # Setup logging
 logging.basicConfig(
@@ -31,8 +27,8 @@ orca_logger = logging.getLogger("orca")
 
 
 # Create your labware
-sample_plate = LabwareTemplate("sample_plate", "Matrix 96-well plate")
-transfer_plate = LabwareTemplate("transfer_plate", "Matrix 96-well plate")
+sample_plate = PlateTemplate("sample_plate",  Thermo_Nunc_96_well_plate_1300uL_Rb, None)
+transfer_plate = PlateTemplate("transfer_plate", Thermo_Nunc_96_well_plate_1300uL_Rb, None)
 
 # Add your labware to a list
 labwares = [
@@ -40,16 +36,12 @@ labwares = [
     transfer_plate
     ]
 
-# Setup your devices
-# Each device needs a driver assigned to it
+# Setup your devices 
+ml_star = Venus("ml_star")
 
-venus_driver = VenusProtocolDriver("venus")
-ml_star = Device("ml_star", venus_driver)
-
-# Transorter equipment are devices capable of moving labwaare
+# we will use the HumanTransfer - meaning that the user will need to manually pick up and place the labware and press Enter to continue
 # For this simulation, the teachpoints are saved within a local file
-# we will use the HumanTransferDriver - meaning that the user will need to manually pick up and place the labware and press Enter to continue
-human_transfer = TransporterEquipment("human_transfer", HumanTransferDriver("venus", "examples\\simple_venus_example\\teachpoints\\human_transfer_teachpoints.xml"))
+human_transfer = HumanTransfer("human_transfer", "examples\\simple_venus_example\\teachpoints\\human_transfer_teachpoints.xml")
 
 # Create a resource registry to hold all the resources
 resource_registry = ResourceRegistry()
@@ -69,47 +61,39 @@ map.assign_resources({
 
 # The methods here are included in the orca subfolder examples\simple_venus_example\venus_protocols\
 # The Venus Protocol Driver will look with the folder C:\Program Files (x86)\HAMILTON\Methods\{method_filepath}
-# Within options, the 'method' key is the path to the method file relative to the Methods folder
-# the 'params' key is a dictionary of parameters that will be passed to the method 
-# - these are retrievable within the Venus method using the SubMethod Library provide with the Venus driver's repo on Cheshire Labs' GitHub
+# A protocol filepath is passed.  This is the method filepath in the Venus software.
+# Parameters can also be passed to the Venus method
+# A SubMethod library in provided in the venus driver folder: orca/driver_management/drivers/venus/venus_submethods/
 example_method_1 = MethodTemplate(
     "example_method_1",
     actions=[
-        ActionTemplate(
-            ml_star,
-            "run",
-            inputs=[sample_plate],
-            outputs=[sample_plate],
-            options={
-                "method": "Cheshire Labs\\VariableAccessTesting.hsl",
-                "params": {
+        RunProtocol(ml_star,
+            "Cheshire Labs\\VariableAccessTesting.hsl",
+            {
                     "strParam": "strParam value transmitted",
                     "intParam": 123,
                     "fltParam": 1.003
-                }
-            }
-        )
+                },
+            [sample_plate],
+            [sample_plate])
     ]
 )
 transfer_method = MethodTemplate(
     "transfer_method",
     actions=[
-        ActionTemplate(
+        RunProtocol(
             ml_star,
-            "run",
-            inputs=[sample_plate, transfer_plate],
-            outputs=[sample_plate, transfer_plate],
-            options={
-                "method": "Cheshire Labs\\SimplePlateStamp.hsl",
-                "params": {
+            "Cheshire Labs\\SimplePlateStamp.hsl",
+             {
                     "numOfPlates": 1,
                     "waterVol": 30,
                     "dyeVol": 10,
                     "wait": 1,
                     "tipEjectPos": 2,
                     "clld": 1
-                }
-            }
+                },
+            [sample_plate, transfer_plate],
+            [sample_plate, transfer_plate], 
         )
     ]
 )
@@ -122,7 +106,7 @@ methods = [
 
 # Build your labware threadds
 # Labware threads are the set of methods which you expect your labware to pass through
-# If your labware interactes with another piece of labware, use a JunctionMethodTemplate() at that step, you will then define this interaction further within the workflow
+# If your labware interactes with another piece of labware, use a SharedMethodTemplate() at that step, you will then define this interaction further within the workflow
 # Labware threads can usually be throught of as a single piece of labware from which other labwares spawn
 sample_plate_thread = ThreadTemplate(
     sample_plate,
@@ -139,7 +123,7 @@ transfer_plate_thread = ThreadTemplate(
     map.get_location("plate_pad_3"),
     map.get_location("plate_pad_4"),
     [
-        JunctionMethodTemplate()
+        SharedMethodTemplate()
     ]
 )
     
@@ -156,7 +140,7 @@ example_workflow.add_thread(transfer_plate_thread)
 # A spawn point is a point in the workflow where a new thread is created
 # Spawn points are attached to another running thread, in this case, the plate_1_thread - the main thread of the workflow
 # The spawn point will create a new thread when the main thread reaches the method defined in the spawn point
-# The 'join' parameter here tells the workflow whether or not to join the newly created thread to the main thread via a JunctionMethodTemplate
+# The 'join' parameter here tells the workflow whether or not to join the newly created thread to the main thread via a SharedMethodTemplate
 example_workflow.set_spawn_point(transfer_plate_thread, sample_plate_thread, transfer_method, True)
 
 # Create an event bus to handle events in the system
