@@ -3,7 +3,9 @@ import logging
 import sys
 from typing import Any, Dict, List
 
-from orca.sdk.devices import Sealer, MockTransporter, MockDevice, Device
+from orca.devices.sealer import Sealer
+from orca.devices.mock_device import MockDevice
+from orca.sdk.devices import MockTransporter, Device
 from orca.sdk.labware import PlateTemplate, LabwareInstance
 from orca.sdk.workflow import MethodTemplate, ThreadTemplate, WorkflowTemplate
 from orca.sdk.system import SdkToSystemBuilder, WorkflowExecutor, ResourceRegistry, SystemMap

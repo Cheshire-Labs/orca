@@ -1,0 +1,8 @@
+<teachpoints>
+    <teachpoint name="SAFE_LOCATION_C" x="175" y="0.003" z="169.995" yaw="-0.001" pitch="90" roll="0" />
+    <teachpoint name="SAFE_LOCATION_J" rail="0" shoulder="170.003" elbow="0" wrist="180" gripper="-180" />
+    <teachpoint name="TEST_LOCATION_C_RIGHT" x="271.692" y="115.89" z="169.969" yaw="2.473" pitch="90" roll="0" />
+    <teachpoint name="TEST_LOCATION_J_RIGHT" rail="0" shoulder="169.975" elbow="-16.736" wrist="115.991" gripper="-110.057" />
+    <teachpoint name="TEST_LOCATION_C_LEFT" x="246.024" y="-147.689" z="169.955" yaw="6.879" pitch="90" roll="0" />
+    <teachpoint name="TEST_LOCATION_J_LEFT" rail="0" shoulder="169.888" elbow="10.079" wrist="231.358" gripper="-240.229" />
+</teachpoints>
