@@ -1,17 +1,68 @@
 import logging
 import asyncio
-from typing import Dict
 
-from orca.driver_management.driver_interfaces import ISealer
-from orca.resource_models.devices import Device
-from orca.resource_models.labware import LabwareInstance
-from orca.resource_models.simulation_manager import SimulationManager
-from pylabrobot.sealing.backend import SealerBackend
+from pylabrobot.sealing.backend import SealerBackend as PLRSealerBackend
+from abc import ABC, abstractmethod
 
 orca_logger = logging.getLogger("orca")
 
 
-class SimulationSealerBackend:
+class ISealerBackend(ABC):
+    @abstractmethod
+    async def setup(self) -> None:
+        """Setup the sealer backend."""
+        pass
+
+    @abstractmethod
+    async def open(self) -> None:
+        """Open the sealer."""
+        pass
+
+    @abstractmethod
+    async def close(self) -> None:
+        """Close the sealer."""
+        pass
+
+    @abstractmethod
+    async def seal(self, temperature: int, duration: float) -> None:
+        """Seal at specified temperature and duration."""
+        pass
+
+    @abstractmethod
+    async def set_temperature(self, temperature: float) -> None:
+        """Set the temperature."""
+        pass
+
+    @abstractmethod
+    async def get_temperature(self) -> float:
+        """Get the current temperature."""
+        pass
+
+
+class PLRSealerBackendWrapper(ISealerBackend):
+    def __init__(self, backend: PLRSealerBackend):
+        self._backend = backend
+
+    async def setup(self) -> None:
+        await self._backend.setup()
+
+    async def open(self) -> None:
+        await self._backend.open()
+
+    async def close(self) -> None:
+        await self._backend.close()
+
+    async def seal(self, temperature: int, duration: float) -> None:
+        await self._backend.seal(temperature=temperature, duration=duration)
+
+    async def set_temperature(self, temperature: float) -> None:
+        await self._backend.set_temperature(temperature)
+
+    async def get_temperature(self) -> float:
+        return await self._backend.get_temperature()
+
+
+class SimulationSealerBackend(ISealerBackend):
     def __init__(self, port: str, timeout: int = 20, sim_time: float = 0.1):
         self._simulated_temperature = 25.0  # Default simulated temperature
         self._sim_time = sim_time
@@ -47,62 +98,6 @@ class SimulationSealerBackend:
         return self._simulated_temperature
 
 
-class Sealer(Device, ISealer):
-    def __init__(self, name: str, backend: SealerBackend, sim: bool = False) -> None:
-        self._name = name
-        self._sim_manager = SimulationManager(
-            backend,
-            SimulationSealerBackend("sim", sim_time=0.1),
-            sim
-            )
-        super().__init__(name, self._sim_manager)
-
-    @property
-    def driver(self) -> SealerBackend | SimulationSealerBackend:
-        return self._sim_manager.driver
-    
-    @property
-    def name(self) -> str:
-        return self._name
-    
-    @property
-    def is_initialized(self) -> bool:
-        return self._is_initialized
-
-    async def initialize(self) -> None:
-        """
-        Initialize the driver.
-        """
-        await self.driver.setup(**self._init_options)  # type: ignore
-        self._is_initialized = True
-
-    async def execute(self, command: str, options: Dict[str, str]) -> None:
-        if command == "seal":
-            temperature = int(options.get("temperature", 0))
-            duration = float(options.get("duration", 0.0))
-            await self.seal(temperature=temperature, duration=duration)
-        elif command == "open":
-            await self.driver.open()
-        elif command == "close":
-            await self.driver.close()
-        else:
-            raise ValueError(f"Unknown command: {command}")
-
-    async def _do_prepare_for_pick(self, labware: LabwareInstance) -> None:
-        await self.driver.open()
-
-    async def _do_prepare_for_place(self, labware: LabwareInstance) -> None:
-        await self.driver.open()
-
-    async def _do_notify_picked(self, labware: LabwareInstance) -> None:
-        await self.driver.close()
-
-    async def _do_notify_placed(self, labware: LabwareInstance) -> None:
-        await self.driver.close()
-
-    async def seal(self, temperature: int, duration: float) -> None:
-        """Seal the plate at a specified temperature and duration."""
-        await self.driver.seal(temperature=temperature, duration=duration)
 
 
 

@@ -4,7 +4,7 @@ from orca.driver_management.driver_interfaces import ICentrifuge
 from orca.resource_models.devices import Device
 from pylabrobot.centrifuge.backend import CentrifugeBackend
 
-class CentrifugeDriver(Device, ICentrifuge):
+class Centrifuge(Device, ICentrifuge):
     def __init__(self, name: str, backend: CentrifugeBackend):
         self._name = name
         self._centrifuge = backend

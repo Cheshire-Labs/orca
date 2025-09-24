@@ -4,10 +4,11 @@ import logging
 import sys
 import time
 
+from orca.devices.mock_device import MockDevice
 from orca.sdk.system import SdkToSystemBuilder, WorkflowExecutor, ResourceRegistry, SystemMap, ExecutingLabwareThread, StandalonMethodExecutor
 from orca.sdk.workflow import WorkflowTemplate, ThreadTemplate, MethodTemplate, SharedMethodTemplate
 from orca.sdk.events import EventBus, SystemBoundEventHandler, ExecutionContext, ThreadExecutionContext, WorkflowExecutionContext, LabwareThreadStatus
-from orca.sdk.devices import ResourcePool, A4SSealer, MockDevice, MockTransporter
+from orca.sdk.devices import ResourcePool, A4SSealer, MockTransporter
 from orca.sdk.labware import AnyLabwareTemplate, PlateTemplate, TipRackTemplate
 from orca.sdk.actions import Centrifuge, Delid, Read, RunProtocol, Shake
 
