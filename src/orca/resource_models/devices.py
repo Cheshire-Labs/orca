@@ -1,10 +1,13 @@
 from abc import ABC, abstractmethod
 import asyncio
 import logging
+from orca.driver_management.drivers.driver_interfaces import IDoor, Initialize
 from orca.resource_models.resources import IDevice, ISimulationable
 from orca.resource_models.device_error import DeviceBusyError
 from orca.resource_models.labware import LabwareInstance
-from typing import List, Optional
+from typing import Generic, List, Optional, TypeVar
+
+from orca.resource_models.simulation_manager import SimulationManager
 
 orca_logger = logging.getLogger("orca")
 
@@ -47,11 +50,14 @@ class StageLoadingEquipmentLabwareManager:
         self._stage_labware = labware
 
 
-class Device(IDevice, ABC):
+TDriver = TypeVar('TDriver', bound=Initialize)
+class Device(IDevice, Generic[TDriver], ABC):
     """A class that represents a device that can operate on labware."""
     def __init__(self, 
                  name: str, 
-                 sim_manager: ISimulationable,
+                 driver: TDriver,
+                 sim_driver: TDriver,
+                 sim: bool = False,
                  labware_reg: StageLoadingEquipmentLabwareManager | None = None,
                  ) -> None:
         """Initialize the device with a name and a driver.
@@ -61,9 +67,19 @@ class Device(IDevice, ABC):
             labware_reg (StageLoadingEquipmentLabwareManager, optional): The labware manager for the device. Defaults to None.
         """
         self._name = name
-        self._sim_manager = sim_manager
+        self._sim_manager = SimulationManager(
+            driver,
+            sim_driver,
+            sim
+            )
+        self._is_initialized = False
         self._labware_reg = StageLoadingEquipmentLabwareManager() if labware_reg is None else labware_reg
         self._lock = asyncio.Lock() 
+
+    @property
+    def driver(self) -> TDriver:
+        """Returns the device's driver."""
+        return self._sim_manager.driver
 
     @property
     def lock(self) -> asyncio.Lock:
@@ -76,15 +92,11 @@ class Device(IDevice, ABC):
         return self._name
     
     @property
-    @abstractmethod
     def is_initialized(self) -> bool:
-        """Returns whether the device is initialized or not."""
-        raise NotImplementedError("This method should be implemented by subclasses.")
+        return self.driver.is_initialized
     
-    @abstractmethod
     async def initialize(self) -> None:
-        """Initializes the device."""
-        raise NotImplementedError("This method should be implemented by subclasses.")
+        await self.driver.initialize()
 
     @property
     def in_use(self) -> bool:
@@ -168,3 +180,21 @@ class Device(IDevice, ABC):
 
     def __str__(self) -> str:
         return f"Equipment: {self._name}"
+    
+    
+class DooredDeviceMixin(Device[IDoor]):
+    async def _do_prepare_for_place(self, labware: LabwareInstance) -> None:
+        """Prepare the device for picking up the specified labware."""
+        await self.driver.open()
+
+    async def _do_prepare_for_pick(self, labware: LabwareInstance) -> None:
+        """Prepare the device for picking up the specified labware."""
+        await self.driver.open()
+
+    async def _do_notify_picked(self, labware: LabwareInstance) -> None:
+        """Notify the device that the specified labware has been picked."""
+        await self.driver.close()
+
+    async def _do_notify_placed(self, labware: LabwareInstance) -> None:
+        """Notify the device that the specified labware has been placed."""
+        await self.driver.close()

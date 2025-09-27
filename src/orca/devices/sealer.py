@@ -1,26 +1,32 @@
-from orca.driver_management.driver_interfaces import ISealer
-from orca.driver_management.drivers.sealer import ISealerBackend, PLRSealerBackendWrapper, SimulationSealerBackend
+from orca.driver_management.drivers.driver_interfaces import ISealerDriver
+from orca.driver_management.drivers.plr_wrappers import PLRSealerBackendWrapper
+from orca.driver_management.drivers.sims import SimSealerDriver
 from orca.resource_models.devices import Device
 from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.simulation_manager import SimulationManager
 from pylabrobot.sealing.backend import SealerBackend as PLRSealerBackend
 
 
-from typing import Dict
+from typing import Dict, Optional
 
 
-class Sealer(Device, ISealer):
-    def __init__(self, name: str, backend: PLRSealerBackend, sim: bool = False) -> None:
-        self._name = name
+class Sealer(Device):
+    def __init__(self, 
+                 name: str, 
+                 driver: ISealerDriver | PLRSealerBackend, 
+                 sim: bool = False, 
+                 sim_driver: Optional[ISealerDriver] = None) -> None:
+        driver = PLRSealerBackendWrapper(driver) if isinstance(driver, PLRSealerBackend) else driver
+        sim_driver = sim_driver if sim_driver else SimSealerDriver(name)
         self._sim_manager = SimulationManager(
-            PLRSealerBackendWrapper(backend),
-            SimulationSealerBackend("sim", sim_time=0.1),
+            driver,
+            sim_driver,
             sim
             )
         super().__init__(name, self._sim_manager)
 
     @property
-    def driver(self) -> ISealerBackend:
+    def driver(self) -> ISealerDriver:
         return self._sim_manager.driver
 
     @property
@@ -35,7 +41,7 @@ class Sealer(Device, ISealer):
         """
         Initialize the driver.
         """
-        await self.driver.setup(**self._init_options)  # type: ignore
+        await self.driver.initialize(**self._init_options)  # type: ignore
         self._is_initialized = True
 
     async def execute(self, command: str, options: Dict[str, str]) -> None:

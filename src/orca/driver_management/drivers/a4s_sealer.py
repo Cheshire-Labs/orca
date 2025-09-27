@@ -1,7 +1,7 @@
 import asyncio
 
 import logging
-from orca.driver_management.driver_interfaces import ISealer, ITempGettable, ITempSettable
+from orca.devices.device_interfaces import ISealer, ITempGettable, ITempSettable
 from orca.resource_models.simulation_manager import SimulationManager
 from orca.resource_models.devices import Device
 from orca.resource_models.labware import LabwareInstance
@@ -48,7 +48,7 @@ class SimulationA4SBackend:
         return self._simulated_temperature
 
 
-class A4SSealer(Device, ISealer, ITempGettable, ITempSettable):
+class A4SSealer(Device):
     def __init__(
         self,
         name: str,

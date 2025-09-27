@@ -4,8 +4,9 @@ import sys
 from typing import Any, Dict, List
 
 from orca.devices.sealer import Sealer
-from orca.devices.mock_device import MockDevice
-from orca.sdk.devices import MockTransporter, Device
+
+from orca.resource_models.transporter import Transporter
+from orca.sdk.devices import Device
 from orca.sdk.labware import PlateTemplate, LabwareInstance
 from orca.sdk.workflow import MethodTemplate, ThreadTemplate, WorkflowTemplate
 from orca.sdk.system import SdkToSystemBuilder, WorkflowExecutor, ResourceRegistry, SystemMap
@@ -37,8 +38,8 @@ labwares = [
 # import the pylabrobot package to use the A4SSealerDriver
 a4s_sealer_driver = A4SBackend(port="/dev/tty.usbserial-0001", timeout=10)
 sealer = Sealer("a4s_sealer", a4s_sealer_driver)
-mock_device = MockDevice("liquid_handler", "ml_star")
-robotic_arm = MockTransporter("robotic_arm", "ddr", "examples\\pylabrobot_example\\teachpoints\\teachpoints.xml")
+mock_device = MockDevice("liquid_handler", MockDriver("ml_star", "ml_star_driver"))
+robotic_arm = Transporter("robotic_arm", MockTransporterDriver("robotic_arm", "ddr"), "examples\\pylabrobot_example\\teachpoints\\teachpoints.xml")
 
 # Register the resources
 resources = ResourceRegistry()
