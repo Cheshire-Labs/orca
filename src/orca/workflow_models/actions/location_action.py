@@ -4,7 +4,7 @@ import logging
 from typing import Any, Awaitable, Callable, Dict, List, cast
 import uuid
 
-from orca.driver_management.driver_interfaces import ICentrifuge, IDelidder, IGenericExecutable, IProtocolRunner, IReader, ISealer, IShaker
+from orca.devices.device_interfaces import ICentrifuge, IDelidder, IGenericExecutable, IProtocolRunner, IReader, ISealer, IShaker
 from orca.resource_models.devices import Device
 from orca.resource_models.labware import LabwareInstance, LabwareTemplate
 from orca.resource_models.location import Location

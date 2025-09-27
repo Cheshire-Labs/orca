@@ -4,19 +4,23 @@ import logging
 import sys
 import time
 
-from orca.devices.mock_device import MockDevice
+from orca.devices.centrifuge import Centrifuge
+from orca.devices.devices import Delidder, LiquidHandler, PlateWasher, Reader, Storage, Waste
+from orca.devices.shaker import Shaker
+from orca.driver_management.drivers.sims import SimCentrifugeDriver, SimShakerDriver, SimTransporterDriver
+from orca.resource_models.transporter import Transporter
 from orca.sdk.system import SdkToSystemBuilder, WorkflowExecutor, ResourceRegistry, SystemMap, ExecutingLabwareThread, StandalonMethodExecutor
 from orca.sdk.workflow import WorkflowTemplate, ThreadTemplate, MethodTemplate, SharedMethodTemplate
 from orca.sdk.events import EventBus, SystemBoundEventHandler, ExecutionContext, ThreadExecutionContext, WorkflowExecutionContext, LabwareThreadStatus
-from orca.sdk.devices import ResourcePool, A4SSealer, MockTransporter
+from orca.sdk.devices import ResourcePool, A4SSealer
 from orca.sdk.labware import AnyLabwareTemplate, PlateTemplate, TipRackTemplate
-from orca.sdk.actions import Centrifuge, Delid, Read, RunProtocol, Shake
+from orca.sdk.actions import Spin, Delid, Read, RunProtocol, Shake
 
 
 from pylabrobot.resources.agenbio import AGenBio_1_troughplate_190000uL_Fl
 from pylabrobot.resources.biorad import BioRad_384_wellplate_50uL_Vb
 from pylabrobot.resources.corning.falcon.plates import Cor_Falcon_96_wellplate_340ul_Fb_Black
-from pylabrobot.resources.hamilton.tip_racks import LTF
+from pylabrobot.resources.hamilton.tip_racks import hamilton_96_tiprack_10uL_filter
 
 # Setup a logger (Optional)
 logging.basicConfig(
@@ -35,8 +39,8 @@ bead_reservoir = PlateTemplate("bead_reservoir",  AGenBio_1_troughplate_190000uL
 buffer_b_reservoir = PlateTemplate("buffer_b_reservoir",  AGenBio_1_troughplate_190000uL_Fl) # Not really needed for this example, but included for completeness
 buffer_d_reservoir = PlateTemplate("buffer_d_reservoir",  AGenBio_1_troughplate_190000uL_Fl) # Not really needed for this example, but included for completeness
 detection_reservoir = PlateTemplate("detection_reservoir",  AGenBio_1_troughplate_190000uL_Fl) # Not really needed for this example, but included for completeness
-tips_96 = TipRackTemplate("tips_96",  LTF, True) # TODO: Hamilton tips for now
-tips_384 = TipRackTemplate("tips_384", LTF, True)
+tips_96 = TipRackTemplate("tips_96",  hamilton_96_tiprack_10uL_filter, True) # TODO: Hamilton tips for now
+tips_384 = TipRackTemplate("tips_384", hamilton_96_tiprack_10uL_filter, True)
 
 # Add your labware to a list
 labwares = [
@@ -60,40 +64,40 @@ ddr2_points = os.path.join(teachpoints_dir, "ddr2.xml")
 ddr3_points = os.path.join(teachpoints_dir, "ddr3.xml")
 translator1_points = os.path.join(teachpoints_dir, "translator1.xml")
 translator2_points = os.path.join(teachpoints_dir, "translator2.xml")
-ddr_1 = MockTransporter("ddr_1", "ddr", ddr1_points)
-ddr_2 = MockTransporter("ddr_2", "ddr", ddr2_points)
-ddr_3 = MockTransporter("ddr_3", "ddr", ddr3_points)
-translator_1 = MockTransporter("translator_1", "translator", translator1_points)
-translator_2 = MockTransporter("translator_2", "translator", translator2_points)
+ddr_1 = Transporter("ddr_1", SimTransporterDriver("ddr"), load_positions=ddr1_points)
+ddr_2 = Transporter("ddr_2", SimTransporterDriver("ddr"), load_positions=ddr2_points)
+ddr_3 = Transporter("ddr_3", SimTransporterDriver("ddr"), load_positions=ddr3_points)
+translator_1 = Transporter("translator_1", SimTransporterDriver("translator"), load_positions=translator1_points)
+translator_2 = Transporter("translator_2", SimTransporterDriver("translator"), load_positions=translator2_points)
 
 # These are devices capable of reciving labware
-biotek_1 = MockDevice("biotek", "biotek")
-biotek_2 = MockDevice("biotek_2", "biotek")
-bravo_96 = MockDevice("bravo_96_head", "bravo")
-bravo_384 = MockDevice("bravo_384_head", "bravo")
+biotek_1 = PlateWasher("biotek")
+biotek_2 = PlateWasher("biotek_2")
+bravo_96 = LiquidHandler("bravo_96_head")
+bravo_384 = LiquidHandler("bravo_384_head")
 sealer = A4SSealer("sealer", "COM3", sim=True)
-centrifuge = MockDevice("centrifuge", "centrifuge")
-plate_hotel = MockDevice("plate_hotel", "plate_hotel")
-delidder = MockDevice("delidder", "delidder")
-smc_pro = MockDevice("smc_pro", "smc_pro")
-stacker_sample_start = MockDevice("stacker_simple_start", "vstack")
-stacker_sample_end = MockDevice("stacker_sample_end", "vstack")
-stacker_plate_1_start = MockDevice("stacker_plate_1_start", "vstack")
-stacker_final_plate_start = MockDevice("stacker_final_plate_start", "vstack")
-stacker_96_tips = MockDevice("stacker_96_tips", "vstack") 
-stacker_384_tips_start = MockDevice("stacker_384_tips_start", "vstack")
-stacker_384_tips_end = MockDevice("stacker_384_tips_end", "vstack")
-shaker_1 = MockDevice("shaker_1", "shaker")
-shaker_2 = MockDevice("shaker_2", "shaker")
-shaker_3 = MockDevice("shaker_3", "shaker")
-shaker_4 = MockDevice("shaker_4", "shaker")
-shaker_5 = MockDevice("shaker_5", "shaker")
-shaker_6 = MockDevice("shaker_6", "shaker")
-shaker_7 = MockDevice("shaker_7", "shaker")
-shaker_8 = MockDevice("shaker_8", "shaker")
-shaker_9 = MockDevice("shaker_9", "shaker")
-shaker_10 = MockDevice("shaker_10", "shaker")
-waste_1 = MockDevice("waste_1","waste")
+centrifuge = Centrifuge("centrifuge", SimCentrifugeDriver("centrifuge"), True)
+plate_hotel = Storage("plate_hotel")
+delidder = Delidder("delidder")
+smc_pro = Reader("smc_pro")
+stacker_sample_start = Storage("stacker_simple_start")
+stacker_sample_end = Storage("stacker_sample_end")
+stacker_plate_1_start = Storage("stacker_plate_1_start")
+stacker_final_plate_start = Storage("stacker_final_plate_start")
+stacker_96_tips = Storage("stacker_96_tips") 
+stacker_384_tips_start = Storage("stacker_384_tips_start")
+stacker_384_tips_end = Storage("stacker_384_tips_end")
+shaker_1 = Shaker("shaker_1", SimShakerDriver("shaker_1"), True)
+shaker_2 = Shaker("shaker_2", SimShakerDriver("shaker_2"), True)
+shaker_3 = Shaker("shaker_3", SimShakerDriver("shaker_3"), True)
+shaker_4 = Shaker("shaker_4", SimShakerDriver("shaker_4"), True)
+shaker_5 = Shaker("shaker_5", SimShakerDriver("shaker_5"), True)
+shaker_6 = Shaker("shaker_6", SimShakerDriver("shaker_6"), True)
+shaker_7 = Shaker("shaker_7", SimShakerDriver("shaker_7"), True)
+shaker_8 = Shaker("shaker_8", SimShakerDriver("shaker_8"), True)
+shaker_9 = Shaker("shaker_9", SimShakerDriver("shaker_9"), True)
+shaker_10 = Shaker("shaker_10", SimShakerDriver("shaker_10"), True)
+waste_1 = Waste("waste_1")
 
 # Build any resource pools - Orca will resolve what resource to use once it reaches that step
 shaker_collection = ResourcePool("shaker_collection", resources=[shaker_1, shaker_2, shaker_3, shaker_4, shaker_5, shaker_6, shaker_7, shaker_8, shaker_9, shaker_10])
@@ -294,7 +298,7 @@ transfer_eluate = MethodTemplate("transfer_eluate", [
 ])
 
 centrifuge_method = MethodTemplate("centrifuge", [
-    Centrifuge(
+    Spin(
         centrifuge,
         1200,
         2000,
