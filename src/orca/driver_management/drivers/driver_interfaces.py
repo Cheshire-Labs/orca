@@ -9,7 +9,7 @@ from orca.resource_models.resource_extras.teachpoints import Teachpoint
 
 
 @runtime_checkable
-class Initialize(Protocol):
+class BaseDriver(Protocol):
     async def initialize(self) -> None:
         """Setup the driver."""
         ...
@@ -19,9 +19,6 @@ class Initialize(Protocol):
         """Returns whether the driver is initialized or not."""
         ...
 
-
-@runtime_checkable
-class IDoor(Protocol):
     async def open(self) -> None:
         """Open driver door."""
         ...
@@ -32,7 +29,7 @@ class IDoor(Protocol):
 
 
 @runtime_checkable
-class IShakerDriver(Initialize, Protocol):
+class IShakerDriver(BaseDriver, Protocol):
 
     async def stop(self) -> None:
         """Stop the shaker backend."""
@@ -65,7 +62,7 @@ class IShakerDriver(Initialize, Protocol):
         ...
 
 @runtime_checkable
-class ISealerDriver(Initialize, IDoor, Protocol):
+class ISealerDriver(BaseDriver, Protocol):
 
     async def seal(self, temperature: int, duration: float) -> None:
         """Seal at specified temperature and duration."""
@@ -93,39 +90,32 @@ class ITempGettableDriver(Protocol):
         ...
 
 @runtime_checkable
-class IProtocolRunnerDriver(Initialize, Protocol):
+class IProtocolRunnerDriver(BaseDriver, Protocol):
     async def run_protocol(self, protocol_filepath: str, params: Dict[str, Any]) -> None:
         """Execute a protocol run command."""
         ...    
    
 @runtime_checkable
-class ICentrifugeDriver(Initialize, IDoor, Protocol):
-    async def open(self) -> None:
-        """Open the sealer."""
-        ...
-
-    async def close(self) -> None:
-        """Close the sealer."""
-        ...
+class ICentrifugeDriver(BaseDriver, Protocol):
 
     async def centrifuge(self, g: float, duration: float) -> None:
         """Spin the centrifuge at a specified speed for a specified duration."""
         ...  
 
 @runtime_checkable
-class IReaderDriver(Initialize, Protocol):
+class IReaderDriver(BaseDriver, Protocol):
     async def read(self, protocol_filepath: str, output_filepath: str) -> None:
         """Read data using the specified protocol and save results to a file."""
         ...
 
 @runtime_checkable
-class IDelidderDriver(Protocol):
+class IDelidderDriver(BaseDriver, Protocol):
     async def delid(self) -> None:
         """Remove the lid from the specified labware."""
         ...
 
 @runtime_checkable
-class ITransporterDriver(Initialize, Protocol):
+class ITransporterDriver(BaseDriver, Protocol):
 
     @property
     def name(self) -> str:
@@ -145,17 +135,17 @@ class ITransporterDriver(Initialize, Protocol):
         ...
 
 @runtime_checkable
-class IStorageDriver(Initialize, Protocol):
+class IStorageDriver(BaseDriver, Protocol):
     pass
 
 @runtime_checkable
-class IPlateWasherDriver(IProtocolRunnerDriver):
+class IPlateWasherDriver(IProtocolRunnerDriver, Protocol):
     pass
 
 @runtime_checkable
-class ILiquidHandlerDriver(IProtocolRunnerDriver):
+class ILiquidHandlerDriver(IProtocolRunnerDriver, Protocol):
     pass
 
 @runtime_checkable
-class IWasteDriver(IStorageDriver):
+class IWasteDriver(IStorageDriver, Protocol):
     pass

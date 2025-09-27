@@ -121,10 +121,21 @@ class PLRShakerBackendWrapper:
     async def stop_shaking(self) -> None:
         await self._backend.stop_shaking()
 
+    async def open(self) -> None:
+        await self.unlock_plate()
+
+    async def close(self) -> None:
+        await self.lock_plate()
+
 class PLRCentrifugeBackendWrapper:
     def __init__(self, backend: PLRCentrifugeBackend):
         self._backend = backend
+        self._is_initialized = False
         self._acceleration = 7
+
+    @property
+    def is_initialized(self) -> bool:
+        return self._is_initialized
 
     async def initialize(self) -> None:
         await self._backend.setup()

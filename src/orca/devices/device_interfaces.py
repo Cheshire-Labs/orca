@@ -54,3 +54,19 @@ class IDelidder(Protocol):
     async def delid(self) -> None:
         """Remove the lid from the specified labware."""
         ...
+
+@runtime_checkable
+class IPlateWasher(IProtocolRunner):
+    pass
+
+@runtime_checkable
+class ILiquidHandler(IProtocolRunner):
+    pass
+
+@runtime_checkable
+class IStorage(Protocol):
+    pass
+
+@runtime_checkable
+class IWaste(IStorage):
+    pass

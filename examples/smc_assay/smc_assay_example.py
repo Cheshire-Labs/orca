@@ -7,7 +7,7 @@ import time
 from orca.devices.centrifuge import Centrifuge
 from orca.devices.devices import Delidder, LiquidHandler, PlateWasher, Reader, Storage, Waste
 from orca.devices.shaker import Shaker
-from orca.driver_management.drivers.sims import SimCentrifugeDriver, SimShakerDriver, SimTransporterDriver
+from orca.driver_management.drivers.sims import SimCentrifugeDriver, SimDelidderDriver, SimLiquidHandlerDriver, SimPlateWasherDriver, SimReaderDriver, SimShakerDriver, SimStorageDriver, SimTransporterDriver, SimWasteDriver
 from orca.resource_models.transporter import Transporter
 from orca.sdk.system import SdkToSystemBuilder, WorkflowExecutor, ResourceRegistry, SystemMap, ExecutingLabwareThread, StandalonMethodExecutor
 from orca.sdk.workflow import WorkflowTemplate, ThreadTemplate, MethodTemplate, SharedMethodTemplate
@@ -71,22 +71,22 @@ translator_1 = Transporter("translator_1", SimTransporterDriver("translator"), l
 translator_2 = Transporter("translator_2", SimTransporterDriver("translator"), load_positions=translator2_points)
 
 # These are devices capable of reciving labware
-biotek_1 = PlateWasher("biotek")
-biotek_2 = PlateWasher("biotek_2")
-bravo_96 = LiquidHandler("bravo_96_head")
-bravo_384 = LiquidHandler("bravo_384_head")
+biotek_1 = PlateWasher("biotek", SimPlateWasherDriver("biotek"))
+biotek_2 = PlateWasher("biotek_2", SimPlateWasherDriver("biotek_2"))
+bravo_96 = LiquidHandler("bravo_96_head", SimLiquidHandlerDriver("bravo_96_head"))
+bravo_384 = LiquidHandler("bravo_384_head", SimLiquidHandlerDriver("bravo_384_head"))
 sealer = A4SSealer("sealer", "COM3", sim=True)
 centrifuge = Centrifuge("centrifuge", SimCentrifugeDriver("centrifuge"), True)
-plate_hotel = Storage("plate_hotel")
-delidder = Delidder("delidder")
-smc_pro = Reader("smc_pro")
-stacker_sample_start = Storage("stacker_simple_start")
-stacker_sample_end = Storage("stacker_sample_end")
-stacker_plate_1_start = Storage("stacker_plate_1_start")
-stacker_final_plate_start = Storage("stacker_final_plate_start")
-stacker_96_tips = Storage("stacker_96_tips") 
-stacker_384_tips_start = Storage("stacker_384_tips_start")
-stacker_384_tips_end = Storage("stacker_384_tips_end")
+plate_hotel = Storage("plate_hotel", SimStorageDriver("plate_hotel"))
+delidder = Delidder("delidder", SimDelidderDriver("delidder"))
+smc_pro = Reader("smc_pro", SimReaderDriver("smc_pro"))
+stacker_sample_start = Storage("stacker_simple_start", SimStorageDriver("stacker_simple_start"))
+stacker_sample_end = Storage("stacker_sample_end", SimStorageDriver("stacker_sample_end"))
+stacker_plate_1_start = Storage("stacker_plate_1_start", SimStorageDriver("stacker_plate_1_start"))
+stacker_final_plate_start = Storage("stacker_final_plate_start", SimStorageDriver("stacker_final_plate_start"))
+stacker_96_tips = Storage("stacker_96_tips", SimStorageDriver("stacker_96_tips")) 
+stacker_384_tips_start = Storage("stacker_384_tips_start", SimStorageDriver("stacker_384_tips_start"))
+stacker_384_tips_end = Storage("stacker_384_tips_end", SimStorageDriver("stacker_384_tips_end"))
 shaker_1 = Shaker("shaker_1", SimShakerDriver("shaker_1"), True)
 shaker_2 = Shaker("shaker_2", SimShakerDriver("shaker_2"), True)
 shaker_3 = Shaker("shaker_3", SimShakerDriver("shaker_3"), True)
@@ -97,7 +97,7 @@ shaker_7 = Shaker("shaker_7", SimShakerDriver("shaker_7"), True)
 shaker_8 = Shaker("shaker_8", SimShakerDriver("shaker_8"), True)
 shaker_9 = Shaker("shaker_9", SimShakerDriver("shaker_9"), True)
 shaker_10 = Shaker("shaker_10", SimShakerDriver("shaker_10"), True)
-waste_1 = Waste("waste_1")
+waste_1 = Waste("waste_1", SimWasteDriver("waste_1"))
 
 # Build any resource pools - Orca will resolve what resource to use once it reaches that step
 shaker_collection = ResourcePool("shaker_collection", resources=[shaker_1, shaker_2, shaker_3, shaker_4, shaker_5, shaker_6, shaker_7, shaker_8, shaker_9, shaker_10])
