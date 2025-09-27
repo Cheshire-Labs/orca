@@ -2,6 +2,9 @@ import asyncio
 
 import logging
 from orca.devices.device_interfaces import ISealer, ITempGettable, ITempSettable
+from orca.driver_management.drivers.driver_interfaces import ISealerDriver
+from orca.driver_management.drivers.plr_wrappers import PLRSealerBackendWrapper
+from orca.driver_management.drivers.sims import SimSealerDriver
 from orca.resource_models.simulation_manager import SimulationManager
 from orca.resource_models.devices import Device
 from orca.resource_models.labware import LabwareInstance
@@ -48,7 +51,7 @@ class SimulationA4SBackend:
         return self._simulated_temperature
 
 
-class A4SSealer(Device):
+class A4SSealer(Device[ISealerDriver]):
     def __init__(
         self,
         name: str,
@@ -56,48 +59,9 @@ class A4SSealer(Device):
         timeout: int = 20,
         sim: bool = False
     ):
-        self._sim_manager = SimulationManager(
-            live_driver=A4SBackend(port, timeout),
-            sim_driver=SimulationA4SBackend(port, timeout),
-            sim=sim
-        )
-        self._is_initialized = False
+        self.a4s_driver = A4SBackend(port, timeout)
+        self.a4s_sim_driver = SimulationA4SBackend(port, timeout)
         super().__init__(name, 
-                         self._sim_manager)
-    @property  
-    def driver(self) -> A4SBackend | SimulationA4SBackend:
-         return self._sim_manager.driver
-
-    async def _do_prepare_for_pick(self, labware: LabwareInstance) -> None:
-        await self.driver.open()
-
-    async def _do_prepare_for_place(self, labware: LabwareInstance) -> None:
-        await self.driver.open()
-
-    async def _do_notify_picked(self, labware: LabwareInstance) -> None:
-        await self.driver.close()
-
-    async def _do_notify_placed(self, labware: LabwareInstance) -> None:
-        await self.driver.close()
-
-    @property
-    def is_initialized(self) -> bool:
-        return self._is_initialized
-    
-    async def initialize(self) -> None:
-        """Initialize the sealer."""
-        await self.driver.setup()
-        self._is_initialized = True
-        orca_logger.info(f"{self.name} initialized successfully.")
-
-    async def seal(self, temperature: int, duration: float) -> None:
-        """Seal the plate at a specified temperature and duration."""
-        await self.driver.seal(temperature, duration)
-
-    async def set_temperature(self, temperature: float) -> None:
-        """Set the temperature of the sealer."""
-        await self.driver.set_temperature(temperature)
-
-    async def get_temperature(self) -> float:
-        """Get the current temperature of the sealer."""
-        return await self.driver.get_temperature()
+                         PLRSealerBackendWrapper(self.a4s_driver),
+                        SimSealerDriver(name),
+                        sim)

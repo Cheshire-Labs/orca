@@ -2,11 +2,13 @@ import asyncio
 import logging
 from abc import ABC
 from typing import Any, Dict, List, Optional, Protocol
+from typing_extensions import runtime_checkable
 
 from orca.resource_models.resource_extras.teachpoints import Teachpoint
 
 orca_logger = logging.getLogger("orca")
 
+@runtime_checkable
 class Sim(Protocol):
     def name(self) -> str: ...
     async def _sim(self, message: str) -> None: ...
@@ -85,12 +87,25 @@ class BaseSimDriver:
         self._is_running = False
         orca_logger.info(f"{self.name} stopped successfully.")
 
+    async def open(self) -> None:
+        """Opens the door of the device"""
+        await self._sim(f"Opening {self.name}...")
+        orca_logger.info(f"{self.name} open door successfully")
+
+    async def close(self) -> None:
+        """Closes the door of the device"""
+        await self._sim(f"Closing {self.name}...")
+        orca_logger.info(f"{self.name} close door successfully")
+
     async def _sim(self, message: str) -> None:
         self._is_running = True
         await self._sim(message)
         self._is_running = False
+
+
 # Mixins for simulation functionality
 
+@runtime_checkable
 class ShakerSimMixin(Sim):
     """Mixin for shaker simulation functionality"""
     _supports_locking = True
@@ -164,7 +179,7 @@ class TempGettableSimMixin(Sim):
         orca_logger.info("Getting current temperature.")
         return 25.0  # Mock temperature value
 
-
+@runtime_checkable
 class ProtocolRunnerSimMixin(Sim):
     """Mixin for protocol runner functionality"""
     
@@ -257,7 +272,11 @@ class TransporterSimMixin(Sim):
         """Load taught positions."""
         self._positions = {t.name: t for t in positions}
 
+class StorageSimMixin(Sim):
+    pass
 
+
+### Sim Drivers ###
 class SimDriver(BaseSimDriver):
     """
     A simulation device driver that extends BaseSimDriver.
@@ -278,4 +297,23 @@ class SimCentrifugeDriver(BaseSimDriver, CentrifugeSimMixin):
 
 class SimTransporterDriver(BaseSimDriver, TransporterSimMixin):
     """Simulation transporter driver using mixin"""
+    pass
+
+
+class SimStorageDriver(BaseSimDriver, StorageSimMixin):
+    pass
+
+class SimPlateWasherDriver(BaseSimDriver, ProtocolRunnerSimMixin):
+    pass
+
+class SimLiquidHandlerDriver(BaseSimDriver, ProtocolRunnerSimMixin):
+    pass
+
+class SimDelidderDriver(BaseSimDriver, DelidderSimMixin):
+    pass
+
+class SimWasteDriver(BaseSimDriver, StorageSimMixin):
+    pass
+
+class SimReaderDriver(BaseSimDriver, ReaderSimMixin):
     pass

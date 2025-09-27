@@ -1,114 +1,78 @@
-from typing import Optional
-from orca.driver_management.drivers.driver_interfaces import IDelidderDriver, ILiquidHandlerDriver, IPlateWasherDriver, IStorageDriver, IWasteDriver
+from typing import Any, Dict, Optional
+from orca.devices.device_interfaces import IDelidder, ILiquidHandler, IPlateWasher, IReader, IStorage, IWaste
+from orca.driver_management.drivers.driver_interfaces import IDelidderDriver, ILiquidHandlerDriver, IPlateWasherDriver, IReaderDriver, IStorageDriver, IWasteDriver
+from orca.driver_management.drivers.sims import SimDelidderDriver, SimLiquidHandlerDriver, SimPlateWasherDriver, SimReaderDriver, SimStorageDriver, SimWasteDriver
 from orca.resource_models.devices import Device
-from orca.resource_models.labware import LabwareInstance
-from orca.resource_models.simulation_manager import SimulationManager
 
 
-class PlateWasher(Device):
+class PlateWasher(Device[IPlateWasherDriver], IPlateWasher):
     def __init__(self, 
                  name: str, 
                  driver: IPlateWasherDriver, 
                  sim: bool = False, 
                  sim_driver: Optional[IPlateWasherDriver] = None) -> None:
-        sim_manager = SimulationManager(
-            driver,
-            sim_driver,
-            sim
-            )
-        super().__init__(name, sim_manager)
 
-    @property
-    def is_initialized(self) -> bool:
-        """Returns whether the device is initialized or not."""
-        return self._is_initialized
-    
-    async def initialize(self) -> None:
-        """Initializes the device."""
-        await self._driver.initialize()
-        self._is_initialized = True
-    
-    async def _do_prepare_for_place(self, labware: LabwareInstance) -> None:
-        """Prepare the device for picking up the specified labware."""
-        await self._driver.open()
-    
-    async def _do_prepare_for_pick(self, labware: LabwareInstance) -> None:
-        """Prepare the device for picking up the specified labware."""
-        await self._driver.open()
-    
-    async def _do_notify_picked(self, labware: LabwareInstance) -> None:
-        """Notify the device that the specified labware has been picked."""
-        await self._driver.close()
-    
-    async def _do_notify_placed(self, labware: LabwareInstance) -> None:
-        """Notify the device that the specified labware has been placed."""
-        await self._driver.close()
+        super().__init__( 
+                 name,
+                 driver,
+                 sim_driver or SimPlateWasherDriver(name),
+                 sim)
+        
+    async def run_protocol(self, protocol_filepath: str, params: Dict[str, Any]) -> None:
+        await self.driver.run_protocol(protocol_filepath, params)
 
+    
 
-class LiquidHandler(Device):
+class LiquidHandler(Device[ILiquidHandlerDriver], ILiquidHandler):
     def __init__(self, 
                  name: str, 
                  driver: ILiquidHandlerDriver, 
                  sim: bool = False, 
                  sim_driver: Optional[ILiquidHandlerDriver] = None) -> None:
 
-        self._sim_manager = SimulationManager(
-            driver,
-            sim_driver,
-            sim
-            )
-        super().__init__(name, self._sim_manager)
+       super().__init__(name, driver, sim_driver or SimLiquidHandlerDriver(name), sim)
 
-class Delidder(Device):
+
+    async def run_protocol(self, protocol_filepath: str, params: Dict[str, Any]) -> None:
+        await self.driver.run_protocol(protocol_filepath, params)
+
+class Delidder(Device[IDelidderDriver], IDelidder):
     def __init__(self, 
                  name: str, 
                  driver: IDelidderDriver, 
                  sim: bool = False, 
                  sim_driver: Optional[IDelidderDriver] = None) -> None:
-        self._sim_manager = SimulationManager(
-            driver,
-            sim_driver,
-            sim
-            )
-        super().__init__(name, self._sim_manager)
 
+        super().__init__(name, driver, sim_driver or SimDelidderDriver(name), sim)
 
-class Waste(Device):
+    async def delid(self):
+        await self.driver.delid()
+
+class Waste(Device[IWasteDriver], IWaste):
     def __init__(self, 
                  name: str, 
                  driver: IWasteDriver, 
                  sim: bool = False, 
                  sim_driver: Optional[IWasteDriver] = None) -> None:
 
-        self._sim_manager = SimulationManager(
-            driver,
-            sim_driver,
-            sim
-            )
-        super().__init__(name, self._sim_manager)
+        super().__init__(name, driver, sim_driver or SimWasteDriver(name), sim)
 
-class Storage(Device):
+
+class Storage(Device[IStorageDriver], IStorage):
     def __init__(self, 
                  name: str, 
                  driver: IStorageDriver, 
                  sim: bool = False, 
                  sim_driver: Optional[IStorageDriver] = None) -> None:
-        self._sim_manager = SimulationManager(
-            driver,
-            sim_driver,
-            sim
-            )
-        super().__init__(name, self._sim_manager)
+        super().__init__(name, driver, sim_driver or SimStorageDriver(name), sim)
 
-class Reader(Device):
+class Reader(Device[IReaderDriver], IReader):
     def __init__(self, 
                  name: str, 
-                 driver: IStorageDriver, 
+                 driver: IReaderDriver, 
                  sim: bool = False, 
-                 sim_driver: Optional[IStorageDriver] = None) -> None:
-        self._sim_manager = SimulationManager(
-            driver,
-            sim_driver,
-            sim
-            )
-        super().__init__(name, self._sim_manager)
+                 sim_driver: Optional[IReaderDriver] = None) -> None:
+        super().__init__(name, driver, sim_driver or SimReaderDriver(name), sim)
+
+    async def read(self, protocol_filepath: str, output_filepath: str) -> None:
+        await self.driver.read(protocol_filepath, output_filepath)

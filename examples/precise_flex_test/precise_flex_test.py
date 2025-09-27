@@ -3,19 +3,18 @@ import logging
 import os
 import sys
 
+from orca.devices.centrifuge import Centrifuge
 from orca.devices.sealer import Sealer
 from orca.devices.shaker import Shaker
-from orca.driver_management.drivers.mock import HumanSim, MockDriver
-from orca.driver_management.drivers.sealer import SimulationSealerDriver
-from orca.driver_management.drivers.shaker import SimulationShakerDriver
-from orca.driver_management.drivers.venus.Venus import Venus
+from orca.driver_management.drivers.sims import HumanSim, SimCentrifugeDriver, SimSealerDriver, SimShakerDriver
 from orca.driver_management.drivers.venus.venus_driver import VenusProtocolDriver
 from orca.events.event_bus import EventBus
 from orca.resource_models.labware import PlateTemplate
 from orca.resource_models.transporter import Transporter
 from orca.system.SdkToSystemBuilder import SdkToSystemBuilder
+from orca.system.resource_registry import ResourceRegistry
 from orca.system.system_map import SystemMap
-from orca.workflow_models.action_template import Delid, Shake, Spin, Read
+from orca.workflow_models.action_template import Delid, Seal, Shake, Spin, Read
 from orca.workflow_models.method_template import MethodTemplate
 from orca.workflow_models.thread_template import ThreadTemplate
 from orca.workflow_models.workflow_templates import WorkflowTemplate
@@ -41,36 +40,48 @@ pf_teachpoints = os.path.join("examples", "precise_flex_test", "teachpoints", "p
 test_plate = PlateTemplate("test_plate", Cor_Falcon_96_wellplate_340ul_Fb_Black, None)
 pf_arm = Transporter("pf_arm", PreciseFlex400Backend("192.168.0.1", 10100), pf_teachpoints)
 
-mock_device = Shaker("human_device", SimulationShakerDriver(0.2,HumanSim()))
-sealer = Sealer("sealer", SimulationSealerDriver(, "peeler_driver"))
+shaker = Shaker("human_device", SimShakerDriver("human_device", HumanSim()))
+centrifuge = Centrifuge("centrifuge", SimCentrifugeDriver("centrifuge", HumanSim()))
+sealer = Sealer("sealer", SimSealerDriver("peeler_driver", HumanSim()))
+
+resource_registry = ResourceRegistry()
 resources = [
     pf_arm,
-    mock_device,
+    shaker,
     sealer,
-    venus
+    centrifuge
 ]
 
-test_method = MethodTemplate("test_method", [
-    Shake(),
-    Spin
-])
-
-method_template = MethodTemplate("test_method", [
-    Spin()
-    Delid("test_plate"),
-])
-
-
-map = SystemMap(resources)
+map = SystemMap(resource_registry)
 map.assign_resources({
 
 })
 
-sample_plate_thread = ThreadTemplate("sample_plate_thread", [
-    method_template
+test_method = MethodTemplate("test_method", [
+    Shake(shaker, 10, 12, [test_plate], [test_plate]),
+    Spin(centrifuge, 10, 10, [test_plate], [test_plate])
 ])
 
-destination_plate_thread = ThreadTemplate("destination_plate_thread", [
+method_template = MethodTemplate("test_method", [
+    Seal(sealer, 120, 20, [test_plate], [test_plate])
+])
+
+
+
+
+sample_plate_thread = ThreadTemplate(
+    test_plate,
+    map.get_location("location_1"),
+    map.get_location("location_2"),
+    [
+    test_method
+])
+
+destination_plate_thread = ThreadTemplate(
+    test_plate, 
+    map.get_location("location_3"),
+    map.get_location("location_4"),
+    [
     method_template
 ])
 
@@ -85,7 +96,7 @@ builder = SdkToSystemBuilder(
     "Precise Flex Test", 
     "An example workflow to test the Precise Flex arm", 
     labwares, 
-    resources, 
+    resource_registry, 
     map, 
     [test_method, method_template], 
     [test_workflow], 

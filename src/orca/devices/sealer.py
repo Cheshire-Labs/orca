@@ -1,3 +1,4 @@
+from orca.devices.device_interfaces import ISealer
 from orca.driver_management.drivers.driver_interfaces import ISealerDriver
 from orca.driver_management.drivers.plr_wrappers import PLRSealerBackendWrapper
 from orca.driver_management.drivers.sims import SimSealerDriver
@@ -10,7 +11,7 @@ from pylabrobot.sealing.backend import SealerBackend as PLRSealerBackend
 from typing import Dict, Optional
 
 
-class Sealer(Device):
+class Sealer(Device[ISealerDriver], ISealer):
     def __init__(self, 
                  name: str, 
                  driver: ISealerDriver | PLRSealerBackend, 
@@ -18,12 +19,7 @@ class Sealer(Device):
                  sim_driver: Optional[ISealerDriver] = None) -> None:
         driver = PLRSealerBackendWrapper(driver) if isinstance(driver, PLRSealerBackend) else driver
         sim_driver = sim_driver if sim_driver else SimSealerDriver(name)
-        self._sim_manager = SimulationManager(
-            driver,
-            sim_driver,
-            sim
-            )
-        super().__init__(name, self._sim_manager)
+        super().__init__(name, driver, sim_driver, sim)
 
     @property
     def driver(self) -> ISealerDriver:
@@ -55,18 +51,6 @@ class Sealer(Device):
             await self.driver.close()
         else:
             raise ValueError(f"Unknown command: {command}")
-
-    async def _do_prepare_for_pick(self, labware: LabwareInstance) -> None:
-        await self.driver.open()
-
-    async def _do_prepare_for_place(self, labware: LabwareInstance) -> None:
-        await self.driver.open()
-
-    async def _do_notify_picked(self, labware: LabwareInstance) -> None:
-        await self.driver.close()
-
-    async def _do_notify_placed(self, labware: LabwareInstance) -> None:
-        await self.driver.close()
 
     async def seal(self, temperature: int, duration: float) -> None:
         """Seal the plate at a specified temperature and duration."""

@@ -1,8 +1,8 @@
-from abc import ABC, abstractmethod
+from abc import ABC
 import asyncio
 import logging
-from orca.driver_management.drivers.driver_interfaces import IDoor, Initialize
-from orca.resource_models.resources import IDevice, ISimulationable
+from orca.driver_management.drivers.driver_interfaces import BaseDriver
+from orca.resource_models.resources import IDevice
 from orca.resource_models.device_error import DeviceBusyError
 from orca.resource_models.labware import LabwareInstance
 from typing import Generic, List, Optional, TypeVar
@@ -50,7 +50,7 @@ class StageLoadingEquipmentLabwareManager:
         self._stage_labware = labware
 
 
-TDriver = TypeVar('TDriver', bound=Initialize)
+TDriver = TypeVar('TDriver', bound=BaseDriver)
 class Device(IDevice, Generic[TDriver], ABC):
     """A class that represents a device that can operate on labware."""
     def __init__(self, 
@@ -77,6 +77,11 @@ class Device(IDevice, Generic[TDriver], ABC):
         self._lock = asyncio.Lock() 
 
     @property
+    def name(self) -> str:
+        """Returns the name of the device."""
+        return self._name
+
+    @property
     def driver(self) -> TDriver:
         """Returns the device's driver."""
         return self._sim_manager.driver
@@ -85,11 +90,6 @@ class Device(IDevice, Generic[TDriver], ABC):
     def lock(self) -> asyncio.Lock:
         """Returns the lock for the device."""
         return self._lock
-
-    @property
-    def name(self) -> str:
-        """Returns the name of the device."""
-        return self._name
     
     @property
     def is_initialized(self) -> bool:
@@ -132,11 +132,6 @@ class Device(IDevice, Generic[TDriver], ABC):
         orca_logger.info(f"{self} - preparing for place of {labware}")
         await self._do_prepare_for_place(labware)
 
-    @abstractmethod
-    async def _do_prepare_for_place(self, labware: LabwareInstance) -> None:
-        """Prepare the device for picking up the specified labware."""
-        raise NotImplementedError("This method should be implemented by subclasses.")
-
     async def prepare_for_pick(self, labware: LabwareInstance) -> None:
 
         if self._labware_reg.staged_labware == labware:
@@ -146,11 +141,6 @@ class Device(IDevice, Generic[TDriver], ABC):
             await self._do_prepare_for_pick(labware)
             self._labware_reg.unload_labware_to_stage(labware)
 
-    @abstractmethod
-    async def _do_prepare_for_pick(self, labware: LabwareInstance) -> None:
-        """Prepare the device for picking up the specified labware."""
-        raise NotImplementedError("This method should be implemented by subclasses.")
-
     async def notify_picked(self, labware: LabwareInstance) -> None:
         if self._labware_reg.staged_labware != labware:
             raise ValueError(f"{self} - An error has ocurred.  The labware {labware} notified as picked does not match the previously staged labware. "
@@ -158,11 +148,6 @@ class Device(IDevice, Generic[TDriver], ABC):
         orca_logger.info(f"{self} - labware {labware} picked from stage")
         self._labware_reg.set_staged_labware(None)
         await self._do_notify_picked(labware)
-
-    @abstractmethod
-    async def _do_notify_picked(self, labware: LabwareInstance) -> None:
-        """Notify the device that the specified labware has been picked."""
-        raise NotImplementedError("This method should be implemented by subclasses.")
 
     async def notify_placed(self, labware: LabwareInstance) -> None:
         if self._labware_reg.staged_labware is not None:
@@ -173,16 +158,6 @@ class Device(IDevice, Generic[TDriver], ABC):
         await self._do_notify_placed(labware)
         self._labware_reg.load_labware_from_stage(labware)
 
-    @abstractmethod
-    async def _do_notify_placed(self, labware: LabwareInstance) -> None:
-        """Notify the device that the specified labware has been placed."""
-        raise NotImplementedError("This method should be implemented by subclasses.")
-
-    def __str__(self) -> str:
-        return f"Equipment: {self._name}"
-    
-    
-class DooredDeviceMixin(Device[IDoor]):
     async def _do_prepare_for_place(self, labware: LabwareInstance) -> None:
         """Prepare the device for picking up the specified labware."""
         await self.driver.open()
@@ -198,3 +173,7 @@ class DooredDeviceMixin(Device[IDoor]):
     async def _do_notify_placed(self, labware: LabwareInstance) -> None:
         """Notify the device that the specified labware has been placed."""
         await self.driver.close()
+
+    def __str__(self) -> str:
+        return f"Equipment: {self._name}"
+    
