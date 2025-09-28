@@ -7,14 +7,13 @@ from orca.devices.centrifuge import Centrifuge
 from orca.devices.sealer import Sealer
 from orca.devices.shaker import Shaker
 from orca.driver_management.drivers.sims import HumanSim, SimCentrifugeDriver, SimSealerDriver, SimShakerDriver
-from orca.driver_management.drivers.venus.venus_driver import VenusProtocolDriver
 from orca.events.event_bus import EventBus
 from orca.resource_models.labware import PlateTemplate
 from orca.resource_models.transporter import Transporter
 from orca.system.SdkToSystemBuilder import SdkToSystemBuilder
 from orca.system.resource_registry import ResourceRegistry
 from orca.system.system_map import SystemMap
-from orca.workflow_models.action_template import Delid, Seal, Shake, Spin, Read
+from orca.workflow_models.action_template import Seal, Shake, Spin, Read
 from orca.workflow_models.method_template import MethodTemplate
 from orca.workflow_models.thread_template import ThreadTemplate
 from orca.workflow_models.workflow_templates import WorkflowTemplate
@@ -29,15 +28,15 @@ logging.basicConfig(
 orca_logger = logging.getLogger("orca")
 
 # Labware
-test_plate = PlateTemplate("test_plate", Cor_Falcon_96_wellplate_340ul_Fb_Black)
-
+src_plate = PlateTemplate("src_plate", Cor_Falcon_96_wellplate_340ul_Fb_Black)
+dest_plate = PlateTemplate("dest_plate", Cor_Falcon_96_wellplate_340ul_Fb_Black)
 labwares = [
-    test_plate
+    src_plate,
+    dest_plate
 ]
 
 pf_teachpoints = os.path.join("examples", "precise_flex_test", "teachpoints", "precise_flex.xml")
 
-test_plate = PlateTemplate("test_plate", Cor_Falcon_96_wellplate_340ul_Fb_Black, None)
 pf_arm = Transporter("pf_arm", PreciseFlex400Backend("192.168.0.1", 10100), pf_teachpoints)
 
 shaker = Shaker("human_device", SimShakerDriver("human_device", HumanSim()))
@@ -58,19 +57,19 @@ map.assign_resources({
 })
 
 test_method = MethodTemplate("test_method", [
-    Shake(shaker, 10, 12, [test_plate], [test_plate]),
-    Spin(centrifuge, 10, 10, [test_plate], [test_plate])
+    Shake(shaker, 10, 12, [src_plate], [src_plate]),
+    Spin(centrifuge, 10, 10, [src_plate], [src_plate])
 ])
 
 method_template = MethodTemplate("test_method", [
-    Seal(sealer, 120, 20, [test_plate], [test_plate])
+    Seal(sealer, 120, 20, [src_plate], [src_plate])
 ])
 
 
 
 
 sample_plate_thread = ThreadTemplate(
-    test_plate,
+    src_plate,
     map.get_location("location_1"),
     map.get_location("location_2"),
     [
@@ -78,7 +77,7 @@ sample_plate_thread = ThreadTemplate(
 ])
 
 destination_plate_thread = ThreadTemplate(
-    test_plate, 
+    dest_plate, 
     map.get_location("location_3"),
     map.get_location("location_4"),
     [
