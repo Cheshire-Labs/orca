@@ -10,6 +10,7 @@ orca_logger = logging.getLogger("orca")
 
 @runtime_checkable
 class Sim(Protocol):
+    @property
     def name(self) -> str: ...
     async def _sim(self, message: str) -> None: ...
 
@@ -99,13 +100,12 @@ class BaseSimDriver:
 
     async def _sim(self, message: str) -> None:
         self._is_running = True
-        await self._sim(message)
+        await self._sim_strategy.sim(message)
         self._is_running = False
 
 
 # Mixins for simulation functionality
 
-@runtime_checkable
 class ShakerSimMixin(Sim):
     """Mixin for shaker simulation functionality"""
     _supports_locking = True
@@ -179,7 +179,6 @@ class TempGettableSimMixin(Sim):
         orca_logger.info("Getting current temperature.")
         return 25.0  # Mock temperature value
 
-@runtime_checkable
 class ProtocolRunnerSimMixin(Sim):
     """Mixin for protocol runner functionality"""
     
@@ -238,10 +237,28 @@ class DelidderSimMixin(Sim):
         self._is_running = False
 
 
-class TransporterSimMixin(Sim):
-    """Mixin for transporter functionality (robotic arms)"""
-    def __init__(self):
-        self._positions: Dict[str, Teachpoint]
+class SimTransporterDriver:
+    """Simulation transporter driver using mixin"""
+    
+    def __init__(self, name: str, sim_strategy: Optional[SimStrategy] = None) -> None:
+        self._name = name
+        self._is_initialized = False
+        self._sim_strategy = sim_strategy or SleepSim()
+        self._teachpoints: Dict[str, Teachpoint] = {}
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    async def _sim(self, message: str) -> None:
+        await self._sim_strategy.sim(message)
+
+    @property
+    def is_initialized(self) -> bool:
+        return self._is_initialized
+    
+    async def initialize(self) -> None:
+        self._is_initialized
 
     async def pick(self, position_name: str, labware_type: str) -> None:
         """Pick labware from a position."""
@@ -261,16 +278,17 @@ class TransporterSimMixin(Sim):
 
     def _validate_position(self, position_name: str) -> None:
         """Validate that a position is taught."""
-        if position_name not in self._positions:
+        if position_name not in self._teachpoints:
             raise ValueError(f"The position '{position_name}' is not taught for {self.name}")
 
-    def get_taught_positions(self) -> List[str]:
+    def get_teachpoints(self) -> List[Teachpoint]:
         """Get list of taught positions."""
-        return list(self._positions.keys())
+        return list(self._teachpoints.values())
 
-    def load_positions(self, positions: List[Teachpoint]) -> None:
+    def load_teachpoints(self, teachpoints: List[Teachpoint]) -> None:
         """Load taught positions."""
-        self._positions = {t.name: t for t in positions}
+        self._teachpoints = {t.name: t for t in teachpoints}
+
 
 class StorageSimMixin(Sim):
     pass
@@ -294,11 +312,6 @@ class SimSealerDriver(BaseSimDriver, SealerSimMixin, TempSettableSimMixin, TempG
 class SimCentrifugeDriver(BaseSimDriver, CentrifugeSimMixin):
     """Simulation centrifuge driver using mixin"""
     pass
-
-class SimTransporterDriver(BaseSimDriver, TransporterSimMixin):
-    """Simulation transporter driver using mixin"""
-    pass
-
 
 class SimStorageDriver(BaseSimDriver, StorageSimMixin):
     pass

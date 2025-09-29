@@ -115,11 +115,20 @@ class IDelidderDriver(BaseDriver, Protocol):
         ...
 
 @runtime_checkable
-class ITransporterDriver(BaseDriver, Protocol):
+class ITransporterDriver(Protocol):
 
     @property
     def name(self) -> str:
         """Returns the name of the transporter."""
+        ...
+
+    async def initialize(self) -> None:
+        """Setup the driver."""
+        ...
+    
+    @property
+    def is_initialized(self) -> bool:
+        """Returns whether the driver is initialized or not."""
         ...
 
     async def pick(self, position_name: str, labware_type: str) -> None:
@@ -128,10 +137,10 @@ class ITransporterDriver(BaseDriver, Protocol):
     async def place(self, position_name: str, labware_type: str) -> None:
         ...
 
-    def get_taught_positions(self) -> List[str]:
+    def get_teachpoints(self) -> List[Teachpoint]:
         ...
 
-    def load_positions(self, positions: List[Teachpoint]) -> None:
+    def load_teachpoints(self, teachpoints: List[Teachpoint]) -> None:
         ...
 
 @runtime_checkable

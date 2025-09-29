@@ -56,11 +56,11 @@ class IDelidder(Protocol):
         ...
 
 @runtime_checkable
-class IPlateWasher(IProtocolRunner):
+class IPlateWasher(IProtocolRunner, Protocol):
     pass
 
 @runtime_checkable
-class ILiquidHandler(IProtocolRunner):
+class ILiquidHandler(IProtocolRunner, Protocol):
     pass
 
 @runtime_checkable
@@ -68,5 +68,5 @@ class IStorage(Protocol):
     pass
 
 @runtime_checkable
-class IWaste(IStorage):
+class IWaste(IStorage, Protocol):
     pass

@@ -192,9 +192,10 @@ class SystemMap(ILocationRegistry, IResourceLocator, IResourceLocationObserver, 
         self._graph.draw()
         
     def add_transporter(self, transporter: Transporter) -> None:
-        taught_locations = transporter.get_taught_positions()
+        taught_teachpoints = transporter.get_teachpoints()
+        teachpoint_names = [t.name for t in taught_teachpoints]
         # add teachpoints as locations if they don't exist and connect them as an edge
-        for edge in itertools.combinations(taught_locations, 2):
+        for edge in itertools.combinations(teachpoint_names, 2):
             try:
                 self.get_location(edge[0])
             except KeyError:
