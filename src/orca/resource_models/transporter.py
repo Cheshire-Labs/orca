@@ -83,6 +83,8 @@ class Transporter(ITransporter):
             raise ValueError(f"{self} already contains labware: {self._labware}")
         if location.labware is None:
             raise ValueError(f"{location} does not contain labware")
+        if not self._teachpoints.exists(location.name):
+            raise KeyError(f"Teachpoint with name: {location.name} does not exist for {self.name}")
         orca_logger.info(f"{self._name} pick {location.labware} from {location}: picking...")
         await self.driver.pick(location.teachpoint_name, location.labware.labware_type)
         orca_logger.info(f"{self._name} pick {location.labware} from {location}: picked")
@@ -93,6 +95,8 @@ class Transporter(ITransporter):
             raise ValueError(f"{self} does not contain labware")
         if location.labware is not None:
             raise ValueError(f"{location} already contains labware")
+        if not self._teachpoints.exists(location.name):
+            raise KeyError(f"Teachpoint with name: {location.name} does not exist for {self.name}")
         orca_logger.info(f"{self._name} place {self._labware} to {location}: placing...")
         await self.driver.place(location.teachpoint_name, self._labware.labware_type)
         orca_logger.info(f"{self._name} place {self._labware} to {location}: placed")
@@ -117,6 +121,5 @@ class Transporter(ITransporter):
     def pull_teachpoints_from_robot(self) -> List[Teachpoint]:
         return self.driver.get_teachpoints()
         
-
     def __str__(self) -> str:
         return f"Transporter: {self._name}"

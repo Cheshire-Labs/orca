@@ -265,7 +265,6 @@ class SimTransporterDriver(ITransporterDriver):
 
     async def pick(self, position_name: str, labware_type: str) -> None:
         """Pick labware from a position."""
-        self._validate_position(position_name)
         self._is_running = True
         await self._sim(f"Driver: {self.name} picking from {position_name}, labware type: {labware_type}...")
         orca_logger.info(f"Driver: {self.name} picked from {position_name}, labware type: {labware_type}")
@@ -273,16 +272,11 @@ class SimTransporterDriver(ITransporterDriver):
 
     async def place(self, position_name: str, labware_type: str) -> None:
         """Place labware at a position."""
-        self._validate_position(position_name)
         self._is_running = True
         await self._sim(f"Driver: {self.name} placing to {position_name}, labware type: {labware_type}...")
         orca_logger.info(f"Driver: {self.name} placed to {position_name}, labware type: {labware_type}")
         self._is_running = False
 
-    def _validate_position(self, position_name: str) -> None:
-        """Validate that a position is taught."""
-        if position_name not in self._teachpoints:
-            raise ValueError(f"The position '{position_name}' is not taught for {self.name}")
 
     def get_teachpoints(self) -> List[Teachpoint]:
         """Get list of taught positions."""
