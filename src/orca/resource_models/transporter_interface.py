@@ -1,5 +1,6 @@
 import asyncio
 from orca.resource_models.location import Location
+from orca.resource_models.resource_extras.teachpoints import Teachpoint
 from orca.resource_models.resources import IInitializable, IResource, ISimulationable
 
 
@@ -60,11 +61,21 @@ class ITransporter(IResource, IInitializable, ISimulationable, ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_taught_positions(self) -> List[str]:
+    def get_teachpoints(self) -> List[Teachpoint]:
         """
         Get a list of the names of taught positions.
 
         Returns:
             List[str]: A list of taught positions.
+        """
+        raise NotImplementedError
+    
+    @abstractmethod
+    def load_teachpoints(self, teachpoints: List["Teachpoint"]) -> None:
+        """
+        Load taught positions from a list of Teachpoint objects.
+
+        Args:
+            positions (List[Teachpoint]): A list of Teachpoint objects to load.
         """
         raise NotImplementedError

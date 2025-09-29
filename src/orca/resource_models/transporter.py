@@ -1,38 +1,59 @@
-from abc import ABC, abstractmethod
 import asyncio
 import logging
 from typing import List, Optional
+from orca.driver_management.drivers.plr_wrappers import PLRTransporterBackendWrapper
+from orca.driver_management.drivers.driver_interfaces import ITransporterDriver
+from orca.driver_management.drivers.sims import SimTransporterDriver
+from orca.resource_models.resource_extras.teachpoints import Teachpoint, TeachpointsRegistry
+from orca.resource_models.simulation_manager import SimulationManager
 from orca.resource_models.transporter_interface import ITransporter
-from orca.resource_models.resources import ISimulationable
 from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.location import Location
+from pylabrobot.arms.backend import ArmBackend
 
 orca_logger = logging.getLogger("orca")
 
-class Transporter(ITransporter, ABC):
+
+class Transporter(ITransporter):
     def __init__(self,
                 name: str,
-                sim_manager: ISimulationable) -> None:
+                driver: ITransporterDriver | ArmBackend,
+                load_positions: Optional[List[Teachpoint] | str] = None,
+                sim: bool = False) -> None:
         self._name = name
-        self._sim_manager = sim_manager
+        driver = PLRTransporterBackendWrapper(driver) if isinstance(driver, ArmBackend) else driver
+        self._sim_manager = SimulationManager(
+            driver,
+            SimTransporterDriver("sim"),
+            sim
+            )
+        self._teachpoints = TeachpointsRegistry()
         self._lock = asyncio.Lock()
         self._labware: Optional[LabwareInstance] = None
+        if type(load_positions) is str:
+            self._teachpoints.load_teachpoints_from_file(load_positions)
+        elif type(load_positions) is list:
+            self.load_teachpoints(load_positions)
+        else:
+            self.load_teachpoints([])
 
     @property
     def name(self) -> str:
         """Returns the name of the transporter."""
         return self._name
+    
+    @property
+    def driver(self) -> ITransporterDriver:
+        return self._sim_manager.driver
 
     @property
-    @abstractmethod
     def is_initialized(self) -> bool:
         """Returns whether the transporter is initialized or not."""
-        raise NotImplementedError("This method should be implemented by subclasses.")
+        return self.driver.is_initialized
     
-    @abstractmethod
     async def initialize(self) -> None:
         """Initializes the transporter."""
-        raise NotImplementedError("This method should be implemented by subclasses.")
+        return await self.driver.initialize()
 
     @property
     def lock(self) -> asyncio.Lock:
@@ -62,8 +83,10 @@ class Transporter(ITransporter, ABC):
             raise ValueError(f"{self} already contains labware: {self._labware}")
         if location.labware is None:
             raise ValueError(f"{location} does not contain labware")
+        if not self._teachpoints.exists(location.name):
+            raise KeyError(f"Teachpoint with name: {location.name} does not exist for {self.name}")
         orca_logger.info(f"{self._name} pick {location.labware} from {location}: picking...")
-        await self._do_pick(location.teachpoint_name, location.labware.labware_type)
+        await self.driver.pick(location.teachpoint_name, location.labware.labware_type)
         orca_logger.info(f"{self._name} pick {location.labware} from {location}: picked")
         self._labware = location.labware
 
@@ -72,22 +95,31 @@ class Transporter(ITransporter, ABC):
             raise ValueError(f"{self} does not contain labware")
         if location.labware is not None:
             raise ValueError(f"{location} already contains labware")
+        if not self._teachpoints.exists(location.name):
+            raise KeyError(f"Teachpoint with name: {location.name} does not exist for {self.name}")
         orca_logger.info(f"{self._name} place {self._labware} to {location}: placing...")
-        await self._do_place(location.teachpoint_name, self._labware.labware_type)
+        await self.driver.place(location.teachpoint_name, self._labware.labware_type)
         orca_logger.info(f"{self._name} place {self._labware} to {location}: placed")
         
         self._labware = None
 
-    async def _do_pick(self, teachpoint_name: str, labware_type: str) -> None:
-        raise NotImplementedError("This method should be implemented by subclasses.")
+    def get_teachpoints(self) -> List[Teachpoint]:
+        return self._teachpoints.list()
     
-    async def _do_place(self, teachpoint_name: str, labware_type: str) -> None:
-        raise NotImplementedError("This method should be implemented by subclasses.")
+    def load_teachpoints(self, teachpoints: List[Teachpoint], overwrite: bool = True, clear_existing: bool = True) -> None:
+        if clear_existing: 
+            self._teachpoints.clear()
+        for t in teachpoints:
+            self._teachpoints.add(t, overwrite)
 
-    @abstractmethod
-    def get_taught_positions(self) -> List[str]:
-        raise NotImplementedError("This method should be implemented by subclasses.")
-    
-    
+    def save_teachpoints_to_file(self, save_filepath: str) -> None:
+        self._teachpoints.save(save_filepath)
+
+    def push_teachpoints_to_robot(self) -> None:
+        self.driver.load_teachpoints(self._teachpoints.list())
+
+    def pull_teachpoints_from_robot(self) -> List[Teachpoint]:
+        return self.driver.get_teachpoints()
+        
     def __str__(self) -> str:
         return f"Transporter: {self._name}"
