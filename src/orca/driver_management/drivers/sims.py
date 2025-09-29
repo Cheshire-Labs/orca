@@ -1,20 +1,22 @@
 import asyncio
 import logging
-from abc import ABC
-from typing import Any, Dict, List, Optional, Protocol
-from typing_extensions import runtime_checkable
+from abc import ABC, abstractmethod
+from typing import Any, Dict, List, Optional
 
 from orca.resource_models.resource_extras.teachpoints import Teachpoint
 
 orca_logger = logging.getLogger("orca")
 
-@runtime_checkable
-class Sim(Protocol):
+
+class Sim(ABC):
     @property
+    @abstractmethod
     def name(self) -> str: ...
+    @abstractmethod
     async def _sim(self, message: str) -> None: ...
 
 class SimStrategy(ABC):
+    @abstractmethod
     async def sim(self, prompt: str) -> None:
         ...
 

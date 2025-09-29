@@ -1,72 +1,80 @@
-from typing import Any, Dict, runtime_checkable
-from typing_extensions import Protocol
+from abc import ABC, abstractmethod
+from typing import Any, Dict
 
-@runtime_checkable
-class IGenericExecutable(Protocol):
+
+class IGenericExecutable(ABC):
+    @abstractmethod
     async def execute(self, command: str, options: Dict[str, Any]) -> None:
         """Execute a command with the driver."""
         ...
 
-@runtime_checkable
-class ITempSettable(Protocol):
+class ITempSettable(ABC):
+    @abstractmethod
     async def set_temperature(self, temperature: float) -> None:
         """Set the temperature of the device."""
         ...
 
-@runtime_checkable
-class ITempGettable(Protocol):
+
+class ITempGettable(ABC):
+    @abstractmethod
     async def get_temperature(self) -> float:
         """Get the current temperature of the device."""
         ...
 
-@runtime_checkable
-class ISealer(Protocol):
+
+class ISealer(ABC):
+    @abstractmethod
     async def seal(self, temperature: int, duration: float) -> None:
         """Seal the plate at a specified temperature and duration."""
         ...
 
-@runtime_checkable
-class IProtocolRunner(Protocol):
+
+class IProtocolRunner(ABC):
+    @abstractmethod
     async def run_protocol(self, protocol_filepath: str, params: Dict[str, Any]) -> None:
         """Execute a protocol run command."""
         ...    
     
-@runtime_checkable
-class IShaker(Protocol):
+
+class IShaker(ABC):
+    @abstractmethod
     async def shake(self, duration: int, speed: int) -> None:
         """Shake the device for a specified duration and speed."""
         ...
 
-@runtime_checkable
-class ICentrifuge(Protocol):
+
+class ICentrifuge(ABC):
+    @abstractmethod
     async def centrifuge(self, speed: int, duration: int) -> None:
         """Spin the centrifuge at a specified speed for a specified duration."""
         ...  
 
-@runtime_checkable  
-class IReader(Protocol):
+  
+class IReader(ABC):
+    @abstractmethod
     async def read(self, protocol_filepath: str, output_filepath: str) -> None:
         """Read data using the specified protocol and save results to a file."""
         ...
 
-@runtime_checkable
-class IDelidder(Protocol):
+
+class IDelidder(ABC):
+    @abstractmethod
     async def delid(self) -> None:
         """Remove the lid from the specified labware."""
         ...
 
-@runtime_checkable
-class IPlateWasher(IProtocolRunner, Protocol):
+
+class IPlateWasher(IProtocolRunner, ABC):
     pass
 
-@runtime_checkable
-class ILiquidHandler(IProtocolRunner, Protocol):
+
+class ILiquidHandler(IProtocolRunner, ABC):
     pass
 
-@runtime_checkable
-class IStorage(Protocol):
+
+class IStorage(ABC):
     pass
 
-@runtime_checkable
-class IWaste(IStorage, Protocol):
+
+class IWaste(IStorage, ABC):
     pass
