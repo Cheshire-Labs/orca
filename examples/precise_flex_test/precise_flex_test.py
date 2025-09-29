@@ -37,7 +37,7 @@ labwares = [
 
 pf_teachpoints = os.path.join("examples", "precise_flex_test", "teachpoints", "precise_flex.xml")
 
-pf_arm = Transporter("pf_arm", PreciseFlex400Backend("192.168.0.1", 10100), pf_teachpoints)
+pf_arm = Transporter("pf_arm", PreciseFlex400Backend("192.168.0.1", 10100), pf_teachpoints, sim=True)
 
 shaker = Shaker("human_device", SimShakerDriver("human_device", HumanSim()))
 centrifuge = Centrifuge("centrifuge", SimCentrifugeDriver("centrifuge", HumanSim()))
