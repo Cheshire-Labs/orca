@@ -3,6 +3,7 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
+from orca.driver_management.drivers.driver_interfaces import ICentrifugeDriver, IDelidderDriver, ILiquidHandlerDriver, IPlateWasherDriver, IProtocolRunnerDriver, IReaderDriver, ISealerDriver, IShakerDriver, IStorageDriver, ITempGettableDriver, ITempSettableDriver, ITransporterDriver, IWasteDriver
 from orca.resource_models.resource_extras.teachpoints import Teachpoint
 
 orca_logger = logging.getLogger("orca")
@@ -108,7 +109,7 @@ class BaseSimDriver:
 
 # Mixins for simulation functionality
 
-class ShakerSimMixin(Sim):
+class ShakerSimMixin(Sim, IShakerDriver):
     """Mixin for shaker simulation functionality"""
     _supports_locking = True
 
@@ -140,7 +141,7 @@ class ShakerSimMixin(Sim):
         orca_logger.info("Plate unlocked.")
 
 
-class SealerSimMixin(Sim):
+class SealerSimMixin(Sim, ISealerDriver):
     """Mixin for sealer simulation functionality"""
     async def open(self) -> None:
         """Open the sealer."""
@@ -164,7 +165,7 @@ class SealerSimMixin(Sim):
         self._is_running = False
 
 
-class TempSettableSimMixin(Sim):
+class TempSettableSimMixin(Sim, ITempSettableDriver):
     """Mixin for temperature settable functionality"""
     
     async def set_temperature(self, temperature: float) -> None:
@@ -173,7 +174,7 @@ class TempSettableSimMixin(Sim):
         orca_logger.info(f"Temperature set to {temperature}°C.")
 
 
-class TempGettableSimMixin(Sim):
+class TempGettableSimMixin(Sim, ITempGettableDriver):
     """Mixin for temperature gettable functionality"""
     
     async def get_temperature(self) -> float:
@@ -181,7 +182,7 @@ class TempGettableSimMixin(Sim):
         orca_logger.info("Getting current temperature.")
         return 25.0  # Mock temperature value
 
-class ProtocolRunnerSimMixin(Sim):
+class ProtocolRunnerSimMixin(Sim, IProtocolRunnerDriver):
     """Mixin for protocol runner functionality"""
     
     async def run_protocol(self, protocol_filepath: str, params: Dict[str, Any]) -> None:
@@ -192,7 +193,7 @@ class ProtocolRunnerSimMixin(Sim):
         self._is_running = False
 
 
-class CentrifugeSimMixin(Sim):
+class CentrifugeSimMixin(Sim, ICentrifugeDriver):
     """Mixin for centrifuge functionality"""
 
     async def open(self) -> None:
@@ -217,7 +218,7 @@ class CentrifugeSimMixin(Sim):
         self._is_running = False
 
 
-class ReaderSimMixin(Sim):
+class ReaderSimMixin(Sim, IReaderDriver):
     """Mixin for reader functionality"""
     
     async def read(self, protocol_filepath: str, output_filepath: str) -> None:
@@ -228,7 +229,7 @@ class ReaderSimMixin(Sim):
         self._is_running = False
 
 
-class DelidderSimMixin(Sim):
+class DelidderSimMixin(Sim, IDelidderDriver):
     """Mixin for delidder functionality"""
     
     async def delid(self) -> None:
@@ -239,7 +240,7 @@ class DelidderSimMixin(Sim):
         self._is_running = False
 
 
-class SimTransporterDriver:
+class SimTransporterDriver(ITransporterDriver):
     """Simulation transporter driver using mixin"""
     
     def __init__(self, name: str, sim_strategy: Optional[SimStrategy] = None) -> None:
@@ -292,7 +293,16 @@ class SimTransporterDriver:
         self._teachpoints = {t.name: t for t in teachpoints}
 
 
-class StorageSimMixin(Sim):
+class StorageSimMixin(Sim, IStorageDriver):
+    pass
+
+class LiquidHandlerSimMixin(ProtocolRunnerSimMixin, ILiquidHandlerDriver):
+    pass
+
+class PlateWasherSimMixin(ProtocolRunnerSimMixin, IPlateWasherDriver):
+    pass
+
+class WasteSimMixin(StorageSimMixin, IWasteDriver):
     pass
 
 
@@ -318,16 +328,16 @@ class SimCentrifugeDriver(BaseSimDriver, CentrifugeSimMixin):
 class SimStorageDriver(BaseSimDriver, StorageSimMixin):
     pass
 
-class SimPlateWasherDriver(BaseSimDriver, ProtocolRunnerSimMixin):
+class SimPlateWasherDriver(BaseSimDriver, PlateWasherSimMixin):
     pass
 
-class SimLiquidHandlerDriver(BaseSimDriver, ProtocolRunnerSimMixin):
+class SimLiquidHandlerDriver(BaseSimDriver, LiquidHandlerSimMixin):
     pass
 
 class SimDelidderDriver(BaseSimDriver, DelidderSimMixin):
     pass
 
-class SimWasteDriver(BaseSimDriver, StorageSimMixin):
+class SimWasteDriver(BaseSimDriver, WasteSimMixin):
     pass
 
 class SimReaderDriver(BaseSimDriver, ReaderSimMixin):

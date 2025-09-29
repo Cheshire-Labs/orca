@@ -1,6 +1,7 @@
 import asyncio
 from typing import List
 
+from orca.driver_management.drivers.driver_interfaces import ICentrifugeDriver, ISealerDriver, IShakerDriver, ITransporterDriver
 from pylabrobot.sealing.backend import SealerBackend as PLRSealerBackend
 from pylabrobot.shaking.backend import ShakerBackend as PLRShakerBackend
 from pylabrobot.centrifuge.backend import CentrifugeBackend as PLRCentrifugeBackend
@@ -9,7 +10,7 @@ from pylabrobot.arms.coords import CartesianCoords as PLRCartesianCoords
 
 from orca.resource_models.resource_extras.teachpoints import Teachpoint
 
-class PLRTransporterBackendWrapper:
+class PLRTransporterBackendWrapper(ITransporterDriver):
     def __init__(self, backend: PLRArmBackend) -> None:
         self._backend = backend
         self._positions: dict[str, Teachpoint] = {}
@@ -52,7 +53,7 @@ class PLRTransporterBackendWrapper:
         self._positions = {tp.name: tp for tp in teachpoints}
 
 
-class PLRSealerBackendWrapper:
+class PLRSealerBackendWrapper(ISealerDriver):
     def __init__(self, backend: PLRSealerBackend):
         self._backend = backend
         self._is_initialized = False
@@ -81,7 +82,7 @@ class PLRSealerBackendWrapper:
         return await self._backend.get_temperature()
 
 
-class PLRShakerBackendWrapper:
+class PLRShakerBackendWrapper(IShakerDriver):
     def __init__(self, backend: PLRShakerBackend):
         self._backend = backend
         self._is_initialized = False
@@ -125,7 +126,7 @@ class PLRShakerBackendWrapper:
     async def close(self) -> None:
         await self.lock_plate()
 
-class PLRCentrifugeBackendWrapper:
+class PLRCentrifugeBackendWrapper(ICentrifugeDriver):
     def __init__(self, backend: PLRCentrifugeBackend):
         self._backend = backend
         self._is_initialized = False
