@@ -1,15 +1,13 @@
 import asyncio
-from orca.resource_models.resource_extras.teachpoints import Teachpoint
-from pylabrobot.arms.backend import ArmBackend as PLRArmBackend
-from pylabrobot.arms.coords import CartesianCoords
-
-
 from typing import List
 
 from pylabrobot.sealing.backend import SealerBackend as PLRSealerBackend
 from pylabrobot.shaking.backend import ShakerBackend as PLRShakerBackend
 from pylabrobot.centrifuge.backend import CentrifugeBackend as PLRCentrifugeBackend
+from pylabrobot.arms.backend import ArmBackend as PLRArmBackend
+from pylabrobot.arms.coords import CartesianCoords as PLRCartesianCoords
 
+from orca.resource_models.resource_extras.teachpoints import Teachpoint
 
 class PLRTransporterBackendWrapper:
     def __init__(self, backend: PLRArmBackend) -> None:
@@ -36,22 +34,22 @@ class PLRTransporterBackendWrapper:
         tp = self._positions.get(position_name)
         if tp is None:
             raise ValueError(f"The position '{position_name}' is not taught for {self.name}")
-        coords = CartesianCoords(x=tp.x, y=tp.y, z=tp.z, yaw=tp.yaw, pitch=tp.pitch, roll=tp.roll)
+        coords = PLRCartesianCoords(**tp.coordinates.__dict__)
         await self._backend.pick_plate(coords, tp.approach_height)
 
     async def place(self, position_name: str, labware_type: str) -> None:
-        teachpoint = self._positions.get(position_name)
-        if teachpoint is None:
+        tp = self._positions.get(position_name)
+        if tp is None:
             raise ValueError(f"The position '{position_name}' is not taught for {self.name}")
-        coords = CartesianCoords(x=teachpoint.x, y=teachpoint.y, z=teachpoint.z, yaw=teachpoint.yaw, pitch=teachpoint.pitch, roll=teachpoint.roll)
-        await self._backend.place_plate(coords, teachpoint.approach_height)
+        coords = PLRCartesianCoords(**tp.coordinates.__dict__)
+        await self._backend.place_plate(coords, tp.approach_height)
 
-    def get_taught_positions(self) -> List[str]:
-        return list(self._positions.keys())
+    def get_teachpoints(self) -> List[Teachpoint]:
+        return list(self._positions.values())
 
-    def load_positions(self, positions: List[Teachpoint]) -> None:
+    def load_teachpoints(self, teachpoints: List[Teachpoint]) -> None:
         """Load taught positions from a list of Teachpoint objects."""
-        self._positions = {tp.name: tp for tp in positions}
+        self._positions = {tp.name: tp for tp in teachpoints}
 
 
 class PLRSealerBackendWrapper:

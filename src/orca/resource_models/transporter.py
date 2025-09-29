@@ -4,7 +4,7 @@ from typing import List, Optional
 from orca.driver_management.drivers.plr_wrappers import PLRTransporterBackendWrapper
 from orca.driver_management.drivers.driver_interfaces import ITransporterDriver
 from orca.driver_management.drivers.sims import SimTransporterDriver
-from orca.resource_models.resource_extras.teachpoints import Teachpoint
+from orca.resource_models.resource_extras.teachpoints import Teachpoint, TeachpointsRegistry
 from orca.resource_models.simulation_manager import SimulationManager
 from orca.resource_models.transporter_interface import ITransporter
 from orca.resource_models.labware import LabwareInstance
@@ -27,14 +27,15 @@ class Transporter(ITransporter):
             SimTransporterDriver("sim"),
             sim
             )
+        self._teachpoints = TeachpointsRegistry()
         self._lock = asyncio.Lock()
         self._labware: Optional[LabwareInstance] = None
         if type(load_positions) is str:
-            self.load_positions(Teachpoint.load_teachpoints_from_file(load_positions))
+            self._teachpoints.load_teachpoints_from_file(load_positions)
         elif type(load_positions) is list:
-            self.load_positions(load_positions)
+            self.load_teachpoints(load_positions)
         else:
-            self.load_positions([])
+            self.load_teachpoints([])
 
     @property
     def name(self) -> str:
@@ -98,11 +99,24 @@ class Transporter(ITransporter):
         
         self._labware = None
 
-    def get_taught_positions(self) -> List[str]:
-        return self.driver.get_taught_positions()
+    def get_teachpoints(self) -> List[Teachpoint]:
+        return self._teachpoints.list()
     
-    def load_positions(self, positions: List[Teachpoint]) -> None:
-        self.driver.load_positions(positions)
-    
+    def load_teachpoints(self, teachpoints: List[Teachpoint], overwrite: bool = True, clear_existing: bool = True) -> None:
+        if clear_existing: 
+            self._teachpoints.clear()
+        for t in teachpoints:
+            self._teachpoints.add(t, overwrite)
+
+    def save_teachpoints_to_file(self, save_filepath: str) -> None:
+        self._teachpoints.save(save_filepath)
+
+    def push_teachpoints_to_robot(self) -> None:
+        self.driver.load_teachpoints(self._teachpoints.list())
+
+    def pull_teachpoints_from_robot(self) -> List[Teachpoint]:
+        return self.driver.get_teachpoints()
+        
+
     def __str__(self) -> str:
         return f"Transporter: {self._name}"
