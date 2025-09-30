@@ -8,7 +8,7 @@ from orca.driver_management.drivers.driver_interfaces import IProtocolRunnerDriv
 
 orca_logger = logging.getLogger("orca")
 
-class SimulationVenusProtocolDriver:
+class SimulationVenusProtocolDriver(IProtocolRunnerDriver):
     """
     Simulation of Venus Protocol Driver for testing purposes.
     """
@@ -20,6 +20,8 @@ class SimulationVenusProtocolDriver:
                 placed_protocol: Optional[str]  = None,
                 prepare_pick_protocol: Optional[str]  = None,
                 prepare_place_protocol: Optional[str]  = None,
+                open_protocol: Optional[str] = None,
+                close_protocol: Optional[str] = None,
                 exe_path: str = r"C:\Program Files (x86)\HAMILTON\Bin\HxRun.exe",
                 methods_folder: str = r"C:\Program Files (x86)\HAMILTON\Methods",
                 sim_time: float = 0.1):
@@ -34,6 +36,8 @@ class SimulationVenusProtocolDriver:
         self._placed_protocol: Optional[str]  = placed_protocol
         self._prepare_pick_protocol: Optional[str]  = prepare_pick_protocol
         self._prepare_place_protocol: Optional[str]  = prepare_place_protocol
+        self._open_protocol: Optional[str] = open_protocol
+        self._close_protocol: Optional[str] = close_protocol
 
     @property
     def name(self) -> str:
@@ -89,8 +93,21 @@ class SimulationVenusProtocolDriver:
         orca_logger.info(f"Running protocol: {protocol_filepath} with params: {params} and options: {options}")
         await asyncio.sleep(self._sim_time)
 
+    async def open(self) -> None:
+        orca_logger.info(f"{self.name} opening...")
+        if self._open_protocol:
+            orca_logger.info(f"Running: {self._open_protocol}")
+            await asyncio.sleep(self._sim_time)
+        orca_logger.info(f"{self.name} opened")
 
-class VenusProtocolDriver:
+    async def close(self) -> None:
+        orca_logger.info(f"{self.name} closing...")
+        if self._close_protocol:
+            orca_logger.info(f"Running: {self._close_protocol}")
+            await asyncio.sleep(self._sim_time)
+        orca_logger.info(f"{self.name} closed")
+
+class VenusProtocolDriver(IProtocolRunnerDriver):
     """
     Driver for interfacing with Hamilton Venus protocols.
     """
@@ -102,6 +119,8 @@ class VenusProtocolDriver:
                 placed_protocol: Optional[str]  = None,
                 prepare_pick_protocol: Optional[str]  = None,
                 prepare_place_protocol: Optional[str]  = None,
+                open_protocol: Optional[str] = None,
+                close_protocol: Optional[str] = None,
                 exe_path: str = r"C:\Program Files (x86)\HAMILTON\Bin\HxRun.exe",
                 methods_folder: str = r"C:\Program Files (x86)\HAMILTON\Methods"):
         self._name = name
@@ -115,6 +134,8 @@ class VenusProtocolDriver:
         self._placed_protocol: Optional[str]  = placed_protocol
         self._prepare_pick_protocol: Optional[str]  = prepare_pick_protocol
         self._prepare_place_protocol: Optional[str]  = prepare_place_protocol
+        self._open_protocol: Optional[str] = open_protocol
+        self._close_protocol: Optional[str] = close_protocol
 
     @property
     def name(self) -> str:
@@ -234,7 +255,13 @@ class VenusProtocolDriver:
     def _write_options_to_json_file(self, options: Dict[str, Any]) -> None:
         json.dump(options, open(self._params_filepath, "w"))
 
+    async def open(self) -> None:
+        if self._open_protocol:
+            await self._execute_protocol(self._open_protocol)
 
+    async def close(self) -> None:
+        if self._close_protocol:
+            await self._execute_protocol(self._close_protocol)
 
 if __name__ == "__main__":
     async def main():
