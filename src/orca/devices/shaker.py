@@ -21,23 +21,6 @@ class Shaker(Device[IShakerDriver], IShaker):
         super().__init__(name, driver, _sim_driver, sim)
 
 
-    @property
-    def is_initialized(self) -> bool:
-        return self._is_initialized
-
-    async def initialize(self) -> None:
-        """
-        Initialize the driver.
-        """
-        async with self._lock:
-            await self.driver.setup(**self._init_options)  # type: ignore
-            self._is_initialized = True
-
-    @property
-    def is_running(self) -> bool:
-        """Check if the driver is running."""
-        return self._lock.locked()
-
     async def shake(self, duration: int, speed: int) -> None:
         """Shake the shaker for a specified duration at a given speed."""
         await self.driver.shake(speed, duration)
