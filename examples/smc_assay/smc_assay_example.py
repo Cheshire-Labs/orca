@@ -73,8 +73,8 @@ translator_2 = Transporter("translator_2", SimTransporterDriver("translator"), l
 # These are devices capable of reciving labware
 biotek_1 = PlateWasher("biotek", SimPlateWasherDriver("biotek"))
 biotek_2 = PlateWasher("biotek_2", SimPlateWasherDriver("biotek_2"))
-bravo_96 = LiquidHandler("bravo_96_head", SimLiquidHandlerDriver("bravo_96_head"))
-bravo_384 = LiquidHandler("bravo_384_head", SimLiquidHandlerDriver("bravo_384_head"))
+bravo_96 = LiquidHandler("bravo_96", SimLiquidHandlerDriver("bravo_96"))
+bravo_384 = LiquidHandler("bravo_384", SimLiquidHandlerDriver("bravo_384"))
 sealer = A4SSealer("sealer", "COM3", sim=True)
 centrifuge = Centrifuge("centrifuge", SimCentrifugeDriver("centrifuge"), True)
 plate_hotel = Storage("plate_hotel", SimStorageDriver("plate_hotel"))
@@ -98,6 +98,7 @@ shaker_8 = Shaker("shaker_8", SimShakerDriver("shaker_8"), True)
 shaker_9 = Shaker("shaker_9", SimShakerDriver("shaker_9"), True)
 shaker_10 = Shaker("shaker_10", SimShakerDriver("shaker_10"), True)
 waste_1 = Waste("waste_1", SimWasteDriver("waste_1"))
+waste_2 = Waste("waste_2", SimWasteDriver("waste_2"))
 
 # Build any resource pools - Orca will resolve what resource to use once it reaches that step
 shaker_collection = ResourcePool("shaker_collection", resources=[shaker_1, shaker_2, shaker_3, shaker_4, shaker_5, shaker_6, shaker_7, shaker_8, shaker_9, shaker_10])
@@ -113,6 +114,7 @@ resource_registry.add_resources([
     centrifuge, 
     plate_hotel,
     delidder,
+    smc_pro,
     ddr_1,
     ddr_2,
     ddr_3,
@@ -136,6 +138,7 @@ resource_registry.add_resources([
     shaker_9,
     shaker_10,
     waste_1,
+    waste_2,
     shaker_collection
 ])
 
@@ -153,6 +156,7 @@ map.assign_resources({
     "centrifuge": centrifuge,
     "plate_hotel": plate_hotel,
     "delidder": delidder,
+    "smc_pro": smc_pro,
     "stacker_1": stacker_sample_start,
     "stacker_2": stacker_sample_end,
     "stacker_3": stacker_plate_1_start,
@@ -171,6 +175,7 @@ map.assign_resources({
     "shaker_9": shaker_9,
     "shaker_10": shaker_10,
     "waste_1": waste_1,
+    "waste_2": waste_2
 })
 
 
