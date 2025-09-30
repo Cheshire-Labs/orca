@@ -4,11 +4,8 @@ from orca.driver_management.drivers.driver_interfaces import IShakerDriver
 from orca.driver_management.drivers.plr_wrappers import PLRShakerBackendWrapper
 from orca.driver_management.drivers.sims import SimShakerDriver
 from orca.resource_models.devices import Device
-from orca.resource_models.labware import LabwareInstance
 from pylabrobot.shaking.backend import ShakerBackend as PLRShakerBackend
 
-
-import asyncio
 
 
 class Shaker(Device[IShakerDriver], IShaker):
