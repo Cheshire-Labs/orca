@@ -25,9 +25,8 @@ class Centrifuge(Device[ICentrifugeDriver], ICentrifuge):
             sim)
 
     async def centrifuge(self, speed: int, duration: int) -> None:
-        """Spin the centrifuge at a specified speed for a specified duration."""
-        async with self._lock:
-            await self.driver.centrifuge(speed, duration)
+        """Spin the centrifuge at a specified speed for a specified duration."""    
+        await self.driver.centrifuge(speed, duration)
 
     @property
     def is_initialized(self) -> bool:
