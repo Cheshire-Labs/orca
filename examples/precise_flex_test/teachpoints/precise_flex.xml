@@ -5,4 +5,11 @@
     <!-- <teachpoint name="TEST_LOCATION_J_RIGHT" frame="joint" rail="0" shoulder="169.975" elbow="-16.736" wrist="115.991" gripper="-110.057" /> -->
     <teachpoint name="TEST_LOCATION_C_LEFT" x="246.024" y="-147.689" z="169.955" yaw="6.879" pitch="90" roll="0" approach_height="20" />
     <!-- <teachpoint name="TEST_LOCATION_J_LEFT" frame="joint" rail="0" shoulder="169.888" elbow="10.079" wrist="231.358" gripper="-240.229" /> -->
+    <teachpoint name="location_1" x="246.024" y="-147.689" z="169.955" yaw="6.879" pitch="90" roll="0" approach_height="20" />
+    <teachpoint name="location_2" x="246.024" y="-147.689" z="169.955" yaw="6.879" pitch="90" roll="0" approach_height="20" />
+    <teachpoint name="location_3" x="246.024" y="-147.689" z="169.955" yaw="6.879" pitch="90" roll="0" approach_height="20" />
+    <teachpoint name="location_4" x="246.024" y="-147.689" z="169.955" yaw="6.879" pitch="90" roll="0" approach_height="20" />
+    <teachpoint name="shaker" x="246.024" y="-147.689" z="169.955" yaw="6.879" pitch="90" roll="0" approach_height="20" />
+    <teachpoint name="centrifuge" x="246.024" y="-147.689" z="169.955" yaw="6.879" pitch="90" roll="0" approach_height="20" />
+    <teachpoint name="sealer" x="246.024" y="-147.689" z="169.955" yaw="6.879" pitch="90" roll="0" approach_height="20" />
 </teachpoints>
