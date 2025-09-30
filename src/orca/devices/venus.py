@@ -2,7 +2,6 @@ from orca.devices.device_interfaces import IGenericExecutable, IProtocolRunner
 from orca.driver_management.drivers.venus.venus_driver import SimulationVenusProtocolDriver, VenusProtocolDriver
 from orca.resource_models.devices import Device
 from orca.resource_models.labware import LabwareInstance
-from orca.resource_models.simulation_manager import SimulationManager
 
 
 from typing import Any, Dict, Optional
@@ -33,24 +32,27 @@ class Venus(Device, IProtocolRunner, IGenericExecutable):
             methods_folder (str): Path to the folder containing Venus methods. This is prepended to the protocol paths.
             sim (bool): Whether to use simulation mode.
         """
-        self._sim_manager = SimulationManager(VenusProtocolDriver(name,
-                                                                  init_protocol,
-                                                                  picked_protocol,
-                                                                  placed_protocol,
-                                                                  prepare_pick_protocol,
-                                                                  prepare_place_protocol,
-                                                                  exe_path,
-                                                                  methods_folder),
-                                            SimulationVenusProtocolDriver(name,
-                                                                          init_protocol,
-                                                                          picked_protocol,
-                                                                          placed_protocol,
-                                                                          prepare_pick_protocol,
-                                                                          prepare_place_protocol,
-                                                                          exe_path,
-                                                                          methods_folder),
-                                            sim)
-        super().__init__(name, self._sim_manager)
+        driver = VenusProtocolDriver(name,
+                                    init_protocol,
+                                    picked_protocol,
+                                    placed_protocol,
+                                    prepare_pick_protocol,
+                                    prepare_place_protocol,
+                                    None,
+                                    None,
+                                    exe_path,
+                                    methods_folder)
+        sim_driver = SimulationVenusProtocolDriver(name,
+                                                    init_protocol,
+                                                    picked_protocol,
+                                                    placed_protocol,
+                                                    prepare_pick_protocol,
+                                                    prepare_place_protocol,
+                                                    None,
+                                                    None,
+                                                    exe_path,
+                                                    methods_folder)
+        super().__init__(name, driver, sim_driver, sim)
 
     @property
     def driver(self) -> VenusProtocolDriver | SimulationVenusProtocolDriver:
