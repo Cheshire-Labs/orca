@@ -1,4 +1,5 @@
 
+import asyncio
 import logging
 import os
 import sys
@@ -11,6 +12,7 @@ from orca.events.event_bus import EventBus
 from orca.resource_models.labware import PlateTemplate
 from orca.resource_models.transporter import Transporter
 from orca.system.SdkToSystemBuilder import SdkToSystemBuilder
+from orca.system.executors import WorkflowExecutor
 from orca.system.resource_registry import ResourceRegistry
 from orca.system.system_map import SystemMap
 from orca.workflow_models.action_template import Seal, Shake, Spin, Read
@@ -39,30 +41,32 @@ pf_teachpoints = os.path.join("examples", "precise_flex_test", "teachpoints", "p
 
 pf_arm = Transporter("pf_arm", PreciseFlex400Backend("192.168.0.1", 10100), pf_teachpoints, sim=True)
 
-shaker = Shaker("human_device", SimShakerDriver("human_device", HumanSim()))
+shaker = Shaker("shaker", SimShakerDriver("shaker", HumanSim()))
 centrifuge = Centrifuge("centrifuge", SimCentrifugeDriver("centrifuge", HumanSim()))
 sealer = Sealer("sealer", SimSealerDriver("peeler_driver", HumanSim()))
 
 resource_registry = ResourceRegistry()
-resources = [
+resource_registry.add_resources([
     pf_arm,
     shaker,
     sealer,
     centrifuge
-]
+])
 
 map = SystemMap(resource_registry)
 map.assign_resources({
-
+"shaker": shaker,
+"sealer": sealer,
+"centrifuge": centrifuge,
 })
 
-test_method = MethodTemplate("test_method", [
+test_method_1 = MethodTemplate("test_method_1", [
     Shake(shaker, 10, 12, [src_plate], [src_plate]),
     Spin(centrifuge, 10, 10, [src_plate], [src_plate])
 ])
 
-method_template = MethodTemplate("test_method", [
-    Seal(sealer, 120, 20, [src_plate], [src_plate])
+test_method_2 = MethodTemplate("test_method_2", [
+    Seal(sealer, 120, 20, [dest_plate], [dest_plate])
 ])
 
 
@@ -73,7 +77,7 @@ sample_plate_thread = ThreadTemplate(
     map.get_location("location_1"),
     map.get_location("location_2"),
     [
-    test_method
+    test_method_1
 ])
 
 destination_plate_thread = ThreadTemplate(
@@ -81,7 +85,7 @@ destination_plate_thread = ThreadTemplate(
     map.get_location("location_3"),
     map.get_location("location_4"),
     [
-    method_template
+    test_method_2
 ])
 
 
@@ -97,6 +101,22 @@ builder = SdkToSystemBuilder(
     labwares, 
     resource_registry, 
     map, 
-    [test_method, method_template], 
+    [test_method_1, test_method_2], 
     [test_workflow], 
     event_bus)
+
+# Build the system
+system = builder.get_system()
+
+# run the workflow using this function
+async def run(sim: bool):
+    orca_logger.info("Starting pyLabRobot workflow execution.")
+    if not sim:
+        await system.initialize_all()
+    executor = WorkflowExecutor(test_workflow, system)
+    await executor.start(sim)
+    orca_logger.info("pyLabRobot workflow completed.")
+
+if __name__ == "__main__":
+    asyncio.run(run(True))
+    orca_logger.info("Workflow execution finished.")
