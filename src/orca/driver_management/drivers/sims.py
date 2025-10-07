@@ -52,7 +52,6 @@ class BaseSimDriver:
         self._sim_strategy = sim_strategy or SleepSim()
         self._is_initialized: bool = False
         self._is_connected: bool = False
-        self._is_running: bool = False
 
     @property
     def name(self) -> str:
@@ -65,10 +64,6 @@ class BaseSimDriver:
     @property
     def is_connected(self) -> bool:
         return self._is_connected
-
-    @property
-    def is_running(self) -> bool:
-        return self._is_running
 
     async def initialize(self) -> None:
         await self._sim(f"Initialization of {self.name} in progress...")
@@ -88,7 +83,6 @@ class BaseSimDriver:
     async def stop(self) -> None:
         """Stop the driver."""
         await self._sim(f"Stopping {self.name}...")
-        self._is_running = False
         orca_logger.info(f"{self.name} stopped successfully.")
 
     async def open(self) -> None:
@@ -102,9 +96,7 @@ class BaseSimDriver:
         orca_logger.info(f"{self.name} close door successfully")
 
     async def _sim(self, message: str) -> None:
-        self._is_running = True
         await self._sim_strategy.sim(message)
-        self._is_running = False
 
 
 # Mixins for simulation functionality
@@ -115,10 +107,8 @@ class ShakerSimMixin(Sim, IShakerDriver):
 
     async def shake(self, speed: float, duration: float) -> None:
         """Shake the device for a specified duration and speed."""
-        self._is_running = True
         await self._sim(f"Shaking at speed {speed} for {duration} seconds...")
         orca_logger.info("Shaking completed successfully.")
-        self._is_running = False
 
     async def stop_shaking(self) -> None:
         """Stop shaking"""
@@ -145,24 +135,18 @@ class SealerSimMixin(Sim, ISealerDriver):
     """Mixin for sealer simulation functionality"""
     async def open(self) -> None:
         """Open the sealer."""
-        self._is_running = True
         await self._sim("Opening sealer...")
         orca_logger.info("Sealer opened successfully.")
-        self._is_running = False
 
     async def close(self) -> None:
         """Close the sealer."""
-        self._is_running = True
         await self._sim("Closing sealer...")
         orca_logger.info("Sealer closed successfully.")
-        self._is_running = False
 
     async def seal(self, temperature: int, duration: float) -> None:
         """Seal the plate at a specified temperature and duration."""
-        self._is_running = True
         await self._sim(f"Sealing at {temperature}°C for {duration} seconds...")
         orca_logger.info("Sealing completed successfully.")
-        self._is_running = False
 
 
 class TempSettableSimMixin(Sim, ITempSettableDriver):
@@ -184,13 +168,11 @@ class TempGettableSimMixin(Sim, ITempGettableDriver):
 
 class ProtocolRunnerSimMixin(Sim, IProtocolRunnerDriver):
     """Mixin for protocol runner functionality"""
-    
+
     async def run_protocol(self, protocol_filepath: str, params: Dict[str, Any]) -> None:
         """Run a protocol with given parameters."""
-        self._is_running = True
         await self._sim(f"Running protocol: {protocol_filepath} with params: {params}...")
         orca_logger.info(f"Protocol {protocol_filepath} executed successfully.")
-        self._is_running = False
 
 
 class CentrifugeSimMixin(Sim, ICentrifugeDriver):
@@ -198,46 +180,36 @@ class CentrifugeSimMixin(Sim, ICentrifugeDriver):
 
     async def open(self) -> None:
         """Open the centrifuge."""
-        self._is_running = True
         await self._sim("Opening centrifuge...")
         orca_logger.info("Centrifuge opened successfully.")
-        self._is_running = False
 
     async def close(self) -> None:
         """Close the centrifuge."""
-        self._is_running = True
         await self._sim("Closing centrifuge...")
         orca_logger.info("Centrifuge closed successfully.")
-        self._is_running = False
-    
+
     async def centrifuge(self, g: float, duration: float) -> None:
         """Spin the centrifuge at a specified speed for a specified duration."""
-        self._is_running = True
         await self._sim(f"Spinning centrifuge for {duration} seconds at speed {g}...")
         orca_logger.info("Centrifuge spin completed successfully.")
-        self._is_running = False
 
 
 class ReaderSimMixin(Sim, IReaderDriver):
     """Mixin for reader functionality"""
-    
+
     async def read(self, protocol_filepath: str, output_filepath: str) -> None:
         """Read data from the specified protocol and output to a file."""
-        self._is_running = True
         await self._sim(f"Reading data from {protocol_filepath} and writing to {output_filepath}...")
         orca_logger.info(f"Data read successfully from {protocol_filepath} and written to {output_filepath}.")
-        self._is_running = False
 
 
 class DelidderSimMixin(Sim, IDelidderDriver):
     """Mixin for delidder functionality"""
-    
+
     async def delid(self) -> None:
         """Delid the specified labware."""
-        self._is_running = True
         await self._sim("Delidding labware...")
         orca_logger.info("Labware delidded successfully.")
-        self._is_running = False
 
 
 class SimTransporterDriver(ITransporterDriver):
@@ -265,17 +237,13 @@ class SimTransporterDriver(ITransporterDriver):
 
     async def pick(self, position_name: str, labware_type: str) -> None:
         """Pick labware from a position."""
-        self._is_running = True
         await self._sim(f"Driver: {self.name} picking from {position_name}, labware type: {labware_type}...")
         orca_logger.info(f"Driver: {self.name} picked from {position_name}, labware type: {labware_type}")
-        self._is_running = False
 
     async def place(self, position_name: str, labware_type: str) -> None:
         """Place labware at a position."""
-        self._is_running = True
         await self._sim(f"Driver: {self.name} placing to {position_name}, labware type: {labware_type}...")
         orca_logger.info(f"Driver: {self.name} placed to {position_name}, labware type: {labware_type}")
-        self._is_running = False
 
 
     def get_teachpoints(self) -> List[Teachpoint]:
