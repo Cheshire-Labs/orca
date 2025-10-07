@@ -38,11 +38,7 @@ class HumanSim(SimStrategy):
 
     async def sim(self, prompt: str) -> None:
         full = f"{prompt}{self.prompt_suffix}"
-        loop = asyncio.get_running_loop()
-        # run blocking input() in a thread so we don't block the event loop
-        # but this will block the current task/coroutine until input is received
-        await loop.run_in_executor(None, lambda: input(full))
-
+        input(full)
 
 class BaseSimDriver:
     """Base simulation driver with common functionality"""
