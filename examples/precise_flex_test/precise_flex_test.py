@@ -92,6 +92,7 @@ destination_plate_thread = ThreadTemplate(
 
 test_workflow = WorkflowTemplate("test_workflow")
 test_workflow.add_thread(sample_plate_thread, True)
+test_workflow.add_thread(destination_plate_thread)
 
 event_bus = EventBus()
 
@@ -118,5 +119,5 @@ async def run(sim: bool):
     orca_logger.info("pyLabRobot workflow completed.")
 
 if __name__ == "__main__":
-    asyncio.run(run(True))
+    asyncio.run(run(False))
     orca_logger.info("Workflow execution finished.")
