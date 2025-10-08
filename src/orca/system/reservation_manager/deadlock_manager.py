@@ -1,14 +1,23 @@
-from typing import Dict, List, Optional, Set
-from orca.resource_models.labware import LabwareInstance
-
+from typing import Dict, List, Set
 
 import networkx as nx # type: ignore
 
 from orca.system.reservation_manager.interfaces import IReservationCollection
 from orca.system.reservation_manager.location_reservation import LocationReservation
-from orca.system.system_map import ILocationRegistry
 from orca.system.thread_registry_interface import IThreadRegistry
 
+class DeadlockStarvationRegistry:
+    """Maintains a registry to track plate movement frequency for deadlock resolution."""
+    def __init__(self) -> None:
+        self._starvation_scores: dict[str, int] = {}
+
+    def increment_starvation_score(self, thread_id: str) -> None:
+        """Increment the starvation score for a labware."""
+        self._starvation_scores[thread_id] = self._starvation_scores.get(labware_id, 0) + 1
+
+    def get_starvation_score(self, thread_id: str) -> int:
+        """Get the current starvation score for a labware."""
+        return self._starvation_scores.get(thread_id, 0)
 
 class DeadlockGraph:
     def __init__(self) -> None:
@@ -90,23 +99,3 @@ class ThreadDeadlockDetector:
     
     def _get_labware_to_thread_map(self, queue: List[IReservationCollection]) -> Dict[str, str]:
         return {self._thread_registry.get_thread(c.thread_id).labware.id: c.thread_id for c in queue}
-
-
-
-# class DeadlockDetector:
-#     def __init__(self, location_registry: ILocationRegistry, location_reservations: Dict[str, LocationReservation], reservation_queues: Dict[str, List[LocationReservation]]) -> None:
-#         self._location_registry = location_registry
-#         self._location_reservations = location_reservations
-#         self._reservation_queues = reservation_queues
-
-#     def is_deadlocked(self) -> bool:
-#         graph = DeadlockGraph()
-#         for location_name, queue in self._reservation_queues.items():
-#             for request in queue:
-#                 requestor = request.labware
-#                 holder = self._location_registry.get_location(location_name).labware
-#                 if holder is None or requestor is None:
-#                     continue
-#                 graph._add_edge(requestor, holder)
-
-#         return graph.is_deadlocked()

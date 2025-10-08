@@ -4,7 +4,7 @@ import logging
 from typing import Dict, List
 from orca.resource_models.location import ILabwareLocationObserver
 from orca.system.reservation_manager.location_reservation import LocationReservation
-from orca.system.reservation_manager.deadlock_manager import ThreadDeadlockDetector
+from orca.system.reservation_manager.deadlock_manager import DeadlockStarvationRegistry, ThreadDeadlockDetector
 from orca.system.reservation_manager.interfaces import IAvailabilityManager, IReservationCollection, IReservationManager, IThreadReservationCoordinator
 from orca.system.system_map import ILocationRegistry
 from orca.system.thread_registry_interface import IThreadRegistry
@@ -60,6 +60,8 @@ class ThreadReservationCoordinator(IThreadReservationCoordinator, IAvailabilityM
         self._queue: List[IReservationCollection] = []
         # self._deadlock_detector = DeadlockDetector(location_reg, self._location_reservations, self._location_queues)
         self._deadlock_detector = ThreadDeadlockDetector(thread_registry)
+        self._starvatoin_registry = DeadlockStarvationRegistry()
+
         self.ticker_started = False
         self._lock = asyncio.Lock()
 
