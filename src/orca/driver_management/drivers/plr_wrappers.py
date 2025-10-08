@@ -6,14 +6,27 @@ from pylabrobot.sealing.backend import SealerBackend as PLRSealerBackend
 from pylabrobot.shaking.backend import ShakerBackend as PLRShakerBackend
 from pylabrobot.centrifuge.backend import CentrifugeBackend as PLRCentrifugeBackend
 from pylabrobot.arms.backend import ArmBackend as PLRArmBackend
-from pylabrobot.arms.coords import CartesianCoords as PLRCartesianCoords
+from pylabrobot.arms.coords import CartesianCoords as PLRCartesianCoords, ElbowOrientation
 
-from orca.resource_models.resource_extras.teachpoints import Teachpoint
+from orca.resource_models.resource_extras.teachpoints import Teachpoint, TeachpointsRegistry
+
+
+def convert_teachpoint_to_plr_coord(teachpoint: Teachpoint):
+    tp = teachpoint
+    c = tp.coordinates
+    return PLRCartesianCoords(
+      c.x,
+      c.y,
+      c.z,
+      c.yaw,
+      c.pitch,
+      c.roll,
+      ElbowOrientation(tp.orientation))
 
 class PLRTransporterBackendWrapper(ITransporterDriver):
     def __init__(self, backend: PLRArmBackend) -> None:
         self._backend = backend
-        self._positions: dict[str, Teachpoint] = {}
+        self._teachpoints = TeachpointsRegistry()
         self._is_initialized = False
 
     @property
@@ -29,29 +42,31 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
     async def initialize(self) -> None:
         """Initializes the transporter."""
         await self._backend.setup()
+        await self._backend.home()
+        # await self._backend.move_to_safe()
         self._is_initialized = True
 
     async def pick(self, position_name: str, labware_type: str) -> None:
-        tp = self._positions.get(position_name)
+        tp = self._teachpoints.get(position_name)
         if tp is None:
             raise ValueError(f"The position '{position_name}' is not taught for {self.name}")
-        coords = PLRCartesianCoords(**tp.coordinates.__dict__)
+        coords = convert_teachpoint_to_plr_coord(tp)
         await self._backend.pick_plate(coords, tp.approach_height)
 
     async def place(self, position_name: str, labware_type: str) -> None:
-        tp = self._positions.get(position_name)
+        tp = self._teachpoints.get(position_name)
         if tp is None:
             raise ValueError(f"The position '{position_name}' is not taught for {self.name}")
-        coords = PLRCartesianCoords(**tp.coordinates.__dict__)
+        coords = convert_teachpoint_to_plr_coord(tp)
         await self._backend.place_plate(coords, tp.approach_height)
 
     def get_teachpoints(self) -> List[Teachpoint]:
-        return list(self._positions.values())
+        return self._teachpoints.list()
 
     def load_teachpoints(self, teachpoints: List[Teachpoint]) -> None:
         """Load taught positions from a list of Teachpoint objects."""
-        self._positions = {tp.name: tp for tp in teachpoints}
-
+        self._teachpoints.clear()
+        [self._teachpoints.add(t) for t in teachpoints]
 
 class PLRSealerBackendWrapper(ISealerDriver):
     def __init__(self, backend: PLRSealerBackend):

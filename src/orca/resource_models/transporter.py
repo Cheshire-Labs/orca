@@ -27,11 +27,11 @@ class Transporter(ITransporter):
             SimTransporterDriver("sim"),
             sim
             )
-        self._teachpoints = TeachpointsRegistry()
         self._lock = asyncio.Lock()
         self._labware: Optional[LabwareInstance] = None
         if type(load_positions) is str:
-            self._teachpoints.load_teachpoints_from_file(load_positions)
+            teachpoints = Teachpoint.load_teachpoints_from_file(load_positions)
+            self.load_teachpoints(teachpoints)
         elif type(load_positions) is list:
             self.load_teachpoints(load_positions)
         else:
@@ -83,8 +83,6 @@ class Transporter(ITransporter):
             raise ValueError(f"{self} already contains labware: {self._labware}")
         if location.labware is None:
             raise ValueError(f"{location} does not contain labware")
-        if not self._teachpoints.exists(location.name):
-            raise KeyError(f"Teachpoint with name: {location.name} does not exist for {self.name}")
         orca_logger.info(f"{self._name} pick {location.labware} from {location}: picking...")
         await self.driver.pick(location.teachpoint_name, location.labware.labware_type)
         orca_logger.info(f"{self._name} pick {location.labware} from {location}: picked")
@@ -95,8 +93,6 @@ class Transporter(ITransporter):
             raise ValueError(f"{self} does not contain labware")
         if location.labware is not None:
             raise ValueError(f"{location} already contains labware")
-        if not self._teachpoints.exists(location.name):
-            raise KeyError(f"Teachpoint with name: {location.name} does not exist for {self.name}")
         orca_logger.info(f"{self._name} place {self._labware} to {location}: placing...")
         await self.driver.place(location.teachpoint_name, self._labware.labware_type)
         orca_logger.info(f"{self._name} place {self._labware} to {location}: placed")
@@ -104,19 +100,10 @@ class Transporter(ITransporter):
         self._labware = None
 
     def get_teachpoints(self) -> List[Teachpoint]:
-        return self._teachpoints.list()
+        return self.driver.get_teachpoints()
     
-    def load_teachpoints(self, teachpoints: List[Teachpoint], overwrite: bool = True, clear_existing: bool = True) -> None:
-        if clear_existing: 
-            self._teachpoints.clear()
-        for t in teachpoints:
-            self._teachpoints.add(t, overwrite)
-
-    def save_teachpoints_to_file(self, save_filepath: str) -> None:
-        self._teachpoints.save(save_filepath)
-
-    def push_teachpoints_to_robot(self) -> None:
-        self.driver.load_teachpoints(self._teachpoints.list())
+    def load_teachpoints(self, teachpoints: List[Teachpoint]) -> None:
+        self.driver.load_teachpoints(teachpoints)
 
     def pull_teachpoints_from_robot(self) -> List[Teachpoint]:
         return self.driver.get_teachpoints()
