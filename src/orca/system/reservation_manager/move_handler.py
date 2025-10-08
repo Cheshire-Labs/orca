@@ -52,36 +52,6 @@ class MoveActionCollectionReservationRequest(IReservationCollection):
         if self._reserved_move_action is None:
             raise ValueError("No move action reserved yet")
         return self._reserved_move_action
-
-    # async def reserve_route(self, reservation_manager: IReservationManager) -> MoveAction:
-    #     for action in self._requested_move_actions:
-    #         action.reservation.submit_reservation_request(reservation_manager)
-        
-    #     # await first route reservation completed
-    #     done, pending = await asyncio.wait([asyncio.create_task(action.reservation.granted.wait()) for action in self._requested_move_actions], return_when=asyncio.FIRST_COMPLETED)
-
-    #     # Find the first completed reservation and set it as the reservation to use
-    #     for task in done:
-    #         completed_reservation = next((action for action in self._requested_move_actions if action.reservation.granted.is_set()), None)
-    #         if completed_reservation and not self._reservation:
-    #             self._reservation = completed_reservation
-    #             break
-        
-    #     for task in pending:
-    #         task.cancel()
-
-    #     # release and cancel any other reservations
-    #     for action in self._requested_move_actions:
-    #         if action != self._reservation and action.reservation.granted.is_set():
-    #             action.reservation.release_reservation()
-    #         elif not action.reservation.granted.is_set():
-    #             action.reservation.rejected.set()
-    #             action.reservation.processed.set()
-
-    #     if self._reservation is None:
-    #         raise ValueError("No route reserved")
-
-    #     return self._reservation
     
     def get_reservations(self) -> List[LocationReservation]:
         return [action.reservation for action in self._requested_move_actions]
@@ -157,7 +127,6 @@ class MoveHandler:
         potential_paths = [path for path in potential_paths if move_action.target.teachpoint_name not in path]
         sorted_paths = sorted(potential_paths, key=lambda path: len(path))
         potential_moves = self._get_potential_move_actions( move_action.labware, sorted_paths)
-       
         return await self._resolve_reservation_from_move_action_collection(thread_id, potential_moves)
 
 
