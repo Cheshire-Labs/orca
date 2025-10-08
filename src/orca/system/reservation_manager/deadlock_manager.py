@@ -12,12 +12,17 @@ class DeadlockStarvationRegistry:
         self._starvation_scores: dict[str, int] = {}
 
     def increment_starvation_score(self, thread_id: str) -> None:
-        """Increment the starvation score for a labware."""
-        self._starvation_scores[thread_id] = self._starvation_scores.get(labware_id, 0) + 1
+        """Increment the starvation score for a thread."""
+        self._starvation_scores[thread_id] = self._starvation_scores.get(thread_id, 0) + 1
 
     def get_starvation_score(self, thread_id: str) -> int:
-        """Get the current starvation score for a labware."""
+        """Get the current starvation score for a thread."""
         return self._starvation_scores.get(thread_id, 0)
+
+    def reset_starvation_score(self, thread_id: str) -> None:
+        """Reset the starvation score for a thread to zero."""
+        if thread_id in self._starvation_scores:
+            self._starvation_scores[thread_id] = 0
 
 class DeadlockGraph:
     def __init__(self) -> None:
@@ -49,8 +54,9 @@ class DeadlockGraph:
 
 
 class ThreadDeadlockDetector:
-    def __init__(self, thread_registry: IThreadRegistry) -> None:
+    def __init__(self, thread_registry: IThreadRegistry, starvation_registry: DeadlockStarvationRegistry) -> None:
         self._thread_registry = thread_registry
+        self._starvation_registry = starvation_registry
 
     def detect_deadlocks(
         self,
@@ -63,6 +69,7 @@ class ThreadDeadlockDetector:
             if collection.thread_id in cycling_thread_ids:
                 collection.rejected.clear()
                 collection.deadlocked.set()
+                self._starvation_registry.increment_starvation_score(collection.thread_id)
 
     def _build_wait_for_graph(
         self,
