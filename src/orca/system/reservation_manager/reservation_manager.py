@@ -58,9 +58,8 @@ class ThreadReservationCoordinator(IThreadReservationCoordinator, IAvailabilityM
         self._location_reg = location_reg
         self._reservation_manager: LocationReservationManager = LocationReservationManager(location_reg)
         self._queue: List[IReservationCollection] = []
-        # self._deadlock_detector = DeadlockDetector(location_reg, self._location_reservations, self._location_queues)
-        self._deadlock_detector = ThreadDeadlockDetector(thread_registry)
-        self._starvatoin_registry = DeadlockStarvationRegistry()
+        self._starvation_registry = DeadlockStarvationRegistry()
+        self._deadlock_detector = ThreadDeadlockDetector(thread_registry, self._starvation_registry)
 
         self.ticker_started = False
         self._lock = asyncio.Lock()
@@ -74,19 +73,26 @@ class ThreadReservationCoordinator(IThreadReservationCoordinator, IAvailabilityM
 
     async def _on_tick(self) -> None:
         """This method is called periodically to check for deadlocks and process reservations."""
-        
+
         # copy over the queue
         async with self._lock:
             queue_snapshot = list(self._queue)
             self._queue.clear()
 
+        # sort queue by starvation score (highest first) to give priority to starved threads
+        queue_snapshot.sort(key=lambda c: self._starvation_registry.get_starvation_score(c.thread_id), reverse=True)
+
         # attempt to get a reservation
         for collection in queue_snapshot:
             for r in collection.get_reservations():
                 self._reservation_manager.attempt_reservation(r.requested_location.name, r)
-            
+
             collection.resolve_final_reservation()
             collection.processed.set()
+
+            # reset starvation score if reservation was granted
+            if collection.granted.is_set():
+                self._starvation_registry.reset_starvation_score(collection.thread_id)
 
         self._detect_dead_lock(queue_snapshot)
 
