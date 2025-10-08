@@ -41,7 +41,7 @@ labwares = [
 a4s_sealer_driver = A4SBackend(port="/dev/tty.usbserial-0001", timeout=10)
 sealer = Sealer("a4s_sealer", a4s_sealer_driver)
 mock_device = LiquidHandler("liquid_handler", SimLiquidHandlerDriver("ml_star"))
-robotic_arm = Transporter("robotic_arm", SimTransporterDriver("robotic_arm"), "examples\\pylabrobot_example\\teachpoints\\teachpoints.xml")
+robotic_arm = Transporter("robotic_arm", SimTransporterDriver("robotic_arm"), "examples\\pylabrobot_example\\teachpoints\\teachpoints.json")
 
 # Register the resources
 resources = ResourceRegistry()

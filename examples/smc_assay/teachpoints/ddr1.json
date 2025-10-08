@@ -1,0 +1,81 @@
+{
+  "teachpoints": [
+    {
+      "name": "biotek_1",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "bravo_96",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "translator_1_start",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "waste_1",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "pad_1",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "pad_2",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "pad_3",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    }
+  ]
+}

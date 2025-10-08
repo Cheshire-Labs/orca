@@ -1,0 +1,59 @@
+{
+  "teachpoints": [
+    {
+      "name": "shaker",
+      "x": -133.613,
+      "y": -452.869,
+      "z": 296.534,
+      "yaw": -136.235,
+      "pitch": 90,
+      "roll": 180,
+      "approach_height": 100,
+      "orientation": "left"
+    },
+    {
+      "name": "centrifuge",
+      "x": -133.187,
+      "y": -452.553,
+      "z": 213.009,
+      "yaw": -136.612,
+      "pitch": 90,
+      "roll": 180,
+      "approach_height": 100,
+      "orientation": "left"
+    },
+    {
+      "name": "sealer",
+      "x": -131.608,
+      "y": -452.217,
+      "z": 128.151,
+      "yaw": -136.611,
+      "pitch": 90,
+      "roll": 180,
+      "approach_height": 100,
+      "orientation": "left"
+    },
+    {
+      "name": "location_1",
+      "x": -8.730,
+      "y": 272.232,
+      "z": 18.284,
+      "yaw": 133.917,
+      "pitch": 90,
+      "roll": -180,
+      "approach_height": 100,
+      "orientation": "right"
+    },
+    {
+      "name": "location_2",
+      "x": 25.977,
+      "y": 465.31,
+      "z": 23.079,
+      "yaw": 148.286,
+      "pitch": 90,
+      "roll": -180,
+      "approach_height": 100,
+      "orientation": "right"
+    }
+  ]
+}

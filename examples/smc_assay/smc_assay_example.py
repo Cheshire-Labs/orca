@@ -59,11 +59,11 @@ labwares = [
 # Transorter equipment are devices capable of moving labwaare
 # For this simulation, the teachpoints are saved within a local file
 teachpoints_dir = "examples\\smc_assay\\teachpoints"
-ddr1_points = os.path.join(teachpoints_dir, "ddr1.xml")
-ddr2_points = os.path.join(teachpoints_dir, "ddr2.xml")
-ddr3_points = os.path.join(teachpoints_dir, "ddr3.xml")
-translator1_points = os.path.join(teachpoints_dir, "translator1.xml")
-translator2_points = os.path.join(teachpoints_dir, "translator2.xml")
+ddr1_points = os.path.join(teachpoints_dir, "ddr1.json")
+ddr2_points = os.path.join(teachpoints_dir, "ddr2.json")
+ddr3_points = os.path.join(teachpoints_dir, "ddr3.json")
+translator1_points = os.path.join(teachpoints_dir, "translator1.json")
+translator2_points = os.path.join(teachpoints_dir, "translator2.json")
 ddr_1 = Transporter("ddr_1", SimTransporterDriver("ddr"), load_positions=ddr1_points)
 ddr_2 = Transporter("ddr_2", SimTransporterDriver("ddr"), load_positions=ddr2_points)
 ddr_3 = Transporter("ddr_3", SimTransporterDriver("ddr"), load_positions=ddr3_points)
