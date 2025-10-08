@@ -15,7 +15,7 @@ from orca.system.SdkToSystemBuilder import SdkToSystemBuilder
 from orca.system.executors import WorkflowExecutor
 from orca.system.resource_registry import ResourceRegistry
 from orca.system.system_map import SystemMap
-from orca.workflow_models.action_template import Seal, Shake, Spin, Read
+from orca.workflow_models.action_template import Seal, Shake, Spin
 from orca.workflow_models.method_template import MethodTemplate
 from orca.workflow_models.thread_template import ThreadTemplate
 from orca.workflow_models.workflow_templates import WorkflowTemplate
@@ -39,7 +39,7 @@ labwares = [
 
 pf_teachpoints = os.path.join("examples", "precise_flex_test", "teachpoints", "precise_flex.xml")
 
-pf_arm = Transporter("pf_arm", PreciseFlex400Backend("192.168.0.1", 10100), pf_teachpoints, sim=True)
+pf_arm = Transporter("pf_arm", PreciseFlex400Backend("192.168.0.1", 10100), pf_teachpoints, sim=False)
 
 shaker = Shaker("shaker", SimShakerDriver("shaker", HumanSim()))
 centrifuge = Centrifuge("centrifuge", SimCentrifugeDriver("centrifuge", HumanSim()))
@@ -75,15 +75,15 @@ test_method_2 = MethodTemplate("test_method_2", [
 sample_plate_thread = ThreadTemplate(
     src_plate,
     map.get_location("location_1"),
-    map.get_location("location_2"),
+    map.get_location("location_1"),
     [
     test_method_1
 ])
 
 destination_plate_thread = ThreadTemplate(
     dest_plate, 
-    map.get_location("location_3"),
-    map.get_location("location_4"),
+    map.get_location("location_2"),
+    map.get_location("location_2"),
     [
     test_method_2
 ])
