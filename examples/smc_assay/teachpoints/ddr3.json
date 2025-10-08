@@ -1,0 +1,114 @@
+{
+  "teachpoints": [
+    {
+      "name": "biotek_2",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "bravo_384",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "plate_hotel",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "smc_pro",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "translator_2_end",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "waste_2",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "pad_7",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "pad_8",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "pad_9",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "delidder",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    }
+  ]
+}
