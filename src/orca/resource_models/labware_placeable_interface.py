@@ -14,6 +14,12 @@ class ILabwarePlaceable(ABC):
     def labware(self) -> Optional[LabwareInstance]:
         raise NotImplementedError
 
+    @property
+    @abstractmethod
+    def supports_deadlock_resolution(self) -> bool:
+        """Returns True if this resource can be used as a parking location during deadlock resolution."""
+        raise NotImplementedError
+
     def initialize_labware(self, labware: LabwareInstance) -> None:
         # TODO: Make async in future
         # TODO: this will need to be restricted to only initilaizing the labware, probably with a LabwareManager service
