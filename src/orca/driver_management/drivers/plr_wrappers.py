@@ -51,6 +51,10 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
         if tp is None:
             raise ValueError(f"The position '{position_name}' is not taught for {self.name}")
         coords = convert_teachpoint_to_plr_coord(tp)
+
+        #### HERE ####
+        ### Figure out how to set this up to make sense
+
         await self._backend.pick_plate(coords, tp.approach_height)
 
     async def place(self, position_name: str, labware_type: str) -> None:

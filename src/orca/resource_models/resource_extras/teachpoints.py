@@ -11,11 +11,27 @@ class CartesianCoordinates:
         self.roll = roll
     
 class Teachpoint:
-    def __init__(self, name: str, coordinates: CartesianCoordinates, approach_height: float, orientation: str | None) -> None:
+    def __init__(
+        self,
+        name: str,
+        coordinates: CartesianCoordinates,
+        orientation: str | None,
+        access_type: str,
+        gripper_offset: float = 20.0,
+        retract_distance: float = 100.0,
+        vertical_clearance: float = 50.0,
+        z_above: float = 10.0
+    ) -> None:
         self.name = name
         self.coordinates = coordinates
-        self.approach_height = approach_height
         self.orientation = orientation
+        self.access_type = access_type  # "vertical" or "horizontal"
+        self.gripper_offset = gripper_offset  # Gripper height compensation (always used)
+        # For VERTICAL access only:
+        self.retract_distance = retract_distance  # How far to pull back horizontally
+        # For HORIZONTAL access only:
+        self.vertical_clearance = vertical_clearance  # Vertical clearance distance
+        self.z_above = z_above  # Extra height above nest slot
 
     @staticmethod
     def load_teachpoints_from_file(file_path: str) -> List[Teachpoint]:
@@ -27,15 +43,28 @@ class Teachpoint:
 
         for teachpoint in data.get('teachpoints', []):
             name = teachpoint.get('name')
-            x = float(teachpoint.get('x', 0))
-            y = float(teachpoint.get('y', 0))
-            z = float(teachpoint.get('z', 0))
-            yaw = float(teachpoint.get('yaw', 0))
-            pitch = float(teachpoint.get('pitch', 0))
-            roll = float(teachpoint.get('roll', 0))
-            approach_height = float(teachpoint.get('approach_height', 0))
+            x = float(teachpoint.get('x'))
+            y = float(teachpoint.get('y'))
+            z = float(teachpoint.get('z'))
+            yaw = float(teachpoint.get('yaw'))
+            pitch = float(teachpoint.get('pitch'))
+            roll = float(teachpoint.get('roll'))
             orientation = teachpoint.get('orientation', None)
-            positions.append(Teachpoint(name, CartesianCoordinates(x, y, z, yaw, pitch, roll), approach_height, orientation))
+            access_type = teachpoint.get('access_type', 'vertical')
+            gripper_offset = float(teachpoint.get('gripper_offset', 20.0))
+            retract_distance = float(teachpoint.get('retract_distance', 100.0))
+            vertical_clearance = float(teachpoint.get('vertical_clearance', 50.0))
+            z_above = float(teachpoint.get('z_above', 10.0))
+            positions.append(Teachpoint(
+                name,
+                CartesianCoordinates(x, y, z, yaw, pitch, roll),
+                orientation,
+                access_type,
+                gripper_offset,
+                retract_distance,
+                vertical_clearance,
+                z_above
+            ))
 
         return positions
 
@@ -90,8 +119,12 @@ class TeachpointsRegistry:
                 'yaw': teachpoint.coordinates.yaw,
                 'pitch': teachpoint.coordinates.pitch,
                 'roll': teachpoint.coordinates.roll,
-                'approach_height': teachpoint.approach_height,
-                'orientation': teachpoint.orientation
+                'orientation': teachpoint.orientation,
+                'access_type': teachpoint.access_type,
+                'gripper_offset': teachpoint.gripper_offset,
+                'retract_distance': teachpoint.retract_distance,
+                'vertical_clearance': teachpoint.vertical_clearance,
+                'z_above': teachpoint.z_above
             }
             teachpoints_list.append(tp_dict)
 
