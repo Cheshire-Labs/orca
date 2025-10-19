@@ -169,9 +169,12 @@ class SystemMap(ILocationRegistry, IResourceLocator, IResourceLocationObserver, 
     def get_shortest_paths_to_deadlock_resolution(self, source: str) -> List[List[str]]:
         paths = []
         for name, data in self._graph.get_nodes().items():
-            if isinstance(data["location"].resource, PlatePad) and name != source:
+            resource = data["location"].resource
+            # Only include locations that explicitly support deadlock resolution
+            # This filters out devices (which return False) and waypoints (explicitly marked False)
+            if isinstance(resource, PlatePad) and resource.supports_deadlock_resolution and name != source:
                 paths.extend(self.get_all_shortest_any_paths(source, name)) #type: ignore
-            
+
         return paths
     
     def _get_blocking_locations(self, source: str, target: str) -> List[Location]:
