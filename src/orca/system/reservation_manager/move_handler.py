@@ -63,9 +63,6 @@ class MoveActionCollectionReservationRequest(IReservationCollection):
             self._processed.set()
             return
 
-        # Log all granted targets to understand what's happening
-        orca_logger.info(f"Thread {self._thread_id} - Multiple reservations granted: {[r.target.name for r in granted_reservations]}")
-
         # choose the first granted reservation as the reserved move action
         self._reserved_move_action = granted_reservations[0] if len(granted_reservations) > 0 else None
 
@@ -111,8 +108,6 @@ class MoveHandler:
     async def resolve_move_action(self, thread_id: str, labware: LabwareInstance, current_location: Location, target_location: Location, assigned_action: ILocationAction | None = None) -> MoveAction:
         potential_paths = self._get_potential_paths(current_location, target_location)
         potential_moves = self._get_potential_move_actions(labware, potential_paths)
-        # DEBUG: Track path generation
-        orca_logger.info(f"[DEBUG] Thread {labware.name} - resolve_move_action from {current_location.name} to {target_location.name}, potential first hops: {[m.target.name for m in potential_moves]}")
         if assigned_action is not None:
             self._assign_reservation_to_moves(potential_moves, assigned_action)
         # check for any moves using the assigned_action's reservation
@@ -127,14 +122,11 @@ class MoveHandler:
         # even though it is set as completed, it is also deadlocked.  This may lead to confusion and may need to be changed
         # due to this, this handling may work better else where
 
-        # DEBUG: Track deadlock handling
-        orca_logger.info(f"[DEBUG] Thread {move_action.labware.name} - handle_deadlock called from {move_action.source.name}")
         potential_paths = self._system_map.get_shortest_paths_to_deadlock_resolution(move_action.source.teachpoint_name)
         # if move_action.target is in the potential_paths, remove it
         potential_paths = [path for path in potential_paths if move_action.target.teachpoint_name not in path]
         sorted_paths = sorted(potential_paths, key=lambda path: len(path))
         potential_moves = self._get_potential_move_actions( move_action.labware, sorted_paths)
-        orca_logger.info(f"[DEBUG] Thread {move_action.labware.name} - handle_deadlock parking pad targets: {[m.target.name for m in potential_moves]}")
         return await self._resolve_reservation_from_move_action_collection(thread_id, potential_moves)
 
 
