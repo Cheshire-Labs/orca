@@ -1,10 +1,12 @@
 import asyncio
 import logging
-from typing import List
+from typing import List, Optional
 from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.location import Location
 from orca.system.reservation_manager.interfaces import IReservationCollection, IThreadReservationCoordinator
 from orca.system.reservation_manager.location_reservation import LocationReservation
+from orca.system.reservation_manager.deadlock_manager import DeadlockStarvationRegistry
+from orca.system.reservation_manager.path_scoring import PathScoringStrategy, PathScoringWeights
 from orca.system.system_map import SystemMap
 from orca.workflow_models.actions.location_action_interface import ILocationAction
 
@@ -101,13 +103,41 @@ class MoveActionCollectionReservationRequest(IReservationCollection):
 class MoveHandler:
     def __init__(self,
                 thread_reservation_coordinator: IThreadReservationCoordinator,
-                system_map: SystemMap) -> None:
+                system_map: SystemMap,
+                starvation_registry: DeadlockStarvationRegistry,
+                scoring_weights: Optional[PathScoringWeights] = None) -> None:
         self._thread_reservation_coordinator = thread_reservation_coordinator
         self._system_map = system_map
+        self._starvation_registry = starvation_registry
+        self._path_scorer = PathScoringStrategy(system_map, scoring_weights)
 
-    async def resolve_move_action(self, thread_id: str, labware: LabwareInstance, current_location: Location, target_location: Location, assigned_action: ILocationAction | None = None) -> MoveAction:
-        potential_paths = self._get_potential_paths(current_location, target_location)
-        potential_moves = self._get_potential_move_actions(labware, potential_paths)
+    async def resolve_move_action(self, thread_id: str, labware: LabwareInstance, current_location: Location, target_location: Location, assigned_action: ILocationAction | None = None, previous_location: Optional[Location] = None) -> MoveAction:
+        # Get ALL potential paths (not filtered by availability)
+        # The reservation system will choose the first available path
+        all_paths = self._system_map.get_all_shortest_any_paths(
+            current_location.teachpoint_name,
+            target_location.teachpoint_name
+        )
+
+        if not all_paths:
+            raise ValueError(f"No routes found from {current_location.name} to {target_location.name}")
+
+        # Score and sort paths to prioritize better options
+        starvation_score = self._starvation_registry.get_starvation_score(thread_id)
+        scored_paths = self._path_scorer.score_paths(
+            all_paths,
+            thread_id,
+            starvation_score,
+            previous_location,
+            original_target=None  # Not deadlock resolution
+        )
+
+        # Extract paths ordered by score (best first)
+        sorted_paths = [sp.path for sp in scored_paths]
+
+        # Create move actions for ALL paths - reservation system picks first available
+        potential_moves = self._get_potential_move_actions(labware, sorted_paths)
+
         if assigned_action is not None:
             self._assign_reservation_to_moves(potential_moves, assigned_action)
         # check for any moves using the assigned_action's reservation
@@ -117,16 +147,38 @@ class MoveHandler:
 
         return await self._resolve_reservation_from_move_action_collection(thread_id, potential_moves)
 
-    async def handle_deadlock(self, thread_id: str, move_action: MoveAction) -> MoveAction:
+    async def handle_deadlock(self, thread_id: str, move_action: MoveAction, previous_location: Optional[Location] = None) -> MoveAction:
         # NOTE: Although move_action does not have a reservation and does not need to be released,
         # even though it is set as completed, it is also deadlocked.  This may lead to confusion and may need to be changed
         # due to this, this handling may work better else where
 
-        potential_paths = self._system_map.get_shortest_paths_to_deadlock_resolution(move_action.source.teachpoint_name)
-        # if move_action.target is in the potential_paths, remove it
-        potential_paths = [path for path in potential_paths if move_action.target.teachpoint_name not in path]
-        sorted_paths = sorted(potential_paths, key=lambda path: len(path))
-        potential_moves = self._get_potential_move_actions( move_action.labware, sorted_paths)
+        # Get all paths to parking pads
+        all_deadlock_paths = self._system_map.get_shortest_paths_to_deadlock_resolution(
+            move_action.source.teachpoint_name
+        )
+
+        if not all_deadlock_paths:
+            raise RuntimeError(f"Thread {thread_id} - No parking pads available for deadlock resolution")
+
+        # Score and select best parking pad using PathScoringStrategy
+        # This considers: path length, starvation score, backtracking, and dead-end detection
+        starvation_score = self._starvation_registry.get_starvation_score(thread_id)
+        best_path, score = self._path_scorer.select_best_path(
+            all_deadlock_paths,
+            thread_id,
+            starvation_score,
+            previous_location,
+            original_target=move_action.target,  # Provide original target for dead-end detection
+            blocked_location=move_action.target  # Filter out paths containing blocked target
+        )
+
+        orca_logger.info(
+            f"Thread {thread_id} - Deadlock resolution: moving to parking pad "
+            f"{best_path[-1]} (starvation score: {starvation_score}, total score: {score.total_score:.2f})"
+        )
+
+        # Create move actions for the best path (only first hop)
+        potential_moves = self._get_potential_move_actions(move_action.labware, [best_path])
         return await self._resolve_reservation_from_move_action_collection(thread_id, potential_moves)
 
 
@@ -146,14 +198,6 @@ class MoveHandler:
             return reservation_request_collection.reserved_move_action
         raise ValueError("Route reservation was not granted")
    
-    def _get_potential_paths(self, current_location: Location, target_location: Location) -> List[List[str]]:
-        if current_location == target_location:
-            raise ValueError("Source and target locations are the same")
-        potential_paths = self._system_map.get_all_shortest_any_paths(current_location.teachpoint_name, target_location.teachpoint_name)
-        if potential_paths == []:
-            raise ValueError("No routes found between source and target")
-        return potential_paths
-
     def _get_potential_move_actions(self, labware: LabwareInstance, potential_paths: List[List[str]]) -> List[MoveAction]:
         potential_actions: List[MoveAction] = []
         for path in potential_paths:
