@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 import logging
 import asyncio
-from typing import Dict, List
+from typing import Dict, List, Optional
 from orca.events.event_bus_interface import IEventBus
 from orca.events.execution_context import ThreadExecutionContext, WorkflowExecutionContext
 from orca.resource_models.device_error import DeviceBusyError
@@ -16,6 +16,8 @@ from orca.workflow_models.actions.executing_location_action import ExecutingLoca
 from orca.workflow_models.actions.move_action import ExecutingMoveAction, MoveAction
 from orca.workflow_models.interfaces import ILabwareThread
 from orca.workflow_models.labware_threads.labware_thread import LabwareThreadInstance
+from orca.workflow_models.labware_threads.location_history import LocationHistory
+from orca.workflow_models.labware_threads.location_history_registry import LabwareLocationHistoryRegistry
 from orca.workflow_models.method import ExecutingMethod, MethodInstance
 from orca.workflow_models.method_template import SharedMethodInstance
 from orca.workflow_models.status_enums import LabwareThreadStatus, MethodStatus
@@ -35,6 +37,7 @@ class ExecutingLabwareThread(ILabwareThread):
                  status_manager: StatusManager,
                  actions_resolver: DynamicResourceActionResolver,
                  context: WorkflowExecutionContext,
+                 location_history_registry: LabwareLocationHistoryRegistry,
                  ) -> None:
 
         self._thread = thread
@@ -47,12 +50,11 @@ class ExecutingLabwareThread(ILabwareThread):
         self._assigned_method: ExecutingMethod | None = None
 
         self._completed_methods: List[ExecutingMethod] = []
-        # set current_location is after self._status assignment to accommodate scripts changing start location
-        # TODO: source of truth needs to be changed to a labware manager
-        self._current_location: Location = self._thread.start_location
+        # Location history is single source of truth; accommodates scripts changing start location
+        self._location_history = location_history_registry.get_or_create_history(self._thread.labware.id)
+        self._location_history.add_location(self._thread.start_location)
         self._previous_action: ExecutingLocationAction | None = None
         self._assigned_action: ExecutingLocationAction | None = None
-        # self._assigned_action: ILocationAction | None = None
         self._move_action: MoveAction | None = None
         self._stop_event = asyncio.Event()
 
@@ -105,15 +107,24 @@ class ExecutingLabwareThread(ILabwareThread):
 
     @property
     def current_location(self) -> Location:
-        return self._current_location
+        """Get current location from location history (single source of truth)."""
+        loc = self._location_history.get_current_location()
+        if loc is None:
+            raise ValueError(f"Thread {self.name} has no location history")
+        return loc
 
     def update_start_location(self, location: Location) -> None:
+        """Update start location (only allowed before thread starts)."""
         if self.status != LabwareThreadStatus.CREATED:
             raise ValueError("Cannot set start location.  Thread is already in progress.")
-        self._start_location = location
+        self._thread.start_location = location
+        # Update location history to reflect the new start location
+        self._location_history.clear()
+        self._location_history.add_location(location)
 
     def set_current_location(self, location: Location) -> None:
-        self._current_location = location
+        """Update current location and record in history."""
+        self._location_history.add_location(location)
 
     @property
     def context(self) -> WorkflowExecutionContext:
@@ -201,12 +212,14 @@ class ExecutingLabwareThread(ILabwareThread):
         assert self.assigned_action is not None, "Assigned action should not be None when moving to assigned location"
         self.status = LabwareThreadStatus.AWAITING_MOVE_RESERVATION
 
+        previous_location = self._location_history.get_previous_location()
         self._move_action = await self._move_handler.resolve_move_action(
                                             self._thread.id,
                                             self._thread.labware,
                                             self.current_location,
                                             self.assigned_action.location,
-                                             self.assigned_action)
+                                            self.assigned_action,
+                                            previous_location)
         await self._execute_move_action()
 
     async def _handle_thread_at_assigned_action_location(self) -> None:
@@ -230,11 +243,13 @@ class ExecutingLabwareThread(ILabwareThread):
                                                             self._context.workflow_name,
                                                             self._thread.id,
                                                             self._thread.name)
+            previous_location = self._location_history.get_previous_location()
             self._move_action = await self._move_handler.resolve_move_action(self._thread.id,
                                                                     self._thread.labware,
                                                                     self.current_location,
                                                                     self._thread.end_location,
-                                                                    None)
+                                                                    None,
+                                                                    previous_location)
             await self._execute_move_action()
             await asyncio.sleep(0.2)
         self.status = LabwareThreadStatus.COMPLETED
@@ -264,7 +279,8 @@ class ExecutingLabwareThread(ILabwareThread):
         assert self._move_action is not None
         orca_logger.info(f"Thread {self._thread.name} - Deadlock detected")
         old_target = self._move_action.target
-        self._move_action = await self._move_handler.handle_deadlock(self._thread.id, self._move_action)
+        previous_location = self._location_history.get_previous_location()
+        self._move_action = await self._move_handler.handle_deadlock(self._thread.id, self._move_action, previous_location)
         orca_logger.info(f"Thread {self._thread.name} - Deadlock resolved - reroute target {old_target.name} to {self._move_action.target.name}")
 
 
@@ -276,7 +292,8 @@ class ExecutingThreadFactory:
                  reservation_coordinator: IThreadReservationCoordinator,
                  actions_resolver: DynamicResourceActionResolver,
                  executing_method_registry: ExecutingMethodRegistry,
-                 system_map: SystemMap) -> None:
+                 system_map: SystemMap,
+                 location_history_registry: LabwareLocationHistoryRegistry) -> None:
         self._event_bus = event_bus
         self._actions_resolver = actions_resolver
         self._move_handler = move_handler
@@ -284,6 +301,7 @@ class ExecutingThreadFactory:
         self._reservation_coordinator = reservation_coordinator
         self._system_map = system_map
         self._executing_method_registry = executing_method_registry
+        self._location_history_registry = location_history_registry
 
     def create_instance(self,
                         instance: LabwareThreadInstance,
@@ -308,7 +326,8 @@ class ExecutingThreadFactory:
             self._move_handler,
             self._status_manager,
             self._actions_resolver,
-            context
+            context,
+            self._location_history_registry
         )
 
 class IExecutingThreadRegistry(ABC):

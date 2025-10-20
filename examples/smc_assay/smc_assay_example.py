@@ -9,6 +9,7 @@ from orca.devices.devices import Delidder, LiquidHandler, PlateWasher, Reader, S
 from orca.devices.shaker import Shaker
 from orca.driver_management.drivers.sims import SimCentrifugeDriver, SimDelidderDriver, SimLiquidHandlerDriver, SimPlateWasherDriver, SimReaderDriver, SimShakerDriver, SimStorageDriver, SimTransporterDriver, SimWasteDriver
 from orca.resource_models.transporter import Transporter
+from orca.resource_models.plate_pad import PlatePad
 from orca.sdk.system import SdkToSystemBuilder, WorkflowExecutor, ResourceRegistry, SystemMap, ExecutingLabwareThread, StandalonMethodExecutor
 from orca.sdk.workflow import WorkflowTemplate, ThreadTemplate, MethodTemplate, SharedMethodTemplate
 from orca.sdk.events import EventBus, SystemBoundEventHandler, ExecutionContext, ThreadExecutionContext, WorkflowExecutionContext, LabwareThreadStatus
@@ -175,7 +176,13 @@ map.assign_resources({
     "shaker_9": shaker_9,
     "shaker_10": shaker_10,
     "waste_1": waste_1,
-    "waste_2": waste_2
+    "waste_2": waste_2,
+    # Mark translator waypoints as not supporting deadlock resolution
+    # These are transit points between robots, not parking locations
+    "translator_1_start": PlatePad("translator_1_start", supports_deadlock_resolution=False),
+    "translator_1_end": PlatePad("translator_1_end", supports_deadlock_resolution=False),
+    "translator_2_start": PlatePad("translator_2_start", supports_deadlock_resolution=False),
+    "translator_2_end": PlatePad("translator_2_end", supports_deadlock_resolution=False),
 })
 
 
@@ -482,11 +489,8 @@ class SpawnNewOnFourthPlate(SystemBoundEventHandler):
             return
         while self._previous_thread.status != LabwareThreadStatus.COMPLETED:
             await asyncio.sleep(1)
-        thread_instance = self.system.create_and_register_thread_instance(self._attach_thread)
-        thread_instance.start_location = self._previous_thread.end_location
-        workflow_context = WorkflowExecutionContext(context.workflow_id, context.workflow_name)
-        new_thread = self.system.create_executing_thread(thread_instance.id, workflow_context)
-        self._previous_thread = new_thread
+        thread.update_start_location(self._previous_thread.end_location)
+        self._previous_thread = thread
 
         
             
