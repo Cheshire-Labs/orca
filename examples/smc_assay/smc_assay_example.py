@@ -489,11 +489,8 @@ class SpawnNewOnFourthPlate(SystemBoundEventHandler):
             return
         while self._previous_thread.status != LabwareThreadStatus.COMPLETED:
             await asyncio.sleep(1)
-        thread_instance = self.system.create_and_register_thread_instance(self._attach_thread)
-        thread_instance.start_location = self._previous_thread.end_location
-        workflow_context = WorkflowExecutionContext(context.workflow_id, context.workflow_name)
-        new_thread = self.system.create_executing_thread(thread_instance.id, workflow_context)
-        self._previous_thread = new_thread
+        thread.update_start_location(self._previous_thread.end_location)
+        self._previous_thread = thread
 
         
             

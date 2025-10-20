@@ -65,11 +65,20 @@ class ThreadDeadlockDetector:
         graph = self._build_wait_for_graph(queue)
         cycling_thread_ids = self._get_cycling_thread_ids(graph)
 
+        if not cycling_thread_ids:
+            return
+
+        # Select single thread to yield based on priority
+        yielding_thread_id = self._select_yielding_thread(cycling_thread_ids)
+
+        # Mark only the selected thread as deadlocked
         for collection in queue:
-            if collection.thread_id in cycling_thread_ids:
+            if collection.thread_id == yielding_thread_id:
                 collection.rejected.clear()
                 collection.deadlocked.set()
                 self._starvation_registry.increment_starvation_score(collection.thread_id)
+                # Note: Other cycling threads remain rejected but NOT deadlocked
+                # They will retry next tick and should succeed once yielding thread clears path
 
     def _build_wait_for_graph(
         self,
@@ -103,6 +112,39 @@ class ThreadDeadlockDetector:
 
     def _get_cycling_thread_ids(self, graph: DeadlockGraph) -> Set[str]:
         return graph.find_cycle_nodes()
-    
+
+    def _select_yielding_thread(self, cycling_thread_ids: Set[str]) -> str:
+        """
+        Select which thread should yield in a deadlock based on priority.
+
+        Priority rules:
+        1. Thread with LOWEST starvation score yields (allows starved threads to proceed)
+        2. If tied, use lexicographic thread_id for deterministic behavior
+
+        Args:
+            cycling_thread_ids: Set of thread IDs involved in deadlock cycle
+
+        Returns:
+            Thread ID that should yield (move to parking pad)
+        """
+        # Get starvation scores for all cycling threads
+        thread_scores = {
+            thread_id: self._starvation_registry.get_starvation_score(thread_id)
+            for thread_id in cycling_thread_ids
+        }
+
+        # Find minimum starvation score
+        min_starvation = min(thread_scores.values())
+
+        # Get all threads with minimum score
+        candidates = [
+            thread_id
+            for thread_id, score in thread_scores.items()
+            if score == min_starvation
+        ]
+
+        # Tie-breaker: lexicographic ordering for deterministic selection
+        return sorted(candidates)[0]
+
     def _get_labware_to_thread_map(self, queue: List[IReservationCollection]) -> Dict[str, str]:
         return {self._thread_registry.get_thread(c.thread_id).labware.id: c.thread_id for c in queue}
