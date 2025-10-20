@@ -40,7 +40,12 @@ class Location(ILabwarePlaceable):
     @property
     def resource(self) -> ILabwarePlaceable:
         return self._resource
-    
+
+    @property
+    def supports_deadlock_resolution(self) -> bool:
+        """Delegate to the underlying resource."""
+        return self._resource.supports_deadlock_resolution
+
     @resource.setter
     def resource(self, resource: ILabwarePlaceable) -> None:
         self._resource = resource

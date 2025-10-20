@@ -1,14 +1,28 @@
-from typing import Dict, List, Optional, Set
-from orca.resource_models.labware import LabwareInstance
-
+from typing import Dict, List, Set
 
 import networkx as nx # type: ignore
 
 from orca.system.reservation_manager.interfaces import IReservationCollection
 from orca.system.reservation_manager.location_reservation import LocationReservation
-from orca.system.system_map import ILocationRegistry
 from orca.system.thread_registry_interface import IThreadRegistry
 
+class DeadlockStarvationRegistry:
+    """Maintains a registry to track plate movement frequency for deadlock resolution."""
+    def __init__(self) -> None:
+        self._starvation_scores: dict[str, int] = {}
+
+    def increment_starvation_score(self, thread_id: str) -> None:
+        """Increment the starvation score for a thread."""
+        self._starvation_scores[thread_id] = self._starvation_scores.get(thread_id, 0) + 1
+
+    def get_starvation_score(self, thread_id: str) -> int:
+        """Get the current starvation score for a thread."""
+        return self._starvation_scores.get(thread_id, 0)
+
+    def reset_starvation_score(self, thread_id: str) -> None:
+        """Reset the starvation score for a thread to zero."""
+        if thread_id in self._starvation_scores:
+            self._starvation_scores[thread_id] = 0
 
 class DeadlockGraph:
     def __init__(self) -> None:
@@ -40,8 +54,9 @@ class DeadlockGraph:
 
 
 class ThreadDeadlockDetector:
-    def __init__(self, thread_registry: IThreadRegistry) -> None:
+    def __init__(self, thread_registry: IThreadRegistry, starvation_registry: DeadlockStarvationRegistry) -> None:
         self._thread_registry = thread_registry
+        self._starvation_registry = starvation_registry
 
     def detect_deadlocks(
         self,
@@ -50,10 +65,20 @@ class ThreadDeadlockDetector:
         graph = self._build_wait_for_graph(queue)
         cycling_thread_ids = self._get_cycling_thread_ids(graph)
 
+        if not cycling_thread_ids:
+            return
+
+        # Select single thread to yield based on priority
+        yielding_thread_id = self._select_yielding_thread(cycling_thread_ids)
+
+        # Mark only the selected thread as deadlocked
         for collection in queue:
-            if collection.thread_id in cycling_thread_ids:
+            if collection.thread_id == yielding_thread_id:
                 collection.rejected.clear()
                 collection.deadlocked.set()
+                self._starvation_registry.increment_starvation_score(collection.thread_id)
+                # Note: Other cycling threads remain rejected but NOT deadlocked
+                # They will retry next tick and should succeed once yielding thread clears path
 
     def _build_wait_for_graph(
         self,
@@ -87,26 +112,39 @@ class ThreadDeadlockDetector:
 
     def _get_cycling_thread_ids(self, graph: DeadlockGraph) -> Set[str]:
         return graph.find_cycle_nodes()
-    
+
+    def _select_yielding_thread(self, cycling_thread_ids: Set[str]) -> str:
+        """
+        Select which thread should yield in a deadlock based on priority.
+
+        Priority rules:
+        1. Thread with LOWEST starvation score yields (allows starved threads to proceed)
+        2. If tied, use lexicographic thread_id for deterministic behavior
+
+        Args:
+            cycling_thread_ids: Set of thread IDs involved in deadlock cycle
+
+        Returns:
+            Thread ID that should yield (move to parking pad)
+        """
+        # Get starvation scores for all cycling threads
+        thread_scores = {
+            thread_id: self._starvation_registry.get_starvation_score(thread_id)
+            for thread_id in cycling_thread_ids
+        }
+
+        # Find minimum starvation score
+        min_starvation = min(thread_scores.values())
+
+        # Get all threads with minimum score
+        candidates = [
+            thread_id
+            for thread_id, score in thread_scores.items()
+            if score == min_starvation
+        ]
+
+        # Tie-breaker: lexicographic ordering for deterministic selection
+        return sorted(candidates)[0]
+
     def _get_labware_to_thread_map(self, queue: List[IReservationCollection]) -> Dict[str, str]:
         return {self._thread_registry.get_thread(c.thread_id).labware.id: c.thread_id for c in queue}
-
-
-
-# class DeadlockDetector:
-#     def __init__(self, location_registry: ILocationRegistry, location_reservations: Dict[str, LocationReservation], reservation_queues: Dict[str, List[LocationReservation]]) -> None:
-#         self._location_registry = location_registry
-#         self._location_reservations = location_reservations
-#         self._reservation_queues = reservation_queues
-
-#     def is_deadlocked(self) -> bool:
-#         graph = DeadlockGraph()
-#         for location_name, queue in self._reservation_queues.items():
-#             for request in queue:
-#                 requestor = request.labware
-#                 holder = self._location_registry.get_location(location_name).labware
-#                 if holder is None or requestor is None:
-#                     continue
-#                 graph._add_edge(requestor, holder)
-
-#         return graph.is_deadlocked()
