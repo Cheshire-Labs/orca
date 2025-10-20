@@ -212,12 +212,6 @@ class ExecutingLabwareThread(ILabwareThread):
         assert self.assigned_action is not None, "Assigned action should not be None when moving to assigned location"
         self.status = LabwareThreadStatus.AWAITING_MOVE_RESERVATION
 
-        # Check for oscillation patterns before requesting move
-        oscillation_pattern = self._location_history.detect_oscillation()
-        if oscillation_pattern is not None:
-            orca_logger.error(f"Thread {self._thread.name} - Oscillation detected: {' -> '.join(oscillation_pattern)}")
-            raise RuntimeError(f"Thread {self._thread.name} stuck in oscillation loop: {' -> '.join(oscillation_pattern)}")
-
         previous_location = self._location_history.get_previous_location()
         self._move_action = await self._move_handler.resolve_move_action(
                                             self._thread.id,
