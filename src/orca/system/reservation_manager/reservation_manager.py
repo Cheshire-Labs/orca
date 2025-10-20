@@ -64,6 +64,11 @@ class ThreadReservationCoordinator(IThreadReservationCoordinator, IAvailabilityM
         self.ticker_started = False
         self._lock = asyncio.Lock()
 
+    @property
+    def starvation_registry(self) -> DeadlockStarvationRegistry:
+        """Get the starvation registry for thread prioritization."""
+        return self._starvation_registry
+
     async def start_tick_loop(self, tick_interval: float = 0.3) -> None:
         """Starts a periodic tick loop to check for deadlocks and process reservations."""
         self.ticker_started = True
