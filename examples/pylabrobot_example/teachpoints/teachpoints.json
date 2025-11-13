@@ -1,0 +1,70 @@
+{
+  "teachpoints": [
+    {
+      "name": "plate_pad_1",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "plate_pad_2",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "plate_pad_3",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "plate_pad_4",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "mock_device",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "sealer",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    }
+  ]
+}

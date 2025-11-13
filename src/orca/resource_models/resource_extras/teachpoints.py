@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import List, Dict
+from typing import Any, List, Dict
 
 class CartesianCoordinates:
     def __init__(self, x: float, y: float, z: float, yaw: float, pitch: float, roll: float):
@@ -11,29 +11,61 @@ class CartesianCoordinates:
         self.roll = roll
     
 class Teachpoint:
-    def __init__(self, name: str, coordinates: CartesianCoordinates, approach_height: float, orientation: str | None) -> None:
+    def __init__(
+        self,
+        name: str,
+        coordinates: CartesianCoordinates,
+        orientation: str | None,
+        access_type: str,
+        gripper_offset: float = 20.0,
+        retract_distance: float = 100.0,
+        vertical_clearance: float = 50.0,
+        z_above: float = 10.0
+    ) -> None:
         self.name = name
         self.coordinates = coordinates
-        self.approach_height = approach_height
         self.orientation = orientation
+        self.access_type = access_type  # "vertical" or "horizontal"
+        self.gripper_offset = gripper_offset  # Gripper height compensation (always used)
+        # For VERTICAL access only:
+        self.retract_distance = retract_distance  # How far to pull back horizontally
+        # For HORIZONTAL access only:
+        self.vertical_clearance = vertical_clearance  # Vertical clearance distance
+        self.z_above = z_above  # Extra height above nest slot
 
     @staticmethod
     def load_teachpoints_from_file(file_path: str) -> List[Teachpoint]:
-        import xml.etree.ElementTree as ET
+        import json
         positions: List[Teachpoint] = []
-        tree = ET.parse(file_path)
-        root = tree.getroot()
-        for teachpoint in root.findall('teachpoint'):
-            name = str(teachpoint.get('name'))
-            x = float(teachpoint.get('x', 0))
-            y = float(teachpoint.get('y', 0))
-            z = float(teachpoint.get('z', 0))
-            yaw = float(teachpoint.get('yaw', 0))
-            pitch = float(teachpoint.get('pitch', 0))
-            roll = float(teachpoint.get('roll', 0))
-            approach_height = float(teachpoint.get('approach_height', 0))
+
+        with open(file_path, 'r') as f:
+            data = json.load(f)
+
+        for teachpoint in data.get('teachpoints', []):
+            name = teachpoint.get('name')
+            x = float(teachpoint.get('x'))
+            y = float(teachpoint.get('y'))
+            z = float(teachpoint.get('z'))
+            yaw = float(teachpoint.get('yaw'))
+            pitch = float(teachpoint.get('pitch'))
+            roll = float(teachpoint.get('roll'))
             orientation = teachpoint.get('orientation', None)
-            positions.append(Teachpoint(name, CartesianCoordinates(x, y, z, yaw, pitch, roll), approach_height, orientation))
+            access_type = teachpoint.get('access_type', 'vertical')
+            gripper_offset = float(teachpoint.get('gripper_offset', 20.0))
+            retract_distance = float(teachpoint.get('retract_distance', 100.0))
+            vertical_clearance = float(teachpoint.get('vertical_clearance', 50.0))
+            z_above = float(teachpoint.get('z_above', 10.0))
+            positions.append(Teachpoint(
+                name,
+                CartesianCoordinates(x, y, z, yaw, pitch, roll),
+                orientation,
+                access_type,
+                gripper_offset,
+                retract_distance,
+                vertical_clearance,
+                z_above
+            ))
+
         return positions
 
 
@@ -75,22 +107,31 @@ class TeachpointsRegistry:
     
     def save(self, filepath: str) -> None:
         """Saves the teachpoints to a file"""
-        import xml.etree.ElementTree as ET
-        root = ET.Element('teachpoints')
+        import json
+
+        teachpoints_list: List[Dict[str, Any]] = []
         for teachpoint in self._registry.values():
-            tp_element = ET.SubElement(root, 'teachpoint')
-            tp_element.set('name', teachpoint.name)
-            tp_element.set('x', str(teachpoint.coordinates.x))
-            tp_element.set('y', str(teachpoint.coordinates.y))
-            tp_element.set('z', str(teachpoint.coordinates.z))
-            tp_element.set('yaw', str(teachpoint.coordinates.yaw))
-            tp_element.set('pitch', str(teachpoint.coordinates.pitch))
-            tp_element.set('roll', str(teachpoint.coordinates.roll))
-            tp_element.set('approach_height', str(teachpoint.approach_height))
-            tp_element.set('orientation', str(teachpoint.orientation))
-        tree = ET.ElementTree(root)
-        ET.indent(tree, space="  ", level=0)
-        tree.write(filepath, encoding='utf-8', xml_declaration=True)
+            tp_dict: Dict[str, Any] = {
+                'name': teachpoint.name,
+                'x': teachpoint.coordinates.x,
+                'y': teachpoint.coordinates.y,
+                'z': teachpoint.coordinates.z,
+                'yaw': teachpoint.coordinates.yaw,
+                'pitch': teachpoint.coordinates.pitch,
+                'roll': teachpoint.coordinates.roll,
+                'orientation': teachpoint.orientation,
+                'access_type': teachpoint.access_type,
+                'gripper_offset': teachpoint.gripper_offset,
+                'retract_distance': teachpoint.retract_distance,
+                'vertical_clearance': teachpoint.vertical_clearance,
+                'z_above': teachpoint.z_above
+            }
+            teachpoints_list.append(tp_dict)
+
+        data = {'teachpoints': teachpoints_list}
+
+        with open(filepath, 'w') as f:
+            json.dump(data, f, indent=2)
 
     def clear(self) -> None:
         self._registry = {}

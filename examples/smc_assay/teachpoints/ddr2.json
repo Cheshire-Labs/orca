@@ -1,0 +1,268 @@
+{
+  "teachpoints": [
+    {
+      "name": "centrifuge",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "sealer",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "translator_1_end",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "translator_2_start",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "stacker_1",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "stacker_2",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "stacker_3",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "stacker_4",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "stacker_5",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "stacker_6",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "stacker_7",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "shaker_1",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "shaker_2",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "shaker_3",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "shaker_4",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "shaker_5",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "shaker_6",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "shaker_7",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "shaker_8",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "shaker_9",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "shaker_10",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "pad_4",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "pad_5",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    },
+    {
+      "name": "pad_6",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "yaw": 0,
+      "pitch": 0,
+      "roll": 0,
+      "approach_height": 0,
+      "orientation": null
+    }
+  ]
+}
