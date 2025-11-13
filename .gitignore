@@ -1,6 +1,8 @@
 .idea
 .mypy_cache
 .venv
+.claude
+.serena
 build
 **/~*.tmp
 __pycache__
