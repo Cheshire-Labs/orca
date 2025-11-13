@@ -42,7 +42,7 @@ ml_star = Venus("ml_star")
 
 # we will use the HumanTransfer - meaning that the user will need to manually pick up and place the labware and press Enter to continue
 # For this simulation, the teachpoints are saved within a local file
-human_transfer = HumanTransfer("human_transfer", "examples\\simple_venus_example\\teachpoints\\human_transfer_teachpoints.xml")
+human_transfer = HumanTransfer("human_transfer", "examples\\simple_venus_example\\teachpoints\\human_transfer_teachpoints.json")
 
 # Create a resource registry to hold all the resources
 resource_registry = ResourceRegistry()
