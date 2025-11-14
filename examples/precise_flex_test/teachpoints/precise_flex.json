@@ -1,4 +1,17 @@
 {
+  "access_configs": {
+    "default_vertical": {
+      "access_type": "vertical",
+      "gripper_offset": 20.0,
+      "retract_distance": 100.0
+    },
+    "default_horizontal": {
+      "access_type": "horizontal",
+      "gripper_offset": 20.0,
+      "vertical_clearance": 50.0,
+      "z_above": 10.0
+    }
+  },
   "teachpoints": [
     {
       "name": "shaker",
@@ -8,8 +21,8 @@
       "yaw": -136.235,
       "pitch": 90,
       "roll": 180,
-      "approach_height": 100,
-      "orientation": "left"
+      "orientation": "left",
+      "access": "default_vertical"
     },
     {
       "name": "centrifuge",
@@ -19,8 +32,8 @@
       "yaw": -136.612,
       "pitch": 90,
       "roll": 180,
-      "approach_height": 100,
-      "orientation": "left"
+      "orientation": "left",
+      "access": "default_vertical"
     },
     {
       "name": "sealer",
@@ -30,8 +43,8 @@
       "yaw": -136.611,
       "pitch": 90,
       "roll": 180,
-      "approach_height": 100,
-      "orientation": "left"
+      "orientation": "left",
+      "access": "default_vertical"
     },
     {
       "name": "location_1",
@@ -41,8 +54,8 @@
       "yaw": 133.917,
       "pitch": 90,
       "roll": -180,
-      "approach_height": 100,
-      "orientation": "right"
+      "orientation": "right",
+      "access": "default_horizontal"
     },
     {
       "name": "location_2",
@@ -52,8 +65,8 @@
       "yaw": 148.286,
       "pitch": 90,
       "roll": -180,
-      "approach_height": 100,
-      "orientation": "right"
+      "orientation": "right",
+      "access": "default_horizontal"
     }
   ]
 }
