@@ -1,5 +1,28 @@
 from __future__ import annotations
 from typing import Any, List, Dict
+import json
+
+class AccessConfig:
+    """Defines how a robotic arm approaches and retracts from a location.
+
+    Access configs are defined in JSON teachpoint files and can be referenced by multiple
+    teachpoints to avoid duplication. Parameters specify vertical or horizontal access strategies.
+    """
+    def __init__(
+        self,
+        name: str,
+        access_type: str,
+        gripper_offset: float = 20.0,
+        retract_distance: float = 100.0,
+        vertical_clearance: float = 50.0,
+        z_above: float = 10.0
+    ):
+        self.name = name
+        self.access_type = access_type  # "vertical" or "horizontal"
+        self.gripper_offset = gripper_offset  # Gripper height compensation (always used)
+        self.retract_distance = retract_distance  # For vertical access: how far to pull back
+        self.vertical_clearance = vertical_clearance  # For horizontal access: clearance distance
+        self.z_above = z_above  # For horizontal access: extra height above nest
 
 class CartesianCoordinates:
     def __init__(self, x: float, y: float, z: float, yaw: float, pitch: float, roll: float):
@@ -33,40 +56,68 @@ class Teachpoint:
         self.vertical_clearance = vertical_clearance  # Vertical clearance distance
         self.z_above = z_above  # Extra height above nest slot
 
+        # Name of access config this teachpoint uses (for JSON save reconstruction)
+        self._access_config_name: str | None = None
+
     @staticmethod
     def load_teachpoints_from_file(file_path: str) -> List[Teachpoint]:
-        import json
-        positions: List[Teachpoint] = []
-
         with open(file_path, 'r') as f:
             data = json.load(f)
 
-        for teachpoint in data.get('teachpoints', []):
-            name = teachpoint.get('name')
-            x = float(teachpoint.get('x'))
-            y = float(teachpoint.get('y'))
-            z = float(teachpoint.get('z'))
-            yaw = float(teachpoint.get('yaw'))
-            pitch = float(teachpoint.get('pitch'))
-            roll = float(teachpoint.get('roll'))
-            orientation = teachpoint.get('orientation', None)
-            access_type = teachpoint.get('access_type', 'vertical')
-            gripper_offset = float(teachpoint.get('gripper_offset', 20.0))
-            retract_distance = float(teachpoint.get('retract_distance', 100.0))
-            vertical_clearance = float(teachpoint.get('vertical_clearance', 50.0))
-            z_above = float(teachpoint.get('z_above', 10.0))
-            positions.append(Teachpoint(
-                name,
-                CartesianCoordinates(x, y, z, yaw, pitch, roll),
-                orientation,
-                access_type,
-                gripper_offset,
-                retract_distance,
-                vertical_clearance,
-                z_above
-            ))
+        # Parse access configs from JSON
+        access_configs: Dict[str, AccessConfig] = {}
+        if 'access_configs' in data:
+            for name, cfg_data in data['access_configs'].items():
+                access_configs[name] = AccessConfig(
+                    name=name,
+                    access_type=cfg_data['access_type'],
+                    gripper_offset=float(cfg_data.get('gripper_offset', 20.0)),
+                    retract_distance=float(cfg_data.get('retract_distance', 100.0)),
+                    vertical_clearance=float(cfg_data.get('vertical_clearance', 50.0)),
+                    z_above=float(cfg_data.get('z_above', 10.0))
+                )
 
-        return positions
+        # Add hardcoded defaults
+        access_configs['default_vertical'] = AccessConfig(
+            'default_vertical', 'vertical', 20.0, 100.0, 50.0, 10.0
+        )
+        access_configs['default_horizontal'] = AccessConfig(
+            'default_horizontal', 'horizontal', 20.0, 100.0, 50.0, 10.0
+        )
+
+        # Parse teachpoints and resolve access config references
+        teachpoints: List[Teachpoint] = []
+        for tp_data in data.get('teachpoints', []):
+            # Resolve access config (use default_vertical if not specified)
+            config_name = tp_data.get('access', 'default_vertical')
+            if config_name not in access_configs:
+                raise ValueError(
+                    f"Teachpoint '{tp_data['name']}' references unknown access config '{config_name}'"
+                )
+            cfg = access_configs[config_name]
+
+            # Create teachpoint with resolved access params
+            tp = Teachpoint(
+                name=tp_data['name'],
+                coordinates=CartesianCoordinates(
+                    x=float(tp_data['x']),
+                    y=float(tp_data['y']),
+                    z=float(tp_data['z']),
+                    yaw=float(tp_data['yaw']),
+                    pitch=float(tp_data['pitch']),
+                    roll=float(tp_data['roll'])
+                ),
+                orientation=tp_data.get('orientation', None),
+                access_type=cfg.access_type,
+                gripper_offset=cfg.gripper_offset,
+                retract_distance=cfg.retract_distance,
+                vertical_clearance=cfg.vertical_clearance,
+                z_above=cfg.z_above
+            )
+            tp._access_config_name = config_name
+            teachpoints.append(tp)
+
+        return teachpoints
 
 
 class TeachpointsRegistry:
@@ -106,29 +157,50 @@ class TeachpointsRegistry:
         return name in self._registry
     
     def save(self, filepath: str) -> None:
-        """Saves the teachpoints to a file"""
-        import json
+        """Saves teachpoints to file using access config references."""
+        # Reconstruct unique access configs from teachpoints
+        # Note: If multiple teachpoints claim same config name but have different params,
+        # only the first one's params are used (assumes data is not corrupted)
+        access_configs_dict: Dict[str, Dict[str, Any]] = {}
 
+        for tp in self._registry.values():
+            config_name = tp._access_config_name or 'default_vertical'
+
+            # Skip hardcoded defaults (always available in load)
+            if config_name.startswith('default_'):
+                continue
+
+            # Only write each config once (first occurrence)
+            if config_name not in access_configs_dict:
+                access_configs_dict[config_name] = {
+                    'access_type': tp.access_type,
+                    'gripper_offset': tp.gripper_offset,
+                    'retract_distance': tp.retract_distance,
+                    'vertical_clearance': tp.vertical_clearance,
+                    'z_above': tp.z_above
+                }
+
+        # Build teachpoints list with access references
         teachpoints_list: List[Dict[str, Any]] = []
-        for teachpoint in self._registry.values():
+        for tp in self._registry.values():
             tp_dict: Dict[str, Any] = {
-                'name': teachpoint.name,
-                'x': teachpoint.coordinates.x,
-                'y': teachpoint.coordinates.y,
-                'z': teachpoint.coordinates.z,
-                'yaw': teachpoint.coordinates.yaw,
-                'pitch': teachpoint.coordinates.pitch,
-                'roll': teachpoint.coordinates.roll,
-                'orientation': teachpoint.orientation,
-                'access_type': teachpoint.access_type,
-                'gripper_offset': teachpoint.gripper_offset,
-                'retract_distance': teachpoint.retract_distance,
-                'vertical_clearance': teachpoint.vertical_clearance,
-                'z_above': teachpoint.z_above
+                'name': tp.name,
+                'x': tp.coordinates.x,
+                'y': tp.coordinates.y,
+                'z': tp.coordinates.z,
+                'yaw': tp.coordinates.yaw,
+                'pitch': tp.coordinates.pitch,
+                'roll': tp.coordinates.roll,
+                'orientation': tp.orientation,
+                'access': tp._access_config_name or 'default_vertical'
             }
             teachpoints_list.append(tp_dict)
 
-        data = {'teachpoints': teachpoints_list}
+        # Build final JSON structure
+        data: Dict[str, Any] = {}
+        if access_configs_dict:
+            data['access_configs'] = access_configs_dict
+        data['teachpoints'] = teachpoints_list
 
         with open(filepath, 'w') as f:
             json.dump(data, f, indent=2)
