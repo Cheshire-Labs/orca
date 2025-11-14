@@ -2,6 +2,18 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## CRITICAL: Code Quality Protocol
+
+**After EVERY edit:**
+1. **Check `<ide_diagnostics>`** in tool response - fix ALL errors immediately
+2. **Report pre-existing errors** before making changes
+3. **Verify external API calls** - never guess method signatures
+4. **Never ignore diagnostics** - even if they seem unrelated
+
+**Unacceptable:** Syntax errors, calling non-existent methods, wrong argument counts, ignored diagnostics.
+
+---
+
 ## Project Overview
 
 Orca is a laboratory automation scheduler designed for parallel processing of laboratory workflows. It coordinates multiple devices (liquid handlers, centrifuges, sealers, etc.) and manages labware movement across a lab system using transporters (robotic arms). The system is built on asyncio for concurrent execution of multiple labware threads and workflows.
