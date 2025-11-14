@@ -8,7 +8,6 @@
       "yaw": 0,
       "pitch": 0,
       "roll": 0,
-      "approach_height": 0,
       "orientation": null
     },
     {
@@ -19,7 +18,6 @@
       "yaw": 0,
       "pitch": 0,
       "roll": 0,
-      "approach_height": 0,
       "orientation": null
     },
     {
@@ -30,7 +28,6 @@
       "yaw": 0,
       "pitch": 0,
       "roll": 0,
-      "approach_height": 0,
       "orientation": null
     },
     {
@@ -41,7 +38,6 @@
       "yaw": 0,
       "pitch": 0,
       "roll": 0,
-      "approach_height": 0,
       "orientation": null
     },
     {
@@ -52,7 +48,6 @@
       "yaw": 0,
       "pitch": 0,
       "roll": 0,
-      "approach_height": 0,
       "orientation": null
     },
     {
@@ -63,7 +58,6 @@
       "yaw": 0,
       "pitch": 0,
       "roll": 0,
-      "approach_height": 0,
       "orientation": null
     }
   ]
