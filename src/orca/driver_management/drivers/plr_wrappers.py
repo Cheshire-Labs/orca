@@ -5,23 +5,43 @@ from orca.driver_management.drivers.driver_interfaces import ICentrifugeDriver, 
 from pylabrobot.sealing.backend import SealerBackend as PLRSealerBackend
 from pylabrobot.shaking.backend import ShakerBackend as PLRShakerBackend
 from pylabrobot.centrifuge.backend import CentrifugeBackend as PLRCentrifugeBackend
-from pylabrobot.arms.backend import ArmBackend as PLRArmBackend
+from pylabrobot.arms.backend import ArmBackend as PLRArmBackend, VerticalAccess, HorizontalAccess
 from pylabrobot.arms.coords import CartesianCoords as PLRCartesianCoords, ElbowOrientation
+from pylabrobot.resources import Coordinate, Rotation
 
 from orca.resource_models.resource_extras.teachpoints import Teachpoint, TeachpointsRegistry
 
 
 def convert_teachpoint_to_plr_coord(teachpoint: Teachpoint):
-    tp = teachpoint
-    c = tp.coordinates
+    """Convert Orca Teachpoint to PyLabRobot CartesianCoords.
+
+    Args:
+        teachpoint: Orca teachpoint with coordinates and orientation
+
+    Returns:
+        PLRCartesianCoords with proper Coordinate, Rotation, and ElbowOrientation
+
+    Raises:
+        ValueError: If orientation is provided but is not 'left' or 'right' (case-insensitive)
+    """
+    c = teachpoint.coordinates
+
+    # Handle orientation (case-insensitive, optional)
+    elbow = None
+    if teachpoint.orientation is not None:
+        orientation_lower = teachpoint.orientation.lower()
+        if orientation_lower == "left":
+            elbow = ElbowOrientation.LEFT
+        elif orientation_lower == "right":
+            elbow = ElbowOrientation.RIGHT
+        else:
+            raise ValueError(f"Invalid orientation '{teachpoint.orientation}'. Must be 'left' or 'right' (case-insensitive).")
+
     return PLRCartesianCoords(
-      c.x,
-      c.y,
-      c.z,
-      c.yaw,
-      c.pitch,
-      c.roll,
-      ElbowOrientation(tp.orientation))
+        Coordinate(c.x, c.y, c.z),
+        Rotation(c.yaw, c.pitch, c.roll),
+        elbow
+    )
 
 class PLRTransporterBackendWrapper(ITransporterDriver):
     def __init__(self, backend: PLRArmBackend) -> None:
@@ -46,23 +66,69 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
         # await self._backend.move_to_safe()
         self._is_initialized = True
 
+    def _teachpoint_to_plr_access(self, tp: Teachpoint):
+        """Convert teachpoint access parameters to PLR AccessPattern.
+
+        Args:
+            tp: Teachpoint with access configuration
+
+        Returns:
+            VerticalAccess or HorizontalAccess based on access_type
+
+        Raises:
+            ValueError: If access_type is invalid or required parameters are None
+        """
+        # Validate access_type
+        if tp.access_type is None:
+            raise ValueError(f"Teachpoint '{tp.name}' has no access_type specified. Must be 'vertical' or 'horizontal'.")
+
+        access_type_lower = tp.access_type.lower()
+
+        # Validate common parameter
+        if tp.gripper_offset is None:
+            raise ValueError(f"Teachpoint '{tp.name}' has no gripper_offset specified.")
+
+        if access_type_lower == "vertical":
+            # Validate vertical-specific parameters
+            if tp.retract_distance is None:
+                raise ValueError(f"Teachpoint '{tp.name}' (vertical access) has no retract_distance specified.")
+
+            return VerticalAccess(
+                approach_height_mm=tp.retract_distance,
+                clearance_mm=tp.retract_distance,
+                gripper_offset_mm=tp.gripper_offset
+            )
+        elif access_type_lower == "horizontal":
+            # Validate horizontal-specific parameters
+            if tp.vertical_clearance is None:
+                raise ValueError(f"Teachpoint '{tp.name}' (horizontal access) has no vertical_clearance specified.")
+            if tp.z_above is None:
+                raise ValueError(f"Teachpoint '{tp.name}' (horizontal access) has no z_above specified.")
+
+            return HorizontalAccess(
+                approach_distance_mm=tp.vertical_clearance,
+                clearance_mm=tp.vertical_clearance,
+                lift_height_mm=tp.z_above,
+                gripper_offset_mm=tp.gripper_offset
+            )
+        else:
+            raise ValueError(f"Invalid access_type '{tp.access_type}' for teachpoint '{tp.name}'. Must be 'vertical' or 'horizontal'.")
+
     async def pick(self, position_name: str, labware_type: str) -> None:
         tp = self._teachpoints.get(position_name)
         if tp is None:
             raise ValueError(f"The position '{position_name}' is not taught for {self.name}")
         coords = convert_teachpoint_to_plr_coord(tp)
-
-        #### HERE ####
-        ### Figure out how to set this up to make sense
-
-        await self._backend.pick_plate(coords, tp.approach_height)
+        access = self._teachpoint_to_plr_access(tp)
+        await self._backend.pick_plate(coords, access)
 
     async def place(self, position_name: str, labware_type: str) -> None:
         tp = self._teachpoints.get(position_name)
         if tp is None:
             raise ValueError(f"The position '{position_name}' is not taught for {self.name}")
         coords = convert_teachpoint_to_plr_coord(tp)
-        await self._backend.place_plate(coords, tp.approach_height)
+        access = self._teachpoint_to_plr_access(tp)
+        await self._backend.place_plate(coords, access)
 
     def get_teachpoints(self) -> List[Teachpoint]:
         return self._teachpoints.list()
@@ -166,7 +232,7 @@ class PLRCentrifugeBackendWrapper(ICentrifugeDriver):
 
     async def centrifuge(self, g: float, duration: float) -> None:
         """Spin the centrifuge at a specified speed for a specified duration."""
-        await self._backend.start_spin_cycle(g, duration, self._acceleration)
+        await self._backend.spin(g, duration, self._acceleration)
     
     async def open(self) -> None:
         await self._backend.open_door()
