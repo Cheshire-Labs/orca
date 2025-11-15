@@ -182,15 +182,29 @@ class MoveHandler:
         return await self._resolve_reservation_from_move_action_collection(thread_id, potential_moves)
 
 
-    async def _resolve_reservation_from_move_action_collection(self, thread_id: str, potential_moves: List[MoveAction]) -> MoveAction:
+    async def _resolve_reservation_from_move_action_collection(
+        self,
+        thread_id: str,
+        potential_moves: List[MoveAction],
+        max_retries: int = 100,
+        retry_count: int = 0
+    ) -> MoveAction:
+        if retry_count >= max_retries:
+            raise RuntimeError(
+                f"Thread {thread_id} exceeded maximum reservation retries ({max_retries}). "
+                f"This likely indicates a persistent deadlock or system issue."
+            )
+
         reservation_request_collection = MoveActionCollectionReservationRequest(thread_id, potential_moves)
         await self._thread_reservation_coordinator.submit_reservation_request(thread_id, reservation_request_collection)
         await reservation_request_collection.processed.wait()
         if reservation_request_collection.rejected.is_set():
             await asyncio.sleep(0.2)
-            orca_logger.info("Reservation request collection was rejected, retrying")
+            orca_logger.debug(f"Thread {thread_id} - Reservation rejected, retry {retry_count + 1}/{max_retries}")
             reservation_request_collection.clear()
-            return await self._resolve_reservation_from_move_action_collection(thread_id, potential_moves)
+            return await self._resolve_reservation_from_move_action_collection(
+                thread_id, potential_moves, max_retries, retry_count + 1
+            )
         if reservation_request_collection.deadlocked.is_set():
             reservation_request_collection.clear()
             return await self.handle_deadlock(thread_id, potential_moves[0])

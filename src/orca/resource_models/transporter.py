@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import List, Optional
+from typing import List, Optional, Any
 from orca.driver_management.drivers.plr_wrappers import PLRTransporterBackendWrapper
 from orca.driver_management.drivers.driver_interfaces import ITransporterDriver
 from orca.driver_management.drivers.sims import SimTransporterDriver
@@ -9,7 +9,14 @@ from orca.resource_models.simulation_manager import SimulationManager
 from orca.resource_models.transporter_interface import ITransporter
 from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.location import Location
-from pylabrobot.arms.backend import ArmBackend
+
+# pylabrobot.arms may not be available in all installations
+try:
+    from pylabrobot.arms.backend import ArmBackend
+    ARMBACKEND_AVAILABLE = True
+except ImportError:
+    ArmBackend = Any  # Type placeholder
+    ARMBACKEND_AVAILABLE = False
 
 orca_logger = logging.getLogger("orca")
 

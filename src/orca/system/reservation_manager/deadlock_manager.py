@@ -147,4 +147,34 @@ class ThreadDeadlockDetector:
         return sorted(candidates)[0]
 
     def _get_labware_to_thread_map(self, queue: List[IReservationCollection]) -> Dict[str, str]:
-        return {self._thread_registry.get_thread(c.thread_id).labware.id: c.thread_id for c in queue}
+        """
+        Build a mapping from labware IDs to thread IDs for deadlock detection.
+        Handles missing threads and None labware gracefully.
+        """
+        labware_to_thread = {}
+        for collection in queue:
+            thread = self._thread_registry.get_thread(collection.thread_id)
+            if thread is None:
+                # Thread not found in registry - log warning and skip
+                import logging
+                logging.getLogger("orca").warning(
+                    f"Thread {collection.thread_id} not found in registry during deadlock detection"
+                )
+                continue
+            if thread.labware is None:
+                # Thread has no labware - log warning and skip
+                import logging
+                logging.getLogger("orca").warning(
+                    f"Thread {collection.thread_id} has no labware during deadlock detection"
+                )
+                continue
+            labware_id = thread.labware.id
+            if labware_id in labware_to_thread:
+                # Duplicate labware ID - this shouldn't happen but log it
+                import logging
+                logging.getLogger("orca").warning(
+                    f"Duplicate labware ID {labware_id} for threads "
+                    f"{labware_to_thread[labware_id]} and {collection.thread_id}"
+                )
+            labware_to_thread[labware_id] = collection.thread_id
+        return labware_to_thread

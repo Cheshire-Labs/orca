@@ -41,9 +41,9 @@ class LocationReservationManager(IReservationManager, IAvailabilityManager, ILab
         orca_logger.info(f"Thread {request.labware} - Reservation {request.id} granted for {location_name}")
 
     def can_reserve(self, location_name: str) -> bool:
-        loation_is_unreserved = location_name not in self._reservations.keys() 
+        location_is_unreserved = location_name not in self._reservations.keys()
         location_is_empty = self._location_reg.get_location(location_name).labware is None
-        return loation_is_unreserved and location_is_empty
+        return location_is_unreserved and location_is_empty
     
     def release_reservation(self, location_name: str) -> None:
         if location_name in self._reservations.keys():

@@ -1,10 +1,18 @@
 import pytest
 
-from orca.resource_models.transporter_resource import Transporter
+try:
+    from orca.resource_models.transporter import Transporter
+    from tests.mock import MockEquipmentResource, MockRoboticArm
+    TRANSPORTER_AVAILABLE = True
+except ImportError as e:
+    # pylabrobot dependencies may not be fully available
+    TRANSPORTER_AVAILABLE = False
+    MockRoboticArm = None
+    MockEquipmentResource = None
+
 from orca.system.registries import LabwareRegistry
 from orca.system.resource_registry import ResourceRegistry
 from orca.system.system_map import SystemMap
-from tests.mock import MockEquipmentResource, MockRoboticArm
 
 
 
