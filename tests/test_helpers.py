@@ -17,6 +17,7 @@ from orca.system.system_map import SystemMap
 from orca.workflow_models.labware_threads.executing_labware_thread import ExecutingLabwareThread
 from orca.workflow_models.status_enums import LabwareThreadStatus
 from pylabrobot.resources.corning.falcon.plates import Cor_Falcon_96_wellplate_340ul_Fb_Black
+from tests.mock import UniversalMockDevice
 
 
 def create_test_teachpoints(names: List[str]) -> List[Teachpoint]:
@@ -69,21 +70,18 @@ def create_test_transporter(
     return transporter
 
 
-def create_test_device(name: str, device_type: str = "device") -> Device:
+def create_test_device(name: str, device_type: str = "device") -> UniversalMockDevice:
     """
-    Create a test device.
+    Create a test device that supports all action interfaces.
 
     Args:
         name: Device name
-        device_type: Type of device for simulation
+        device_type: Type of device for simulation (deprecated, kept for compatibility)
 
     Returns:
-        Configured Device instance
+        UniversalMockDevice instance supporting all action types
     """
-    driver = SimDriver(name, device_type)
-    sim_driver = SimDriver(f"{name}_sim", device_type)
-    device = Device(name, driver, sim_driver, sim=True)
-    return device
+    return UniversalMockDevice(name)
 
 
 def create_test_plate_template(name: str = "test_plate") -> PlateTemplate:
