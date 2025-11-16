@@ -8,7 +8,8 @@ from orca.resource_models.labware import LabwareInstance
 
 class MockEquipmentResource(Device):
     def __init__(self, name: str, mocking_type: Optional[str] = None):
-        super().__init__(name, SimDriver())
+        driver = SimDriver(name)
+        super().__init__(name, driver, driver, sim=True)
         self._on_intialize: Callable[[], None] = lambda: None
         self._on_prepare_for_place: Callable[[LabwareInstance], None] = lambda x: None
         self._on_prepare_for_pick: Callable[[LabwareInstance], None] = lambda x: None
@@ -46,6 +47,18 @@ class MockRoboticArm(Transporter):
         driver = SimTransporterDriver(name)
         # In sim mode, don't load positions - they'll be set up differently if needed
         super().__init__(name, driver, sim=True)
+
+        # Set up teachpoints from positions if provided
+        if positions:
+            from orca.resource_models.resource_extras.teachpoints import Teachpoint, CartesianCoordinates
+            teachpoints = []
+            for pos_name in positions:
+                # Create dummy coordinates for mock teachpoints
+                coords = CartesianCoordinates(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                teachpoint = Teachpoint(pos_name, coords, None, "top")
+                teachpoints.append(teachpoint)
+            self.load_teachpoints(teachpoints)
+
         self._on_pick: Callable[[LabwareInstance, Location], None] = lambda x, y: None
         self._on_place: Callable[[LabwareInstance, Location], None] = lambda x, y: None
 

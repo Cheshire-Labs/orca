@@ -85,6 +85,7 @@ class MoveActionCollectionReservationRequest(IReservationCollection):
         self._processed.clear()
         self._rejected.clear()
         self._deadlocked.clear()
+        self._granted.clear()  # Clear for consistency (guard clause prevents clearing granted collections)
         
 
 
@@ -185,32 +186,63 @@ class MoveHandler:
     async def _resolve_reservation_from_move_action_collection(
         self,
         thread_id: str,
-        potential_moves: List[MoveAction],
-        max_retries: int = 100,
-        retry_count: int = 0
+        potential_moves: List[MoveAction]
     ) -> MoveAction:
-        if retry_count >= max_retries:
-            raise RuntimeError(
-                f"Thread {thread_id} exceeded maximum reservation retries ({max_retries}). "
-                f"This likely indicates a persistent deadlock or system issue."
-            )
+        """
+        Resolve a reservation from a collection of potential move actions.
+        Uses iterative retry with exponential backoff (no recursion).
 
-        reservation_request_collection = MoveActionCollectionReservationRequest(thread_id, potential_moves)
-        await self._thread_reservation_coordinator.submit_reservation_request(thread_id, reservation_request_collection)
-        await reservation_request_collection.processed.wait()
-        if reservation_request_collection.rejected.is_set():
-            await asyncio.sleep(0.2)
-            orca_logger.debug(f"Thread {thread_id} - Reservation rejected, retry {retry_count + 1}/{max_retries}")
-            reservation_request_collection.clear()
-            return await self._resolve_reservation_from_move_action_collection(
-                thread_id, potential_moves, max_retries, retry_count + 1
-            )
-        if reservation_request_collection.deadlocked.is_set():
-            reservation_request_collection.clear()
-            return await self.handle_deadlock(thread_id, potential_moves[0])
-        if reservation_request_collection.granted.is_set():
-            return reservation_request_collection.reserved_move_action
-        raise ValueError("Route reservation was not granted")
+        Args:
+            thread_id: Thread requesting the reservation
+            potential_moves: List of potential move actions to try
+
+        Returns:
+            The granted MoveAction
+
+        Raises:
+            RuntimeError: If max retries exceeded (indicates persistent deadlock or system issue)
+            ValueError: If reservation in unexpected state
+        """
+        backoff = 0.05  # Start with 50ms
+        max_backoff = 1.0  # Cap at 1 second
+        retry_count = 0
+        max_retries = 100  # Safety limit (should rarely hit with event-driven system)
+
+        while True:
+            if retry_count >= max_retries:
+                raise RuntimeError(
+                    f"Thread {thread_id} exceeded maximum reservation retries ({max_retries}). "
+                    f"This likely indicates a persistent deadlock or system issue."
+                )
+
+            collection = MoveActionCollectionReservationRequest(thread_id, potential_moves)
+            await self._thread_reservation_coordinator.submit_reservation_request(thread_id, collection)
+            await collection.processed.wait()
+
+            if collection.granted.is_set():
+                return collection.reserved_move_action
+
+            elif collection.deadlocked.is_set():
+                collection.clear()
+                return await self.handle_deadlock(thread_id, potential_moves[0])
+
+            elif collection.rejected.is_set():
+                # Exponential backoff
+                retry_count += 1
+                orca_logger.debug(
+                    f"Thread {thread_id} - Reservation rejected, retry {retry_count}/{max_retries} "
+                    f"after {backoff:.2f}s backoff"
+                )
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 1.5, max_backoff)
+                collection.clear()
+                # Loop continues - no recursion!
+
+            else:
+                raise ValueError(
+                    f"Thread {thread_id} - Reservation collection not granted, rejected, or deadlocked. "
+                    f"This should never happen."
+                )
    
     def _get_potential_move_actions(self, labware: LabwareInstance, potential_paths: List[List[str]]) -> List[MoveAction]:
         potential_actions: List[MoveAction] = []
@@ -223,9 +255,30 @@ class MoveHandler:
         return potential_actions
     
     def _assign_reservation_to_moves(self, potential_moves: List[MoveAction], assigned_action: ILocationAction) -> None:
-        # TODO: Fix this later - this is a temporary fix
-        # use the reservation already set by the assigned action
+        """
+        Assigns an existing reservation from an action to matching move actions.
+
+        This is used when an action has already obtained a reservation for its location,
+        and we're creating move actions to reach that location. We reuse the existing
+        reservation rather than requesting a new one.
+
+        Args:
+            potential_moves: List of move actions we're considering
+            assigned_action: Action that already has a reservation for its location
+        """
+        matched = False
         for move in potential_moves:
             if move.target == assigned_action.location:
                 move.set_reservation(assigned_action.reservation)
-                move.set_release_reservation_on_place(False)
+                move.set_release_reservation_on_place(False)  # Action owns the reservation
+                matched = True
+                orca_logger.debug(
+                    f"Reusing reservation {assigned_action.reservation.id} "
+                    f"for move to {move.target.name}"
+                )
+
+        if not matched:
+            orca_logger.warning(
+                f"Could not match assigned action location {assigned_action.location.name} "
+                f"to any potential move targets: {[m.target.name for m in potential_moves]}"
+            )
