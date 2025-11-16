@@ -59,7 +59,7 @@ labwares = [
 # Setup your devices, each device needs a driver assigneed to it
 # Transorter equipment are devices capable of moving labwaare
 # For this simulation, the teachpoints are saved within a local file
-teachpoints_dir = "examples\\smc_assay\\teachpoints"
+teachpoints_dir = os.path.join("examples", "smc_assay", "teachpoints")
 ddr1_points = os.path.join(teachpoints_dir, "ddr1.json")
 ddr2_points = os.path.join(teachpoints_dir, "ddr2.json")
 ddr3_points = os.path.join(teachpoints_dir, "ddr3.json")

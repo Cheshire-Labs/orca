@@ -136,7 +136,8 @@ class ExecuteCommandAction(LocationAction):
             raise TypeError("Resource must implement IGenericExecutable.")
         await self.resource.execute(self._command, self._options)
 
-type ExecuteMethodType = Callable[[Device, List[LabwareInstance], List[LabwareInstance], Dict[str, Any]], Awaitable[None]]
+# Type alias for execute method signature (Python 3.11 compatible)
+ExecuteMethodType = Callable[[Device, List[LabwareInstance], List[LabwareInstance], Dict[str, Any]], Awaitable[None]]
 
 class ExecuteMethodAction(LocationAction):
     def __init__(self,
