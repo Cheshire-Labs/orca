@@ -15,6 +15,7 @@ class LocationReservationManager(IReservationManager, IAvailabilityManager, ILab
     def __init__(self, location_reg: ILocationRegistry) -> None:
         self._location_reg = location_reg
         self._reservations: Dict[str, LocationReservation] = {}
+        self._lock = asyncio.Lock()  # Protects reservation operations from race conditions
 
     @property
     def reservations(self) -> Dict[str, LocationReservation]:
@@ -25,14 +26,21 @@ class LocationReservationManager(IReservationManager, IAvailabilityManager, ILab
         """Returns the reservation for the given location name, if it exists."""
         return self._reservations.get(location_name, None)
 
-    def attempt_reservation(self, location_name: str, request: LocationReservation) -> None:
-        """Attempts to reserve a location for the given request."""
-        if self.can_reserve(location_name):
-            self._reserve(location_name, request)
-            request.granted.set()
-        else:
-            request.rejected.set()
-        request.processed.set()
+    async def attempt_reservation(self, location_name: str, request: LocationReservation) -> None:
+        """
+        Attempts to reserve a location for the given request.
+
+        Uses a lock to prevent TOCTOU (Time-Of-Check Time-Of-Use) race conditions
+        where multiple threads could simultaneously check availability and both
+        attempt to reserve the same location.
+        """
+        async with self._lock:  # Atomic check-and-act
+            if self.can_reserve(location_name):
+                self._reserve(location_name, request)
+                request.granted.set()
+            else:
+                request.rejected.set()
+            request.processed.set()
 
     def _reserve(self, location_name: str, request: LocationReservation) -> None:
         self._reservations[location_name] = request
@@ -90,7 +98,7 @@ class ThreadReservationCoordinator(IThreadReservationCoordinator, IAvailabilityM
         # attempt to get a reservation
         for collection in queue_snapshot:
             for r in collection.get_reservations():
-                self._reservation_manager.attempt_reservation(r.requested_location.name, r)
+                await self._reservation_manager.attempt_reservation(r.requested_location.name, r)
 
             collection.resolve_final_reservation()
             collection.processed.set()

@@ -1,15 +1,14 @@
 from typing import Optional, Dict, Any, Callable, List
 from unittest.mock import MagicMock
-from orca.driver_management.drivers.simulation_device_driver import SimulationDeviceDriver
-from orca.driver_management.drivers.simulation_robotic_arm.simulation_robotic_arm import SimulationRoboticArmDriver
-from orca.resource_models.transporter_resource import Transporter
+from orca.driver_management.drivers.sims import SimDriver, SimTransporterDriver
+from orca.resource_models.transporter import Transporter
 from orca.resource_models.devices import Device
 from orca.resource_models.location import Location
 from orca.resource_models.labware import LabwareInstance
 
 class MockEquipmentResource(Device):
     def __init__(self, name: str, mocking_type: Optional[str] = None):
-        super().__init__(name, SimulationDeviceDriver(name, mocking_type))
+        super().__init__(name, SimDriver())
         self._on_intialize: Callable[[], None] = lambda: None
         self._on_prepare_for_place: Callable[[LabwareInstance], None] = lambda x: None
         self._on_prepare_for_pick: Callable[[LabwareInstance], None] = lambda x: None
@@ -44,10 +43,9 @@ class MockEquipmentResource(Device):
 
 class MockRoboticArm(Transporter):
     def __init__(self, name: str, mocking_type: Optional[str] = None, positions: Optional[List[str]] = None) -> None:
-        driver = SimulationRoboticArmDriver(name,  mocking_type)
-        positions = positions if positions is not None else []
-        driver.set_init_options({"positions": positions})
-        super().__init__(name, driver)
+        driver = SimTransporterDriver(name)
+        # In sim mode, don't load positions - they'll be set up differently if needed
+        super().__init__(name, driver, sim=True)
         self._on_pick: Callable[[LabwareInstance, Location], None] = lambda x, y: None
         self._on_place: Callable[[LabwareInstance, Location], None] = lambda x, y: None
 
