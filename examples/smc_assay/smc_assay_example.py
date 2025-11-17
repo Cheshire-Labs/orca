@@ -476,21 +476,25 @@ class SpawnNewOnFourthPlate(SystemBoundEventHandler):
         workflow = self.system.get_executing_workflow(context.workflow_id)
         thread = workflow.thread_manager.get_executing_thread(context.thread_id)
         if self._num_of_spawns % 4 != 0:
-            asyncio.create_task(self._await_previous_thread_completion_and_set_start(thread, context))
+            # Set manual_start flag to prevent auto-start by Spawn handler
+            thread.manual_start = True
+            asyncio.create_task(self._await_previous_thread_completion_and_start(thread, context))
         else:
             # if this is the first spawn, we don't have a previous thread
-            # or if this is the fourth spawn, we allow the thread to end normally
+            # or if this is the fourth spawn, we allow the thread to auto-start normally
             self._previous_thread = thread
-        self._num_of_spawns += 1        
-    
-    async def _await_previous_thread_completion_and_set_start(self, thread: ExecutingLabwareThread, context: ThreadExecutionContext):
-        """Awaits the completion of the previous thread and sets the start location of the new thread to the end location of the previous thread."""
+        self._num_of_spawns += 1
+
+    async def _await_previous_thread_completion_and_start(self, thread: ExecutingLabwareThread, context: ThreadExecutionContext):
+        """Awaits the completion of the previous thread, sets the start location, and manually starts the new thread."""
         if self._previous_thread is None:
             return
         while self._previous_thread.status != LabwareThreadStatus.COMPLETED:
             await asyncio.sleep(1)
         thread.update_start_location(self._previous_thread.end_location)
         self._previous_thread = thread
+        # Manually start the thread now that start location is updated
+        await thread.start()
 
         
             
