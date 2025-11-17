@@ -34,9 +34,10 @@ class Spawn(SystemBoundEventHandler):
                 method = self.system.get_executing_method(context.method_id)
                 self._spawn_thread.set_wrapped_method(method)
             thread_instance = self.system.create_and_register_thread_instance(self._spawn_thread)
-            workflow.add_and_start_thread(thread_instance)
-            # thread = self.system.start_labware_thread(self._spawn_thread)
-            # self.system.add_thread(thread)        
+            executing_thread = workflow.add_thread(thread_instance)
+            # THREAD.CREATED event fires in add_thread(), allowing handlers to set manual_start flag
+            if not executing_thread.manual_start:
+                workflow.start_thread(executing_thread)        
 
 
 
