@@ -64,9 +64,15 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
     async def initialize(self) -> None:
         """Initializes the transporter."""
         await self._backend.setup()
-        await self._backend.home()
-        # await self._backend.move_to_safe()
         self._is_initialized = True
+
+    async def home(self) -> None:
+        """Homes the transporter."""
+        await self._backend.home()
+
+    async def move_to_safe(self) -> None:
+        """Moves the transporter to a safe position."""
+        await self._backend.move_to_safe()
 
     def _teachpoint_to_plr_access(self, tp: Teachpoint):
         """Convert teachpoint access parameters to PLR AccessPattern.
