@@ -66,8 +66,7 @@ class ExecutingWorkflow(IWorkflow):
         self._status_manager.set_status("WORKFLOW", self._workflow.id, status.name, self._context)
 
     async def start(self) -> None:
-        # Start coordinator (idempotent - will not start if already running)
-        await self._thread_reservation_coordinator.start()
+        asyncio.create_task(self._thread_reservation_coordinator.start_tick_loop(0.3))
         if self.status != WorkflowStatus.CREATED:
             raise RuntimeError(f"Workflow {self._workflow.name} is already started or completed.")
         await asyncio.gather(*[thread.start() for thread in self._entry_threads])

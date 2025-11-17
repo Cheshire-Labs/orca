@@ -266,19 +266,11 @@ class MoveHandler:
             potential_moves: List of move actions we're considering
             assigned_action: Action that already has a reservation for its location
         """
-        matched = False
         for move in potential_moves:
             if move.target == assigned_action.location:
                 move.set_reservation(assigned_action.reservation)
                 move.set_release_reservation_on_place(False)  # Action owns the reservation
-                matched = True
                 orca_logger.debug(
                     f"Reusing reservation {assigned_action.reservation.id} "
                     f"for move to {move.target.name}"
                 )
-
-        if not matched:
-            orca_logger.warning(
-                f"Could not match assigned action location {assigned_action.location.name} "
-                f"to any potential move targets: {[m.target.name for m in potential_moves]}"
-            )

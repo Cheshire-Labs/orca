@@ -1,7 +1,7 @@
 
 import asyncio
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List
 from orca.resource_models.location import ILabwareLocationObserver
 from orca.system.reservation_manager.location_reservation import LocationReservation
 from orca.system.reservation_manager.deadlock_manager import DeadlockStarvationRegistry, ThreadDeadlockDetector
@@ -65,15 +65,12 @@ class ThreadReservationCoordinator(IThreadReservationCoordinator, IAvailabilityM
     def __init__(self, location_reg: ILocationRegistry, thread_registry: IThreadRegistry) -> None:
         self._location_reg = location_reg
         self._reservation_manager: LocationReservationManager = LocationReservationManager(location_reg)
-        # Priority queue: lower number = higher priority
-        # Priority = -starvation_score (higher starvation = higher priority)
-        self._queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
+        self._queue: List[IReservationCollection] = []
         self._starvation_registry = DeadlockStarvationRegistry()
         self._deadlock_detector = ThreadDeadlockDetector(thread_registry, self._starvation_registry)
 
-        self.ticker_started = False  # Keep for backward compatibility
-        self._processing_task: Optional[asyncio.Task] = None
-        self._request_counter = 0  # For tie-breaking in priority queue
+        self.ticker_started = False
+        self._lock = asyncio.Lock()
 
     @property
     def starvation_registry(self) -> DeadlockStarvationRegistry:
@@ -81,44 +78,36 @@ class ThreadReservationCoordinator(IThreadReservationCoordinator, IAvailabilityM
         return self._starvation_registry
 
     async def start_tick_loop(self, tick_interval: float = 0.3) -> None:
-        """
-        Legacy method for backward compatibility.
-        Starts the event-driven processing loop (idempotent).
-        tick_interval parameter is ignored in new implementation.
-        """
-        await self.start()
-
-    async def start(self) -> None:
-        """Start the reservation processing loop (idempotent)"""
-        if self._processing_task is not None:
-            return  # Already running
-        self.ticker_started = True  # Set flag for backward compatibility
-        self._processing_task = asyncio.create_task(self._process_reservations())
-
-    async def _process_reservations(self) -> None:
-        """Consumer loop - processes requests as they arrive (event-driven, no polling)"""
+        """Starts a periodic tick loop to check for deadlocks and process reservations."""
+        self.ticker_started = True
         while True:
-            # Blocks until item available - no polling delay!
-            priority, counter, collection = await self._queue.get()
-            try:
-                # Process single collection
-                for r in collection.get_reservations():
-                    await self._reservation_manager.attempt_reservation(r.requested_location.name, r)
+            await asyncio.sleep(tick_interval)
+            await self._on_tick()
 
-                collection.resolve_final_reservation()
-                collection.processed.set()
+    async def _on_tick(self) -> None:
+        """This method is called periodically to check for deadlocks and process reservations."""
 
-                # Reset starvation score if granted
-                if collection.granted.is_set():
-                    self._starvation_registry.reset_starvation_score(collection.thread_id)
+        # copy over the queue
+        async with self._lock:
+            queue_snapshot = list(self._queue)
+            self._queue.clear()
 
-                # Deadlock detection (only if rejected)
-                if collection.rejected.is_set():
-                    self._detect_dead_lock([collection])
-            except Exception as e:
-                orca_logger.error(f"Error processing reservation: {e}")
-            finally:
-                self._queue.task_done()
+        # sort queue by starvation score (highest first) to give priority to starved threads
+        queue_snapshot.sort(key=lambda c: self._starvation_registry.get_starvation_score(c.thread_id), reverse=True)
+
+        # attempt to get a reservation
+        for collection in queue_snapshot:
+            for r in collection.get_reservations():
+                await self._reservation_manager.attempt_reservation(r.requested_location.name, r)
+
+            collection.resolve_final_reservation()
+            collection.processed.set()
+
+            # reset starvation score if reservation was granted
+            if collection.granted.is_set():
+                self._starvation_registry.reset_starvation_score(collection.thread_id)
+
+        self._detect_dead_lock(queue_snapshot)
 
     def _detect_dead_lock(self, queue: List[IReservationCollection]) -> None:
         """Detects deadlocks in the current reservation state."""
@@ -132,23 +121,9 @@ class ThreadReservationCoordinator(IThreadReservationCoordinator, IAvailabilityM
         
     async def submit_reservation_request(self, thread_id: str, request: IReservationCollection) -> None:
         if self.ticker_started is False:
-            orca_logger.warning("Reservation Coordinator not started.")
-        # Priority = negative starvation score (higher score = lower number = higher priority)
-        priority = -self._starvation_registry.get_starvation_score(thread_id)
-        # Use counter for tie-breaking to maintain FIFO order for same priority
-        self._request_counter += 1
-        await self._queue.put((priority, self._request_counter, request))
-
-    async def stop(self) -> None:
-        """Clean shutdown of the processing loop"""
-        if self._processing_task:
-            self._processing_task.cancel()
-            try:
-                await self._processing_task
-            except asyncio.CancelledError:
-                pass
-            self._processing_task = None
-            self.ticker_started = False
+            orca_logger.warning("Reservation Coordinator Ticker not started.")
+        async with self._lock:
+            self._queue.append(request)
 
 
 
