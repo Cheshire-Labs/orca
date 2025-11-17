@@ -267,22 +267,10 @@ class ExecutingLabwareThread(ILabwareThread):
     async def _execute_move_action(self) -> None:
         assert self._move_action is not None
         self.status = LabwareThreadStatus.AWAITING_MOVE_TARGET_AVAILABILITY
-
-        # Event-driven wait - instant notification when location becomes available
-        try:
-            await self._move_action.target.wait_until_available(timeout=60.0)
-        except asyncio.TimeoutError:
-            # After 60s timeout, check for deadlock
+        while self._move_action.target.labware is not None:
             if self._move_action.reservation.deadlocked.is_set():
                 await self._handle_deadlock()
-                return
-            raise RuntimeError(f"Timeout waiting for {self._move_action.target.name} to become available")
-
-        # Check deadlock one more time before proceeding
-        if self._move_action.reservation.deadlocked.is_set():
-            await self._handle_deadlock()
-            return
-
+            await asyncio.sleep(0.2)
         self.status = LabwareThreadStatus.MOVING
         context = ThreadExecutionContext(self._context.workflow_id,
                                         self._context.workflow_name,
