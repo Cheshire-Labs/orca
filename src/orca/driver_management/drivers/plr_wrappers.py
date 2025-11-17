@@ -1,24 +1,13 @@
 import asyncio
-from typing import List, Optional, Any
+from typing import List
 
 from orca.driver_management.drivers.driver_interfaces import ICentrifugeDriver, ISealerDriver, IShakerDriver, ITransporterDriver
 from pylabrobot.sealing.backend import SealerBackend as PLRSealerBackend
 from pylabrobot.shaking.backend import ShakerBackend as PLRShakerBackend
 from pylabrobot.centrifuge.backend import CentrifugeBackend as PLRCentrifugeBackend
 
-# pylabrobot.arms may not be available in all installations
-try:
-    from pylabrobot.arms.backend import ArmBackend as PLRArmBackend, VerticalAccess, HorizontalAccess
-    from pylabrobot.arms.coords import CartesianCoords as PLRCartesianCoords, ElbowOrientation
-    ARMS_AVAILABLE = True
-except ImportError:
-    # Define placeholders for type checking
-    PLRArmBackend = Any
-    PLRCartesianCoords = Any
-    VerticalAccess = Any
-    HorizontalAccess = Any
-    ElbowOrientation = Any
-    ARMS_AVAILABLE = False
+from pylabrobot.arms.backend import ArmBackend as PLRArmBackend, VerticalAccess, HorizontalAccess
+from pylabrobot.arms.coords import CartesianCoords as PLRCartesianCoords, ElbowOrientation
 
 from pylabrobot.resources import Coordinate, Rotation
 

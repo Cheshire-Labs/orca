@@ -10,13 +10,9 @@ from orca.resource_models.transporter_interface import ITransporter
 from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.location import Location
 
-# pylabrobot.arms may not be available in all installations
-try:
-    from pylabrobot.arms.backend import ArmBackend
-    ARMBACKEND_AVAILABLE = True
-except ImportError:
-    ArmBackend = Any  # Type placeholder
-    ARMBACKEND_AVAILABLE = False
+
+from pylabrobot.arms.backend import ArmBackend
+
 
 orca_logger = logging.getLogger("orca")
 
