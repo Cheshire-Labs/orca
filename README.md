@@ -608,7 +608,9 @@ class Spawn(SystemBoundEventHandler):
                 method = self.system.get_executing_method(context.method_id)
                 self._spawn_thread.set_wrapped_method(method)
             thread_instance = self.system.create_and_register_thread_instance(self._spawn_thread)
-            workflow.add_and_start_thread(thread_instance)
+            executing_thread = workflow.add_thread(thread_instance)
+            if not executing_thread.manual_start:
+                workflow.start_thread(executing_thread)
 ```
 
 You subscribe to events by using their event names.  Event names are emitted as ```{emitter_type}.{emitter_id}.{emitter_status}```.  You can either subscribe to a collection of events or a specific emitter type, but you need the id for the specific emitter.
