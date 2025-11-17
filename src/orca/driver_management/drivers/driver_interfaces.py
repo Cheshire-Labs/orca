@@ -142,6 +142,16 @@ class ITransporterDriver(ABC):
     async def initialize(self) -> None:
         """Setup the driver."""
         ...
+
+    @abstractmethod
+    async def home(self) -> None:
+        """Homes the transporter."""
+        ...
+
+    @abstractmethod
+    async def move_to_safe(self) -> None:
+        """Moves the transporter to a safe position."""
+        ...
     
     @property
     @abstractmethod

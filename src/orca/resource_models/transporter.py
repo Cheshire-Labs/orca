@@ -56,7 +56,9 @@ class Transporter(ITransporter):
     
     async def initialize(self) -> None:
         """Initializes the transporter."""
-        return await self.driver.initialize()
+        await self.driver.initialize()
+        await self.driver.home()
+        await self.driver.move_to_safe()
 
     @property
     def lock(self) -> asyncio.Lock:
