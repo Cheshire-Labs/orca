@@ -79,8 +79,13 @@ class ExecutingWorkflow(IWorkflow):
         for event in self._workflow.event_hooks:
             self._event_bus.subscribe(event.event_name, event.handler)
 
-    def add_and_start_thread(self, thread: LabwareThreadInstance) -> None:
+    def add_thread(self, thread: LabwareThreadInstance) -> ExecutingLabwareThread:
+        """Create executing thread. THREAD.CREATED event fires here."""
         executing_thread = self._thread_manager.create_executing_thread(thread.id, self._context)
+        return executing_thread
+
+    def start_thread(self, executing_thread: ExecutingLabwareThread) -> None:
+        """Start a thread that was previously added."""
         event_loop = asyncio.get_event_loop()
         event_loop.create_task(executing_thread.start())
 

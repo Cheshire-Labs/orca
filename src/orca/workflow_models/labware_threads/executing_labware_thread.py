@@ -57,6 +57,7 @@ class ExecutingLabwareThread(ILabwareThread):
         self._assigned_action: ExecutingLocationAction | None = None
         self._move_action: MoveAction | None = None
         self._stop_event = asyncio.Event()
+        self._manual_start = False
 
     @property
     def id(self) -> str:
@@ -145,6 +146,15 @@ class ExecutingLabwareThread(ILabwareThread):
                                         self._thread.name)
         self._status_manager.set_status("THREAD", self._thread.id, status.name, context)
 
+    @property
+    def manual_start(self) -> bool:
+        """Whether this thread requires manual start by event handler."""
+        return self._manual_start
+
+    @manual_start.setter
+    def manual_start(self, value: bool) -> None:
+        """Set whether this thread requires manual start by event handler."""
+        self._manual_start = value
 
     def has_completed(self) -> bool:
         return self.status == LabwareThreadStatus.COMPLETED
