@@ -41,7 +41,7 @@ def convert_teachpoint_to_plr_coord(teachpoint: Teachpoint):
 
     return PLRCartesianCoords(
         Coordinate(c.x, c.y, c.z),
-        Rotation(c.yaw, c.pitch, c.roll),
+        Rotation(c.roll, c.pitch, c.yaw),
         elbow
     )
 
