@@ -229,7 +229,19 @@ class SimTransporterDriver(ITransporterDriver):
         return self._is_initialized
     
     async def initialize(self) -> None:
-        self._is_initialized
+        orca_logger.info(f"Initializing transporter driver: {self.name}...")
+        self._is_initialized = True
+        orca_logger.info(f"Transporter driver {self.name} initialized successfully.")
+
+    async def home(self) -> None:
+        """Homes the transporter."""
+        await self._sim(f"Driver: {self.name} homing...")
+        orca_logger.info(f"Driver: {self.name} homed successfully.")
+
+    async def move_to_safe(self) -> None:
+        """Moves the transporter to a safe position."""
+        await self._sim(f"Driver: {self.name} moving to safe position...")
+        orca_logger.info(f"Driver: {self.name} moved to safe position successfully.")
 
     async def pick(self, position_name: str, labware_type: str) -> None:
         """Pick labware from a position."""
