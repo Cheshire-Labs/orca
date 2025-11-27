@@ -74,6 +74,39 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
         """Moves the transporter to a safe position."""
         await self._backend.move_to_safe()
 
+    def _resolve_gateway_path(self, teachpoint: Teachpoint) -> List[Teachpoint]:
+        """Resolve gateway chain, returning ordered list of waypoints to traverse.
+
+        Detects circular references to prevent infinite loops.
+        """
+        path: List[Teachpoint] = []
+        visited: set[str] = set()
+        current_gateway = teachpoint.gateway
+
+        while current_gateway:
+            if current_gateway in visited:
+                raise ValueError(f"Circular gateway reference detected: {current_gateway}")
+            visited.add(current_gateway)
+
+            try:
+                gateway_tp = self._teachpoints.get(current_gateway)
+            except KeyError:
+                raise ValueError(f"Gateway '{current_gateway}' not found in teachpoints")
+
+            path.append(gateway_tp)
+            current_gateway = gateway_tp.gateway
+
+        # Reverse so we traverse from outermost gateway inward
+        return list(reversed(path))
+
+    async def move_to_position(self, position_name: str) -> None:
+        """Move robot to a position without picking/placing (for waypoints)."""
+        tp = self._teachpoints.get(position_name)
+        if tp is None:
+            raise ValueError(f"The position '{position_name}' is not taught for {self.name}")
+        coords = convert_teachpoint_to_plr_coord(tp)
+        await self._backend.move_to(coords)
+
     def _teachpoint_to_plr_access(self, tp: Teachpoint):
         """Convert teachpoint access parameters to PLR AccessPattern.
 
@@ -126,17 +159,39 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
         tp = self._teachpoints.get(position_name)
         if tp is None:
             raise ValueError(f"The position '{position_name}' is not taught for {self.name}")
+
+        # Resolve and traverse gateway path (entry)
+        gateway_path = self._resolve_gateway_path(tp)
+        for waypoint in gateway_path:
+            await self.move_to_position(waypoint.name)
+
+        # Execute actual pick
         coords = convert_teachpoint_to_plr_coord(tp)
         access = self._teachpoint_to_plr_access(tp)
         await self._backend.pick_plate(coords, access)
+
+        # Traverse gateway path in reverse (exit)
+        for waypoint in reversed(gateway_path):
+            await self.move_to_position(waypoint.name)
 
     async def place(self, position_name: str, labware_type: str) -> None:
         tp = self._teachpoints.get(position_name)
         if tp is None:
             raise ValueError(f"The position '{position_name}' is not taught for {self.name}")
+
+        # Resolve and traverse gateway path (entry)
+        gateway_path = self._resolve_gateway_path(tp)
+        for waypoint in gateway_path:
+            await self.move_to_position(waypoint.name)
+
+        # Execute actual place
         coords = convert_teachpoint_to_plr_coord(tp)
         access = self._teachpoint_to_plr_access(tp)
         await self._backend.place_plate(coords, access)
+
+        # Traverse gateway path in reverse (exit)
+        for waypoint in reversed(gateway_path):
+            await self.move_to_position(waypoint.name)
 
     def get_teachpoints(self) -> List[Teachpoint]:
         return self._teachpoints.list()

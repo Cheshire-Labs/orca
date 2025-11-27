@@ -253,6 +253,10 @@ class SimTransporterDriver(ITransporterDriver):
         await self._sim(f"Driver: {self.name} placing to {position_name}, labware type: {labware_type}...")
         orca_logger.info(f"Driver: {self.name} placed to {position_name}, labware type: {labware_type}")
 
+    async def move_to_position(self, position_name: str) -> None:
+        """Move to position without picking/placing (for waypoints)."""
+        await self._sim(f"Driver: {self.name} moving through waypoint {position_name}...")
+        orca_logger.info(f"Driver: {self.name} moved through waypoint {position_name}")
 
     def get_teachpoints(self) -> List[Teachpoint]:
         """Get list of taught positions."""
