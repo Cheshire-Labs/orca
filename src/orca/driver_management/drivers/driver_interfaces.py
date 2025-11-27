@@ -175,6 +175,11 @@ class ITransporterDriver(ABC):
     def load_teachpoints(self, teachpoints: List[Teachpoint]) -> None:
         ...
 
+    @abstractmethod
+    async def move_to_position(self, position_name: str) -> None:
+        """Move to a position without picking/placing (for waypoint traversal)."""
+        ...
+
 
 class IStorageDriver(BaseDriver, ABC):
     pass
