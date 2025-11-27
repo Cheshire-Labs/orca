@@ -43,7 +43,8 @@ class Teachpoint:
         gripper_offset: float = 20.0,
         retract_distance: float = 100.0,
         vertical_clearance: float = 50.0,
-        z_above: float = 10.0
+        z_above: float = 10.0,
+        gateway: str | None = None
     ) -> None:
         self.name = name
         self.coordinates = coordinates
@@ -55,6 +56,8 @@ class Teachpoint:
         # For HORIZONTAL access only:
         self.vertical_clearance = vertical_clearance  # Vertical clearance distance
         self.z_above = z_above  # Extra height above nest slot
+        # Gateway waypoint - robot must pass through this teachpoint before reaching destination
+        self.gateway = gateway
 
         # Name of access config this teachpoint uses (for JSON save reconstruction)
         self._access_config_name: str | None = None
@@ -112,7 +115,8 @@ class Teachpoint:
                 gripper_offset=cfg.gripper_offset,
                 retract_distance=cfg.retract_distance,
                 vertical_clearance=cfg.vertical_clearance,
-                z_above=cfg.z_above
+                z_above=cfg.z_above,
+                gateway=tp_data.get('gateway', None)
             )
             tp._access_config_name = config_name
             teachpoints.append(tp)
@@ -194,6 +198,8 @@ class TeachpointsRegistry:
                 'orientation': tp.orientation,
                 'access': tp._access_config_name or 'default_vertical'
             }
+            if tp.gateway:
+                tp_dict['gateway'] = tp.gateway
             teachpoints_list.append(tp_dict)
 
         # Build final JSON structure
