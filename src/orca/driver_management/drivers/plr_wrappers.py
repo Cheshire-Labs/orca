@@ -1,24 +1,13 @@
 import asyncio
-from typing import List, Optional, Any
+from typing import List
 
 from orca.driver_management.drivers.driver_interfaces import ICentrifugeDriver, ISealerDriver, IShakerDriver, ITransporterDriver
 from pylabrobot.sealing.backend import SealerBackend as PLRSealerBackend
 from pylabrobot.shaking.backend import ShakerBackend as PLRShakerBackend
 from pylabrobot.centrifuge.backend import CentrifugeBackend as PLRCentrifugeBackend
 
-# pylabrobot.arms may not be available in all installations
-try:
-    from pylabrobot.arms.backend import ArmBackend as PLRArmBackend, VerticalAccess, HorizontalAccess
-    from pylabrobot.arms.coords import CartesianCoords as PLRCartesianCoords, ElbowOrientation
-    ARMS_AVAILABLE = True
-except ImportError:
-    # Define placeholders for type checking
-    PLRArmBackend = Any
-    PLRCartesianCoords = Any
-    VerticalAccess = Any
-    HorizontalAccess = Any
-    ElbowOrientation = Any
-    ARMS_AVAILABLE = False
+from pylabrobot.arms.backend import ArmBackend as PLRArmBackend, VerticalAccess, HorizontalAccess
+from pylabrobot.arms.coords import CartesianCoords as PLRCartesianCoords, ElbowOrientation
 
 from pylabrobot.resources import Coordinate, Rotation
 
@@ -52,7 +41,7 @@ def convert_teachpoint_to_plr_coord(teachpoint: Teachpoint):
 
     return PLRCartesianCoords(
         Coordinate(c.x, c.y, c.z),
-        Rotation(c.yaw, c.pitch, c.roll),
+        Rotation(c.roll, c.pitch, c.yaw),
         elbow
     )
 
@@ -75,9 +64,15 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
     async def initialize(self) -> None:
         """Initializes the transporter."""
         await self._backend.setup()
-        await self._backend.home()
-        # await self._backend.move_to_safe()
         self._is_initialized = True
+
+    async def home(self) -> None:
+        """Homes the transporter."""
+        await self._backend.home()
+
+    async def move_to_safe(self) -> None:
+        """Moves the transporter to a safe position."""
+        await self._backend.move_to_safe()
 
     def _teachpoint_to_plr_access(self, tp: Teachpoint):
         """Convert teachpoint access parameters to PLR AccessPattern.

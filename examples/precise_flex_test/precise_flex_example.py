@@ -55,9 +55,9 @@ resource_registry.add_resources([
 
 map = SystemMap(resource_registry)
 map.assign_resources({
-"shaker": shaker,
-"sealer": sealer,
-"centrifuge": centrifuge,
+"black_pad": centrifuge,
+"red_pad": sealer,
+"nest_5": shaker,
 })
 
 test_method_1 = MethodTemplate("test_method_1", [
@@ -74,16 +74,16 @@ test_method_2 = MethodTemplate("test_method_2", [
 
 sample_plate_thread = ThreadTemplate(
     src_plate,
-    map.get_location("location_1"),
-    map.get_location("location_1"),
+    map.get_location("nest_2"),
+    map.get_location("nest_2"),
     [
     test_method_1
 ])
 
 destination_plate_thread = ThreadTemplate(
     dest_plate, 
-    map.get_location("location_2"),
-    map.get_location("location_2"),
+    map.get_location("nest_3"),
+    map.get_location("nest_3"),
     [
     test_method_2
 ])
