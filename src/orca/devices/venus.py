@@ -1,5 +1,5 @@
 from orca.devices.device_interfaces import IGenericExecutable, IProtocolRunner
-from orca.driver_management.drivers.venus.venus_driver import SimulationVenusProtocolDriver, VenusProtocolDriver
+from cheshire_drivers import SimulationVenusProtocolDriver, VenusProtocolDriver
 from orca.resource_models.devices import Device
 from orca.resource_models.labware import LabwareInstance
 

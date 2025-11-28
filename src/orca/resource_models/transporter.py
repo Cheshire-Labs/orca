@@ -1,10 +1,7 @@
 import asyncio
 import logging
 from typing import List, Optional, Any
-from orca.driver_management.drivers.plr_wrappers import PLRTransporterBackendWrapper
-from orca.driver_management.drivers.driver_interfaces import ITransporterDriver
-from orca.driver_management.drivers.sims import SimTransporterDriver
-from orca.resource_models.resource_extras.teachpoints import Teachpoint, TeachpointsRegistry
+from cheshire_drivers import PLRTransporterBackendWrapper, ITransporterDriver, SimTransporterDriver, Teachpoint
 from orca.resource_models.simulation_manager import SimulationManager
 from orca.resource_models.transporter_interface import ITransporter
 from orca.resource_models.labware import LabwareInstance

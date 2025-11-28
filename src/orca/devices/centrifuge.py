@@ -1,9 +1,7 @@
 from typing import Optional
 
 from orca.devices.device_interfaces import ICentrifuge
-from orca.driver_management.drivers.driver_interfaces import ICentrifugeDriver
-from orca.driver_management.drivers.plr_wrappers import PLRCentrifugeBackendWrapper
-from orca.driver_management.drivers.sims import SimCentrifugeDriver
+from cheshire_drivers import ICentrifugeDriver, PLRCentrifugeBackendWrapper, SimCentrifugeDriver
 from orca.resource_models.devices import Device
 from pylabrobot.centrifuge.backend import CentrifugeBackend as PLRCentrifugeBackend
 

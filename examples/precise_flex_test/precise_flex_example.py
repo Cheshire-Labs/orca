@@ -7,7 +7,7 @@ import sys
 from orca.devices.centrifuge import Centrifuge
 from orca.devices.sealer import Sealer
 from orca.devices.shaker import Shaker
-from orca.driver_management.drivers.sims import HumanSim, SimCentrifugeDriver, SimSealerDriver, SimShakerDriver
+from cheshire_drivers import HumanSim, SimCentrifugeDriver, SimSealerDriver, SimShakerDriver
 from orca.events.event_bus import EventBus
 from orca.resource_models.labware import PlateTemplate
 from orca.resource_models.transporter import Transporter

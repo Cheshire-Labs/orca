@@ -1,9 +1,10 @@
 import pytest
 import json
-from orca.resource_models.resource_extras.teachpoints import (
+from cheshire_drivers import (
     Teachpoint,
     CartesianCoordinates,
     TeachpointsRegistry,
+    PLRTransporterBackendWrapper,
 )
 
 
@@ -73,7 +74,6 @@ class TestGatewayResolution:
 
     def test_no_gateway_returns_empty_path(self):
         """Teachpoint without gateway should resolve to empty path."""
-        from orca.driver_management.drivers.plr_wrappers import PLRTransporterBackendWrapper
         from unittest.mock import MagicMock
 
         wrapper = PLRTransporterBackendWrapper(MagicMock())
@@ -86,7 +86,6 @@ class TestGatewayResolution:
 
     def test_single_gateway_returns_one_waypoint(self):
         """Teachpoint with single gateway should return path with one waypoint."""
-        from orca.driver_management.drivers.plr_wrappers import PLRTransporterBackendWrapper
         from unittest.mock import MagicMock
 
         wrapper = PLRTransporterBackendWrapper(MagicMock())
@@ -103,7 +102,6 @@ class TestGatewayResolution:
 
     def test_chained_gateways_returns_correct_order(self):
         """Gateway chain A->B->C should traverse C then B to reach A."""
-        from orca.driver_management.drivers.plr_wrappers import PLRTransporterBackendWrapper
         from unittest.mock import MagicMock
 
         wrapper = PLRTransporterBackendWrapper(MagicMock())
@@ -123,7 +121,6 @@ class TestGatewayResolution:
 
     def test_circular_gateway_raises_error(self):
         """Circular gateway reference should raise ValueError."""
-        from orca.driver_management.drivers.plr_wrappers import PLRTransporterBackendWrapper
         from unittest.mock import MagicMock
 
         wrapper = PLRTransporterBackendWrapper(MagicMock())
@@ -140,7 +137,6 @@ class TestGatewayResolution:
 
     def test_missing_gateway_raises_error(self):
         """Reference to non-existent gateway should raise ValueError."""
-        from orca.driver_management.drivers.plr_wrappers import PLRTransporterBackendWrapper
         from unittest.mock import MagicMock
 
         wrapper = PLRTransporterBackendWrapper(MagicMock())
