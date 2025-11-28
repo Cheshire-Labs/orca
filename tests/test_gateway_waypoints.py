@@ -148,3 +148,136 @@ class TestGatewayResolution:
 
         with pytest.raises(ValueError, match="not found in teachpoints"):
             wrapper._resolve_gateway_path(tp)
+
+
+class TestTeachpointToPlrAccess:
+    """Test _teachpoint_to_plr_access() conversion logic."""
+
+    def test_vertical_access_creates_vertical_pattern(self):
+        """Vertical access teachpoint should create VerticalAccess pattern."""
+        from unittest.mock import MagicMock
+        from pylabrobot.arms.backend import VerticalAccess
+
+        wrapper = PLRTransporterBackendWrapper(MagicMock())
+
+        coords = CartesianCoordinates(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        tp = Teachpoint(
+            name="test_vertical",
+            coordinates=coords,
+            orientation=None,
+            access_type="vertical",
+            gripper_offset=25.0,
+            retract_distance=150.0,
+        )
+
+        access = wrapper._teachpoint_to_plr_access(tp)
+
+        assert isinstance(access, VerticalAccess)
+        assert access.gripper_offset_mm == 25.0
+        assert access.approach_height_mm == 150.0
+
+    def test_horizontal_access_creates_horizontal_pattern(self):
+        """Horizontal access teachpoint should create HorizontalAccess pattern."""
+        from unittest.mock import MagicMock
+        from pylabrobot.arms.backend import HorizontalAccess
+
+        wrapper = PLRTransporterBackendWrapper(MagicMock())
+
+        coords = CartesianCoordinates(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        tp = Teachpoint(
+            name="test_horizontal",
+            coordinates=coords,
+            orientation=None,
+            access_type="horizontal",
+            gripper_offset=20.0,
+            vertical_clearance=80.0,
+            z_above=15.0,
+        )
+
+        access = wrapper._teachpoint_to_plr_access(tp)
+
+        assert isinstance(access, HorizontalAccess)
+        assert access.gripper_offset_mm == 20.0
+        assert access.approach_distance_mm == 80.0
+        assert access.lift_height_mm == 15.0
+
+    def test_invalid_access_type_raises_error(self):
+        """Invalid access_type should raise ValueError."""
+        from unittest.mock import MagicMock
+
+        wrapper = PLRTransporterBackendWrapper(MagicMock())
+
+        coords = CartesianCoordinates(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        tp = Teachpoint(
+            name="test_invalid",
+            coordinates=coords,
+            orientation=None,
+            access_type="diagonal",  # Invalid
+            gripper_offset=20.0,
+        )
+
+        with pytest.raises(ValueError, match="Invalid access_type"):
+            wrapper._teachpoint_to_plr_access(tp)
+
+
+class TestAccessConfigLoading:
+    """Test load_teachpoints_from_file() with access_configs."""
+
+    def test_load_teachpoints_with_access_configs(self, tmp_path):
+        """Loading JSON with access_configs should resolve references correctly."""
+        json_content = """
+        {
+            "access_configs": {
+                "nest_access": {
+                    "access_type": "horizontal",
+                    "gripper_offset": 30.0,
+                    "retract_distance": 120.0,
+                    "vertical_clearance": 75.0,
+                    "z_above": 12.0
+                }
+            },
+            "teachpoints": [
+                {"name": "nest_1", "x": 100, "y": 200, "z": 50, "yaw": 0, "pitch": 0, "roll": 0, "access": "nest_access"},
+                {"name": "nest_2", "x": 150, "y": 200, "z": 50, "yaw": 0, "pitch": 0, "roll": 0, "access": "nest_access"},
+                {"name": "safe_zone", "x": 0, "y": 0, "z": 100, "yaw": 0, "pitch": 0, "roll": 0}
+            ]
+        }
+        """
+        json_file = tmp_path / "teachpoints.json"
+        json_file.write_text(json_content)
+
+        teachpoints = Teachpoint.load_teachpoints_from_file(str(json_file))
+
+        # Both nest teachpoints should have the custom access config
+        nest_1 = next(tp for tp in teachpoints if tp.name == "nest_1")
+        nest_2 = next(tp for tp in teachpoints if tp.name == "nest_2")
+        safe_zone = next(tp for tp in teachpoints if tp.name == "safe_zone")
+
+        # Custom config values
+        assert nest_1.access_type == "horizontal"
+        assert nest_1.gripper_offset == 30.0
+        assert nest_1.vertical_clearance == 75.0
+        assert nest_1.z_above == 12.0
+
+        # Same config shared by both nests
+        assert nest_2.access_type == nest_1.access_type
+        assert nest_2.gripper_offset == nest_1.gripper_offset
+
+        # Default config for safe_zone (no access specified, uses default_vertical)
+        assert safe_zone.access_type == "vertical"
+        assert safe_zone.gripper_offset == 20.0  # default value
+
+    def test_load_teachpoints_unknown_access_config_raises_error(self, tmp_path):
+        """Reference to non-existent access config should raise ValueError."""
+        json_content = """
+        {
+            "teachpoints": [
+                {"name": "nest_1", "x": 0, "y": 0, "z": 0, "yaw": 0, "pitch": 0, "roll": 0, "access": "nonexistent_config"}
+            ]
+        }
+        """
+        json_file = tmp_path / "teachpoints.json"
+        json_file.write_text(json_content)
+
+        with pytest.raises(ValueError, match="unknown access config"):
+            Teachpoint.load_teachpoints_from_file(str(json_file))
