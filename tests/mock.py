@@ -1,16 +1,14 @@
 from typing import Optional, Dict, Any, Callable, List
 import logging
 from unittest.mock import MagicMock
-from orca.driver_management.drivers.sims import (
-    SimDriver, SimTransporterDriver, BaseSimDriver,
-    ShakerSimMixin, CentrifugeSimMixin, ReaderSimMixin,
-    DelidderSimMixin, ProtocolRunnerSimMixin
+from cheshire_drivers import (
+    SimDriver, SimTransporterDriver, BaseSimDriver, Teachpoint, CartesianCoordinates,
+    ShakerSimMixin, CentrifugeSimMixin, ReaderSimMixin, DelidderSimMixin, ProtocolRunnerSimMixin,
 )
 from orca.resource_models.transporter import Transporter
 from orca.resource_models.devices import Device
 from orca.resource_models.location import Location
 from orca.resource_models.labware import LabwareInstance
-from orca.resource_models.resource_extras.teachpoints import Teachpoint
 from orca.devices.device_interfaces import (
     IGenericExecutable, IProtocolRunner, ISealer,
     IShaker, ICentrifuge, IReader, IDelidder
@@ -62,7 +60,6 @@ class MockRoboticArm(Transporter):
 
         # Set up teachpoints from positions if provided
         if positions:
-            from orca.resource_models.resource_extras.teachpoints import Teachpoint, CartesianCoordinates
             teachpoints = []
             for pos_name in positions:
                 # Create dummy coordinates for mock teachpoints

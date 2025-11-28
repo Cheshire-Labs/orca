@@ -2,9 +2,7 @@ import asyncio
 
 import logging
 from orca.devices.device_interfaces import ISealer, ITempGettable, ITempSettable
-from orca.driver_management.drivers.driver_interfaces import ISealerDriver
-from orca.driver_management.drivers.plr_wrappers import PLRSealerBackendWrapper
-from orca.driver_management.drivers.sims import SimSealerDriver
+from cheshire_drivers import ISealerDriver, PLRSealerBackendWrapper, SimSealerDriver
 from orca.resource_models.simulation_manager import SimulationManager
 from orca.resource_models.devices import Device
 from orca.resource_models.labware import LabwareInstance
