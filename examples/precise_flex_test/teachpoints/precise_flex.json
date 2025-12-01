@@ -14,70 +14,86 @@
   },
   "teachpoints": [
     {
-      "name": "black_pad",
-      "x": -68.796,
-      "y": -368.169,
-      "z": 15.087,
-      "yaw": 179.759,
-      "pitch": 90,
-      "roll": -180,
-      "orientation": "left",
-      "access": "default_vertical"
+      "name": "safe",
+      "j1": 0,
+      "j2": 169.994,
+      "j3": 0.001,
+      "j4": 180.001,
+      "j5": -180.002
     },
     {
-      "name": "red_pad",
-      "x": -46.593,
-      "y": 200.518,
-      "z": 17.277,
-      "yaw": 178.891,
-      "pitch": 90,
-      "roll": -180,
-      "orientation": "right",
-      "access": "default_vertical"
-    },
-    {
-      "name": "nest_2",
-      "x": -64.33,
-      "y": 380.228,
-      "z": 382.147,
-      "yaw": 153.767,
-      "pitch": 90,
-      "roll": -180,
-      "orientation": "right",
-      "access": "default_horizontal"
+      "name": "nest_gateway",
+      "j1": 0,
+      "j2": 265.913,
+      "j3": -23.78,
+      "j4": 101.484,
+      "j5": -284.645
     },
     {
       "name": "nest_3",
-      "x": -63.691,
-      "y": 380.619,
-      "z": 296.322,
-      "yaw": 154.374,
-      "pitch": 90,
-      "roll": -180,
-      "orientation": "right",
-      "access": "default_horizontal"
+      "j1": 0,
+      "j2": 297.206,
+      "j3": 19.659,
+      "j4": 115.286,
+      "j5": 17.586,
+      "access": "default_horizontal",
+      "gateway": "nest_gateway"
     },
     {
       "name": "nest_4",
-      "x": -62.472,
-      "y": 380.95,
-      "z": 211.209,
-      "yaw": 153.753,
-      "pitch": 90,
-      "roll": -180,
-      "orientation": "right",
-      "access": "default_horizontal"
+      "j1": 0,
+      "j2": 212.94,
+      "j3": 19.705,
+      "j4": 114.964,
+      "j5": 18.302,
+      "access": "default_horizontal",
+      "gateway": "nest_gateway"
     },
     {
       "name": "nest_5",
-      "x": -62.8,
-      "y": 380.782,
-      "z": 124.459,
-      "yaw": 153.547,
-      "pitch": 90,
-      "roll": -180,
-      "orientation": "right",
-      "access": "default_horizontal"
+      "j1": 0,
+      "j2": 126.297,
+      "j3": 19.634,
+      "j4": 114.642,
+      "j5": 19.132,
+      "access": "default_horizontal",
+      "gateway": "nest_gateway"
+    },
+    {
+      "name": "red_pad_gateway",
+      "j1": 0,
+      "j2": 96.403,
+      "j3": -18.945,
+      "j4": 116.788,
+      "j5": 75.637
+    },
+    {
+      "name": "red_pad",
+      "j1": 0,
+      "j2": 17.995,
+      "j3": -4.901,
+      "j4": 135.144,
+      "j5": 47.8,
+      "access": "default_vertical",
+      "gateway": "red_pad_gateway"
+    },
+    {
+      "name": "black_pad_gateway",
+      "j1": 0,
+      "j2": 173.292,
+      "j3": 14.876,
+      "j4": 263.824,
+      "j5": -434.977
+    },
+    {
+      "name": "black_pad",
+      "j1": 0,
+      "j2": 20.635,
+      "j3": -35.073,
+      "j4": 263.987,
+      "j5": -395.376,
+      "access": "default_vertical",
+      "gateway": "black_pad_gateway"
     }
   ]
 }
