@@ -6,12 +6,11 @@ and waiting for async operations to complete.
 """
 import asyncio
 from typing import List, Dict
-from orca.resource_models.resource_extras.teachpoints import Teachpoint, CartesianCoordinates
+from cheshire_drivers import Teachpoint, CartesianCoordinates, SimTransporterDriver, SimDriver
 from orca.resource_models.transporter import Transporter
 from orca.resource_models.devices import Device
 from orca.resource_models.plate_pad import PlatePad
 from orca.resource_models.labware import PlateTemplate, LabwareInstance
-from orca.driver_management.drivers.sims import SimTransporterDriver, SimDriver
 from orca.system.resource_registry import ResourceRegistry
 from orca.system.system_map import SystemMap
 from orca.workflow_models.labware_threads.executing_labware_thread import ExecutingLabwareThread

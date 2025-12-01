@@ -1,6 +1,6 @@
 import asyncio
 from orca.resource_models.location import Location
-from orca.resource_models.resource_extras.teachpoints import Teachpoint
+from cheshire_drivers import Teachpoint
 from orca.resource_models.resources import IInitializable, IResource, ISimulationable
 
 

@@ -1,7 +1,7 @@
 from abc import ABC
 import asyncio
 import logging
-from orca.driver_management.drivers.driver_interfaces import BaseDriver
+from cheshire_drivers import BaseDriver
 from orca.resource_models.resources import IDevice
 from orca.resource_models.device_error import DeviceBusyError
 from orca.resource_models.labware import LabwareInstance
