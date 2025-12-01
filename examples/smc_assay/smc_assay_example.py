@@ -7,7 +7,7 @@ import time
 from orca.devices.centrifuge import Centrifuge
 from orca.devices.devices import Delidder, LiquidHandler, PlateWasher, Reader, Storage, Waste
 from orca.devices.shaker import Shaker
-from orca.driver_management.drivers.sims import SimCentrifugeDriver, SimDelidderDriver, SimLiquidHandlerDriver, SimPlateWasherDriver, SimReaderDriver, SimShakerDriver, SimStorageDriver, SimTransporterDriver, SimWasteDriver
+from cheshire_drivers import SimCentrifugeDriver, SimDelidderDriver, SimLiquidHandlerDriver, SimPlateWasherDriver, SimReaderDriver, SimShakerDriver, SimStorageDriver, SimTransporterDriver, SimWasteDriver
 from orca.resource_models.transporter import Transporter
 from orca.resource_models.plate_pad import PlatePad
 from orca.sdk.system import SdkToSystemBuilder, WorkflowExecutor, ResourceRegistry, SystemMap, ExecutingLabwareThread, StandalonMethodExecutor

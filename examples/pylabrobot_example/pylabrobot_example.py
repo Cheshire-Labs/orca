@@ -6,7 +6,7 @@ from typing import Any, Dict, List
 from orca.devices.devices import LiquidHandler
 from orca.devices.sealer import Sealer
 
-from orca.driver_management.drivers.sims import SimLiquidHandlerDriver, SimTransporterDriver
+from cheshire_drivers import SimLiquidHandlerDriver, SimTransporterDriver
 from orca.resource_models.transporter import Transporter
 from orca.sdk.devices import Device
 from orca.sdk.labware import PlateTemplate, LabwareInstance

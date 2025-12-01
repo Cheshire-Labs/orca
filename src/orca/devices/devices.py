@@ -1,7 +1,9 @@
 from typing import Any, Dict, Optional
 from orca.devices.device_interfaces import IDelidder, ILiquidHandler, IPlateWasher, IReader, IStorage, IWaste
-from orca.driver_management.drivers.driver_interfaces import IDelidderDriver, ILiquidHandlerDriver, IPlateWasherDriver, IReaderDriver, IStorageDriver, IWasteDriver
-from orca.driver_management.drivers.sims import SimDelidderDriver, SimLiquidHandlerDriver, SimPlateWasherDriver, SimReaderDriver, SimStorageDriver, SimWasteDriver
+from cheshire_drivers import (
+    IDelidderDriver, ILiquidHandlerDriver, IPlateWasherDriver, IReaderDriver, IStorageDriver, IWasteDriver,
+    SimDelidderDriver, SimLiquidHandlerDriver, SimPlateWasherDriver, SimReaderDriver, SimStorageDriver, SimWasteDriver
+)
 from orca.resource_models.devices import Device
 
 

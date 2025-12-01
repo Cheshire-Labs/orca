@@ -1,17 +1,11 @@
 import asyncio
 import logging
 from typing import List, Optional, Any
-from orca.driver_management.drivers.plr_wrappers import PLRTransporterBackendWrapper
-from orca.driver_management.drivers.driver_interfaces import ITransporterDriver
-from orca.driver_management.drivers.sims import SimTransporterDriver
-from orca.resource_models.resource_extras.teachpoints import Teachpoint, TeachpointsRegistry
+from cheshire_drivers import PLRTransporterBackendWrapper, ITransporterDriver, SimTransporterDriver, Teachpoint, PLRArmBackend
 from orca.resource_models.simulation_manager import SimulationManager
 from orca.resource_models.transporter_interface import ITransporter
 from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.location import Location
-
-
-from pylabrobot.arms.backend import ArmBackend
 
 
 orca_logger = logging.getLogger("orca")
@@ -20,11 +14,11 @@ orca_logger = logging.getLogger("orca")
 class Transporter(ITransporter):
     def __init__(self,
                 name: str,
-                driver: ITransporterDriver | ArmBackend,
+                driver: ITransporterDriver | PLRArmBackend,
                 load_positions: Optional[List[Teachpoint] | str] = None,
                 sim: bool = False) -> None:
         self._name = name
-        driver = PLRTransporterBackendWrapper(driver) if isinstance(driver, ArmBackend) else driver
+        driver = PLRTransporterBackendWrapper(driver) if isinstance(driver, PLRArmBackend) else driver
         self._sim_manager = SimulationManager(
             driver,
             SimTransporterDriver("sim"),

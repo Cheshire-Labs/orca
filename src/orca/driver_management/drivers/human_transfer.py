@@ -1,5 +1,5 @@
 
-from orca.driver_management.drivers.sims import HumanSim, SimTransporterDriver
+from cheshire_drivers import HumanSim, SimTransporterDriver
 from orca.resource_models.transporter import Transporter
 
 
