@@ -1,7 +1,6 @@
 from orca.devices.device_interfaces import ISealer
-from cheshire_drivers import ISealerDriver, PLRSealerBackendWrapper, SimSealerDriver
+from cheshire_drivers import ISealerDriver, PLRSealerBackendWrapper, SimSealerDriver, PLRSealerBackend
 from orca.resource_models.devices import Device
-from pylabrobot.sealing.backend import SealerBackend as PLRSealerBackend
 
 
 from typing import Dict, Optional

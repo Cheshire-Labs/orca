@@ -1,9 +1,8 @@
 from typing import Optional
 
 from orca.devices.device_interfaces import ICentrifuge
-from cheshire_drivers import ICentrifugeDriver, PLRCentrifugeBackendWrapper, SimCentrifugeDriver
+from cheshire_drivers import ICentrifugeDriver, PLRCentrifugeBackendWrapper, SimCentrifugeDriver, PLRCentrifugeBackend
 from orca.resource_models.devices import Device
-from pylabrobot.centrifuge.backend import CentrifugeBackend as PLRCentrifugeBackend
 
 class Centrifuge(Device[ICentrifugeDriver], ICentrifuge):
     def __init__(self, 

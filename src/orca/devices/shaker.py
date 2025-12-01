@@ -1,8 +1,7 @@
 from typing import Optional, Union
 from orca.devices.device_interfaces import IShaker
-from cheshire_drivers import IShakerDriver, PLRShakerBackendWrapper, SimShakerDriver
+from cheshire_drivers import IShakerDriver, PLRShakerBackendWrapper, SimShakerDriver, PLRShakerBackend
 from orca.resource_models.devices import Device
-from pylabrobot.shaking.backend import ShakerBackend as PLRShakerBackend
 
 
 

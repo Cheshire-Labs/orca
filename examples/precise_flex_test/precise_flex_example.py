@@ -20,7 +20,7 @@ from orca.workflow_models.method_template import MethodTemplate
 from orca.workflow_models.thread_template import ThreadTemplate
 from orca.workflow_models.workflow_templates import WorkflowTemplate
 from pylabrobot.resources.corning.falcon.plates import Cor_Falcon_96_wellplate_340ul_Fb_Black
-from pylabrobot.arms.precise_flex.pf_3400 import PreciseFlex400Backend
+from pylabrobot.arms.precise_flex.pf_3400 import PreciseFlex3400Backend
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,7 +39,7 @@ labwares = [
 
 pf_teachpoints = os.path.join("examples", "precise_flex_test", "teachpoints", "precise_flex.json")
 
-pf_arm = Transporter("pf_arm", PreciseFlex400Backend("192.168.0.1", 10100), pf_teachpoints, sim=False)
+pf_arm = Transporter("pf_arm", PreciseFlex3400Backend("192.168.0.1", 10100), pf_teachpoints, sim=False)
 
 shaker = Shaker("shaker", SimShakerDriver("shaker", HumanSim()))
 centrifuge = Centrifuge("centrifuge", SimCentrifugeDriver("centrifuge", HumanSim()))
