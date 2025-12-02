@@ -33,11 +33,10 @@ def create_test_teachpoints(names: List[str]) -> List[Teachpoint]:
     for i, name in enumerate(names):
         # Use joint coordinates for test teachpoints (no orientation required)
         coords = JointCoordinates(
-            j1=0.0,
-            j2=float(i * 50 + 100),  # Spread along base rotation
-            j3=0.0,
-            j4=150.0,  # Right orientation (elbow < 180)
-            j5=0.0
+            base=float(i * 50 + 100),  # Spread along base rotation
+            shoulder=0.0,
+            elbow=150.0,  # Right orientation (elbow < 180)
+            wrist=0.0
         )
         teachpoint = Teachpoint(
             name=name,

@@ -11,7 +11,7 @@ from cheshire_drivers import (
 
 def make_tp(name: str, gateway: str | None = None) -> Teachpoint:
     """Helper to create simple joint-space teachpoint for testing."""
-    coords = JointCoordinates(j1=0.0, j2=170.0, j3=0.0, j4=150.0, j5=0.0)
+    coords = JointCoordinates(base=170.0, shoulder=0.0, elbow=150.0, wrist=0.0)
     return Teachpoint(name, coords, access_type="vertical", gateway=gateway)
 
 
@@ -37,8 +37,8 @@ class TestTeachpointJsonPersistence:
         json_content = """
         {
             "teachpoints": [
-                {"name": "nest_1", "j1": 0, "j2": 170, "j3": 0, "j4": 150, "j5": 0, "gateway": "safe_zone"},
-                {"name": "safe_zone", "j1": 0, "j2": 180, "j3": 5, "j4": 160, "j5": 10}
+                {"name": "nest_1", "base": 170, "shoulder": 0, "elbow": 150, "wrist": 0, "gateway": "safe_zone"},
+                {"name": "safe_zone", "base": 180, "shoulder": 5, "elbow": 160, "wrist": 10}
             ]
         }
         """
@@ -211,7 +211,7 @@ class TestTeachpointToPlrAccess:
         wrapper = PLRTransporterBackendWrapper(MagicMock())
 
         # Use joint coords to bypass orientation check, since we're testing access_type
-        coords = JointCoordinates(j1=0.0, j2=170.0, j3=0.0, j4=150.0, j5=0.0)
+        coords = JointCoordinates(base=170.0, shoulder=0.0, elbow=150.0, wrist=0.0)
         tp = Teachpoint(
             name="test_invalid",
             coordinates=coords,
@@ -240,9 +240,9 @@ class TestAccessConfigLoading:
                 }
             },
             "teachpoints": [
-                {"name": "nest_1", "j1": 0, "j2": 170, "j3": 5, "j4": 150, "j5": 10, "access": "nest_access"},
-                {"name": "nest_2", "j1": 0, "j2": 180, "j3": 5, "j4": 160, "j5": 10, "access": "nest_access"},
-                {"name": "safe_zone", "j1": 0, "j2": 190, "j3": 0, "j4": 180, "j5": 0}
+                {"name": "nest_1", "base": 170, "shoulder": 5, "elbow": 150, "wrist": 10, "access": "nest_access"},
+                {"name": "nest_2", "base": 180, "shoulder": 5, "elbow": 160, "wrist": 10, "access": "nest_access"},
+                {"name": "safe_zone", "base": 190, "shoulder": 0, "elbow": 180, "wrist": 0}
             ]
         }
         """
@@ -274,7 +274,7 @@ class TestAccessConfigLoading:
         json_content = """
         {
             "teachpoints": [
-                {"name": "nest_1", "j1": 0, "j2": 170, "j3": 0, "j4": 150, "j5": 0, "access": "nonexistent_config"}
+                {"name": "nest_1", "base": 170, "shoulder": 0, "elbow": 150, "wrist": 0, "access": "nonexistent_config"}
             ]
         }
         """
