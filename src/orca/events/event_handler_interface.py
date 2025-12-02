@@ -7,7 +7,7 @@ T = TypeVar("T")
 
 class IEventHandler(ABC):
     @abstractmethod
-    def handle(self, event: str, data: ExecutionContext) -> None:
+    def handle(self, event: str, context: ExecutionContext) -> None:
         raise NotImplementedError("Event handler must implement handle method")
 
 

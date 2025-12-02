@@ -131,7 +131,7 @@ class LocationHistory:
 
     def __repr__(self) -> str:
         """String representation for debugging."""
-        return f"LocationHistory({' → '.join(self._history)})"
+        return f"LocationHistory({' → '.join(str(loc) for loc in self._history)})"
 
     def __len__(self) -> int:
         """Return the number of locations in history."""

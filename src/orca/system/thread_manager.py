@@ -20,8 +20,8 @@ class ThreadManager(IThreadManager, IExecutingThreadRegistry):
     def create_executing_thread(self, thread_id: str, context: WorkflowExecutionContext) -> ExecutingLabwareThread:
         return self._thread_registry.create_executing_thread(thread_id, context)
 
-    def get_executing_thread(self, id: str) -> ExecutingLabwareThread:
-        return self._thread_registry.get_executing_thread(id)
+    def get_executing_thread(self, thread_id: str) -> ExecutingLabwareThread:
+        return self._thread_registry.get_executing_thread(thread_id)
 
     def get_thread_by_labware(self, labware_id: str) -> ExecutingLabwareThread:
         matches = list(filter(lambda thread: thread.labware.id == labware_id, self.threads))

@@ -1,5 +1,5 @@
 import asyncio
-from typing import Any, Optional
+from typing import Optional
 from cheshire_drivers import NullPlatePadDriver
 from orca.resource_models.labware_placeable_interface import ILabwarePlaceable
 from orca.resource_models.simulation_manager import SimulationManager
@@ -9,7 +9,7 @@ from orca.resource_models.labware import LabwareInstance
 
 class PlatePad(IResource, IInitializable, ILabwarePlaceable):
 
-    def __init__(self, name: str, driver: Any | None = None, supports_deadlock_resolution: bool = True) -> None:
+    def __init__(self, name: str, driver: NullPlatePadDriver | None = None, supports_deadlock_resolution: bool = True) -> None:
         self._name = name
         self._supports_deadlock_resolution = supports_deadlock_resolution
         if driver is None:

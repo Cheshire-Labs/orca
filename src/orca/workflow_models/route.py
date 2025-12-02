@@ -1,6 +1,6 @@
 from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.location import Location
-from orca.resource_models.transporter_resource import Transporter
+from orca.resource_models.transporter import Transporter
 
 
 from typing import Iterator, List

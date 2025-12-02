@@ -1,7 +1,7 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
 import itertools
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 from orca.resource_models.labware_placeable_interface import ILabwarePlaceable
 from orca.resource_models.resources import IResource
 from orca.resource_models.labware import LabwareInstance
@@ -226,7 +226,7 @@ class SystemMap(ILocationRegistry, IResourceLocator, IResourceLocationObserver, 
         location.resource = resource
         self._equipment_map[resource.name] = location
 
-    def assign_resources(self, resources: Dict[str, ILabwarePlaceable]) -> None:
+    def assign_resources(self, resources: Mapping[str, ILabwarePlaceable]) -> None:
         for name, resource in resources.items():
             self.assign_resource_to_location(name, resource)
         

@@ -48,7 +48,6 @@ class MockEquipmentResource(Device):
         self._on_notify_placed(labware)
 
     async def execute(self, command: str, options: Dict[str, Any]) -> None:
-        await super().execute(command, options)
         self._on_execute(command)
 
 
