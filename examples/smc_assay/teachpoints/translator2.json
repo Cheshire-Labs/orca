@@ -1,24 +1,30 @@
 {
+  "access_configs": {
+    "default_horizontal": {
+      "access_type": "horizontal",
+      "gripper_offset": 20.0,
+      "vertical_clearance": 50.0,
+      "z_above": 10.0
+    }
+  },
   "teachpoints": [
     {
       "name": "translator_2_start",
-      "x": 0,
-      "y": 0,
-      "z": 0,
-      "yaw": 0,
-      "pitch": 0,
-      "roll": 0,
-      "orientation": null
+      "j1": 0,
+      "j2": 110.5,
+      "j3": 17.8,
+      "j4": 115.9,
+      "j5": 20.4,
+      "access": "default_horizontal"
     },
     {
       "name": "translator_2_end",
-      "x": 0,
-      "y": 0,
-      "z": 0,
-      "yaw": 0,
-      "pitch": 0,
-      "roll": 0,
-      "orientation": null
+      "j1": 0,
+      "j2": 140.8,
+      "j3": 18.9,
+      "j4": 115.1,
+      "j5": 19.5,
+      "access": "default_horizontal"
     }
   ]
 }
