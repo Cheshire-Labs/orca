@@ -15,47 +15,42 @@
   "teachpoints": [
     {
       "name": "plate_pad_1",
-      "j1": 0,
-      "j2": 297.206,
-      "j3": 19.659,
-      "j4": 115.286,
-      "j5": 17.586,
+      "base": 297.206,
+      "shoulder": 19.659,
+      "elbow": 115.286,
+      "wrist": 17.586,
       "access": "default_horizontal"
     },
     {
       "name": "plate_pad_2",
-      "j1": 0,
-      "j2": 212.94,
-      "j3": 19.705,
-      "j4": 114.964,
-      "j5": 18.302,
+      "base": 212.94,
+      "shoulder": 19.705,
+      "elbow": 114.964,
+      "wrist": 18.302,
       "access": "default_horizontal"
     },
     {
       "name": "plate_pad_3",
-      "j1": 0,
-      "j2": 126.297,
-      "j3": 19.634,
-      "j4": 114.642,
-      "j5": 19.132,
+      "base": 126.297,
+      "shoulder": 19.634,
+      "elbow": 114.642,
+      "wrist": 19.132,
       "access": "default_horizontal"
     },
     {
       "name": "plate_pad_4",
-      "j1": 0,
-      "j2": 17.995,
-      "j3": -4.901,
-      "j4": 135.144,
-      "j5": 47.8,
+      "base": 17.995,
+      "shoulder": -4.901,
+      "elbow": 135.144,
+      "wrist": 47.8,
       "access": "default_vertical"
     },
     {
       "name": "ml_star_position_1",
-      "j1": 0,
-      "j2": 20.635,
-      "j3": -35.073,
-      "j4": 263.987,
-      "j5": -395.376,
+      "base": 20.635,
+      "shoulder": -35.073,
+      "elbow": 263.987,
+      "wrist": -395.376,
       "access": "default_vertical"
     }
   ]

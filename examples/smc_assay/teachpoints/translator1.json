@@ -10,20 +10,18 @@
   "teachpoints": [
     {
       "name": "translator_1_start",
-      "j1": 0,
-      "j2": 126.297,
-      "j3": 19.634,
-      "j4": 114.642,
-      "j5": 19.132,
+      "base": 126.297,
+      "shoulder": 19.634,
+      "elbow": 114.642,
+      "wrist": 19.132,
       "access": "default_horizontal"
     },
     {
       "name": "translator_1_end",
-      "j1": 0,
-      "j2": 126.297,
-      "j3": 19.634,
-      "j4": 114.642,
-      "j5": 19.132,
+      "base": 126.297,
+      "shoulder": 19.634,
+      "elbow": 114.642,
+      "wrist": 19.132,
       "access": "default_horizontal"
     }
   ]

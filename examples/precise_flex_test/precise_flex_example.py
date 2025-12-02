@@ -74,16 +74,16 @@ test_method_2 = MethodTemplate("test_method_2", [
 
 sample_plate_thread = ThreadTemplate(
     src_plate,
-    map.get_location("nest_2"),
-    map.get_location("nest_2"),
+    map.get_location("nest_3"),
+    map.get_location("nest_3"),
     [
     test_method_1
 ])
 
 destination_plate_thread = ThreadTemplate(
     dest_plate, 
-    map.get_location("nest_3"),
-    map.get_location("nest_3"),
+    map.get_location("nest_4"),
+    map.get_location("nest_4"),
     [
     test_method_2
 ])

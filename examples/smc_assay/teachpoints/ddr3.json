@@ -15,89 +15,79 @@
   "teachpoints": [
     {
       "name": "biotek_2",
-      "j1": 0,
-      "j2": 310.5,
-      "j3": 18.2,
-      "j4": 112.8,
-      "j5": 15.4,
+      "base": 310.5,
+      "shoulder": 18.2,
+      "elbow": 112.8,
+      "wrist": 15.4,
       "access": "default_horizontal"
     },
     {
       "name": "bravo_384",
-      "j1": 0,
-      "j2": 225.6,
-      "j3": 19.1,
-      "j4": 114.5,
-      "j5": 18.8,
+      "base": 225.6,
+      "shoulder": 19.1,
+      "elbow": 114.5,
+      "wrist": 18.8,
       "access": "default_horizontal"
     },
     {
       "name": "plate_hotel",
-      "j1": 0,
-      "j2": 42.3,
-      "j3": -6.8,
-      "j4": 132.4,
-      "j5": 49.5,
+      "base": 42.3,
+      "shoulder": -6.8,
+      "elbow": 132.4,
+      "wrist": 49.5,
       "access": "default_vertical"
     },
     {
       "name": "smc_pro",
-      "j1": 0,
-      "j2": 268.4,
-      "j3": 17.5,
-      "j4": 116.2,
-      "j5": 20.3,
+      "base": 268.4,
+      "shoulder": 17.5,
+      "elbow": 116.2,
+      "wrist": 20.3,
       "access": "default_horizontal"
     },
     {
       "name": "translator_2_end",
-      "j1": 0,
-      "j2": 140.8,
-      "j3": 18.9,
-      "j4": 115.1,
-      "j5": 19.5,
+      "base": 140.8,
+      "shoulder": 18.9,
+      "elbow": 115.1,
+      "wrist": 19.5,
       "access": "default_horizontal"
     },
     {
       "name": "waste_2",
-      "j1": 0,
-      "j2": 22.4,
-      "j3": -3.8,
-      "j4": 133.8,
-      "j5": 45.2,
+      "base": 22.4,
+      "shoulder": -3.8,
+      "elbow": 133.8,
+      "wrist": 45.2,
       "access": "default_vertical"
     },
     {
       "name": "pad_7",
-      "j1": 0,
-      "j2": 39.6,
-      "j3": -37.2,
-      "j4": 265.1,
-      "j5": -395.3
+      "base": 39.6,
+      "shoulder": -37.2,
+      "elbow": 265.1,
+      "wrist": -395.3
     },
     {
       "name": "pad_8",
-      "j1": 0,
-      "j2": 44.3,
-      "j3": -38.9,
-      "j4": 266.4,
-      "j5": -396.9
+      "base": 44.3,
+      "shoulder": -38.9,
+      "elbow": 266.4,
+      "wrist": -396.9
     },
     {
       "name": "pad_9",
-      "j1": 0,
-      "j2": 49.0,
-      "j3": -40.6,
-      "j4": 267.7,
-      "j5": -398.5
+      "base": 49.0,
+      "shoulder": -40.6,
+      "elbow": 267.7,
+      "wrist": -398.5
     },
     {
       "name": "delidder",
-      "j1": 0,
-      "j2": 185.2,
-      "j3": 16.4,
-      "j4": 117.8,
-      "j5": 21.5,
+      "base": 185.2,
+      "shoulder": 16.4,
+      "elbow": 117.8,
+      "wrist": 21.5,
       "access": "default_horizontal"
     }
   ]
