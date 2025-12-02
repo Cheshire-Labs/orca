@@ -6,11 +6,11 @@ and waiting for async operations to complete.
 """
 import asyncio
 from typing import List, Dict
-from cheshire_drivers import Teachpoint, CartesianCoordinates, SimTransporterDriver, SimDriver
+from cheshire_drivers import Teachpoint, JointCoordinates, SimTransporterDriver, SimDriver
 from orca.resource_models.transporter import Transporter
 from orca.resource_models.devices import Device
 from orca.resource_models.plate_pad import PlatePad
-from orca.resource_models.labware import PlateTemplate, LabwareInstance
+from orca.resource_models.labware import PlateTemplate, PlateInstance
 from orca.system.resource_registry import ResourceRegistry
 from orca.system.system_map import SystemMap
 from orca.workflow_models.labware_threads.executing_labware_thread import ExecutingLabwareThread
@@ -31,18 +31,17 @@ def create_test_teachpoints(names: List[str]) -> List[Teachpoint]:
     """
     teachpoints = []
     for i, name in enumerate(names):
-        coords = CartesianCoordinates(
-            x=i * 100.0,
-            y=0.0,
-            z=0.0,
-            yaw=0.0,
-            pitch=0.0,
-            roll=0.0
+        # Use joint coordinates for test teachpoints (no orientation required)
+        coords = JointCoordinates(
+            j1=0.0,
+            j2=float(i * 50 + 100),  # Spread along base rotation
+            j3=0.0,
+            j4=150.0,  # Right orientation (elbow < 180)
+            j5=0.0
         )
         teachpoint = Teachpoint(
             name=name,
             coordinates=coords,
-            orientation=None,
             access_type="vertical"
         )
         teachpoints.append(teachpoint)
@@ -96,7 +95,7 @@ def create_test_plate_template(name: str = "test_plate") -> PlateTemplate:
     return PlateTemplate(name, Cor_Falcon_96_wellplate_340ul_Fb_Black)
 
 
-def create_test_labware_instance(name: str = "test_plate") -> LabwareInstance:
+def create_test_labware_instance(name: str = "test_plate") -> PlateInstance:
     """
     Create a test labware instance.
 
@@ -104,16 +103,16 @@ def create_test_labware_instance(name: str = "test_plate") -> LabwareInstance:
         name: Labware name
 
     Returns:
-        LabwareInstance
+        PlateInstance
     """
     template = create_test_plate_template(name)
-    return LabwareInstance(template, f"{name}_instance")
+    return template.create_instance()
 
 
 def create_simple_system_map(
     transporters: List[Transporter],
     devices: Dict[str, Device],
-    parking_pads: Dict[str, PlatePad] = None
+    parking_pads: Dict[str, PlatePad] | None = None
 ) -> tuple[ResourceRegistry, SystemMap]:
     """
     Create a simple system map for testing.
