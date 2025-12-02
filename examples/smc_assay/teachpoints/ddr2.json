@@ -1,244 +1,230 @@
 {
+  "access_configs": {
+    "default_vertical": {
+      "access_type": "vertical",
+      "gripper_offset": 20.0,
+      "retract_distance": 100.0
+    },
+    "default_horizontal": {
+      "access_type": "horizontal",
+      "gripper_offset": 20.0,
+      "vertical_clearance": 50.0,
+      "z_above": 10.0
+    }
+  },
   "teachpoints": [
     {
       "name": "centrifuge",
-      "x": 0,
-      "y": 0,
-      "z": 0,
-      "yaw": 0,
-      "pitch": 0,
-      "roll": 0,
-      "orientation": null
+      "j1": 0,
+      "j2": 280.5,
+      "j3": 15.2,
+      "j4": 118.3,
+      "j5": 22.1,
+      "access": "default_horizontal"
     },
     {
       "name": "sealer",
-      "x": 0,
-      "y": 0,
-      "z": 0,
-      "yaw": 0,
-      "pitch": 0,
-      "roll": 0,
-      "orientation": null
+      "j1": 0,
+      "j2": 245.8,
+      "j3": 18.4,
+      "j4": 116.2,
+      "j5": 19.8,
+      "access": "default_horizontal"
     },
     {
       "name": "translator_1_end",
-      "x": 0,
-      "y": 0,
-      "z": 0,
-      "yaw": 0,
-      "pitch": 0,
-      "roll": 0,
-      "orientation": null
+      "j1": 0,
+      "j2": 126.297,
+      "j3": 19.634,
+      "j4": 114.642,
+      "j5": 19.132,
+      "access": "default_horizontal"
     },
     {
       "name": "translator_2_start",
-      "x": 0,
-      "y": 0,
-      "z": 0,
-      "yaw": 0,
-      "pitch": 0,
-      "roll": 0,
-      "orientation": null
+      "j1": 0,
+      "j2": 110.5,
+      "j3": 17.8,
+      "j4": 115.9,
+      "j5": 20.4,
+      "access": "default_horizontal"
     },
     {
       "name": "stacker_1",
-      "x": 0,
-      "y": 0,
-      "z": 0,
-      "yaw": 0,
-      "pitch": 0,
-      "roll": 0,
-      "orientation": null
+      "j1": 0,
+      "j2": 55.2,
+      "j3": -8.5,
+      "j4": 128.4,
+      "j5": 52.3,
+      "access": "default_vertical"
     },
     {
       "name": "stacker_2",
-      "x": 0,
-      "y": 0,
-      "z": 0,
-      "yaw": 0,
-      "pitch": 0,
-      "roll": 0,
-      "orientation": null
+      "j1": 0,
+      "j2": 62.8,
+      "j3": -7.2,
+      "j4": 130.1,
+      "j5": 50.8,
+      "access": "default_vertical"
     },
     {
       "name": "stacker_3",
-      "x": 0,
-      "y": 0,
-      "z": 0,
-      "yaw": 0,
-      "pitch": 0,
-      "roll": 0,
-      "orientation": null
+      "j1": 0,
+      "j2": 70.4,
+      "j3": -5.9,
+      "j4": 131.8,
+      "j5": 49.3,
+      "access": "default_vertical"
     },
     {
       "name": "stacker_4",
-      "x": 0,
-      "y": 0,
-      "z": 0,
-      "yaw": 0,
-      "pitch": 0,
-      "roll": 0,
-      "orientation": null
+      "j1": 0,
+      "j2": 78.0,
+      "j3": -4.6,
+      "j4": 133.5,
+      "j5": 47.8,
+      "access": "default_vertical"
     },
     {
       "name": "stacker_5",
-      "x": 0,
-      "y": 0,
-      "z": 0,
-      "yaw": 0,
-      "pitch": 0,
-      "roll": 0,
-      "orientation": null
+      "j1": 0,
+      "j2": 85.6,
+      "j3": -3.3,
+      "j4": 135.2,
+      "j5": 46.3,
+      "access": "default_vertical"
     },
     {
       "name": "stacker_6",
-      "x": 0,
-      "y": 0,
-      "z": 0,
-      "yaw": 0,
-      "pitch": 0,
-      "roll": 0,
-      "orientation": null
+      "j1": 0,
+      "j2": 93.2,
+      "j3": -2.0,
+      "j4": 136.9,
+      "j5": 44.8,
+      "access": "default_vertical"
     },
     {
       "name": "stacker_7",
-      "x": 0,
-      "y": 0,
-      "z": 0,
-      "yaw": 0,
-      "pitch": 0,
-      "roll": 0,
-      "orientation": null
+      "j1": 0,
+      "j2": 100.8,
+      "j3": -0.7,
+      "j4": 138.6,
+      "j5": 43.3,
+      "access": "default_vertical"
     },
     {
       "name": "shaker_1",
-      "x": 0,
-      "y": 0,
-      "z": 0,
-      "yaw": 0,
-      "pitch": 0,
-      "roll": 0,
-      "orientation": null
+      "j1": 0,
+      "j2": 150.2,
+      "j3": 12.5,
+      "j4": 120.8,
+      "j5": 25.6,
+      "access": "default_horizontal"
     },
     {
       "name": "shaker_2",
-      "x": 0,
-      "y": 0,
-      "z": 0,
-      "yaw": 0,
-      "pitch": 0,
-      "roll": 0,
-      "orientation": null
+      "j1": 0,
+      "j2": 158.4,
+      "j3": 14.2,
+      "j4": 119.5,
+      "j5": 24.1,
+      "access": "default_horizontal"
     },
     {
       "name": "shaker_3",
-      "x": 0,
-      "y": 0,
-      "z": 0,
-      "yaw": 0,
-      "pitch": 0,
-      "roll": 0,
-      "orientation": null
+      "j1": 0,
+      "j2": 166.6,
+      "j3": 15.9,
+      "j4": 118.2,
+      "j5": 22.6,
+      "access": "default_horizontal"
     },
     {
       "name": "shaker_4",
-      "x": 0,
-      "y": 0,
-      "z": 0,
-      "yaw": 0,
-      "pitch": 0,
-      "roll": 0,
-      "orientation": null
+      "j1": 0,
+      "j2": 174.8,
+      "j3": 17.6,
+      "j4": 116.9,
+      "j5": 21.1,
+      "access": "default_horizontal"
     },
     {
       "name": "shaker_5",
-      "x": 0,
-      "y": 0,
-      "z": 0,
-      "yaw": 0,
-      "pitch": 0,
-      "roll": 0,
-      "orientation": null
+      "j1": 0,
+      "j2": 183.0,
+      "j3": 19.3,
+      "j4": 115.6,
+      "j5": 19.6,
+      "access": "default_horizontal"
     },
     {
       "name": "shaker_6",
-      "x": 0,
-      "y": 0,
-      "z": 0,
-      "yaw": 0,
-      "pitch": 0,
-      "roll": 0,
-      "orientation": null
+      "j1": 0,
+      "j2": 191.2,
+      "j3": 18.8,
+      "j4": 116.1,
+      "j5": 20.2,
+      "access": "default_horizontal"
     },
     {
       "name": "shaker_7",
-      "x": 0,
-      "y": 0,
-      "z": 0,
-      "yaw": 0,
-      "pitch": 0,
-      "roll": 0,
-      "orientation": null
+      "j1": 0,
+      "j2": 199.4,
+      "j3": 18.3,
+      "j4": 116.6,
+      "j5": 20.8,
+      "access": "default_horizontal"
     },
     {
       "name": "shaker_8",
-      "x": 0,
-      "y": 0,
-      "z": 0,
-      "yaw": 0,
-      "pitch": 0,
-      "roll": 0,
-      "orientation": null
+      "j1": 0,
+      "j2": 207.6,
+      "j3": 17.8,
+      "j4": 117.1,
+      "j5": 21.4,
+      "access": "default_horizontal"
     },
     {
       "name": "shaker_9",
-      "x": 0,
-      "y": 0,
-      "z": 0,
-      "yaw": 0,
-      "pitch": 0,
-      "roll": 0,
-      "orientation": null
+      "j1": 0,
+      "j2": 215.8,
+      "j3": 17.3,
+      "j4": 117.6,
+      "j5": 22.0,
+      "access": "default_horizontal"
     },
     {
       "name": "shaker_10",
-      "x": 0,
-      "y": 0,
-      "z": 0,
-      "yaw": 0,
-      "pitch": 0,
-      "roll": 0,
-      "orientation": null
+      "j1": 0,
+      "j2": 224.0,
+      "j3": 16.8,
+      "j4": 118.1,
+      "j5": 22.6,
+      "access": "default_horizontal"
     },
     {
       "name": "pad_4",
-      "x": 0,
-      "y": 0,
-      "z": 0,
-      "yaw": 0,
-      "pitch": 0,
-      "roll": 0,
-      "orientation": null
+      "j1": 0,
+      "j2": 25.5,
+      "j3": -32.1,
+      "j4": 261.2,
+      "j5": -390.5
     },
     {
       "name": "pad_5",
-      "x": 0,
-      "y": 0,
-      "z": 0,
-      "yaw": 0,
-      "pitch": 0,
-      "roll": 0,
-      "orientation": null
+      "j1": 0,
+      "j2": 30.2,
+      "j3": -33.8,
+      "j4": 262.5,
+      "j5": -392.1
     },
     {
       "name": "pad_6",
-      "x": 0,
-      "y": 0,
-      "z": 0,
-      "yaw": 0,
-      "pitch": 0,
-      "roll": 0,
-      "orientation": null
+      "j1": 0,
+      "j2": 34.9,
+      "j3": -35.5,
+      "j4": 263.8,
+      "j5": -393.7
     }
   ]
 }
