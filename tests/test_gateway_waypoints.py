@@ -3,15 +3,16 @@ import json
 from cheshire_drivers import (
     Teachpoint,
     CartesianCoordinates,
+    JointCoordinates,
     TeachpointsRegistry,
     PLRTransporterBackendWrapper,
 )
 
 
 def make_tp(name: str, gateway: str | None = None) -> Teachpoint:
-    """Helper to create simple teachpoint for testing."""
-    coords = CartesianCoordinates(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    return Teachpoint(name, coords, None, "vertical", gateway=gateway)
+    """Helper to create simple joint-space teachpoint for testing."""
+    coords = JointCoordinates(j1=0.0, j2=170.0, j3=0.0, j4=150.0, j5=0.0)
+    return Teachpoint(name, coords, access_type="vertical", gateway=gateway)
 
 
 class TestTeachpointGateway:
@@ -36,8 +37,8 @@ class TestTeachpointJsonPersistence:
         json_content = """
         {
             "teachpoints": [
-                {"name": "nest_1", "x": 0, "y": 0, "z": 0, "yaw": 0, "pitch": 0, "roll": 0, "gateway": "safe_zone"},
-                {"name": "safe_zone", "x": 0, "y": 0, "z": 100, "yaw": 0, "pitch": 0, "roll": 0}
+                {"name": "nest_1", "j1": 0, "j2": 170, "j3": 0, "j4": 150, "j5": 0, "gateway": "safe_zone"},
+                {"name": "safe_zone", "j1": 0, "j2": 180, "j3": 5, "j4": 160, "j5": 10}
             ]
         }
         """
@@ -160,11 +161,12 @@ class TestTeachpointToPlrAccess:
 
         wrapper = PLRTransporterBackendWrapper(MagicMock())
 
+        # Use Cartesian with required orientation
         coords = CartesianCoordinates(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         tp = Teachpoint(
             name="test_vertical",
             coordinates=coords,
-            orientation=None,
+            orientation="right",
             access_type="vertical",
             gripper_offset=25.0,
             retract_distance=150.0,
@@ -183,11 +185,12 @@ class TestTeachpointToPlrAccess:
 
         wrapper = PLRTransporterBackendWrapper(MagicMock())
 
+        # Use Cartesian with required orientation
         coords = CartesianCoordinates(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         tp = Teachpoint(
             name="test_horizontal",
             coordinates=coords,
-            orientation=None,
+            orientation="left",
             access_type="horizontal",
             gripper_offset=20.0,
             vertical_clearance=80.0,
@@ -207,11 +210,11 @@ class TestTeachpointToPlrAccess:
 
         wrapper = PLRTransporterBackendWrapper(MagicMock())
 
-        coords = CartesianCoordinates(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        # Use joint coords to bypass orientation check, since we're testing access_type
+        coords = JointCoordinates(j1=0.0, j2=170.0, j3=0.0, j4=150.0, j5=0.0)
         tp = Teachpoint(
             name="test_invalid",
             coordinates=coords,
-            orientation=None,
             access_type="diagonal",  # Invalid
             gripper_offset=20.0,
         )
@@ -237,9 +240,9 @@ class TestAccessConfigLoading:
                 }
             },
             "teachpoints": [
-                {"name": "nest_1", "x": 100, "y": 200, "z": 50, "yaw": 0, "pitch": 0, "roll": 0, "access": "nest_access"},
-                {"name": "nest_2", "x": 150, "y": 200, "z": 50, "yaw": 0, "pitch": 0, "roll": 0, "access": "nest_access"},
-                {"name": "safe_zone", "x": 0, "y": 0, "z": 100, "yaw": 0, "pitch": 0, "roll": 0}
+                {"name": "nest_1", "j1": 0, "j2": 170, "j3": 5, "j4": 150, "j5": 10, "access": "nest_access"},
+                {"name": "nest_2", "j1": 0, "j2": 180, "j3": 5, "j4": 160, "j5": 10, "access": "nest_access"},
+                {"name": "safe_zone", "j1": 0, "j2": 190, "j3": 0, "j4": 180, "j5": 0}
             ]
         }
         """
@@ -263,16 +266,15 @@ class TestAccessConfigLoading:
         assert nest_2.access_type == nest_1.access_type
         assert nest_2.gripper_offset == nest_1.gripper_offset
 
-        # Default config for safe_zone (no access specified, uses default_vertical)
-        assert safe_zone.access_type == "vertical"
-        assert safe_zone.gripper_offset == 20.0  # default value
+        # Waypoint without access config - should have access_type=None
+        assert safe_zone.access_type is None
 
     def test_load_teachpoints_unknown_access_config_raises_error(self, tmp_path):
         """Reference to non-existent access config should raise ValueError."""
         json_content = """
         {
             "teachpoints": [
-                {"name": "nest_1", "x": 0, "y": 0, "z": 0, "yaw": 0, "pitch": 0, "roll": 0, "access": "nonexistent_config"}
+                {"name": "nest_1", "j1": 0, "j2": 170, "j3": 0, "j4": 150, "j5": 0, "access": "nonexistent_config"}
             ]
         }
         """
