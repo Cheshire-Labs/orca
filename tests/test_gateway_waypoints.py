@@ -168,7 +168,7 @@ class TestTeachpointToPlrAccess:
             orientation="right",
             access_type="vertical",
             gripper_offset=25.0,
-            retract_distance=150.0,
+            vertical_clearance=150.0,
         )
 
         access = wrapper._teachpoint_to_plr_access(tp)
@@ -192,8 +192,8 @@ class TestTeachpointToPlrAccess:
             orientation="left",
             access_type="horizontal",
             gripper_offset=20.0,
-            vertical_clearance=80.0,
-            z_above=15.0,
+            horizontal_clearance=80.0,
+            vertical_clearance=15.0,
         )
 
         access = wrapper._teachpoint_to_plr_access(tp)
@@ -234,9 +234,8 @@ class TestAccessConfigLoading:
                 "nest_access": {
                     "access_type": "horizontal",
                     "gripper_offset": 30.0,
-                    "retract_distance": 120.0,
-                    "vertical_clearance": 75.0,
-                    "z_above": 12.0
+                    "horizontal_clearance": 120.0,
+                    "vertical_clearance": 75.0
                 }
             },
             "teachpoints": [
@@ -259,8 +258,8 @@ class TestAccessConfigLoading:
         # Custom config values
         assert nest_1.access_type == "horizontal"
         assert nest_1.gripper_offset == 30.0
+        assert nest_1.horizontal_clearance == 120.0
         assert nest_1.vertical_clearance == 75.0
-        assert nest_1.z_above == 12.0
 
         # Same config shared by both nests
         assert nest_2.access_type == nest_1.access_type
