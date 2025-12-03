@@ -3,27 +3,23 @@
     "default_horizontal": {
       "access_type": "horizontal",
       "gripper_offset": 20.0,
-      "vertical_clearance": 50.0,
-      "z_above": 10.0
+      "horizontal_clearance": 100.0,
+      "vertical_clearance": 20.0
     }
   },
   "teachpoints": [
     {
       "name": "translator_2_start",
-      "j1": 0,
-      "j2": 110.5,
-      "j3": 17.8,
-      "j4": 115.9,
-      "j5": 20.4,
+      "x": 0.0, "y": 0.0, "z": 0.0,
+      "yaw": 180.0, "pitch": 90.0, "roll": 0.0,
+      "orientation": "right",
       "access": "default_horizontal"
     },
     {
       "name": "translator_2_end",
-      "j1": 0,
-      "j2": 140.8,
-      "j3": 18.9,
-      "j4": 115.1,
-      "j5": 19.5,
+      "x": 0.0, "y": 0.0, "z": 0.0,
+      "yaw": 180.0, "pitch": 90.0, "roll": 0.0,
+      "orientation": "right",
       "access": "default_horizontal"
     }
   ]

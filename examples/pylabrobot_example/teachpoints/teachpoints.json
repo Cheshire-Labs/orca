@@ -3,68 +3,77 @@
     "default_vertical": {
       "access_type": "vertical",
       "gripper_offset": 20.0,
-      "retract_distance": 100.0
+      "vertical_clearance": 20.0
     },
     "default_horizontal": {
       "access_type": "horizontal",
       "gripper_offset": 20.0,
-      "vertical_clearance": 50.0,
-      "z_above": 10.0
+      "horizontal_clearance": 100.0,
+      "vertical_clearance": 20.0
     }
   },
   "teachpoints": [
     {
       "name": "plate_pad_1",
-      "j1": 0,
-      "j2": 297.206,
-      "j3": 19.659,
-      "j4": 115.286,
-      "j5": 17.586,
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0,
+      "yaw": 180.0,
+      "pitch": 90.0,
+      "roll": 0.0,
+      "orientation": "right",
       "access": "default_horizontal"
     },
     {
       "name": "plate_pad_2",
-      "j1": 0,
-      "j2": 212.94,
-      "j3": 19.705,
-      "j4": 114.964,
-      "j5": 18.302,
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0,
+      "yaw": 180.0,
+      "pitch": 90.0,
+      "roll": 0.0,
+      "orientation": "right",
       "access": "default_horizontal"
     },
     {
       "name": "plate_pad_3",
-      "j1": 0,
-      "j2": 126.297,
-      "j3": 19.634,
-      "j4": 114.642,
-      "j5": 19.132,
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0,
+      "yaw": 180.0,
+      "pitch": 90.0,
+      "roll": 0.0,
+      "orientation": "right",
       "access": "default_horizontal"
     },
     {
       "name": "plate_pad_4",
-      "j1": 0,
-      "j2": 17.995,
-      "j3": -4.901,
-      "j4": 135.144,
-      "j5": 47.8,
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0,
+      "yaw": 180.0,
+      "pitch": 90.0,
+      "roll": 0.0,
+      "orientation": "right",
       "access": "default_vertical"
     },
     {
       "name": "mock_device",
-      "j1": 0,
-      "j2": 20.635,
-      "j3": -35.073,
-      "j4": 263.987,
-      "j5": -395.376,
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0,
+      "yaw": 180.0,
+      "pitch": 90.0,
+      "roll": 0.0,
+      "orientation": "left",
       "access": "default_vertical"
     },
     {
       "name": "sealer",
-      "j1": 0,
-      "j2": 169.994,
-      "j3": 0.001,
-      "j4": 180.001,
-      "j5": -180.002
+      "base": 169.994,
+      "shoulder": 0.001,
+      "elbow": 180.001,
+      "wrist": -180.002
     }
   ]
 }
