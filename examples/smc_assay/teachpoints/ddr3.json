@@ -15,50 +15,44 @@
   "teachpoints": [
     {
       "name": "biotek_2",
-      "base": 310.5,
-      "shoulder": 18.2,
-      "elbow": 112.8,
-      "wrist": 15.4,
+      "x": 0.0, "y": 0.0, "z": 0.0,
+      "yaw": 180.0, "pitch": 90.0, "roll": 0.0,
+      "orientation": "right",
       "access": "default_horizontal"
     },
     {
       "name": "bravo_384",
-      "base": 225.6,
-      "shoulder": 19.1,
-      "elbow": 114.5,
-      "wrist": 18.8,
+      "x": 0.0, "y": 0.0, "z": 0.0,
+      "yaw": 180.0, "pitch": 90.0, "roll": 0.0,
+      "orientation": "right",
       "access": "default_horizontal"
     },
     {
       "name": "plate_hotel",
-      "base": 42.3,
-      "shoulder": -6.8,
-      "elbow": 132.4,
-      "wrist": 49.5,
+      "x": 0.0, "y": 0.0, "z": 0.0,
+      "yaw": 180.0, "pitch": 90.0, "roll": 0.0,
+      "orientation": "right",
       "access": "default_vertical"
     },
     {
       "name": "smc_pro",
-      "base": 268.4,
-      "shoulder": 17.5,
-      "elbow": 116.2,
-      "wrist": 20.3,
+      "x": 0.0, "y": 0.0, "z": 0.0,
+      "yaw": 180.0, "pitch": 90.0, "roll": 0.0,
+      "orientation": "right",
       "access": "default_horizontal"
     },
     {
       "name": "translator_2_end",
-      "base": 140.8,
-      "shoulder": 18.9,
-      "elbow": 115.1,
-      "wrist": 19.5,
+      "x": 0.0, "y": 0.0, "z": 0.0,
+      "yaw": 180.0, "pitch": 90.0, "roll": 0.0,
+      "orientation": "right",
       "access": "default_horizontal"
     },
     {
       "name": "waste_2",
-      "base": 22.4,
-      "shoulder": -3.8,
-      "elbow": 133.8,
-      "wrist": 45.2,
+      "x": 0.0, "y": 0.0, "z": 0.0,
+      "yaw": 180.0, "pitch": 90.0, "roll": 0.0,
+      "orientation": "right",
       "access": "default_vertical"
     },
     {
@@ -84,10 +78,9 @@
     },
     {
       "name": "delidder",
-      "base": 185.2,
-      "shoulder": 16.4,
-      "elbow": 117.8,
-      "wrist": 21.5,
+      "x": 0.0, "y": 0.0, "z": 0.0,
+      "yaw": 180.0, "pitch": 90.0, "roll": 0.0,
+      "orientation": "right",
       "access": "default_horizontal"
     }
   ]
