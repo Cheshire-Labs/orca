@@ -10,18 +10,16 @@
   "teachpoints": [
     {
       "name": "translator_2_start",
-      "base": 110.5,
-      "shoulder": 17.8,
-      "elbow": 115.9,
-      "wrist": 20.4,
+      "x": 0.0, "y": 0.0, "z": 0.0,
+      "yaw": 180.0, "pitch": 90.0, "roll": 0.0,
+      "orientation": "right",
       "access": "default_horizontal"
     },
     {
       "name": "translator_2_end",
-      "base": 140.8,
-      "shoulder": 18.9,
-      "elbow": 115.1,
-      "wrist": 19.5,
+      "x": 0.0, "y": 0.0, "z": 0.0,
+      "yaw": 180.0, "pitch": 90.0, "roll": 0.0,
+      "orientation": "right",
       "access": "default_horizontal"
     }
   ]
