@@ -6,7 +6,7 @@ and waiting for async operations to complete.
 """
 import asyncio
 from typing import List, Dict
-from cheshire_drivers import Teachpoint, JointCoordinates, SimTransporterDriver, SimDriver
+from cheshire_drivers import Teachpoint, CartesianCoordinates, SimTransporterDriver, SimDriver
 from orca.resource_models.transporter import Transporter
 from orca.resource_models.devices import Device
 from orca.resource_models.plate_pad import PlatePad
@@ -27,20 +27,23 @@ def create_test_teachpoints(names: List[str]) -> List[Teachpoint]:
         names: List of teachpoint names
 
     Returns:
-        List of Teachpoint objects with simple coordinates
+        List of Teachpoint objects with Cartesian coordinates (required for access_type)
     """
     teachpoints = []
     for i, name in enumerate(names):
-        # Use joint coordinates for test teachpoints (no orientation required)
-        coords = JointCoordinates(
-            base=float(i * 50 + 100),  # Spread along base rotation
-            shoulder=0.0,
-            elbow=150.0,  # Right orientation (elbow < 180)
-            wrist=0.0
+        # Use Cartesian coordinates (access_type requires Cartesian for pick/place)
+        coords = CartesianCoordinates(
+            x=float(i * 50 + 100),
+            y=0.0,
+            z=50.0,
+            yaw=180.0,
+            pitch=90.0,
+            roll=0.0
         )
         teachpoint = Teachpoint(
             name=name,
             coordinates=coords,
+            orientation="right",
             access_type="vertical"
         )
         teachpoints.append(teachpoint)
