@@ -3,16 +3,15 @@ import json
 from cheshire_drivers import (
     Teachpoint,
     CartesianCoordinates,
-    JointCoordinates,
     TeachpointsRegistry,
     PLRTransporterBackendWrapper,
 )
 
 
 def make_tp(name: str, gateway: str | None = None) -> Teachpoint:
-    """Helper to create simple joint-space teachpoint for testing."""
-    coords = JointCoordinates(j1=0.0, j2=170.0, j3=0.0, j4=150.0, j5=0.0)
-    return Teachpoint(name, coords, access_type="vertical", gateway=gateway)
+    """Helper to create Cartesian teachpoint for testing (access_type requires Cartesian)."""
+    coords = CartesianCoordinates(x=100.0, y=0.0, z=50.0, yaw=180.0, pitch=90.0, roll=0.0)
+    return Teachpoint(name, coords, orientation="right", access_type="vertical", gateway=gateway)
 
 
 class TestTeachpointGateway:
@@ -37,8 +36,8 @@ class TestTeachpointJsonPersistence:
         json_content = """
         {
             "teachpoints": [
-                {"name": "nest_1", "j1": 0, "j2": 170, "j3": 0, "j4": 150, "j5": 0, "gateway": "safe_zone"},
-                {"name": "safe_zone", "j1": 0, "j2": 180, "j3": 5, "j4": 160, "j5": 10}
+                {"name": "nest_1", "base": 170, "shoulder": 0, "elbow": 150, "wrist": 0, "gateway": "safe_zone"},
+                {"name": "safe_zone", "base": 180, "shoulder": 5, "elbow": 160, "wrist": 10}
             ]
         }
         """
@@ -169,7 +168,7 @@ class TestTeachpointToPlrAccess:
             orientation="right",
             access_type="vertical",
             gripper_offset=25.0,
-            retract_distance=150.0,
+            vertical_clearance=150.0,
         )
 
         access = wrapper._teachpoint_to_plr_access(tp)
@@ -193,8 +192,8 @@ class TestTeachpointToPlrAccess:
             orientation="left",
             access_type="horizontal",
             gripper_offset=20.0,
-            vertical_clearance=80.0,
-            z_above=15.0,
+            horizontal_clearance=80.0,
+            vertical_clearance=15.0,
         )
 
         access = wrapper._teachpoint_to_plr_access(tp)
@@ -210,11 +209,12 @@ class TestTeachpointToPlrAccess:
 
         wrapper = PLRTransporterBackendWrapper(MagicMock())
 
-        # Use joint coords to bypass orientation check, since we're testing access_type
-        coords = JointCoordinates(j1=0.0, j2=170.0, j3=0.0, j4=150.0, j5=0.0)
+        # Use Cartesian coords (required for access_type)
+        coords = CartesianCoordinates(x=100.0, y=0.0, z=50.0, yaw=180.0, pitch=90.0, roll=0.0)
         tp = Teachpoint(
             name="test_invalid",
             coordinates=coords,
+            orientation="right",
             access_type="diagonal",  # Invalid
             gripper_offset=20.0,
         )
@@ -234,15 +234,14 @@ class TestAccessConfigLoading:
                 "nest_access": {
                     "access_type": "horizontal",
                     "gripper_offset": 30.0,
-                    "retract_distance": 120.0,
-                    "vertical_clearance": 75.0,
-                    "z_above": 12.0
+                    "horizontal_clearance": 120.0,
+                    "vertical_clearance": 75.0
                 }
             },
             "teachpoints": [
-                {"name": "nest_1", "j1": 0, "j2": 170, "j3": 5, "j4": 150, "j5": 10, "access": "nest_access"},
-                {"name": "nest_2", "j1": 0, "j2": 180, "j3": 5, "j4": 160, "j5": 10, "access": "nest_access"},
-                {"name": "safe_zone", "j1": 0, "j2": 190, "j3": 0, "j4": 180, "j5": 0}
+                {"name": "nest_1", "x": 100, "y": 0, "z": 50, "yaw": 180, "pitch": 90, "roll": 0, "orientation": "right", "access": "nest_access"},
+                {"name": "nest_2", "x": 150, "y": 0, "z": 50, "yaw": 180, "pitch": 90, "roll": 0, "orientation": "right", "access": "nest_access"},
+                {"name": "safe_zone", "base": 190, "shoulder": 0, "elbow": 180, "wrist": 0}
             ]
         }
         """
@@ -259,8 +258,8 @@ class TestAccessConfigLoading:
         # Custom config values
         assert nest_1.access_type == "horizontal"
         assert nest_1.gripper_offset == 30.0
+        assert nest_1.horizontal_clearance == 120.0
         assert nest_1.vertical_clearance == 75.0
-        assert nest_1.z_above == 12.0
 
         # Same config shared by both nests
         assert nest_2.access_type == nest_1.access_type
@@ -274,7 +273,7 @@ class TestAccessConfigLoading:
         json_content = """
         {
             "teachpoints": [
-                {"name": "nest_1", "j1": 0, "j2": 170, "j3": 0, "j4": 150, "j5": 0, "access": "nonexistent_config"}
+                {"name": "nest_1", "base": 170, "shoulder": 0, "elbow": 150, "wrist": 0, "access": "nonexistent_config"}
             ]
         }
         """

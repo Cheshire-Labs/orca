@@ -70,20 +70,18 @@ test_method_2 = MethodTemplate("test_method_2", [
 ])
 
 
-
-
 sample_plate_thread = ThreadTemplate(
     src_plate,
-    map.get_location("nest_2"),
-    map.get_location("nest_2"),
+    map.get_location("nest_3"),
+    map.get_location("nest_3"),
     [
     test_method_1
 ])
 
 destination_plate_thread = ThreadTemplate(
     dest_plate, 
-    map.get_location("nest_3"),
-    map.get_location("nest_3"),
+    map.get_location("nest_4"),
+    map.get_location("nest_4"),
     [
     test_method_2
 ])
@@ -93,6 +91,9 @@ destination_plate_thread = ThreadTemplate(
 test_workflow = WorkflowTemplate("test_workflow")
 test_workflow.add_thread(sample_plate_thread, True)
 test_workflow.add_thread(destination_plate_thread)
+test_workflow.set_spawn_point(destination_plate_thread, 
+                              sample_plate_thread, 
+                              test_method_1)
 
 event_bus = EventBus()
 

@@ -1,9 +1,11 @@
 import asyncio
-from pylabrobot.arms.precise_flex.precise_flex_api import PreciseFlexBackendApi
+from pylabrobot.arms.precise_flex.pf_400 import PreciseFlex400Backend
+
+HOST = "192.168.1.100"  # Update with actual robot IP
 
 async def main():
 
-    arm = PreciseFlexBackendApi()
+    arm = PreciseFlex400Backend(host=HOST)
     await arm.setup()
     while True:
         try:

@@ -3,101 +3,84 @@
     "default_vertical": {
       "access_type": "vertical",
       "gripper_offset": 20.0,
-      "retract_distance": 100.0
+      "vertical_clearance": 20.0
     },
     "default_horizontal": {
       "access_type": "horizontal",
       "gripper_offset": 20.0,
-      "vertical_clearance": 50.0,
-      "z_above": 10.0
+      "horizontal_clearance": 100.0,
+      "vertical_clearance": 20.0
     }
   },
   "teachpoints": [
     {
       "name": "biotek_2",
-      "j1": 0,
-      "j2": 310.5,
-      "j3": 18.2,
-      "j4": 112.8,
-      "j5": 15.4,
+      "x": 0.0, "y": 0.0, "z": 0.0,
+      "yaw": 180.0, "pitch": 90.0, "roll": 0.0,
+      "orientation": "right",
       "access": "default_horizontal"
     },
     {
       "name": "bravo_384",
-      "j1": 0,
-      "j2": 225.6,
-      "j3": 19.1,
-      "j4": 114.5,
-      "j5": 18.8,
+      "x": 0.0, "y": 0.0, "z": 0.0,
+      "yaw": 180.0, "pitch": 90.0, "roll": 0.0,
+      "orientation": "right",
       "access": "default_horizontal"
     },
     {
       "name": "plate_hotel",
-      "j1": 0,
-      "j2": 42.3,
-      "j3": -6.8,
-      "j4": 132.4,
-      "j5": 49.5,
+      "x": 0.0, "y": 0.0, "z": 0.0,
+      "yaw": 180.0, "pitch": 90.0, "roll": 0.0,
+      "orientation": "right",
       "access": "default_vertical"
     },
     {
       "name": "smc_pro",
-      "j1": 0,
-      "j2": 268.4,
-      "j3": 17.5,
-      "j4": 116.2,
-      "j5": 20.3,
+      "x": 0.0, "y": 0.0, "z": 0.0,
+      "yaw": 180.0, "pitch": 90.0, "roll": 0.0,
+      "orientation": "right",
       "access": "default_horizontal"
     },
     {
       "name": "translator_2_end",
-      "j1": 0,
-      "j2": 140.8,
-      "j3": 18.9,
-      "j4": 115.1,
-      "j5": 19.5,
+      "x": 0.0, "y": 0.0, "z": 0.0,
+      "yaw": 180.0, "pitch": 90.0, "roll": 0.0,
+      "orientation": "right",
       "access": "default_horizontal"
     },
     {
       "name": "waste_2",
-      "j1": 0,
-      "j2": 22.4,
-      "j3": -3.8,
-      "j4": 133.8,
-      "j5": 45.2,
+      "x": 0.0, "y": 0.0, "z": 0.0,
+      "yaw": 180.0, "pitch": 90.0, "roll": 0.0,
+      "orientation": "right",
       "access": "default_vertical"
     },
     {
       "name": "pad_7",
-      "j1": 0,
-      "j2": 39.6,
-      "j3": -37.2,
-      "j4": 265.1,
-      "j5": -395.3
+      "base": 39.6,
+      "shoulder": -37.2,
+      "elbow": 265.1,
+      "wrist": -395.3
     },
     {
       "name": "pad_8",
-      "j1": 0,
-      "j2": 44.3,
-      "j3": -38.9,
-      "j4": 266.4,
-      "j5": -396.9
+      "base": 44.3,
+      "shoulder": -38.9,
+      "elbow": 266.4,
+      "wrist": -396.9
     },
     {
       "name": "pad_9",
-      "j1": 0,
-      "j2": 49.0,
-      "j3": -40.6,
-      "j4": 267.7,
-      "j5": -398.5
+      "base": 49.0,
+      "shoulder": -40.6,
+      "elbow": 267.7,
+      "wrist": -398.5
     },
     {
       "name": "delidder",
-      "j1": 0,
-      "j2": 185.2,
-      "j3": 16.4,
-      "j4": 117.8,
-      "j5": 21.5,
+      "x": 0.0, "y": 0.0, "z": 0.0,
+      "yaw": 180.0, "pitch": 90.0, "roll": 0.0,
+      "orientation": "right",
       "access": "default_horizontal"
     }
   ]
