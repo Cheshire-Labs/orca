@@ -3,8 +3,8 @@
     "default_horizontal": {
       "access_type": "horizontal",
       "gripper_offset": 20.0,
-      "vertical_clearance": 50.0,
-      "z_above": 10.0
+      "horizontal_clearance": 100.0,
+      "vertical_clearance": 20.0
     }
   },
   "teachpoints": [
