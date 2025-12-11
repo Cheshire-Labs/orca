@@ -50,7 +50,7 @@ class SdkToSystemBuilder:
             workflows (List[WorkflowTemplate]): A list of workflow templates to be used in the system.
             event_bus (IEventBus): The event bus to handle events in the system.
         """
-        self._system_info: SystemInfo = SystemInfo(name, description=description, version="0.1.0", model_extra={})
+        self._system_info: SystemInfo = SystemInfo(name, description=description, version="1.0.0", model_extra={})
         self._resource_reg: ResourceRegistry = resources_registry
         self._labware_registry: LabwareRegistry = self._get_labware_registry(list(labwares))
         self._system_map: SystemMap = system_map
