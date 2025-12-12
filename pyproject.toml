@@ -19,9 +19,10 @@ classifiers = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    "networkx>=3.3", 
+    "networkx>=3.3",
     "matplotlib>=3.9.0",
-    "pylabrobot @ git+https://github.com/Cheshire-Labs/pylabrobot.git"
+    "pylabrobot @ git+https://github.com/Cheshire-Labs/pylabrobot.git@cheshire-v1.0.0",
+    "cheshire-drivers @ git+https://github.com/Cheshire-Labs/cheshire-drivers.git@v0.1.0",
 ]
 
 [project.optional-dependencies]
