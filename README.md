@@ -2,8 +2,6 @@
 
 Orca is a laboratory automation scheduler designed for parallel processing of laboratory workflows. It coordinates devices (liquid handlers, centrifuges, sealers, etc.) and manages labware movement across your lab system.
 
-**Live System Usage**: Connecting Orca to a driver running a live instrument is done at your own risk. Please exercise caution to protect your personnel and equipment.
-
 **Stopping Orca**: To stop Orca, terminate the program (Ctrl+C).
 
 ## Features
@@ -155,18 +153,6 @@ Cheshire Labs follows an open core business model with dual licensing. Contribut
 ## License
 
 This project is released under [AGPLv3 license](./LICENSE). Plugins, scripts, and drivers are considered derivatives.
-
-For alternative licensing, [contact Cheshire Labs](https://cheshirelabs.io/contact/).
-
-## Need More?
-
-[Contact Cheshire Labs](https://cheshirelabs.io/contact/) for:
-- Custom features
-- Graphical interface
-- Driver development
-- Cloud hosting
-- Setup assistance
-- Custom scripting
 
 ## Contact
 
