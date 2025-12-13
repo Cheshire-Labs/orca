@@ -14,6 +14,7 @@ from orca.system.system_map import SystemMap
 from orca.system.thread_manager import ThreadManager
 from orca.workflow_models.actions.dynamic_resource_action import DynamicResourceActionResolver
 from orca.workflow_models.labware_threads.executing_labware_thread import ExecutingThreadFactory, ExecutingThreadRegistry
+from orca.workflow_models.labware_threads.location_history_registry import LabwareLocationHistoryRegistry
 from orca.workflow_models.status_manager import StatusManager
 from orca.workflow_models.workflows.workflow_factories import ThreadFactory
 from orca.workflow_models.workflows.executing_workflow import ExecutingWorkflowFactory, ExecutingWorkflowRegistry
@@ -49,7 +50,7 @@ class SdkToSystemBuilder:
             workflows (List[WorkflowTemplate]): A list of workflow templates to be used in the system.
             event_bus (IEventBus): The event bus to handle events in the system.
         """
-        self._system_info: SystemInfo = SystemInfo(name, description=description, version="0.1.0", model_extra={})
+        self._system_info: SystemInfo = SystemInfo(name, description=description, version="1.0.0", model_extra={})
         self._resource_reg: ResourceRegistry = resources_registry
         self._labware_registry: LabwareRegistry = self._get_labware_registry(list(labwares))
         self._system_map: SystemMap = system_map
@@ -71,17 +72,23 @@ class SdkToSystemBuilder:
 
         self._thread_reservation_coordinator = ThreadReservationCoordinator(self._system_map,
                                                                             self._thread_registry)
-        self._move_hander = MoveHandler(self._thread_reservation_coordinator, self._system_map)
+        self._move_hander = MoveHandler(
+            self._thread_reservation_coordinator,
+            self._system_map,
+            self._thread_reservation_coordinator.starvation_registry
+        )
         method_factory = ExecutingMethodFactory(self._event_bus, self._status_manager)
         self._executing_method_registry = ExecutingMethodRegistry(self._method_registry, method_factory)
         self._action_resolver = DynamicResourceActionResolver(self._thread_reservation_coordinator, self._system_map)
+        self._location_history_registry = LabwareLocationHistoryRegistry()
         self._executing_thread_factory = ExecutingThreadFactory(self._event_bus,
                                                                 self._move_hander,
-                                                                self._status_manager, 
+                                                                self._status_manager,
                                                                 self._thread_reservation_coordinator,
                                                                 self._action_resolver,
                                                                 self._executing_method_registry,
-                                                                self._system_map)
+                                                                self._system_map,
+                                                                self._location_history_registry)
         self._executing_thread_registry = ExecutingThreadRegistry(self._thread_registry,
                                                                   self._executing_thread_factory)
         

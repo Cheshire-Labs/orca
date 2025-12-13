@@ -1,4 +1,5 @@
 from abc import ABC
+import asyncio
 from typing import List, Optional, Any, Dict
 from orca.resource_models.plate_pad import PlatePad
 from orca.resource_models.labware_placeable_interface import ILabwarePlaceable
@@ -19,6 +20,7 @@ class Location(ILabwarePlaceable):
         self._options: Dict[str, Any] = {}
         self._resource_observers: List[IResourceLocationObserver] = []
         self._labware_observers: List[ILabwareLocationObserver] = []
+        self._availability_condition = asyncio.Condition()  # Event-driven availability notification
     
     @property
     def name(self) -> str:
@@ -40,7 +42,12 @@ class Location(ILabwarePlaceable):
     @property
     def resource(self) -> ILabwarePlaceable:
         return self._resource
-    
+
+    @property
+    def supports_deadlock_resolution(self) -> bool:
+        """Delegate to the underlying resource."""
+        return self._resource.supports_deadlock_resolution
+
     @resource.setter
     def resource(self, resource: ILabwarePlaceable) -> None:
         self._resource = resource
@@ -60,11 +67,33 @@ class Location(ILabwarePlaceable):
         await self._resource.notify_picked(labware)
         for observer in self._labware_observers:
             observer.notify_labware_location_change("picked", self, labware)
+
+        # Notify all threads waiting for this location to become available
+        async with self._availability_condition:
+            self._availability_condition.notify_all()
     
     async def notify_placed(self, labware: LabwareInstance) -> None:
         await self._resource.notify_placed(labware)
         for observer in self._labware_observers:
             observer.notify_labware_location_change("placed", self, labware)
+
+    async def wait_until_available(self, timeout: Optional[float] = None) -> None:
+        """
+        Wait until this location becomes available (empty).
+        Event-driven - instant notification when labware is picked.
+
+        Args:
+            timeout: Optional timeout in seconds. If None, waits indefinitely.
+
+        Raises:
+            asyncio.TimeoutError: If timeout expires before location becomes available.
+        """
+        async with self._availability_condition:
+            while self.labware is not None:
+                if timeout:
+                    await asyncio.wait_for(self._availability_condition.wait(), timeout)
+                else:
+                    await self._availability_condition.wait()
 
     def __str__(self) -> str:
         return f"Location: {self._teachpoint_name}"

@@ -1,0 +1,79 @@
+{
+  "access_configs": {
+    "default_vertical": {
+      "access_type": "vertical",
+      "gripper_offset": 20.0,
+      "vertical_clearance": 20.0
+    },
+    "default_horizontal": {
+      "access_type": "horizontal",
+      "gripper_offset": 20.0,
+      "horizontal_clearance": 100.0,
+      "vertical_clearance": 20.0
+    }
+  },
+  "teachpoints": [
+    {
+      "name": "plate_pad_1",
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0,
+      "yaw": 180.0,
+      "pitch": 90.0,
+      "roll": 0.0,
+      "orientation": "right",
+      "access": "default_horizontal"
+    },
+    {
+      "name": "plate_pad_2",
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0,
+      "yaw": 180.0,
+      "pitch": 90.0,
+      "roll": 0.0,
+      "orientation": "right",
+      "access": "default_horizontal"
+    },
+    {
+      "name": "plate_pad_3",
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0,
+      "yaw": 180.0,
+      "pitch": 90.0,
+      "roll": 0.0,
+      "orientation": "right",
+      "access": "default_horizontal"
+    },
+    {
+      "name": "plate_pad_4",
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0,
+      "yaw": 180.0,
+      "pitch": 90.0,
+      "roll": 0.0,
+      "orientation": "right",
+      "access": "default_vertical"
+    },
+    {
+      "name": "mock_device",
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0,
+      "yaw": 180.0,
+      "pitch": 90.0,
+      "roll": 0.0,
+      "orientation": "left",
+      "access": "default_vertical"
+    },
+    {
+      "name": "sealer",
+      "base": 169.994,
+      "shoulder": 0.001,
+      "elbow": 180.001,
+      "wrist": -180.002
+    }
+  ]
+}

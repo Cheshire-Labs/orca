@@ -1,0 +1,109 @@
+{
+  "access_configs": {
+    "default_vertical": {
+      "access_type": "vertical",
+      "gripper_offset": 20.0,
+      "vertical_clearance": 20.0
+    },
+    "default_horizontal": {
+      "access_type": "horizontal",
+      "gripper_offset": 20.0,
+      "horizontal_clearance": 100.0,
+      "vertical_clearance": 20.0
+    }
+  },
+  "teachpoints": [
+    {
+      "name": "nest_gateway",
+      "x": 208.136,
+      "y": 222.5,
+      "z": 318.789,
+      "yaw": 153.459,
+      "pitch": 90.0,
+      "roll": -180.0,
+      "orientation": "right"
+    },
+    {
+      "name": "nest_4",
+      "x": -16.163,
+      "y": 329.607,
+      "z": 298.536,
+      "yaw": 154.255,
+      "pitch": 90.0,
+      "roll": -180.0,
+      "orientation": "right",
+      "access": "default_horizontal",
+      "gateway": "nest_gateway"
+    },
+    {
+      "name": "nest_5",
+      "x": -16.114,
+      "y": 330.531,
+      "z": 216.586,
+      "yaw": 154.143,
+      "pitch": 90.0,
+      "roll": -180.0,
+      "orientation": "right",
+      "access": "default_horizontal",
+      "gateway": "nest_gateway"
+    },
+    {
+      "name": "nest_6",
+      "x": -15.894,
+      "y": 329.975,
+      "z": 126.885,
+      "yaw": 153.368,
+      "pitch": 90.0,
+      "roll": -180.0,
+      "orientation": "right",
+      "access": "default_horizontal",
+      "gateway": "nest_gateway"
+    },
+    {
+      "name": "center_waypoint",
+      "x": 336.224,
+      "y": -29.795,
+      "z": 301.013,
+      "yaw": -0.128,
+      "pitch": 90.0,
+      "roll": 180.0,
+      "orientation": "right"
+    },
+    {
+      "name": "shaker",
+      "x": 380.885,
+      "y": 197.281,
+      "z": 69.686,
+      "yaw": -1.325,
+      "pitch": 90.0,
+      "roll": 180.0,
+      "orientation": "right",
+      "access": "default_vertical",
+      "gateway": "center_waypoint"
+    },
+    {
+      "name": "centrifuge",
+      "x": 403.284,
+      "y": 10.856,
+      "z": 73.45,
+      "yaw": -1.732,
+      "pitch": 90.0,
+      "roll": 180.0,
+      "orientation": "right",
+      "access": "default_vertical",
+      "gateway": "center_waypoint"
+    },
+    {
+      "name": "sealer",
+      "x": 283.344,
+      "y": -293.057,
+      "z": 143.697,
+      "yaw": -90.711,
+      "pitch": 90.0,
+      "roll": 180.0,
+      "orientation": "left",
+      "access": "default_vertical",
+      "gateway": "center_waypoint"
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
 import itertools
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 from orca.resource_models.labware_placeable_interface import ILabwarePlaceable
 from orca.resource_models.resources import IResource
 from orca.resource_models.labware import LabwareInstance
@@ -35,10 +35,13 @@ class _NetworkXHandler:
         return nx.has_path(self._graph, source, target) # type: ignore
 
     def get_nodes(self) -> Dict[str, Dict[str, Any]]:
-        return dict(self._graph.nodes.items())
+        return dict(self._graph.nodes.items()) # type: ignore
     
     def get_node_data(self, name: str) -> Dict[str, Any]:
-        return self._graph.nodes[name]
+        return self._graph.nodes[name] # type: ignore
+    
+    def has_node(self, name: str) -> bool:
+        return self._graph.has_node(name) # type: ignore
     
     def get_shortest_path(self, source: str, target: str) -> List[str]:
         path: List[str] = nx.shortest_path(self._graph, source, target, weight='weight') # type: ignore
@@ -109,6 +112,8 @@ class SystemMap(ILocationRegistry, IResourceLocator, IResourceLocationObserver, 
         return [nodedata["location"] for _, nodedata in self._graph.get_nodes().items()]
 
     def get_location(self, name: str) -> Location:
+        if not self.location_exists(name):
+            raise KeyError(f"Location {name} does not exist in system map")
         return self._graph.get_node_data(name)["location"]
 
     def add_location(self, location: Location) -> None:
@@ -117,6 +122,9 @@ class SystemMap(ILocationRegistry, IResourceLocator, IResourceLocationObserver, 
             self.assign_resource_to_location(location.name, location.resource)
             
         location.add_observer(self)
+
+    def location_exists(self, name: str) -> bool:
+        return self._graph.has_node(name)
 
     def get_resource_location(self, resource_name: str) -> Location:
         try:
@@ -161,9 +169,12 @@ class SystemMap(ILocationRegistry, IResourceLocator, IResourceLocationObserver, 
     def get_shortest_paths_to_deadlock_resolution(self, source: str) -> List[List[str]]:
         paths = []
         for name, data in self._graph.get_nodes().items():
-            if isinstance(data["location"].resource, PlatePad) and name != source:
+            resource = data["location"].resource
+            # Only include locations that explicitly support deadlock resolution
+            # This filters out devices (which return False) and waypoints (explicitly marked False)
+            if isinstance(resource, PlatePad) and resource.supports_deadlock_resolution and name != source:
                 paths.extend(self.get_all_shortest_any_paths(source, name)) #type: ignore
-            
+
         return paths
     
     def _get_blocking_locations(self, source: str, target: str) -> List[Location]:
@@ -192,9 +203,10 @@ class SystemMap(ILocationRegistry, IResourceLocator, IResourceLocationObserver, 
         self._graph.draw()
         
     def add_transporter(self, transporter: Transporter) -> None:
-        taught_locations = transporter.get_taught_positions()
+        taught_teachpoints = transporter.get_teachpoints()
+        teachpoint_names = [t.name for t in taught_teachpoints]
         # add teachpoints as locations if they don't exist and connect them as an edge
-        for edge in itertools.combinations(taught_locations, 2):
+        for edge in itertools.combinations(teachpoint_names, 2):
             try:
                 self.get_location(edge[0])
             except KeyError:
@@ -214,7 +226,7 @@ class SystemMap(ILocationRegistry, IResourceLocator, IResourceLocationObserver, 
         location.resource = resource
         self._equipment_map[resource.name] = location
 
-    def assign_resources(self, resources: Dict[str, ILabwarePlaceable]) -> None:
+    def assign_resources(self, resources: Mapping[str, ILabwarePlaceable]) -> None:
         for name, resource in resources.items():
             self.assign_resource_to_location(name, resource)
         

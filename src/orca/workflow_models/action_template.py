@@ -1,7 +1,7 @@
 from typing import Any, Dict, List, Optional
 
 from pyparsing import ABC, abstractmethod
-from orca.driver_management.driver_interfaces import ICentrifuge, IDelidder, IGenericExecutable, IProtocolRunner, IReader, ISealer, IShaker
+from orca.devices.device_interfaces import ICentrifuge, IDelidder, IGenericExecutable, IProtocolRunner, IReader, ISealer, IShaker
 from orca.resource_models.devices import Device
 from orca.resource_models.labware import AnyLabwareTemplate, LabwareTemplate
 from orca.resource_models.resource_pool import ResourcePool
@@ -249,7 +249,7 @@ class Shake(ActionTemplate):
         elif not isinstance(resource, IShaker):
             raise TypeError("Resource must implement IGenericEIShakerxecutable.")
 
-class Centrifuge(ActionTemplate):
+class Spin(ActionTemplate):
     """ Centrifuges the labware at a specified speed and duration once the labware reaches the resource."""
     def __init__(self,
                  resource: Device | ResourcePool,

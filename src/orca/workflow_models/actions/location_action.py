@@ -4,7 +4,7 @@ import logging
 from typing import Any, Awaitable, Callable, Dict, List, cast
 import uuid
 
-from orca.driver_management.driver_interfaces import ICentrifuge, IDelidder, IGenericExecutable, IProtocolRunner, IReader, ISealer, IShaker
+from orca.devices.device_interfaces import ICentrifuge, IDelidder, IGenericExecutable, IProtocolRunner, IReader, ISealer, IShaker
 from orca.resource_models.devices import Device
 from orca.resource_models.labware import LabwareInstance, LabwareTemplate
 from orca.resource_models.location import Location
@@ -136,7 +136,8 @@ class ExecuteCommandAction(LocationAction):
             raise TypeError("Resource must implement IGenericExecutable.")
         await self.resource.execute(self._command, self._options)
 
-type ExecuteMethodType = Callable[[Device, List[LabwareInstance], List[LabwareInstance], Dict[str, Any]], Awaitable[None]]
+# Type alias for execute method signature (Python 3.11 compatible)
+ExecuteMethodType = Callable[[Device, List[LabwareInstance], List[LabwareInstance], Dict[str, Any]], Awaitable[None]]
 
 class ExecuteMethodAction(LocationAction):
     def __init__(self,

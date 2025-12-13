@@ -1,12 +1,25 @@
-import asyncio
-from orca.driver_management.driver_interfaces import ICentrifuge
+from typing import Optional
 
+from orca.devices.device_interfaces import ICentrifuge
+from cheshire_drivers import ICentrifugeDriver, PLRCentrifugeBackendWrapper, SimCentrifugeDriver, PLRCentrifugeBackend
 from orca.resource_models.devices import Device
-from pylabrobot.centrifuge.backend import CentrifugeBackend
 
-class Centrifuge(Device, ICentrifuge):
-    def __init__(self, name: str, backend: CentrifugeBackend):
+class Centrifuge(Device[ICentrifugeDriver], ICentrifuge):
+    def __init__(self, 
+                 name: str, 
+                 driver: ICentrifugeDriver | PLRCentrifugeBackend,
+                 sim: bool = False,
+                 sim_driver: Optional[ICentrifugeDriver] = None
+                 ):
         self._name = name
-        self._centrifuge = backend
-        self._is_initialized: bool = False
-        self._lock = asyncio.Lock()
+        driver = PLRCentrifugeBackendWrapper(driver) if isinstance(driver, PLRCentrifugeBackend) else driver
+        sim_driver = sim_driver if sim_driver else SimCentrifugeDriver("centrifuge")
+
+        super().__init__(name, 
+            driver,
+            sim_driver,
+            sim)
+
+    async def centrifuge(self, speed: int, duration: int) -> None:
+        """Spin the centrifuge at a specified speed for a specified duration."""    
+        await self.driver.centrifuge(speed, duration)

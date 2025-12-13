@@ -4,19 +4,24 @@ import logging
 import sys
 import time
 
-from orca.devices.mock_device import MockDevice
+from orca.devices.centrifuge import Centrifuge
+from orca.devices.devices import Delidder, LiquidHandler, PlateWasher, Reader, Storage, Waste
+from orca.devices.shaker import Shaker
+from cheshire_drivers import SimCentrifugeDriver, SimDelidderDriver, SimLiquidHandlerDriver, SimPlateWasherDriver, SimReaderDriver, SimShakerDriver, SimStorageDriver, SimTransporterDriver, SimWasteDriver
+from orca.resource_models.transporter import Transporter
+from orca.resource_models.plate_pad import PlatePad
 from orca.sdk.system import SdkToSystemBuilder, WorkflowExecutor, ResourceRegistry, SystemMap, ExecutingLabwareThread, StandalonMethodExecutor
 from orca.sdk.workflow import WorkflowTemplate, ThreadTemplate, MethodTemplate, SharedMethodTemplate
 from orca.sdk.events import EventBus, SystemBoundEventHandler, ExecutionContext, ThreadExecutionContext, WorkflowExecutionContext, LabwareThreadStatus
-from orca.sdk.devices import ResourcePool, A4SSealer, MockTransporter
+from orca.sdk.devices import ResourcePool, A4SSealer
 from orca.sdk.labware import AnyLabwareTemplate, PlateTemplate, TipRackTemplate
-from orca.sdk.actions import Centrifuge, Delid, Read, RunProtocol, Shake
+from orca.sdk.actions import Spin, Delid, Read, RunProtocol, Shake
 
 
 from pylabrobot.resources.agenbio import AGenBio_1_troughplate_190000uL_Fl
 from pylabrobot.resources.biorad import BioRad_384_wellplate_50uL_Vb
 from pylabrobot.resources.corning.falcon.plates import Cor_Falcon_96_wellplate_340ul_Fb_Black
-from pylabrobot.resources.hamilton.tip_racks import LTF
+from pylabrobot.resources.hamilton.tip_racks import hamilton_96_tiprack_10uL_filter
 
 # Setup a logger (Optional)
 logging.basicConfig(
@@ -35,8 +40,8 @@ bead_reservoir = PlateTemplate("bead_reservoir",  AGenBio_1_troughplate_190000uL
 buffer_b_reservoir = PlateTemplate("buffer_b_reservoir",  AGenBio_1_troughplate_190000uL_Fl) # Not really needed for this example, but included for completeness
 buffer_d_reservoir = PlateTemplate("buffer_d_reservoir",  AGenBio_1_troughplate_190000uL_Fl) # Not really needed for this example, but included for completeness
 detection_reservoir = PlateTemplate("detection_reservoir",  AGenBio_1_troughplate_190000uL_Fl) # Not really needed for this example, but included for completeness
-tips_96 = TipRackTemplate("tips_96",  LTF, True) # TODO: Hamilton tips for now
-tips_384 = TipRackTemplate("tips_384", LTF, True)
+tips_96 = TipRackTemplate("tips_96",  hamilton_96_tiprack_10uL_filter, True) # TODO: Hamilton tips for now
+tips_384 = TipRackTemplate("tips_384", hamilton_96_tiprack_10uL_filter, True)
 
 # Add your labware to a list
 labwares = [
@@ -54,46 +59,47 @@ labwares = [
 # Setup your devices, each device needs a driver assigneed to it
 # Transorter equipment are devices capable of moving labwaare
 # For this simulation, the teachpoints are saved within a local file
-teachpoints_dir = "examples\\smc_assay\\teachpoints"
-ddr1_points = os.path.join(teachpoints_dir, "ddr1.xml")
-ddr2_points = os.path.join(teachpoints_dir, "ddr2.xml")
-ddr3_points = os.path.join(teachpoints_dir, "ddr3.xml")
-translator1_points = os.path.join(teachpoints_dir, "translator1.xml")
-translator2_points = os.path.join(teachpoints_dir, "translator2.xml")
-ddr_1 = MockTransporter("ddr_1", "ddr", ddr1_points)
-ddr_2 = MockTransporter("ddr_2", "ddr", ddr2_points)
-ddr_3 = MockTransporter("ddr_3", "ddr", ddr3_points)
-translator_1 = MockTransporter("translator_1", "translator", translator1_points)
-translator_2 = MockTransporter("translator_2", "translator", translator2_points)
+teachpoints_dir = os.path.join("examples", "smc_assay", "teachpoints")
+ddr1_points = os.path.join(teachpoints_dir, "ddr1.json")
+ddr2_points = os.path.join(teachpoints_dir, "ddr2.json")
+ddr3_points = os.path.join(teachpoints_dir, "ddr3.json")
+translator1_points = os.path.join(teachpoints_dir, "translator1.json")
+translator2_points = os.path.join(teachpoints_dir, "translator2.json")
+ddr_1 = Transporter("ddr_1", SimTransporterDriver("ddr"), load_positions=ddr1_points)
+ddr_2 = Transporter("ddr_2", SimTransporterDriver("ddr"), load_positions=ddr2_points)
+ddr_3 = Transporter("ddr_3", SimTransporterDriver("ddr"), load_positions=ddr3_points)
+translator_1 = Transporter("translator_1", SimTransporterDriver("translator"), load_positions=translator1_points)
+translator_2 = Transporter("translator_2", SimTransporterDriver("translator"), load_positions=translator2_points)
 
 # These are devices capable of reciving labware
-biotek_1 = MockDevice("biotek", "biotek")
-biotek_2 = MockDevice("biotek_2", "biotek")
-bravo_96 = MockDevice("bravo_96_head", "bravo")
-bravo_384 = MockDevice("bravo_384_head", "bravo")
+biotek_1 = PlateWasher("biotek", SimPlateWasherDriver("biotek"))
+biotek_2 = PlateWasher("biotek_2", SimPlateWasherDriver("biotek_2"))
+bravo_96 = LiquidHandler("bravo_96", SimLiquidHandlerDriver("bravo_96"))
+bravo_384 = LiquidHandler("bravo_384", SimLiquidHandlerDriver("bravo_384"))
 sealer = A4SSealer("sealer", "COM3", sim=True)
-centrifuge = MockDevice("centrifuge", "centrifuge")
-plate_hotel = MockDevice("plate_hotel", "plate_hotel")
-delidder = MockDevice("delidder", "delidder")
-smc_pro = MockDevice("smc_pro", "smc_pro")
-stacker_sample_start = MockDevice("stacker_simple_start", "vstack")
-stacker_sample_end = MockDevice("stacker_sample_end", "vstack")
-stacker_plate_1_start = MockDevice("stacker_plate_1_start", "vstack")
-stacker_final_plate_start = MockDevice("stacker_final_plate_start", "vstack")
-stacker_96_tips = MockDevice("stacker_96_tips", "vstack") 
-stacker_384_tips_start = MockDevice("stacker_384_tips_start", "vstack")
-stacker_384_tips_end = MockDevice("stacker_384_tips_end", "vstack")
-shaker_1 = MockDevice("shaker_1", "shaker")
-shaker_2 = MockDevice("shaker_2", "shaker")
-shaker_3 = MockDevice("shaker_3", "shaker")
-shaker_4 = MockDevice("shaker_4", "shaker")
-shaker_5 = MockDevice("shaker_5", "shaker")
-shaker_6 = MockDevice("shaker_6", "shaker")
-shaker_7 = MockDevice("shaker_7", "shaker")
-shaker_8 = MockDevice("shaker_8", "shaker")
-shaker_9 = MockDevice("shaker_9", "shaker")
-shaker_10 = MockDevice("shaker_10", "shaker")
-waste_1 = MockDevice("waste_1","waste")
+centrifuge = Centrifuge("centrifuge", SimCentrifugeDriver("centrifuge"), True)
+plate_hotel = Storage("plate_hotel", SimStorageDriver("plate_hotel"))
+delidder = Delidder("delidder", SimDelidderDriver("delidder"))
+smc_pro = Reader("smc_pro", SimReaderDriver("smc_pro"))
+stacker_sample_start = Storage("stacker_simple_start", SimStorageDriver("stacker_simple_start"))
+stacker_sample_end = Storage("stacker_sample_end", SimStorageDriver("stacker_sample_end"))
+stacker_plate_1_start = Storage("stacker_plate_1_start", SimStorageDriver("stacker_plate_1_start"))
+stacker_final_plate_start = Storage("stacker_final_plate_start", SimStorageDriver("stacker_final_plate_start"))
+stacker_96_tips = Storage("stacker_96_tips", SimStorageDriver("stacker_96_tips")) 
+stacker_384_tips_start = Storage("stacker_384_tips_start", SimStorageDriver("stacker_384_tips_start"))
+stacker_384_tips_end = Storage("stacker_384_tips_end", SimStorageDriver("stacker_384_tips_end"))
+shaker_1 = Shaker("shaker_1", SimShakerDriver("shaker_1"), True)
+shaker_2 = Shaker("shaker_2", SimShakerDriver("shaker_2"), True)
+shaker_3 = Shaker("shaker_3", SimShakerDriver("shaker_3"), True)
+shaker_4 = Shaker("shaker_4", SimShakerDriver("shaker_4"), True)
+shaker_5 = Shaker("shaker_5", SimShakerDriver("shaker_5"), True)
+shaker_6 = Shaker("shaker_6", SimShakerDriver("shaker_6"), True)
+shaker_7 = Shaker("shaker_7", SimShakerDriver("shaker_7"), True)
+shaker_8 = Shaker("shaker_8", SimShakerDriver("shaker_8"), True)
+shaker_9 = Shaker("shaker_9", SimShakerDriver("shaker_9"), True)
+shaker_10 = Shaker("shaker_10", SimShakerDriver("shaker_10"), True)
+waste_1 = Waste("waste_1", SimWasteDriver("waste_1"))
+waste_2 = Waste("waste_2", SimWasteDriver("waste_2"))
 
 # Build any resource pools - Orca will resolve what resource to use once it reaches that step
 shaker_collection = ResourcePool("shaker_collection", resources=[shaker_1, shaker_2, shaker_3, shaker_4, shaker_5, shaker_6, shaker_7, shaker_8, shaker_9, shaker_10])
@@ -109,6 +115,7 @@ resource_registry.add_resources([
     centrifuge, 
     plate_hotel,
     delidder,
+    smc_pro,
     ddr_1,
     ddr_2,
     ddr_3,
@@ -132,6 +139,7 @@ resource_registry.add_resources([
     shaker_9,
     shaker_10,
     waste_1,
+    waste_2,
     shaker_collection
 ])
 
@@ -149,6 +157,7 @@ map.assign_resources({
     "centrifuge": centrifuge,
     "plate_hotel": plate_hotel,
     "delidder": delidder,
+    "smc_pro": smc_pro,
     "stacker_1": stacker_sample_start,
     "stacker_2": stacker_sample_end,
     "stacker_3": stacker_plate_1_start,
@@ -167,6 +176,13 @@ map.assign_resources({
     "shaker_9": shaker_9,
     "shaker_10": shaker_10,
     "waste_1": waste_1,
+    "waste_2": waste_2,
+    # Mark translator waypoints as not supporting deadlock resolution
+    # These are transit points between robots, not parking locations
+    "translator_1_start": PlatePad("translator_1_start", supports_deadlock_resolution=False),
+    "translator_1_end": PlatePad("translator_1_end", supports_deadlock_resolution=False),
+    "translator_2_start": PlatePad("translator_2_start", supports_deadlock_resolution=False),
+    "translator_2_end": PlatePad("translator_2_end", supports_deadlock_resolution=False),
 })
 
 
@@ -294,7 +310,7 @@ transfer_eluate = MethodTemplate("transfer_eluate", [
 ])
 
 centrifuge_method = MethodTemplate("centrifuge", [
-    Centrifuge(
+    Spin(
         centrifuge,
         1200,
         2000,
@@ -460,24 +476,25 @@ class SpawnNewOnFourthPlate(SystemBoundEventHandler):
         workflow = self.system.get_executing_workflow(context.workflow_id)
         thread = workflow.thread_manager.get_executing_thread(context.thread_id)
         if self._num_of_spawns % 4 != 0:
-            asyncio.create_task(self._await_previous_thread_completion_and_set_start(thread, context))
+            # Set manual_start flag to prevent auto-start by Spawn handler
+            thread.manual_start = True
+            asyncio.create_task(self._await_previous_thread_completion_and_start(thread, context))
         else:
             # if this is the first spawn, we don't have a previous thread
-            # or if this is the fourth spawn, we allow the thread to end normally
+            # or if this is the fourth spawn, we allow the thread to auto-start normally
             self._previous_thread = thread
-        self._num_of_spawns += 1        
-    
-    async def _await_previous_thread_completion_and_set_start(self, thread: ExecutingLabwareThread, context: ThreadExecutionContext):
-        """Awaits the completion of the previous thread and sets the start location of the new thread to the end location of the previous thread."""
+        self._num_of_spawns += 1
+
+    async def _await_previous_thread_completion_and_start(self, thread: ExecutingLabwareThread, context: ThreadExecutionContext):
+        """Awaits the completion of the previous thread, sets the start location, and manually starts the new thread."""
         if self._previous_thread is None:
             return
         while self._previous_thread.status != LabwareThreadStatus.COMPLETED:
             await asyncio.sleep(1)
-        thread_instance = self.system.create_and_register_thread_instance(self._attach_thread)
-        thread_instance.start_location = self._previous_thread.end_location
-        workflow_context = WorkflowExecutionContext(context.workflow_id, context.workflow_name)
-        new_thread = self.system.create_executing_thread(thread_instance.id, workflow_context)
-        self._previous_thread = new_thread
+        thread.update_start_location(self._previous_thread.end_location)
+        self._previous_thread = thread
+        # Manually start the thread now that start location is updated
+        await thread.start()
 
         
             

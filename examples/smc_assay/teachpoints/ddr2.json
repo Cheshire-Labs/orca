@@ -1,0 +1,185 @@
+{
+  "access_configs": {
+    "default_vertical": {
+      "access_type": "vertical",
+      "gripper_offset": 20.0,
+      "vertical_clearance": 20.0
+    },
+    "default_horizontal": {
+      "access_type": "horizontal",
+      "gripper_offset": 20.0,
+      "horizontal_clearance": 100.0,
+      "vertical_clearance": 20.0
+    }
+  },
+  "teachpoints": [
+    {
+      "name": "centrifuge",
+      "x": 0.0, "y": 0.0, "z": 0.0,
+      "yaw": 180.0, "pitch": 90.0, "roll": 0.0,
+      "orientation": "right",
+      "access": "default_horizontal"
+    },
+    {
+      "name": "sealer",
+      "x": 0.0, "y": 0.0, "z": 0.0,
+      "yaw": 180.0, "pitch": 90.0, "roll": 0.0,
+      "orientation": "right",
+      "access": "default_horizontal"
+    },
+    {
+      "name": "translator_1_end",
+      "x": 0.0, "y": 0.0, "z": 0.0,
+      "yaw": 180.0, "pitch": 90.0, "roll": 0.0,
+      "orientation": "right",
+      "access": "default_horizontal"
+    },
+    {
+      "name": "translator_2_start",
+      "x": 0.0, "y": 0.0, "z": 0.0,
+      "yaw": 180.0, "pitch": 90.0, "roll": 0.0,
+      "orientation": "right",
+      "access": "default_horizontal"
+    },
+    {
+      "name": "stacker_1",
+      "x": 0.0, "y": 0.0, "z": 0.0,
+      "yaw": 180.0, "pitch": 90.0, "roll": 0.0,
+      "orientation": "right",
+      "access": "default_vertical"
+    },
+    {
+      "name": "stacker_2",
+      "x": 0.0, "y": 0.0, "z": 0.0,
+      "yaw": 180.0, "pitch": 90.0, "roll": 0.0,
+      "orientation": "right",
+      "access": "default_vertical"
+    },
+    {
+      "name": "stacker_3",
+      "x": 0.0, "y": 0.0, "z": 0.0,
+      "yaw": 180.0, "pitch": 90.0, "roll": 0.0,
+      "orientation": "right",
+      "access": "default_vertical"
+    },
+    {
+      "name": "stacker_4",
+      "x": 0.0, "y": 0.0, "z": 0.0,
+      "yaw": 180.0, "pitch": 90.0, "roll": 0.0,
+      "orientation": "right",
+      "access": "default_vertical"
+    },
+    {
+      "name": "stacker_5",
+      "x": 0.0, "y": 0.0, "z": 0.0,
+      "yaw": 180.0, "pitch": 90.0, "roll": 0.0,
+      "orientation": "right",
+      "access": "default_vertical"
+    },
+    {
+      "name": "stacker_6",
+      "x": 0.0, "y": 0.0, "z": 0.0,
+      "yaw": 180.0, "pitch": 90.0, "roll": 0.0,
+      "orientation": "right",
+      "access": "default_vertical"
+    },
+    {
+      "name": "stacker_7",
+      "x": 0.0, "y": 0.0, "z": 0.0,
+      "yaw": 180.0, "pitch": 90.0, "roll": 0.0,
+      "orientation": "right",
+      "access": "default_vertical"
+    },
+    {
+      "name": "shaker_1",
+      "x": 0.0, "y": 0.0, "z": 0.0,
+      "yaw": 180.0, "pitch": 90.0, "roll": 0.0,
+      "orientation": "right",
+      "access": "default_horizontal"
+    },
+    {
+      "name": "shaker_2",
+      "x": 0.0, "y": 0.0, "z": 0.0,
+      "yaw": 180.0, "pitch": 90.0, "roll": 0.0,
+      "orientation": "right",
+      "access": "default_horizontal"
+    },
+    {
+      "name": "shaker_3",
+      "x": 0.0, "y": 0.0, "z": 0.0,
+      "yaw": 180.0, "pitch": 90.0, "roll": 0.0,
+      "orientation": "right",
+      "access": "default_horizontal"
+    },
+    {
+      "name": "shaker_4",
+      "x": 0.0, "y": 0.0, "z": 0.0,
+      "yaw": 180.0, "pitch": 90.0, "roll": 0.0,
+      "orientation": "right",
+      "access": "default_horizontal"
+    },
+    {
+      "name": "shaker_5",
+      "x": 0.0, "y": 0.0, "z": 0.0,
+      "yaw": 180.0, "pitch": 90.0, "roll": 0.0,
+      "orientation": "right",
+      "access": "default_horizontal"
+    },
+    {
+      "name": "shaker_6",
+      "x": 0.0, "y": 0.0, "z": 0.0,
+      "yaw": 180.0, "pitch": 90.0, "roll": 0.0,
+      "orientation": "right",
+      "access": "default_horizontal"
+    },
+    {
+      "name": "shaker_7",
+      "x": 0.0, "y": 0.0, "z": 0.0,
+      "yaw": 180.0, "pitch": 90.0, "roll": 0.0,
+      "orientation": "right",
+      "access": "default_horizontal"
+    },
+    {
+      "name": "shaker_8",
+      "x": 0.0, "y": 0.0, "z": 0.0,
+      "yaw": 180.0, "pitch": 90.0, "roll": 0.0,
+      "orientation": "right",
+      "access": "default_horizontal"
+    },
+    {
+      "name": "shaker_9",
+      "x": 0.0, "y": 0.0, "z": 0.0,
+      "yaw": 180.0, "pitch": 90.0, "roll": 0.0,
+      "orientation": "right",
+      "access": "default_horizontal"
+    },
+    {
+      "name": "shaker_10",
+      "x": 0.0, "y": 0.0, "z": 0.0,
+      "yaw": 180.0, "pitch": 90.0, "roll": 0.0,
+      "orientation": "right",
+      "access": "default_horizontal"
+    },
+    {
+      "name": "pad_4",
+      "base": 25.5,
+      "shoulder": -32.1,
+      "elbow": 261.2,
+      "wrist": -390.5
+    },
+    {
+      "name": "pad_5",
+      "base": 30.2,
+      "shoulder": -33.8,
+      "elbow": 262.5,
+      "wrist": -392.1
+    },
+    {
+      "name": "pad_6",
+      "base": 34.9,
+      "shoulder": -35.5,
+      "elbow": 263.8,
+      "wrist": -393.7
+    }
+  ]
+}

@@ -1,8 +1,0 @@
-<teachpoints>
-    <teachpoint name="plate_pad_1" />
-    <teachpoint name="plate_pad_2" />
-    <teachpoint name="plate_pad_3" />
-    <teachpoint name="plate_pad_4" />
-    <teachpoint name="mock_device" />
-    <teachpoint name="sealer" />
-</teachpoints>

@@ -2,8 +2,9 @@ import asyncio
 import logging
 import sys
 
+from orca.devices.venus import Venus
+from orca.driver_management.drivers.human_transfer import HumanTransfer
 from orca.sdk.labware import PlateTemplate
-from orca.sdk.devices import HumanTransfer, Venus
 from orca.sdk.system import ResourceRegistry, SystemMap, SdkToSystemBuilder, WorkflowExecutor
 from orca.sdk.workflow import MethodTemplate, WorkflowTemplate, ThreadTemplate, SharedMethodTemplate
 from orca.sdk.events import EventBus
@@ -41,7 +42,7 @@ ml_star = Venus("ml_star")
 
 # we will use the HumanTransfer - meaning that the user will need to manually pick up and place the labware and press Enter to continue
 # For this simulation, the teachpoints are saved within a local file
-human_transfer = HumanTransfer("human_transfer", "examples\\simple_venus_example\\teachpoints\\human_transfer_teachpoints.xml")
+human_transfer = HumanTransfer("human_transfer", "examples\\simple_venus_example\\teachpoints\\human_transfer_teachpoints.json")
 
 # Create a resource registry to hold all the resources
 resource_registry = ResourceRegistry()

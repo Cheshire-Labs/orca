@@ -136,7 +136,7 @@ class IDevice(IResource, IInitializable, ILabwarePlaceable, ISimulationable, ABC
     def lock(self) -> asyncio.Lock:
         """
         Get the lock for the device.
-        
+
         Returns:
             asyncio.Lock: The lock used to control access to the device.
         """
@@ -147,6 +147,11 @@ class IDevice(IResource, IInitializable, ILabwarePlaceable, ISimulationable, ABC
     def in_use(self) -> bool:
         """ Check if the device is running."""
         raise NotImplementedError
+
+    @property
+    def supports_deadlock_resolution(self) -> bool:
+        """Devices do not support deadlock resolution (they are not parking locations)."""
+        return False
 
 
 # class IDriver(IInitializable, ABC):

@@ -1,6 +1,6 @@
 import asyncio
-from typing import Any, Optional
-from orca.driver_management.drivers.null_plate_pad import NullPlatePadDriver
+from typing import Optional
+from cheshire_drivers import NullPlatePadDriver
 from orca.resource_models.labware_placeable_interface import ILabwarePlaceable
 from orca.resource_models.simulation_manager import SimulationManager
 from orca.resource_models.resources import IInitializable, IResource
@@ -9,12 +9,13 @@ from orca.resource_models.labware import LabwareInstance
 
 class PlatePad(IResource, IInitializable, ILabwarePlaceable):
 
-    def __init__(self, name: str, driver: Any | None = None) -> None:
+    def __init__(self, name: str, driver: NullPlatePadDriver | None = None, supports_deadlock_resolution: bool = True) -> None:
         self._name = name
+        self._supports_deadlock_resolution = supports_deadlock_resolution
         if driver is None:
             driver = NullPlatePadDriver(name)
-        self._sim_manager = SimulationManager(driver, 
-                                              NullPlatePadDriver("Basic Plate Pad"), 
+        self._sim_manager = SimulationManager(driver,
+                                              NullPlatePadDriver("Basic Plate Pad"),
                                               False)
         self._lock = asyncio.Lock()
         self._is_initialized = False
@@ -31,7 +32,11 @@ class PlatePad(IResource, IInitializable, ILabwarePlaceable):
     @property
     def labware(self) -> Optional[LabwareInstance]:
         return self._labware
-    
+
+    @property
+    def supports_deadlock_resolution(self) -> bool:
+        return self._supports_deadlock_resolution
+
     def initialize_labware(self, labware: LabwareInstance) -> None:
         self._labware = labware
 
