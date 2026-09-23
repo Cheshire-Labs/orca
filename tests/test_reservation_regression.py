@@ -1,5 +1,5 @@
 """
-Regression tests for reservation system bug fixes (Phase 1).
+Regression tests for reservation system bug fixes.
 
 These tests validate that critical bugs identified in the reservation system
 have been properly fixed and do not regress.
@@ -7,6 +7,8 @@ have been properly fixed and do not regress.
 import asyncio
 import pytest
 from unittest.mock import Mock, MagicMock, patch
+
+from tests.test_helpers import wait_until
 
 from orca.system.reservation_manager.reservation_manager import (
     LocationReservationManager,
@@ -40,36 +42,32 @@ class TestBug7MultipleTickLoops:
         assert coordinator.ticker_started is False
 
         # Start first tick loop
-        task1 = asyncio.create_task(coordinator.start_tick_loop(0.1))
+        task1 = asyncio.create_task(coordinator.start_tick_loop())
 
-        # Give it a moment to start
-        await asyncio.sleep(0.05)
+        # Wait for the loop to mark itself started.
+        await wait_until(lambda: coordinator.ticker_started is True, timeout=5.0)
 
         # Verify ticker started
         assert coordinator.ticker_started is True
 
-        # Try to start another tick loop (simulating second workflow)
-        # This should NOT create a second loop
-        task2 = asyncio.create_task(coordinator.start_tick_loop(0.1))
+        # Guard makes the second call return immediately, not loop.
+        task2 = asyncio.create_task(coordinator.start_tick_loop())
 
-        # Give both tasks a moment
-        await asyncio.sleep(0.15)
+        # The guarded second call returns on its own; the first loops forever.
+        await wait_until(lambda: task2.done(), timeout=5.0)
 
-        # Clean up
+        # Without the guard both enter while-True and neither finishes alone.
+        assert not task1.done(), "first tick loop should still be running"
+        assert task2.done(), "guard should make the second start_tick_loop return immediately"
+        assert task2.exception() is None
+        assert coordinator.ticker_started is True
+
+        # Clean up the surviving loop task.
         task1.cancel()
-        task2.cancel()
         try:
             await task1
         except asyncio.CancelledError:
             pass
-        try:
-            await task2
-        except asyncio.CancelledError:
-            pass
-
-        # If we get here without issues, the guard worked
-        # (Multiple tick loops would cause race conditions and potential failures)
-        assert True
 
 
 class TestBug2UnboundedRecursion:
@@ -108,6 +106,9 @@ class TestBug2UnboundedRecursion:
         mock_move_action.labware = Mock()
         mock_move_action.labware.id = "test_labware"
         mock_move_action.reservation = mock_reservation
+        mock_move_action.onward_seat_reservations = []
+        mock_move_action.terminal_reservations = []
+        mock_move_action.owned_onward_reservations = []
 
         # Counter to track retries
         retry_counter = {"count": 0}
@@ -143,6 +144,116 @@ class TestBug2UnboundedRecursion:
         # Verify we actually retried (iterative pattern works)
         assert retry_counter["count"] >= 5
 
+    @pytest.mark.asyncio
+    async def test_repeated_deadlocks_do_not_recurse(self):
+        """Repeated deadlock events must iterate, not recurse.
+
+        Six concurrent SMC submissions blew the stack in CI when every
+        parking-pad attempt also deadlocked: handle_deadlock called
+        _resolve_reservation_from_move_action_collection which called
+        handle_deadlock and so on, one Python frame per deadlock event.
+        Eventually a rich-formatted "Cross-tick deadlock" log line raised
+        RecursionError while rendering, and orca's own recursion was past
+        the default limit by then. This test pins the iterative shape by
+        sampling the Python call stack at each retry: an iterative loop
+        keeps the same frame across iterations, recursion grows the stack
+        linearly with the deadlock count.
+        """
+        import inspect
+
+        from orca.system.reservation_manager.path_scoring import PathScore
+
+        mock_coordinator = Mock()
+        mock_coordinator.get_reserved_position_ids = Mock(return_value=set())
+        mock_system_map = Mock()
+        mock_starvation_registry = Mock()
+        mock_starvation_registry.get_starvation_score.return_value = 0
+
+        move_handler = MoveHandler(
+            mock_coordinator, mock_system_map, mock_starvation_registry
+        )
+
+        shared_labware = Mock()
+        shared_labware.id = "test_labware"
+
+        source_location = Mock()
+        source_location.name = "src"
+        source_location.position_id = "src"
+
+        pad_location = Mock()
+        pad_location.name = "pad"
+        pad_location.position_id = "pad"
+
+        transporter = Mock()
+
+        mock_system_map.get_shortest_paths_to_deadlock_resolution.return_value = [
+            ["src", "pad"]
+        ]
+        mock_system_map.get_location = Mock(
+            side_effect=lambda n: source_location if n == "src" else pad_location
+        )
+        mock_system_map.get_transporter_between.return_value = transporter
+        mock_system_map.boarding_onward_positions.return_value = []
+
+        fake_score = PathScore(
+            path=["src", "pad"],
+            total_score=0.0,
+            length_score=0.0,
+            starvation_score=0.0,
+            backtracking_penalty=0.0,
+            dead_end_penalty=0.0,
+            occupied_penalty=0.0,
+        )
+        move_handler._path_scorer = Mock()
+        move_handler._path_scorer.score_paths.return_value = [fake_score]
+
+        initial_move = MagicMock(spec=MoveAction)
+        initial_move.labware = shared_labware
+        initial_move.source = source_location
+        initial_move.target = pad_location
+        initial_move.reservation = LocationReservation(pad_location, shared_labware)
+        initial_move.onward_seat_reservations = []
+        initial_move.terminal_reservations = []
+        initial_move.owned_onward_reservations = []
+
+        deadlock_count = {"n": 0}
+        deadlocks_before_grant = 200
+        stack_depths: list[int] = []
+
+        async def mock_submit(thread_id, collection):
+            stack_depths.append(len(inspect.stack()))
+            if deadlock_count["n"] < deadlocks_before_grant:
+                deadlock_count["n"] += 1
+                collection.deadlocked.set()
+                collection.processed.set()
+            else:
+                for reservation in collection.get_reservations():
+                    reservation.granted.set()
+                collection.resolve_final_reservation()
+
+        mock_coordinator.submit_reservation_request = mock_submit
+
+        result = await move_handler._resolve_reservation_from_move_action_collection(
+            "test_thread", [initial_move]
+        )
+
+        assert result is not None
+        assert deadlock_count["n"] == deadlocks_before_grant
+
+        # Iterative resolver reuses the same Python frame across deadlock
+        # retries -- stack depth at the submit boundary is constant. Recursion
+        # through handle_deadlock would grow the stack by ~2 frames per
+        # iteration. Tolerate a small +/-1 jitter (e.g. asyncio task plumbing)
+        # but reject any linear growth.
+        assert len(stack_depths) == deadlocks_before_grant + 1
+        depth_growth = max(stack_depths) - min(stack_depths)
+        assert depth_growth <= 2, (
+            f"stack grew {depth_growth} frames across {deadlocks_before_grant} "
+            f"deadlock retries; iterative resolver should be constant. "
+            f"first={stack_depths[0]} last={stack_depths[-1]} "
+            f"max={max(stack_depths)} min={min(stack_depths)}"
+        )
+
 
 class TestBug3NullChecksInDeadlockDetection:
     """
@@ -162,7 +273,7 @@ class TestBug3NullChecksInDeadlockDetection:
         starvation_registry = DeadlockStarvationRegistry()
 
         # Create detector
-        detector = ThreadDeadlockDetector(mock_thread_reg, starvation_registry)
+        detector = ThreadDeadlockDetector(mock_thread_reg, starvation_registry, reservation_at=lambda _position_id: None)
 
         # Create mock collection
         mock_collection = Mock()
@@ -191,7 +302,7 @@ class TestBug3NullChecksInDeadlockDetection:
         starvation_registry = DeadlockStarvationRegistry()
 
         # Create detector
-        detector = ThreadDeadlockDetector(mock_thread_reg, starvation_registry)
+        detector = ThreadDeadlockDetector(mock_thread_reg, starvation_registry, reservation_at=lambda _position_id: None)
 
         # Create mock collection
         mock_collection = Mock()
@@ -291,14 +402,19 @@ class TestMoveActionCollectionReservationRequest:
     """
 
     def test_clear_granted_reservation_raises_error(self):
-        """
-        Test that clearing a granted reservation raises ValueError.
+        """Clearing a granted MoveActionCollectionReservationRequest is an
+        invariant violation: the retry path only calls clear() on
+        deadlocked or rejected branches. See test_reservation_clear_invariant.py
+        for the canonical guard tests across all three reservation types.
         """
         # Create mock move action
         mock_move = Mock(spec=MoveAction)
         mock_move.labware = Mock()
         mock_move.labware.id = "test"
         mock_move.reservation = Mock(spec=LocationReservation)
+        mock_move.onward_seat_reservations = []
+        mock_move.terminal_reservations = []
+        mock_move.owned_onward_reservations = []
 
         # Create collection
         collection = MoveActionCollectionReservationRequest("thread1", [mock_move])
@@ -306,11 +422,11 @@ class TestMoveActionCollectionReservationRequest:
         # Grant it
         collection._granted.set()
 
-        # Try to clear - should raise ValueError
-        with pytest.raises(ValueError) as exc_info:
+        # Try to clear - should raise RuntimeError (invariant violation)
+        with pytest.raises(RuntimeError) as exc_info:
             collection.clear()
 
-        assert "Cannot clear a reservation that has been granted" in str(exc_info.value)
+        assert "cannot clear a granted collection" in str(exc_info.value)
 
     def test_multiple_paths_first_granted_wins(self):
         """
@@ -327,7 +443,11 @@ class TestMoveActionCollectionReservationRequest:
             mock_move.labware = shared_labware  # Use same labware instance
             mock_move.reservation = Mock(spec=LocationReservation)
             mock_move.reservation.granted = asyncio.Event()
+            mock_move.reservation.is_displaced = False
             mock_move.reservation.release_reservation = Mock()
+            mock_move.onward_seat_reservations = []
+            mock_move.terminal_reservations = []
+            mock_move.owned_onward_reservations = []
             mock_moves.append(mock_move)
 
         # Create collection

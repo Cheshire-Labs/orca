@@ -2,15 +2,15 @@ from abc import ABC, abstractmethod
 import asyncio
 from orca.resource_models.devices import Device
 from orca.resource_models.resources import IInitializable, IResource
-from orca.resource_models.resources import ISimulationable
 from orca.resource_models.resource_pool import ResourcePool
 
 
 from typing import Dict, List
 
 from orca.resource_models.transporter import Transporter
+from orca.resource_models.transporter_base import TransporterBase
 
-class IResourceRegistryObesrver(ABC):
+class IResourceRegistryObserver(ABC):
     @abstractmethod
     def resource_registry_notify(self, event: str, resource: IResource) -> None:
         raise NotImplementedError()
@@ -29,11 +29,6 @@ class IResourceRegistry(ABC):
     @abstractmethod
     def add_resource(self, resource: IResource) -> None:
         raise NotImplementedError
-    
-    @abstractmethod
-    def set_simulating(self, simulating: bool) -> None:
-        """Sets the simulation state of the system."""
-        raise NotImplementedError
 
     @property
     @abstractmethod
@@ -47,6 +42,11 @@ class IResourceRegistry(ABC):
     @property
     @abstractmethod
     def transporters(self) -> List[Transporter]:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def movers(self) -> List[TransporterBase]:
         raise NotImplementedError
 
     @abstractmethod
@@ -67,7 +67,11 @@ class IResourceRegistry(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def add_observer(self, observer: IResourceRegistryObesrver) -> None:
+    def has_resource(self, name: str) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def add_observer(self, observer: IResourceRegistryObserver) -> None:
         raise NotImplementedError
     
     @abstractmethod
@@ -84,7 +88,7 @@ class ResourceRegistry(IResourceRegistry):
     def __init__(self) -> None:
         self._resources: Dict[str, IResource] = {}
         self._resource_pools: Dict[str, ResourcePool] = {}
-        self._observers: List[IResourceRegistryObesrver] = []
+        self._observers: List[IResourceRegistryObserver] = []
 
     @property
     def resources(self) -> List[IResource]:
@@ -99,10 +103,22 @@ class ResourceRegistry(IResourceRegistry):
         return [r for r in self._resources.values() if isinstance(r, Transporter)]
 
     @property
+    def movers(self) -> List[TransporterBase]:
+        """Every plate-mover, including device-owned grippers. ``transporters``
+        stays concrete-``Transporter`` because its callers wire teachpoint
+        stores and graph edges that a gripper has neither of."""
+        return [r for r in self._resources.values() if isinstance(r, TransporterBase)]
+
+    @property
     def resource_pools(self) -> List[ResourcePool]:
         return list(self._resource_pools.values())
 
+    def has_resource(self, name: str) -> bool:
+        return name in self._resources
+
     def get_resource(self, name: str) -> IResource:
+        if name not in self._resources:
+            raise KeyError(f"device {name!r} not found")
         return self._resources[name]
 
     def get_device(self, name: str) -> Device:
@@ -141,14 +157,8 @@ class ResourceRegistry(IResourceRegistry):
             raise KeyError(f"Resource Pool {name} is already defined in the system.  Each resource pool must have a unique name")
         self._resource_pools[name] = resource_pool
 
-    def add_observer(self, observer: IResourceRegistryObesrver) -> None:
+    def add_observer(self, observer: IResourceRegistryObserver) -> None:
         self._observers.append(observer)
-
-    def set_simulating(self, simulating: bool) -> None:
-        """Sets the simulation state of the system."""
-        for resource in self._resources.values():
-            if isinstance(resource, ISimulationable):
-                resource.set_simulating(simulating)
 
     async def initialize_all(self) -> None:
         await asyncio.gather(*[r.initialize() for r in self._resources.values() if isinstance(r, IInitializable)])

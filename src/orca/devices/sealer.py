@@ -1,20 +1,27 @@
+from typing import ClassVar, Dict, Optional
+
+from cheshire_drivers.interfaces import ISealerDriver
+from cheshire_drivers.sealer_models import SealRequest
+from cheshire_drivers.sims import SimSealerDriver
+
 from orca.devices.device_interfaces import ISealer
-from cheshire_drivers import ISealerDriver, PLRSealerBackendWrapper, SimSealerDriver, PLRSealerBackend
 from orca.resource_models.devices import Device
-
-
-from typing import Dict, Optional
+from orca.runtime.device_factory_context import resolve_drivers
+from orca.runtime.run_modes import WorkflowRunMode
 
 
 class Sealer(Device[ISealerDriver], ISealer):
-    def __init__(self, 
-                 name: str, 
-                 driver: ISealerDriver | PLRSealerBackend, 
-                 sim: bool = False, 
-                 sim_driver: Optional[ISealerDriver] = None) -> None:
-        driver = PLRSealerBackendWrapper(driver) if isinstance(driver, PLRSealerBackend) else driver
-        sim_driver = sim_driver if sim_driver else SimSealerDriver(name)
-        super().__init__(name, driver, sim_driver, sim)
+    KIND: ClassVar[str] = "sealer"
+
+    def __init__(
+        self,
+        name: str,
+        sim_override: WorkflowRunMode | None = None,
+    ) -> None:
+        live, sim_drv = resolve_drivers(
+            self.KIND, name, SimSealerDriver,
+        )
+        super().__init__(name, live, sim_drv, sim_override=sim_override)
 
     async def execute(self, command: str, options: Dict[str, str]) -> None:
         if command == "seal":
@@ -29,5 +36,4 @@ class Sealer(Device[ISealerDriver], ISealer):
             raise ValueError(f"Unknown command: {command}")
 
     async def seal(self, temperature: int, duration: float) -> None:
-        """Seal the plate at a specified temperature and duration."""
-        await self.driver.seal(temperature=temperature, duration=duration)
+        await self.driver.seal(SealRequest(temperature=temperature, duration=duration))

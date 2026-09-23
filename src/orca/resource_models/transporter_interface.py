@@ -1,81 +1,51 @@
-import asyncio
 from orca.resource_models.location import Location
-from cheshire_drivers import Teachpoint
-from orca.resource_models.resources import IInitializable, IResource, ISimulationable
+from cheshire_drivers.teachpoints import Teachpoint
+from orca.resource_models.labware_placeable_interface import IPlateMover
+from orca.resource_models.resources import IInitializable, IResource
+from orca.resource_models.tracked_lock import TrackedLock
 
 
 from abc import ABC, abstractmethod
 from typing import List
 
 
-class ITransporter(IResource, IInitializable, ISimulationable, ABC):
-    """
-    Interface for transporter drivers.
-    Attributes:
-        name (str): The name of the transporter driver.
-        is_running (bool): Indicates whether the transporter is currently running.
+class ITransporter(IResource, IInitializable, IPlateMover, ABC):
+    """Interface for transporter resources.
+
+    Implementations expose a store-backed view of teachpoints via
+    `get_teachpoints` (the System graph builder's source of truth at build
+    time). Path A: drivers consult the store at every dispatch, so there
+    is no separate prime step on the transporter.
     """
     @property
     @abstractmethod
-    def lock(self) -> asyncio.Lock:
-        """
-        Get the lock for the transporter.
-
-        Returns:
-            asyncio.Lock: The lock used to control access to the transporter.
-        """
+    def lock(self) -> TrackedLock:
+        """Lock used to serialize transporter motion."""
         raise NotImplementedError
 
     @property
     @abstractmethod
     def in_use(self) -> bool:
-        """Check if the transporter is currently running."""
+        """Whether the transporter is currently holding its lock."""
         raise NotImplementedError
 
     @abstractmethod
     async def pick(self, location: Location) -> None:
-        """
-        Pick up labware from a specified position.
-
-        Args:
-            position_name (str): The name of the position to pick from.
-            labware_type (str): The type of labware being picked.
-
-        Returns:
-            None
-        """
+        """Pick the labware currently at `location` into the gripper."""
         raise NotImplementedError
 
     @abstractmethod
     async def place(self, location: Location) -> None:
-        """
-        Place labware at a specified position.
-
-        Args:
-            position_name (str): The name of the position to place at.
-            labware_type (str): The type of labware being placed.
-
-        Returns:
-            None
-        """
+        """Place the labware in the gripper down at `location`."""
         raise NotImplementedError
 
     @abstractmethod
-    def get_teachpoints(self) -> List[Teachpoint]:
-        """
-        Get a list of the names of taught positions.
+    async def get_teachpoints(self) -> List[Teachpoint]:
+        """Store-backed view of this transporter's named positions.
 
-        Returns:
-            List[str]: A list of taught positions.
-        """
-        raise NotImplementedError
-    
-    @abstractmethod
-    def load_teachpoints(self, teachpoints: List["Teachpoint"]) -> None:
-        """
-        Load taught positions from a list of Teachpoint objects.
-
-        Args:
-            positions (List[Teachpoint]): A list of Teachpoint objects to load.
+        Awaited at topology-build time by the System graph for reachability
+        computation. Drivers consult the store directly at every dispatch,
+        so there is no separate driver-prime step: mid-run mutations to
+        the upstream store are visible to the next move automatically.
         """
         raise NotImplementedError

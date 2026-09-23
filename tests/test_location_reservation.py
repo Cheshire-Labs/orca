@@ -1,6 +1,6 @@
 """
 Unit tests for LocationReservation class.
-These tests serve as a safety net before Phase 2 refactoring.
+These tests are the safety net for refactoring this class.
 """
 import pytest
 import asyncio
@@ -112,23 +112,38 @@ class TestLocationReservation:
         callback.assert_called_once()
 
     def test_release_without_callback_no_error(self):
-        """Test that calling release_reservation without setting callback doesn't error"""
+        """Release with no callback set is a safe no-op that leaves state intact."""
         mock_location = Mock(spec=Location)
         reservation = LocationReservation(mock_location)
+        reservation.granted.set()
 
-        # This should not raise an error (default lambda does nothing)
+        # No callback set: must not raise (default lambda) and must not mutate state.
         reservation.release_reservation()
 
-    def test_clear_granted_raises_valueerror(self):
-        """Test that clearing a granted reservation raises ValueError"""
+        assert reservation.granted.is_set()
+        assert not reservation.rejected.is_set()
+        assert not reservation.deadlocked.is_set()
+
+        # A callback set after the no-op release still fires on the next release,
+        # proving the default path was a benign no-op, not a swallowed callback.
+        callback = Mock()
+        reservation.set_reservation_release_callback(callback)
+        reservation.release_reservation()
+        callback.assert_called_once()
+
+    def test_clear_granted_raises_runtime_error(self):
+        """Clearing a granted reservation is an invariant violation: the
+        clear() retry path is only reached on rejected/deadlocked branches.
+        See test_reservation_clear_invariant.py for the canonical guard tests.
+        """
         mock_location = Mock(spec=Location)
         reservation = LocationReservation(mock_location)
 
         # Grant the reservation
         reservation.granted.set()
 
-        # Try to clear - should raise ValueError
-        with pytest.raises(ValueError) as exc_info:
+        # Try to clear - should raise RuntimeError (invariant violation)
+        with pytest.raises(RuntimeError) as exc_info:
             reservation.clear()
 
-        assert "Cannot clear a granted reservation" in str(exc_info.value)
+        assert "cannot clear a granted reservation" in str(exc_info.value)

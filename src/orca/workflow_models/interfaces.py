@@ -1,16 +1,46 @@
-from typing import Any, List
-import typing
+from abc import ABC, abstractmethod
+from typing import List, Protocol
+
 from orca.resource_models.labware import LabwareInstance, LabwareTemplate
 from orca.resource_models.location import Location
+from orca.workflow_models.actions.dynamic_resource_action import UnresolvedLocationAction
 
 
-if typing.TYPE_CHECKING:
-    from orca.workflow_models.labware_threads.labware_thread import LabwareThreadInstance
-    from orca.workflow_models.method import MethodInstance
-    from orca.workflow_models.actions.dynamic_resource_action import UnresolvedLocationAction
+class IHasLabware(Protocol):
+    """Anything carrying a LabwareInstance. ILabwareThread satisfies this
+    structurally; declared here so IMethod can name what it actually needs
+    without depending on the full thread interface."""
+    @property
+    def labware(self) -> LabwareInstance: ...
 
 
-from abc import ABC, abstractmethod
+class IMethod(ABC):
+    @property
+    @abstractmethod
+    def id(self) -> str:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def actions(self) -> List[UnresolvedLocationAction]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def append_action(self, action: UnresolvedLocationAction) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def assign_thread(
+        self,
+        input_template: LabwareTemplate,
+        thread: IHasLabware,
+    ) -> None:
+        raise NotImplementedError
 
 
 class ILabwareThread(ABC):
@@ -31,7 +61,7 @@ class ILabwareThread(ABC):
 
     @property
     @abstractmethod
-    def end_location(self) -> Location:
+    def end_locations(self) -> list[Location]:
         raise NotImplementedError
 
     @property
@@ -40,30 +70,5 @@ class ILabwareThread(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def append_method_sequence(self, method: "MethodInstance") -> None:
-        raise NotImplementedError
-
-
-class IMethod(ABC):
-    @property
-    @abstractmethod
-    def id(self) -> str:
-        raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def name(self) -> str:
-        raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def actions(self) -> List["UnresolvedLocationAction"]:
-        raise NotImplementedError
-
-    @abstractmethod
-    def append_action(self, action: "UnresolvedLocationAction") -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def assign_thread(self, input_template: LabwareTemplate, thread: ILabwareThread) -> None:
+    def append_method_sequence(self, method: IMethod) -> None:
         raise NotImplementedError

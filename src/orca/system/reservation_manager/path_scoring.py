@@ -25,6 +25,7 @@ class PathScoringWeights:
     starvation_priority: float = 10.0  # Weight for starvation score (higher score = higher priority)
     backtracking_penalty: float = 5.0  # Penalty for backtracking paths
     dead_end_penalty: float = 100.0    # Penalty for dead-end parking pads
+    occupied_pad_penalty: float = 50.0  # Penalty for pads reserved by other threads
 
 
 @dataclass
@@ -36,6 +37,7 @@ class PathScore:
     starvation_score: float
     backtracking_penalty: float
     dead_end_penalty: float
+    occupied_penalty: float
 
     def __repr__(self) -> str:
         return (f"PathScore(path={' -> '.join(self.path)}, "
@@ -43,7 +45,8 @@ class PathScore:
                 f"length={self.length_score:.2f}, "
                 f"starvation={self.starvation_score:.2f}, "
                 f"backtrack={self.backtracking_penalty:.2f}, "
-                f"deadend={self.dead_end_penalty:.2f})")
+                f"deadend={self.dead_end_penalty:.2f}, "
+                f"occupied={self.occupied_penalty:.2f})")
 
 
 class PathScoringStrategy:
@@ -72,6 +75,7 @@ class PathScoringStrategy:
         previous_location: Optional[Location] = None,
         original_target: Optional[Location] = None,
         blocked_location: Optional[Location] = None,
+        occupied_locations: Optional[set[str]] = None,
     ) -> List[PathScore]:
         """
         Score all candidate paths and return them sorted by score (best first).
@@ -91,7 +95,7 @@ class PathScoringStrategy:
         if blocked_location is not None:
             filtered_paths = [
                 path for path in paths
-                if blocked_location.teachpoint_name not in path
+                if blocked_location.position_id not in path
             ]
             if filtered_paths:
                 paths = filtered_paths
@@ -105,7 +109,8 @@ class PathScoringStrategy:
                 thread_id,
                 starvation_score,
                 previous_location,
-                original_target
+                original_target,
+                occupied_locations,
             )
             scored_paths.append(score)
 
@@ -121,6 +126,7 @@ class PathScoringStrategy:
         starvation_score: int,
         previous_location: Optional[Location],
         original_target: Optional[Location],
+        occupied_locations: Optional[set[str]] = None,
     ) -> PathScore:
         """Score a single path based on all factors."""
 
@@ -128,7 +134,6 @@ class PathScoringStrategy:
         length_score = len(path) * self._weights.path_length
 
         # Factor 2: Starvation priority (higher starvation = lower penalty)
-        # Invert starvation score so higher starvation reduces total score
         starvation_penalty = -starvation_score * self._weights.starvation_priority
 
         # Factor 3: Backtracking penalty
@@ -137,11 +142,15 @@ class PathScoringStrategy:
         # Factor 4: Dead-end penalty (for deadlock resolution)
         dead_end_penalty = self._calculate_dead_end_penalty(path, original_target)
 
+        # Factor 5: Occupied-pad penalty (for livelock prevention)
+        occupied_penalty = self._calculate_occupied_penalty(path, occupied_locations)
+
         total_score = (
             length_score +
             starvation_penalty +
             backtracking_penalty +
-            dead_end_penalty
+            dead_end_penalty +
+            occupied_penalty
         )
 
         return PathScore(
@@ -150,7 +159,8 @@ class PathScoringStrategy:
             length_score=length_score,
             starvation_score=starvation_penalty,
             backtracking_penalty=backtracking_penalty,
-            dead_end_penalty=dead_end_penalty
+            dead_end_penalty=dead_end_penalty,
+            occupied_penalty=occupied_penalty,
         )
 
     def _calculate_backtracking_penalty(
@@ -193,7 +203,7 @@ class PathScoringStrategy:
         # source = path[0]
         # try:
         #     paths_to_target = self._system_map.get_all_shortest_any_paths(
-        #         parking_pad, original_target.teachpoint_name
+        #         parking_pad, original_target.position_id
         #     )
         #     has_non_backtracking_path = any(source not in p[1:] for p in paths_to_target)
         #     if not has_non_backtracking_path:
@@ -201,6 +211,19 @@ class PathScoringStrategy:
         # except Exception:
         #     return self._weights.dead_end_penalty * 0.5
         # return 0.0
+
+    def _calculate_occupied_penalty(
+        self,
+        path: List[str],
+        occupied_locations: Optional[set[str]],
+    ) -> float:
+        """Penalize paths whose destination is reserved/occupied by another thread."""
+        if not occupied_locations:
+            return 0.0
+        destination = path[-1]
+        if destination in occupied_locations:
+            return self._weights.occupied_pad_penalty
+        return 0.0
 
     def select_best_path(
         self,
@@ -210,6 +233,7 @@ class PathScoringStrategy:
         previous_location: Optional[Location] = None,
         original_target: Optional[Location] = None,
         blocked_location: Optional[Location] = None,
+        occupied_locations: Optional[set[str]] = None,
     ) -> Tuple[List[str], PathScore]:
         """
         Score all paths and return the best one.
@@ -226,7 +250,8 @@ class PathScoringStrategy:
             starvation_score,
             previous_location,
             original_target,
-            blocked_location
+            blocked_location,
+            occupied_locations,
         )
 
         best = scored[0]

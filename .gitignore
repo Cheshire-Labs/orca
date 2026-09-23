@@ -8,8 +8,17 @@ build
 __pycache__
 .VSCodeCounter/
 *.egg-info
+claude.md
 .pytest_cache
 .env
 mypy.ini
 **/~*.sub
 **/~*.hsl
+.orca_logs/
+**/logs/*.log
+tests/logs/
+*.jsol
+# Local-only developer notes (not committed)
+CLAUDE.local.md
+
+uv.lock

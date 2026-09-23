@@ -4,8 +4,10 @@ from cheshire_drivers import (
     Teachpoint,
     CartesianCoordinates,
     TeachpointsRegistry,
-    PLRTransporterBackendWrapper,
 )
+from cheshire_drivers.teachpoints import InMemoryTeachpointStore
+
+from orca.runtime.move_parameters import site_patch
 
 
 def make_tp(name: str, gateway: str | None = None) -> Teachpoint:
@@ -36,8 +38,8 @@ class TestTeachpointJsonPersistence:
         json_content = """
         {
             "teachpoints": [
-                {"name": "nest_1", "base": 170, "shoulder": 0, "elbow": 150, "wrist": 0, "gateway": "safe_zone"},
-                {"name": "safe_zone", "base": 180, "shoulder": 5, "elbow": 160, "wrist": 10}
+                {"position_id": "nest_1", "base": 170, "shoulder": 0, "elbow": 150, "wrist": 0, "gateway": "safe_zone"},
+                {"position_id": "safe_zone", "base": 180, "shoulder": 5, "elbow": 160, "wrist": 10}
             ]
         }
         """
@@ -62,133 +64,58 @@ class TestTeachpointJsonPersistence:
         with open(json_file) as f:
             data = json.load(f)
 
-        nest_1_data = next(tp for tp in data["teachpoints"] if tp["name"] == "nest_1")
-        safe_zone_data = next(tp for tp in data["teachpoints"] if tp["name"] == "safe_zone")
+        nest_1_data = next(tp for tp in data["teachpoints"] if tp["position_id"] == "nest_1")
+        safe_zone_data = next(tp for tp in data["teachpoints"] if tp["position_id"] == "safe_zone")
 
         assert nest_1_data.get("gateway") == "safe_zone"
         assert "gateway" not in safe_zone_data  # None gateways not serialized
 
 
-class TestGatewayResolution:
-    """Test gateway path resolution logic."""
-
-    def test_no_gateway_returns_empty_path(self):
-        """Teachpoint without gateway should resolve to empty path."""
-        from unittest.mock import MagicMock
-
-        wrapper = PLRTransporterBackendWrapper(MagicMock())
-        wrapper.load_teachpoints([make_tp("nest_1")])
-
-        tp = wrapper._teachpoints.get("nest_1")
-        path = wrapper._resolve_gateway_path(tp)
-
-        assert path == []
-
-    def test_single_gateway_returns_one_waypoint(self):
-        """Teachpoint with single gateway should return path with one waypoint."""
-        from unittest.mock import MagicMock
-
-        wrapper = PLRTransporterBackendWrapper(MagicMock())
-        wrapper.load_teachpoints([
-            make_tp("nest_1", gateway="safe_zone"),
-            make_tp("safe_zone"),
-        ])
-
-        tp = wrapper._teachpoints.get("nest_1")
-        path = wrapper._resolve_gateway_path(tp)
-
-        assert len(path) == 1
-        assert path[0].name == "safe_zone"
-
-    def test_chained_gateways_returns_correct_order(self):
-        """Gateway chain A->B->C should traverse C then B to reach A."""
-        from unittest.mock import MagicMock
-
-        wrapper = PLRTransporterBackendWrapper(MagicMock())
-        wrapper.load_teachpoints([
-            make_tp("nest_1", gateway="mid_zone"),
-            make_tp("mid_zone", gateway="safe_zone"),
-            make_tp("safe_zone"),
-        ])
-
-        tp = wrapper._teachpoints.get("nest_1")
-        path = wrapper._resolve_gateway_path(tp)
-
-        # Should be [safe_zone, mid_zone] - outermost first
-        assert len(path) == 2
-        assert path[0].name == "safe_zone"
-        assert path[1].name == "mid_zone"
-
-    def test_circular_gateway_raises_error(self):
-        """Circular gateway reference should raise ValueError."""
-        from unittest.mock import MagicMock
-
-        wrapper = PLRTransporterBackendWrapper(MagicMock())
-        wrapper.load_teachpoints([
-            make_tp("nest_1", gateway="zone_a"),
-            make_tp("zone_a", gateway="zone_b"),
-            make_tp("zone_b", gateway="zone_a"),  # Circular!
-        ])
-
-        tp = wrapper._teachpoints.get("nest_1")
-
-        with pytest.raises(ValueError, match="Circular gateway reference"):
-            wrapper._resolve_gateway_path(tp)
-
-    def test_missing_gateway_raises_error(self):
-        """Reference to non-existent gateway should raise ValueError."""
-        from unittest.mock import MagicMock
-
-        wrapper = PLRTransporterBackendWrapper(MagicMock())
-        wrapper.load_teachpoints([
-            make_tp("nest_1", gateway="nonexistent"),
-        ])
-
-        tp = wrapper._teachpoints.get("nest_1")
-
-        with pytest.raises(ValueError, match="not found in teachpoints"):
-            wrapper._resolve_gateway_path(tp)
+# `TestGatewayResolution` (formerly here) tested gateway-path resolution
+# inside `PLRTransporterBackendWrapper._resolve_gateway_path`. Gateway-path
+# resolution moved upstream into orca-core's
+# `Transporter._resolve_gateway_path`. The same scenarios (single-hop,
+# multi-hop chain, circular reference, missing gateway, missing
+# destination) are covered at `tests/test_transporter_resolution.py`
+# (`TestGatewayChainResolution` + `TestResolutionFailures`). The wrapper-
+# bound test class is removed because the methods it tested no longer
+# exist on the driver. Device-gateway handoff (`LabwareStagingBridge`
+# + `Device._do_notify_placed`) is a separate concern and is covered by
+# `tests/test_device_gateway_deck.py`, which is unaffected.
 
 
-class TestTeachpointToPlrAccess:
-    """Test _teachpoint_to_plr_access() conversion logic."""
+class TestASiteBecomesMoveParameters:
+    """How a taught position narrows a move.
 
-    def test_vertical_access_creates_vertical_pattern(self):
-        """Vertical access teachpoint should create VerticalAccess pattern."""
-        from unittest.mock import MagicMock
-        from pylabrobot.arms.backend import VerticalAccess
+    The vertical-versus-horizontal branch used to live in the driver, reading the
+    teachpoint a second time. It resolves here now so the site is one layer among
+    several rather than the last word, and so a driver receives numbers.
+    """
 
-        wrapper = PLRTransporterBackendWrapper(MagicMock())
-
-        # Use Cartesian with required orientation
-        coords = CartesianCoordinates(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    def test_a_vertical_site_reaches_the_plate_from_above(self):
+        """An open nest is approached straight down, backing off by the taught
+        clearance, with the taught grasp offset added while a plate is held."""
         tp = Teachpoint(
-            name="test_vertical",
-            coordinates=coords,
+            position_id="test_vertical",
+            coordinates=CartesianCoordinates(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
             orientation="right",
             access_type="vertical",
             gripper_offset=25.0,
             vertical_clearance=150.0,
         )
 
-        access = wrapper._teachpoint_to_plr_access(tp)
+        patch = site_patch(tp)
 
-        assert isinstance(access, VerticalAccess)
-        assert access.gripper_offset_mm == 25.0
-        assert access.approach_height_mm == 150.0
+        assert patch.access_type == "vertical"
+        assert patch.grasp_offset == 25.0
+        assert patch.clearance == 150.0
 
-    def test_horizontal_access_creates_horizontal_pattern(self):
-        """Horizontal access teachpoint should create HorizontalAccess pattern."""
-        from unittest.mock import MagicMock
-        from pylabrobot.arms.backend import HorizontalAccess
-
-        wrapper = PLRTransporterBackendWrapper(MagicMock())
-
-        # Use Cartesian with required orientation
-        coords = CartesianCoordinates(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    def test_a_horizontal_site_backs_out_sideways_then_lifts(self):
+        """A hotel slot is entered and left sideways, so the taught horizontal
+        clearance is the back-off and the vertical one is the lift after it."""
         tp = Teachpoint(
-            name="test_horizontal",
-            coordinates=coords,
+            position_id="test_horizontal",
+            coordinates=CartesianCoordinates(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
             orientation="left",
             access_type="horizontal",
             gripper_offset=20.0,
@@ -196,31 +123,42 @@ class TestTeachpointToPlrAccess:
             vertical_clearance=15.0,
         )
 
-        access = wrapper._teachpoint_to_plr_access(tp)
+        patch = site_patch(tp)
 
-        assert isinstance(access, HorizontalAccess)
-        assert access.gripper_offset_mm == 20.0
-        assert access.approach_distance_mm == 80.0
-        assert access.lift_height_mm == 15.0
+        assert patch.access_type == "horizontal"
+        assert patch.grasp_offset == 20.0
+        assert patch.clearance == 80.0
+        assert patch.z_above == 15.0
 
-    def test_invalid_access_type_raises_error(self):
-        """Invalid access_type should raise ValueError."""
-        from unittest.mock import MagicMock
-
-        wrapper = PLRTransporterBackendWrapper(MagicMock())
-
-        # Use Cartesian coords (required for access_type)
-        coords = CartesianCoordinates(x=100.0, y=0.0, z=50.0, yaw=180.0, pitch=90.0, roll=0.0)
+    def test_a_site_says_nothing_about_the_grip_itself(self):
+        """A nest does not know what is being put into it, so the width, the lift
+        and the jaws are left to the layers that do."""
         tp = Teachpoint(
-            name="test_invalid",
-            coordinates=coords,
+            position_id="test_vertical",
+            coordinates=CartesianCoordinates(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
             orientation="right",
-            access_type="diagonal",  # Invalid
+            access_type="vertical",
+        )
+
+        contributed = site_patch(tp).model_dump(exclude_none=True)
+
+        assert "resource_width" not in contributed
+        assert "resource_height" not in contributed
+        assert "jaw_opening" not in contributed
+
+    def test_an_approach_the_arm_has_no_motion_for_is_refused(self):
+        tp = Teachpoint(
+            position_id="test_invalid",
+            coordinates=CartesianCoordinates(
+                x=100.0, y=0.0, z=50.0, yaw=180.0, pitch=90.0, roll=0.0,
+            ),
+            orientation="right",
+            access_type="diagonal",
             gripper_offset=20.0,
         )
 
-        with pytest.raises(ValueError, match="Invalid access_type"):
-            wrapper._teachpoint_to_plr_access(tp)
+        with pytest.raises(ValueError, match="diagonal"):
+            site_patch(tp)
 
 
 class TestAccessConfigLoading:
@@ -239,9 +177,9 @@ class TestAccessConfigLoading:
                 }
             },
             "teachpoints": [
-                {"name": "nest_1", "x": 100, "y": 0, "z": 50, "yaw": 180, "pitch": 90, "roll": 0, "orientation": "right", "access": "nest_access"},
-                {"name": "nest_2", "x": 150, "y": 0, "z": 50, "yaw": 180, "pitch": 90, "roll": 0, "orientation": "right", "access": "nest_access"},
-                {"name": "safe_zone", "base": 190, "shoulder": 0, "elbow": 180, "wrist": 0}
+                {"position_id": "nest_1", "x": 100, "y": 0, "z": 50, "yaw": 180, "pitch": 90, "roll": 0, "orientation": "right", "access": "nest_access"},
+                {"position_id": "nest_2", "x": 150, "y": 0, "z": 50, "yaw": 180, "pitch": 90, "roll": 0, "orientation": "right", "access": "nest_access"},
+                {"position_id": "safe_zone", "base": 190, "shoulder": 0, "elbow": 180, "wrist": 0}
             ]
         }
         """
@@ -251,9 +189,9 @@ class TestAccessConfigLoading:
         teachpoints = Teachpoint.load_teachpoints_from_file(str(json_file))
 
         # Both nest teachpoints should have the custom access config
-        nest_1 = next(tp for tp in teachpoints if tp.name == "nest_1")
-        nest_2 = next(tp for tp in teachpoints if tp.name == "nest_2")
-        safe_zone = next(tp for tp in teachpoints if tp.name == "safe_zone")
+        nest_1 = next(tp for tp in teachpoints if tp.position_id == "nest_1")
+        nest_2 = next(tp for tp in teachpoints if tp.position_id == "nest_2")
+        safe_zone = next(tp for tp in teachpoints if tp.position_id == "safe_zone")
 
         # Custom config values
         assert nest_1.access_type == "horizontal"
@@ -273,7 +211,7 @@ class TestAccessConfigLoading:
         json_content = """
         {
             "teachpoints": [
-                {"name": "nest_1", "base": 170, "shoulder": 0, "elbow": 150, "wrist": 0, "access": "nonexistent_config"}
+                {"position_id": "nest_1", "base": 170, "shoulder": 0, "elbow": 150, "wrist": 0, "access": "nonexistent_config"}
             ]
         }
         """

@@ -4,41 +4,64 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cheshire-orca"
-version = "1.0.0"
+version = "2.0.0"
 description = "Laboratory Automation Framework"
 authors = [
     { name = "Cheshire Labs", email = "support@cheshirelabs.io" }
 ]
 urls = {Repository = "https://github.com/Cheshire-Labs/orca"}
 readme = "README.md"
-license = {text = "AGPL-3.0-only"}
+license = {text = "SSPL-1.0"}
 classifiers = [
     "Programming Language :: Python :: 3.10",
-    "License :: OSI Approved :: GNU Affero General Public License v3",
+    "License :: Other/Proprietary License",
     "Operating System :: OS Independent"
 ]
 requires-python = ">=3.10"
 dependencies = [
     "networkx>=3.3",
     "matplotlib>=3.9.0",
-    "pylabrobot @ git+https://github.com/Cheshire-Labs/pylabrobot.git@cheshire-v1.0.0",
-    "cheshire-drivers @ git+https://github.com/Cheshire-Labs/cheshire-drivers.git@v0.1.0",
+    "typer>=0.12",
+    "rich>=13",
+    # Cap below 0.137: 0.137.0 regressed include_router so create_app() mounts
+    # no routes.
+    "fastapi>=0.118,<0.137",
+    "uvicorn[standard]>=0.30",
+    "httpx>=0.27",
+    "sse-starlette>=2.1",
+    "pydantic>=2.7",
+    "typing-extensions>=4.5",
+    "psutil>=5.9",
+    "sqlalchemy[asyncio]>=2.0.0",
+    "aiosqlite>=0.19.0",
+    "alembic>=1.13.0",
+    "cheshire-drivers @ git+https://github.com/Cheshire-Labs/cheshire-drivers.git@v1.0.0",
 ]
+
+[project.scripts]
+orca = "orca.cli.__main__:main"
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7.3.1",
     "pytest-asyncio>=0.21.0",
+    "pytest-timeout>=2.0",
+    "pytest-xdist>=3.0",
     "types-setuptools",
     "black",
 ]
 
+# override pylabrobot[fw]'s libusb_package<=1.0.26.2 cap (no cp312 wheel)
+[tool.uv]
+override-dependencies = ["libusb-package>=1.0.26.3,<1.0.27"]
+
 [tool.pytest.ini_options]
 markers = [
-    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "slow: marks tests as slow (run with '-m slow' or '-m \"\"' to include)",
 ]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+addopts = "-m 'not slow' --timeout=120"
 
 [tool.setuptools.packages.find]
 where = ["src"]

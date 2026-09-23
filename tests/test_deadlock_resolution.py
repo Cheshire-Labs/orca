@@ -9,23 +9,25 @@ These tests verify that:
 """
 import pytest
 import asyncio
-from typing import Tuple
+from collections.abc import AsyncGenerator
 
-from orca.sdk.system import SdkToSystemBuilder, WorkflowExecutor, ResourceRegistry, SystemMap
-from orca.sdk.workflow import WorkflowTemplate, ThreadTemplate, MethodTemplate
-from orca.sdk.labware import PlateTemplate
-from orca.sdk.actions import RunProtocol
+import orca.orca as orca
+from orca.system.SdkToSystemBuilder import SdkToSystemBuilder
+from orca.sdk.workflow import WorkflowTemplate
 from orca.events.event_bus import EventBus
-from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.plate_pad import PlatePad
+from orca.runtime.run_modes import WorkflowRunMode, current_run_mode
 from orca.workflow_models.status_enums import LabwareThreadStatus
+from orca.workflow_models.action_context import ActionContext
+from orca.workflow_models.method_context import MethodContext
+from orca.workflow_models.thread_context import ThreadContext
+from orca.workflow_models.action_template import ActionTemplate
+from orca.workflow_models.method_template import IMethodTemplate
 from tests.test_helpers import (
     create_test_transporter,
     create_test_device,
-    create_test_labware_instance,
     create_test_plate_template,
     create_simple_system_map,
-    wait_for_threads_completed
 )
 
 
@@ -70,42 +72,53 @@ async def test_two_robot_deadlock_resolution():
     robot1 = create_test_transporter("robot1", ["start_pad_1", "loc_a", "loc_b", "parking_pad"])
     robot2 = create_test_transporter("robot2", ["start_pad_2", "loc_b", "loc_c", "parking_pad"])
 
-    registry, system_map = create_simple_system_map(
+    registry, system_map = await create_simple_system_map(
         [robot1, robot2],
         {"loc_a": device_a, "loc_c": device_c},
-        {"parking_pad": parking_pad, "start_pad_1": start_pad_1, "start_pad_2": start_pad_2}
+        {"parking_pad": parking_pad, "start_pad_1": start_pad_1, "start_pad_2": start_pad_2,
+         "loc_b": PlatePad("loc_b")}
     )
 
     # Create plates
     plate1_template = create_test_plate_template("plate1")
     plate2_template = create_test_plate_template("plate2")
 
-    # Create methods with TWO actions each:
-    # - Action 1 moves to first device
-    # - Action 2 moves to opposite device (requires going through loc_b)
-    method_for_thread1 = MethodTemplate("method_thread1", [
-        RunProtocol(device_a, "protocol.pro", {}, [plate1_template], [plate1_template]),
-        RunProtocol(device_c, "protocol.pro", {}, [plate1_template], [plate1_template])
-    ])
-    method_for_thread2 = MethodTemplate("method_thread2", [
-        RunProtocol(device_c, "protocol.pro", {}, [plate2_template], [plate2_template]),
-        RunProtocol(device_a, "protocol.pro", {}, [plate2_template], [plate2_template])
-    ])
+    # Actions for thread1: device_a then device_c
+    @orca.action(device=device_a, inputs=[plate1_template])
+    async def t1_action_a(ctx: ActionContext) -> None:
+        await ctx.device().run_protocol("protocol.pro", {})
 
-    # Create threads starting at inert pads (NOT at device locations)
-    thread1 = ThreadTemplate(
-        plate1_template,
-        system_map.get_location("start_pad_1"),
-        system_map.get_location("loc_c"),
-        [method_for_thread1]
-    )
+    @orca.action(device=device_c, inputs=[plate1_template])
+    async def t1_action_c(ctx: ActionContext) -> None:
+        await ctx.device().run_protocol("protocol.pro", {})
 
-    thread2 = ThreadTemplate(
-        plate2_template,
-        system_map.get_location("start_pad_2"),
-        system_map.get_location("loc_a"),
-        [method_for_thread2]
-    )
+    # Actions for thread2: device_c then device_a
+    @orca.action(device=device_c, inputs=[plate2_template])
+    async def t2_action_c(ctx: ActionContext) -> None:
+        await ctx.device().run_protocol("protocol.pro", {})
+
+    @orca.action(device=device_a, inputs=[plate2_template])
+    async def t2_action_a(ctx: ActionContext) -> None:
+        await ctx.device().run_protocol("protocol.pro", {})
+
+    @orca.method
+    async def method_thread1(ctx: MethodContext) -> AsyncGenerator[ActionTemplate, None]:
+        yield t1_action_a
+        yield t1_action_c
+
+    @orca.method
+    async def method_thread2(ctx: MethodContext) -> AsyncGenerator[ActionTemplate, None]:
+        yield t2_action_c
+        yield t2_action_a
+
+    # Threads starting at inert pads (NOT at device locations)
+    @orca.thread(labware=plate1_template, start=system_map.get_location("start_pad_1"), end=system_map.resolve_journey_location("loc_c"))
+    async def thread1(ctx: ThreadContext) -> AsyncGenerator[IMethodTemplate, None]:
+        yield method_thread1
+
+    @orca.thread(labware=plate2_template, start=system_map.get_location("start_pad_2"), end=system_map.resolve_journey_location("loc_a"))
+    async def thread2(ctx: ThreadContext) -> AsyncGenerator[IMethodTemplate, None]:
+        yield method_thread2
 
     # Create workflow
     workflow = WorkflowTemplate("deadlock_test")
@@ -117,18 +130,22 @@ async def test_two_robot_deadlock_resolution():
     builder = SdkToSystemBuilder(
         "Deadlock Test",
         "Test deadlock resolution",
-        [plate1_template, plate2_template],
-        registry,
-        system_map,
-        [method_for_thread1, method_for_thread2],
-        [workflow],
-        event_bus
+        labwares=[plate1_template, plate2_template],
+        resources_registry=registry,
+        system_map=system_map,
+        workflows=[workflow],
+        event_bus=event_bus,
     )
+    await builder.bind_labwares()
     system = builder.get_system()
 
-    # Set up simulation mode and create workflow manually
-    system.set_simulating(True)
-    workflow_instance = system.create_and_register_workflow_instance(workflow)
+    # Seed the per-task run-mode ContextVar so device.driver dispatch resolves
+    # to the sim driver during this test. Manual workflow-instance setup bypasses
+    # WorkflowExecutor.start() which would normally seed.
+    current_run_mode.set(WorkflowRunMode.PURE_SIM)
+    workflow_instance = await system.create_and_register_workflow_instance(
+        workflow, run_mode=WorkflowRunMode.PURE_SIM,
+    )
     system.add_workflow(workflow_instance)
     executing_workflow = system.get_executing_workflow(workflow_instance.id)
 
@@ -149,8 +166,8 @@ async def test_two_robot_deadlock_resolution():
             "Deadlock resolution failed!"
         )
 
-    print("✓ Deadlock detected and resolved successfully!")
-    print(f"✓ Both threads completed: {[t.id for t in threads]}")
+    print("Deadlock detected and resolved successfully!")
+    print(f"Both threads completed: {[t.id for t in threads]}")
 
 
 @pytest.mark.asyncio
@@ -182,40 +199,54 @@ async def test_starvation_prevention():
     robot1 = create_test_transporter("robot1", ["start_pad_1", "loc_a", "loc_b", "parking_pad"])
     robot2 = create_test_transporter("robot2", ["start_pad_2", "loc_b", "loc_c", "parking_pad"])
 
-    registry, system_map = create_simple_system_map(
+    registry, system_map = await create_simple_system_map(
         [robot1, robot2],
         {"loc_a": device_a, "loc_c": device_c},
-        {"parking_pad": parking_pad, "start_pad_1": start_pad_1, "start_pad_2": start_pad_2}
+        {"parking_pad": parking_pad, "start_pad_1": start_pad_1, "start_pad_2": start_pad_2,
+         "loc_b": PlatePad("loc_b")}
     )
 
     # Create plates
     plate1_template = create_test_plate_template("plate1")
     plate2_template = create_test_plate_template("plate2")
 
-    # Create methods with TWO actions each (same pattern as deadlock test)
-    method_for_thread1 = MethodTemplate("method_thread1", [
-        RunProtocol(device_a, "protocol.pro", {}, [plate1_template], [plate1_template]),
-        RunProtocol(device_c, "protocol.pro", {}, [plate1_template], [plate1_template])
-    ])
-    method_for_thread2 = MethodTemplate("method_thread2", [
-        RunProtocol(device_c, "protocol.pro", {}, [plate2_template], [plate2_template]),
-        RunProtocol(device_a, "protocol.pro", {}, [plate2_template], [plate2_template])
-    ])
+    # Actions for thread1: device_a then device_c
+    @orca.action(device=device_a, inputs=[plate1_template])
+    async def t1_action_a(ctx: ActionContext) -> None:
+        await ctx.device().run_protocol("protocol.pro", {})
 
-    # Create threads starting at inert pads (NOT at device locations)
-    thread1 = ThreadTemplate(
-        plate1_template,
-        system_map.get_location("start_pad_1"),
-        system_map.get_location("loc_c"),
-        [method_for_thread1]
-    )
+    @orca.action(device=device_c, inputs=[plate1_template])
+    async def t1_action_c(ctx: ActionContext) -> None:
+        await ctx.device().run_protocol("protocol.pro", {})
 
-    thread2 = ThreadTemplate(
-        plate2_template,
-        system_map.get_location("start_pad_2"),
-        system_map.get_location("loc_a"),
-        [method_for_thread2]
-    )
+    # Actions for thread2: device_c then device_a
+    @orca.action(device=device_c, inputs=[plate2_template])
+    async def t2_action_c(ctx: ActionContext) -> None:
+        await ctx.device().run_protocol("protocol.pro", {})
+
+    @orca.action(device=device_a, inputs=[plate2_template])
+    async def t2_action_a(ctx: ActionContext) -> None:
+        await ctx.device().run_protocol("protocol.pro", {})
+
+    # Methods with TWO actions each (same pattern as deadlock test)
+    @orca.method
+    async def method_thread1(ctx: MethodContext) -> AsyncGenerator[ActionTemplate, None]:
+        yield t1_action_a
+        yield t1_action_c
+
+    @orca.method
+    async def method_thread2(ctx: MethodContext) -> AsyncGenerator[ActionTemplate, None]:
+        yield t2_action_c
+        yield t2_action_a
+
+    # Threads starting at inert pads (NOT at device locations)
+    @orca.thread(labware=plate1_template, start=system_map.get_location("start_pad_1"), end=system_map.resolve_journey_location("loc_c"))
+    async def thread1(ctx: ThreadContext) -> AsyncGenerator[IMethodTemplate, None]:
+        yield method_thread1
+
+    @orca.thread(labware=plate2_template, start=system_map.get_location("start_pad_2"), end=system_map.resolve_journey_location("loc_a"))
+    async def thread2(ctx: ThreadContext) -> AsyncGenerator[IMethodTemplate, None]:
+        yield method_thread2
 
     # Create workflow
     workflow = WorkflowTemplate("starvation_test")
@@ -227,18 +258,22 @@ async def test_starvation_prevention():
     builder = SdkToSystemBuilder(
         "Starvation Test",
         "Test starvation prevention",
-        [plate1_template, plate2_template],
-        registry,
-        system_map,
-        [method_for_thread1, method_for_thread2],
-        [workflow],
-        event_bus
+        labwares=[plate1_template, plate2_template],
+        resources_registry=registry,
+        system_map=system_map,
+        workflows=[workflow],
+        event_bus=event_bus,
     )
+    await builder.bind_labwares()
     system = builder.get_system()
 
-    # Set up simulation mode and create workflow manually to get thread IDs first
-    system.set_simulating(True)
-    workflow_instance = system.create_and_register_workflow_instance(workflow)
+    # Seed the per-task run-mode ContextVar so device.driver dispatch resolves
+    # to the sim driver during this test. Manual workflow-instance setup bypasses
+    # WorkflowExecutor.start() which would normally seed.
+    current_run_mode.set(WorkflowRunMode.PURE_SIM)
+    workflow_instance = await system.create_and_register_workflow_instance(
+        workflow, run_mode=WorkflowRunMode.PURE_SIM,
+    )
     system.add_workflow(workflow_instance)
     executing_workflow = system.get_executing_workflow(workflow_instance.id)
 
@@ -281,5 +316,5 @@ async def test_starvation_prevention():
         f"Thread1 (high starvation) should have score 0 after completion, got {thread1_score}"
     )
 
-    print("✓ Starvation prevention mechanism verified!")
-    print(f"✓ Final starvation scores: thread1={thread1_score}, thread2={thread2_score}")
+    print("Starvation prevention mechanism verified!")
+    print(f"Final starvation scores: thread1={thread1_score}, thread2={thread2_score}")
