@@ -1,12 +1,12 @@
-from typing import List, Optional
+from typing import List, Optional, Sequence
 from orca.resource_models.resources import IResource
 
-    
+
 class ResourcePool:
 
-    def __init__(self, name: str, resources: Optional[List[IResource]] = None):
+    def __init__(self, name: str, resources: Optional[Sequence[IResource]] = None):
         self._name = name
-        self._resources: List[IResource] = resources if resources is not None else []
+        self._resources: List[IResource] = list(resources) if resources is not None else []
 
     @property
     def name(self) -> str:

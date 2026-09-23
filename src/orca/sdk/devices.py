@@ -6,6 +6,7 @@ from orca.driver_management.drivers.a4s_sealer import A4SSealer
 from orca.devices.sealer import Sealer
 from orca.devices.shaker import Shaker
 from orca.devices.centrifuge import Centrifuge
+from orca.devices.thermocycler import Thermocycler
 from orca.driver_management.drivers.human_transfer import HumanTransfer
 
 __all__ = [
@@ -17,5 +18,6 @@ __all__ = [
     "Sealer",
     "Shaker",
     "Centrifuge",
+    "Thermocycler",
     "HumanTransfer"
 ]

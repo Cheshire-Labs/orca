@@ -1,6 +1,6 @@
 """
 Unit tests for LocationReservationManager class.
-These tests serve as a safety net before Phase 2 refactoring.
+These tests are the safety net for refactoring this class.
 """
 import pytest
 import asyncio

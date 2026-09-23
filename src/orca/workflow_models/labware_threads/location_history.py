@@ -1,11 +1,10 @@
 """
 Location history tracking for labware threads to detect and prevent movement loops.
 """
-from typing import TYPE_CHECKING, List, Optional
+from typing import List, Optional
 import logging
 
-if TYPE_CHECKING:
-    from orca.resource_models.location import Location
+from orca.resource_models.location import Location
 
 orca_logger = logging.getLogger("orca")
 
@@ -24,18 +23,24 @@ class LocationHistory:
 
     def __init__(self) -> None:
         """Initialize location history tracker with unbounded history."""
-        self._history: List['Location'] = []
+        self._history: List[Location] = []
+        self._timestamps: List[float] = []
 
-    def add_location(self, location: 'Location') -> None:
+    def add_location(self, location: Location, timestamp: float) -> None:
         """
         Add a location to the history.
 
         Args:
             location: Location object to add to history
+            timestamp: Seconds-since-epoch when the move was recorded.
+                Stamped by the caller (LabwareLocationService.update) so
+                downstream LocationEvent projections carry a real time
+                axis instead of a sentinel.
         """
         self._history.append(location)
+        self._timestamps.append(timestamp)
 
-    def get_previous_location(self) -> Optional['Location']:
+    def get_previous_location(self) -> Optional[Location]:
         """
         Get the previous location (second most recent).
 
@@ -46,7 +51,7 @@ class LocationHistory:
             return None
         return self._history[-2]
 
-    def get_current_location(self) -> Optional['Location']:
+    def get_current_location(self) -> Optional[Location]:
         """
         Get the current location (most recent).
 
@@ -59,7 +64,7 @@ class LocationHistory:
             return None
         return self._history[-1]
 
-    def get_history(self) -> List['Location']:
+    def get_history(self) -> List[Location]:
         """
         Get the full location history.
 
@@ -67,6 +72,19 @@ class LocationHistory:
             List of Location objects in chronological order (oldest to newest)
         """
         return list(self._history)
+
+    def get_history_with_timestamps(self) -> List[tuple[Location, float]]:
+        """
+        Get the full location history paired with the timestamp of each
+        move.
+
+        Returns:
+            List of (Location, seconds-since-epoch) pairs in chronological
+            order. Used by LabwareFacade.get_history when projecting to
+            the LocationEvent wire shape so every event carries a real
+            timestamp.
+        """
+        return list(zip(self._history, self._timestamps))
 
     def get_history_names(self) -> List[str]:
         """
@@ -77,7 +95,7 @@ class LocationHistory:
         """
         return [loc.name for loc in self._history]
 
-    def would_backtrack(self, target_location: 'Location') -> bool:
+    def would_backtrack(self, target_location: Location) -> bool:
         """
         Check if moving to the target location would be backtracking to the previous location.
 
@@ -128,6 +146,7 @@ class LocationHistory:
     def clear(self) -> None:
         """Clear all location history."""
         self._history.clear()
+        self._timestamps.clear()
 
     def __repr__(self) -> str:
         """String representation for debugging."""

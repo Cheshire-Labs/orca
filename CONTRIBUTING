@@ -1,85 +1,88 @@
 # Contributing to Orca
 
-Thank you for your interest in contributing to **Orca**! Your contributions help make this project better for everyone. Please review the following guidelines to help us streamline the contribution process and maintain a high standard of quality.
+Thanks for your interest in Orca. Please read the first section before opening
+a pull request, because this repository does not work the way most do.
 
-## Table of Contents
+## This repository is a snapshot
 
-- [How to Contribute](#how-to-contribute)
-- [Suggestions](#suggestions)
-- [Code of Conduct](#code-of-conduct)
-- [Reporting Issues](#reporting-issues)
-- [Feature Requests](#feature-requests)
-- [Pull Requests](#pull-requests)
-- [Coding Standards](#coding-standards)
-- [Testing](#testing)
-- [Documentation](#documentation)
-- [License](#license)
+Development happens in a private working repository. What you see here is a
+published snapshot of it, pushed at each release. Nothing is merged here
+directly, and a branch you push here will be overwritten by the next snapshot.
 
-## How to Contribute
+That does not mean contributions are unwelcome. It means the path is:
 
-1. **Fork the Repository**: Use the "Fork" button at the top of the Orca GitHub page to create a copy of the repo under your GitHub account.
-2. **Clone Your Fork**: Clone your forked repository to your local machine:
-   ```bash
-   git clone https://github.com/cheshire-labs/orca.git
-    ```
-3. **Create a Branch**: Create a new branch for your feature or bug fix:
-    ```bash
-    git checkout -b feature-or-bugfix-name
-    ```
-4. **Make Your Changes**: Implement your changes in your local branch. Please ensure your changes adhere to our coding standards.
-5. **Commit Your Changes**: Write clear and concise commit messages:
-    ```bash
-    git commit -m "Brief description of your changes"
-    ```
+1. Open a pull request here against `main`.
+2. A maintainer reviews it here, in the open.
+3. If it is accepted, the maintainer applies the change in the working
+   repository with your authorship preserved, and it reaches this repository in
+   the next snapshot.
+4. Your pull request is then closed with a pointer to the commit that carries
+   it.
 
-6. **Push to Your Fork**: Push your branch to your GitHub fork:
-    ```bash
-    git push origin feature-or-bugfix-name
-    ```
-7. **Submit a Pull Request**: Open a pull request (PR) from your branch to the dev branch of the main Orca repository. Describe your changes and reference any related issues.
+So your PR is read, discussed and credited. It is just not the commit that
+lands. Expect that to take longer than a normal merge.
 
-## Suggestions
+Issues and feature requests work normally. Open them here.
 
-If you are interested in contributing but you're unsure where to start, please look through issues or feel free to contact us.
+## Before you open a pull request
 
-## Code of Conduct
+- Keep it small and focused. A large change is more likely to be rejected for
+  reasons of scope than of quality, and porting it by hand is harder.
+- Say what problem it solves and how you verified it.
+- If it changes behaviour, include a test that fails before your change and
+  passes after.
+- Open an issue first for anything architectural. Orca has a deliberate scope,
+  and some things belong in a commercial layer rather than here.
 
-We expect all contributors to adhere to our Code of Conduct. Please be respectful and considerate in your interactions with the community.
+## Contributor licence agreement
 
-## Reporting Issues
+Contributing requires signing the
+[Cheshire Labs Contributor Agreement](https://cla-assistant.io/Cheshire-Labs/orca);
+the CLA bot will prompt you on your first pull request. Under it you assign
+copyright in your contribution to Cheshire Labs.
 
-If you encounter a bug or have a question, please check the existing issues first. If your issue hasn’t been reported yet, you can create a new issue. Provide as much detail as possible, including steps to reproduce the problem, your environment, and any relevant logs.
+## Development
 
-## Feature Requests
+```bash
+git clone https://github.com/Cheshire-Labs/orca-client.git
+git clone https://github.com/Cheshire-Labs/orca.git
+cd orca
+python -m venv .venv
+.venv/Scripts/activate      # Windows
+# source .venv/bin/activate # Linux/macOS
+pip install -e ".[dev]"
+pytest
+```
 
-We welcome suggestions for new features! If you have an idea, please create a feature request issue. Clearly describe the problem you’re trying to solve and how your feature will address it.
+pip installs cheshire-drivers from GitHub at the release this version pins.
+To change cheshire-drivers as well, clone it beside `orca` and run
+`pip install -e ../cheshire-drivers` after every other install. It has to be
+the last one: any later `pip install -e .` fetches the pinned copy again and
+replaces your clone.
 
-## Pull Requests
+`orca-client` is not installed. One test reads its source from beside this
+clone, to check that the agent and Orca agree on what each liquid handler can
+do, and it fails if the clone is missing.
 
-- **Branching**: Please base your changes on the dev branch.
+This repository carries no CI of its own. A maintainer runs the suite in the
+working repository as part of porting your change, so run it locally before you
+submit and say in the PR what you ran.
 
-- **PR Description**: Clearly explain what your pull request does, and reference any related issues or discussions.
+## Coding standards
 
-- **Reviews**: Your PR will be reviewed by project maintainers. Please be responsive to feedback and be prepared to make adjustments as necessary.
+- [PEP 8](https://peps.python.org/pep-0008/), with type hints on every function.
+- Clear names over short ones. Small, single-purpose functions.
+- Match the style of the code around you.
+- Comments explain why, not what. Most code needs none.
+- ASCII only in code, tests and strings. Windows consoles crash on the rest.
 
-- **CI/CD**: All PRs must pass continuous integration checks before they can be merged.
+## Conduct
 
-## Coding Standards
+Be respectful. Disagree about the work, not the person. Maintainers may close
+anything that turns abusive.
 
-- Follow the [PEP 8](https://peps.python.org/pep-0008/) Python style guide.
-- Use clear and descriptive variable and function names.
-- Write modular, testable code.
-- Document your code with comments and docstrings where applicable.
-- Use python type hints
-- Maintain a consistent coding style with the existing codebase
+## Licence
 
-## Testing
-- Ensure your changes are covered by unit tests.
-- Add new tests if you’re adding a feature or fixing a bug.
-- Run all tests locally before submitting your pull request.
-
-## Documentation
-If your changes affect how Orca works, please update the relevant documentation. This includes the README, user guides, and any other relevant sections.
-
-## License
-Cheshire Labs follows an open core business model, offering Orca under a dual license structure. To align with this model and the AGPL license, contributors need to submit a contributor license agreement.
+Orca is source-available under SSPL-1.0 from 2.0.0 onward; releases up to and
+including 1.0.0 were AGPL-3.0. NOTICE names the copyright holder. Contributions
+are accepted under the contributor agreement above.

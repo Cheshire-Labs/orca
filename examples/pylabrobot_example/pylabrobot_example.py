@@ -1,149 +1,81 @@
+"""Learn Orca in One File -- Comprehensive PLR Example.
+
+Thin entry point composing topology + workflow. See ``topology.py`` and
+``workflow.py`` for the physical layout and workflow definition.
+
+Demonstrates every Orca SDK feature:
+ 1. Labware templates (PlateTemplate, TipRackTemplate, TroughTemplate)
+ 2. Devices with PLR + sim drivers, ResourcePool
+ 3. Teachpoints with CartesianCoordinates + Transporter
+ 4. Actions: PLR cherry pick (CSV worklist, two plates), serial dilution (trough)
+ 5. AnyLabwareTemplate, failure_policy, tag, ctx.param, ctx.emit, ctx.wait_for
+ 6. Methods (bare + with failure_policy)
+ 7. Threads with orca.join (contributor labware) and orca.branch (QC pass/fail)
+ 8. SystemBoundEventHandler for observability
+ 9. Workflow: wf.start, wf.thread, wf.on, wf.variable
+10. build_system, then SystemBuild.run, which runs the workflow once on a SystemRuntime
+
+Workflow story:
+  1. Cherry pick from sample_plate to dest_plate (worklist CSV)
+  2. Serial dilute dest_plate column B down to column C (diluent from trough)
+  3. Shake dest_plate (shaker pool)
+  4. Read dest_plate (plate reader, emits absorbance data)
+  5. Evaluate QC (pass/fail based on avg absorbance)
+  6. Branch: pass -> seal, fail -> re-dilute + re-read
+
+Run, from the repo root:
+  python -m examples.pylabrobot_example.pylabrobot_example
+"""
+
 import asyncio
 import logging
 import sys
-from typing import Any, Dict, List
 
-from orca.devices.devices import LiquidHandler
-from orca.devices.sealer import Sealer
+import orca.orca as orca
 
-from cheshire_drivers import SimLiquidHandlerDriver, SimTransporterDriver
-from orca.resource_models.transporter import Transporter
-from orca.sdk.devices import Device
-from orca.sdk.labware import PlateTemplate, LabwareInstance
-from orca.sdk.workflow import MethodTemplate, ThreadTemplate, WorkflowTemplate
-from orca.sdk.system import SdkToSystemBuilder, WorkflowExecutor, ResourceRegistry, SystemMap
-from orca.sdk.events import EventBus
-from orca.sdk.actions import Seal, PythonMethod
+from examples.pylabrobot_example.topology import build_topology
+from examples.pylabrobot_example.workflow import build_workflow
+from orca.runtime.run_modes import WorkflowRunMode
+from orca.runtime.store_factory import InMemoryRuntimeStoreFactory
+from orca.sdk.build import SystemBuild
 
-from pylabrobot.sealing.a4s_backend import A4SBackend
-from pylabrobot.resources.thermo_fisher.plates import Thermo_Nunc_96_well_plate_1300uL_Rb
-
-
-# Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    stream=sys.stdout 
+    stream=sys.stdout,
 )
 orca_logger = logging.getLogger("orca")
 
-# Create your labware
-sample_plate = PlateTemplate("sample_plate",Thermo_Nunc_96_well_plate_1300uL_Rb, None)
-transfer_plate = PlateTemplate("transfer_plate",Thermo_Nunc_96_well_plate_1300uL_Rb, None)
 
-# Add your labware to a list
-labwares = [
-    sample_plate,
-    transfer_plate
-    ]
+async def build_plr() -> SystemBuild:
+    """Build a complete PLR example system with fresh topology and workflow.
 
-# import the pylabrobot package to use the A4SSealerDriver
-a4s_sealer_driver = A4SBackend(port="/dev/tty.usbserial-0001", timeout=10)
-sealer = Sealer("a4s_sealer", a4s_sealer_driver)
-mock_device = LiquidHandler("liquid_handler", SimLiquidHandlerDriver("ml_star"))
-robotic_arm = Transporter("robotic_arm", SimTransporterDriver("robotic_arm"), "examples\\pylabrobot_example\\teachpoints\\teachpoints.json")
+    Safe to call multiple times: every call creates fresh device instances
+    for test isolation.
 
-# Register the resources
-resources = ResourceRegistry()
-resources.add_resources(
-    [
-        sealer,
-        robotic_arm,
-        mock_device
-    ]
-)
-
-# Build a method to seal
-seal_method = MethodTemplate(
-    name="Test Method",
-    actions=[
-        Seal(
-            resource=sealer,
-            temperature=100,
-            duration=60,
-            inputs=[sample_plate],
-            outputs=[sample_plate]
-        ),
-    ]
-) 
-
-# Build any python method to run custom code
-async def example_method(resource: Device, inputs: List[LabwareInstance], outputs: List[LabwareInstance], options: Dict[str, Any] | None = None):
+    Tests that need to inject a custom LH driver (e.g. ``RecordingLiquidHandlerDriver``)
+    bind a one-shot factory via ``use_device_factory(...)`` before calling
+    ``build_plr()``; ``build_topology`` honors the outer factory rather than
+    falling back to its default Chatterbox-on-LH binding.
     """
-    A mock method to simulate a liquid handler operation.
-    This is where you would implement the actual logic for the liquid handler.
-    """
-    orca_logger.info(f"Running method with resource: {resource.name}")
-    orca_logger.info(f"Inputs: {[input.name for input in inputs]}")
-    orca_logger.info(f"Outputs: {[output.name for output in outputs]}")
-    orca_logger.info(f"Options: {options if options else 'No options provided'}")
-    
-    # Simulate some processing time
-    await asyncio.sleep(1)
-    orca_logger.info("Example method completed.")
+    stores = InMemoryRuntimeStoreFactory()
+    topology = build_topology(stores)
+    workflow = build_workflow(topology)
+    return await orca.build_system(
+        name="Learn Orca",
+        workflow=workflow,
+        topology=topology,
+        stores=stores,
+        description="Comprehensive example demonstrating every Orca SDK feature",
+    )
 
-# Pass your method to the PythonMethod command to run your custom code once the sample plate reaches the mock device
-dispense_method = MethodTemplate(
-    name="Dispense Method",
-    actions=[
-        PythonMethod(
-            mock_device,
-            example_method,
-            [sample_plate],
-            [sample_plate]
-        ),
-    ]
-)
 
-# build the map and assign where the resources are located
-map = SystemMap(resources)
-map.assign_resources({
-    "sealer": sealer,
-    "mock_device": mock_device,
-})
+async def run(sim: bool = True) -> None:
+    build = await build_plr()
+    orca_logger.info("Starting Learn Orca workflow execution.")
+    await build.run(WorkflowRunMode.PURE_SIM if sim else WorkflowRunMode.LIVE)
+    orca_logger.info("Learn Orca workflow completed.")
 
-# Build your sample plate thread
-sample_plate_thread = ThreadTemplate(
-    sample_plate,
-    map.get_location("plate_pad_1"),
-    map.get_location("plate_pad_2"),
-    [
-        dispense_method,
-        seal_method
-        ]
-)
-
-# Build a workflow and add the sample plate thread to it
-example_workflow = WorkflowTemplate("example_workflow")
-example_workflow.add_thread(sample_plate_thread, True)
-
-# An event bus
-event_bus = EventBus()
-
-# Build the system from the components
-builder = SdkToSystemBuilder(
-    "pylabrobot_example",
-    "An example workflow using PylabRobot",
-    labwares,
-    resources,
-    map,
-    [seal_method],
-    [example_workflow],
-    event_bus,
-)
-
-# Build the system
-system = builder.get_system()
-
-# run the workflow using this function
-async def run(sim: bool):
-    orca_logger.info("Starting pyLabRobot workflow execution.")
-    if not sim:
-        await system.initialize_all()
-    executor = WorkflowExecutor(example_workflow, system)
-    await executor.start(sim)
-    orca_logger.info("pyLabRobot workflow completed.")
 
 if __name__ == "__main__":
     asyncio.run(run(True))
-    orca_logger.info("Workflow execution finished.")

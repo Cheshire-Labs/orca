@@ -1,18 +1,65 @@
 from abc import ABC, abstractmethod
-import asyncio
-from typing import Any, Dict
 
 import logging
+from typing import Protocol, runtime_checkable
 
 from orca.resource_models.labware_placeable_interface import ILabwarePlaceable
+from orca.resource_models.tracked_lock import TrackedLock
+from orca.runtime.run_modes import WorkflowRunMode
 
 orca_logger = logging.getLogger("orca")
-    
+
+
 class IResource(ABC):
     @property
     @abstractmethod
     def name(self) -> str:
         raise NotImplementedError
+
+
+class IModeAware(ABC):
+    """A resource that can say which world it dispatches in.
+
+    Nominal rather than structural on purpose: whether a command reaches real
+    hardware turns on this check, and a duck-typed one silently accepts a test
+    double whose answer is a mock object.
+    """
+
+    @abstractmethod
+    def mode_under(self, base: WorkflowRunMode) -> WorkflowRunMode:
+        """The mode this resource dispatches under if `base` is in force."""
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def effective_mode(self) -> WorkflowRunMode:
+        """`mode_under` applied to whatever base is in force right now."""
+        raise NotImplementedError
+
+
+@runtime_checkable
+class ILabwareStateHolder(Protocol):
+    """The single contract for a holder of labware-projection state.
+
+    A holder owns a derived view of where labware sits (a transporter world
+    graph, a liquid-handler deck tree). `clear_all_labware` drives
+    `reset_labware_state_everywhere` across every holder (devices +
+    transporters) so the projection reconciles to the engine ledger from one
+    place instead of N bespoke reset paths. Stateless holders (most devices)
+    no-op.
+
+    Two verbs because a holder can have more than one projection. A sim driver
+    and a live one are separate worlds, and a reset in one must not disarm the
+    other's identity guard, so `reset_labware_state` means the world the caller
+    is dispatching in. The panic button means all of them.
+    """
+
+    @property
+    def name(self) -> str: ...
+
+    async def reset_labware_state(self) -> None: ...
+
+    async def reset_labware_state_everywhere(self) -> None: ...
 
 
 class IInitializable(ABC):
@@ -32,20 +79,8 @@ class IInitializable(ABC):
         Initialize the driver.
         """
         raise NotImplementedError
-    
-
-# class IEquipment(IResource, IInitializable, ABC):
-    
-#     @property
-#     @abstractmethod
-#     def is_running(self) -> bool:
-#         raise NotImplementedError
 
 
-    # @abstractmethod
-    # async def execute(self, command: str, options: Dict[str, Any]) -> None:
-    #     raise NotImplementedError
-    
 class IConnectable(ABC):
     @property
     @abstractmethod
@@ -70,76 +105,12 @@ class IConnectable(ABC):
         Disconnect from the driver.
         """
         raise NotImplementedError
-    
-# class Equipment(IEquipment):
-
-#     def __init__(self, name: str) -> None:
-#         self._name = name
-
-#     @property
-#     def name(self) -> str:
-#         return self._name
-    
-#     @property
-#     def is_initialized(self) -> bool:
-#         return self._driver.is_initialized
-    
-#     @property
-#     def is_running(self) -> bool:
-#         return self._driver.is_running
-    
-#     async def initialize(self) -> None:
-#         orca_logger.info(f"Initializing...")
-#         orca_logger.info(f"Name: {self._name}")
-#         await self._driver.initialize()
-#         orca_logger.info(f"Initialized")
-
-    # async def execute(self, command: str, options: Dict[str, Any]) -> None:
-    #     if command is None:
-    #         raise ValueError(f"{self} - No command to execute")
-    #     orca_logger.info(f"{self} - execute - {command}")
-    #     orca_logger.info(f"{self} - {command} executing...")
-    #     await self._driver.execute(command, options)
-    #     orca_logger.info(f"{self} - {command} executed")
-
-    # @property
-    # def is_connected(self) -> bool:
-    #     return self._driver.is_connected
-
-    # async def connect(self) -> None:
-    #     orca_logger.info(f"{self} - Connecting...")
-    #     await self._driver.connect()
-    #     orca_logger.info(f"{self} - Connected")
-
-    # async def disconnect(self) -> None:
-    #     orca_logger.info(f"{self} - Disconnecting...")
-    #     await self._driver.disconnect()
-    #     orca_logger.info(f"{self} - Disconnected")
 
 
-
-class ISimulationable(ABC):
+class IDevice(IResource, IInitializable, ABC):
     @property
-    @abstractmethod
-    def is_simulating(self) -> bool:
-        """Returns whether the resource is simulating or not."""
-        raise NotImplementedError
-
-    @abstractmethod
-    def set_simulating(self, sim: bool) -> None:
-        """Sets the simulation state of the resource."""
-        raise NotImplementedError
-
-
-class IDevice(IResource, IInitializable, ILabwarePlaceable, ISimulationable, ABC):
-    @property
-    def lock(self) -> asyncio.Lock:
-        """
-        Get the lock for the device.
-
-        Returns:
-            asyncio.Lock: The lock used to control access to the device.
-        """
+    def lock(self) -> TrackedLock:
+        """The lock serializing driver calls to this device."""
         raise NotImplementedError
 
     @property
@@ -147,44 +118,3 @@ class IDevice(IResource, IInitializable, ILabwarePlaceable, ISimulationable, ABC
     def in_use(self) -> bool:
         """ Check if the device is running."""
         raise NotImplementedError
-
-    @property
-    def supports_deadlock_resolution(self) -> bool:
-        """Devices do not support deadlock resolution (they are not parking locations)."""
-        return False
-
-
-# class IDriver(IInitializable, ABC):
-#     @property
-#     @abstractmethod
-#     def name(self) -> str:
-#         """
-#         Get the name of the driver.
-#         Returns:
-#             str: The name of the driver.
-#         """
-#         raise NotImplementedError
-
-#     @property
-#     @abstractmethod
-#     def is_running(self) -> bool:
-#         """
-#         Check if the driver is running.
-#         Returns:
-#             bool: True if the driver is running, False otherwise.
-#         """
-#         raise NotImplementedError
-
-    # @abstractmethod
-    # async def execute(self, command: str, options: Dict[str, Any]) -> None:
-    #     """
-    #     Execute a command with the driver.
-    #     Args:
-    #         command (str): The command to execute.
-    #         options (Dict[str, Any]): The options for the command.
-    #     """
-    #     raise NotImplementedError
-
- 
-
-    

@@ -1,10 +1,16 @@
 from abc import ABC, abstractmethod
-from typing import Dict, List
+from typing import Dict, List, Sequence
 from orca.events.event_bus_interface import IEventBus
 from orca.events.execution_context import WorkflowExecutionContext
+from orca.runtime.labware_group import LabwareGroup
+from orca.runtime.run_modes import WorkflowRunMode
+from orca.runtime.submission import ResolvedAcquisition
+from orca.runtime.submission_modes import BatchMode
 from orca.system.interfaces import IMethodRegistry, IWorkflowRegistry
 from orca.system.labware_registry_interfaces import ILabwareRegistry
 from orca.system.thread_registry_interface import IThreadRegistry
+from orca.resource_models.tracking_context import TrackingContext
+from orca.variables.variable_store import IVariableResolver
 from orca.workflow_models.interfaces import IMethod
 from orca.workflow_models.status_manager import StatusManager
 from orca.workflow_models.workflows.workflow_factories import ThreadFactory
@@ -38,16 +44,20 @@ class MethodRegistry(IMethodRegistry):
 
 
 class ExecutingMethodFactory:
-    def __init__(self, event_bus: IEventBus, status_manager: StatusManager) -> None:
+    def __init__(self, event_bus: IEventBus, status_manager: StatusManager, variable_store: IVariableResolver, tracking_context: TrackingContext | None = None) -> None:
         self._event_bus = event_bus
         self._status_manager = status_manager
+        self._variable_store = variable_store
+        self._tracking_context = tracking_context
 
     def create_instance(self, method: IMethod, context: WorkflowExecutionContext) -> ExecutingMethod:
         executing_method = ExecutingMethod(
             method,
             self._event_bus,
             self._status_manager,
-            context
+            context,
+            self._variable_store,
+            self._tracking_context,
         )
         return executing_method
     
@@ -110,8 +120,13 @@ class ThreadRegistry(IThreadRegistry):
         for method in labware_thread.methods:
             self._method_reg.add_method(method)
 
-    def create_and_register_thread_instance(self, template: ThreadTemplate) -> LabwareThreadInstance:
-        thread = self._thread_factory.create_instance(template)
+    async def create_and_register_thread_instance(
+        self,
+        template: ThreadTemplate,
+        *,
+        run_mode: WorkflowRunMode,
+    ) -> LabwareThreadInstance:
+        thread = await self._thread_factory.create_instance(template, run_mode=run_mode)
         self.add_thread(thread)
         return thread
 
@@ -130,10 +145,56 @@ class WorkflowRegistry(IWorkflowRegistry):
         for entry_thread in workflow.entry_threads:
             self._thread_registry.add_thread(entry_thread)
     
-    def create_and_register_workflow_instance(self, template: WorkflowTemplate) -> WorkflowInstance:
-        workflow = self._workflow_factory.create_instance(template)
+    async def create_and_register_workflow_instance(
+        self,
+        template: WorkflowTemplate,
+        submission_id: str | None = None,
+        groups: Sequence[LabwareGroup] | None = None,
+        batch_mode: BatchMode = BatchMode.STANDALONE,
+        resolved_acquisitions: dict[tuple[str, str], ResolvedAcquisition] | None = None,
+        id: str | None = None,
+        *,
+        run_mode: WorkflowRunMode,
+    ) -> WorkflowInstance:
+        """Register a WorkflowInstance for this template.
+
+        `id` is forwarded to both factory paths so SystemRuntime can pin
+        WorkflowInstance.id == execution_id (unified-id model). T6 grouped
+        submissions and groupless submissions both honor the caller's id when
+        supplied; the factory generates a fresh UUID otherwise.
+        """
+        if submission_id is None:
+            workflow = await self._workflow_factory.create_instance(
+                template, id=id, run_mode=run_mode,
+            )
+        else:
+            workflow = await self._workflow_factory.create_instance_for_submission(
+                template, submission_id, groups or (), batch_mode=batch_mode,
+                resolved_acquisitions=resolved_acquisitions,
+                id=id,
+                run_mode=run_mode,
+            )
         self.add_workflow(workflow)
         return workflow
+
+    async def build_entry_threads_for(
+        self,
+        template: WorkflowTemplate,
+        submission_id: str,
+        groups: Sequence[LabwareGroup],
+        batch_mode: BatchMode = BatchMode.STANDALONE,
+        resolved_acquisitions: dict[tuple[str, str], ResolvedAcquisition] | None = None,
+        *,
+        run_mode: WorkflowRunMode,
+    ) -> list[LabwareThreadInstance]:
+        """Build entry threads for a new submission without creating a new
+        WorkflowInstance. Used by mid-run submission injection.
+        """
+        return await self._workflow_factory.build_entry_threads_for(
+            template, submission_id, groups, batch_mode=batch_mode,
+            resolved_acquisitions=resolved_acquisitions,
+            run_mode=run_mode,
+        )
     
     def clear(self) -> None:
         self._workflows.clear()

@@ -1,25 +1,27 @@
-from typing import Optional
+from typing import ClassVar, Optional
+
+from cheshire_drivers.centrifuge_models import CentrifugeRequest
+from cheshire_drivers.interfaces import ICentrifugeDriver
+from cheshire_drivers.sims import SimCentrifugeDriver
 
 from orca.devices.device_interfaces import ICentrifuge
-from cheshire_drivers import ICentrifugeDriver, PLRCentrifugeBackendWrapper, SimCentrifugeDriver, PLRCentrifugeBackend
 from orca.resource_models.devices import Device
+from orca.runtime.device_factory_context import resolve_drivers
+from orca.runtime.run_modes import WorkflowRunMode
+
 
 class Centrifuge(Device[ICentrifugeDriver], ICentrifuge):
-    def __init__(self, 
-                 name: str, 
-                 driver: ICentrifugeDriver | PLRCentrifugeBackend,
-                 sim: bool = False,
-                 sim_driver: Optional[ICentrifugeDriver] = None
-                 ):
-        self._name = name
-        driver = PLRCentrifugeBackendWrapper(driver) if isinstance(driver, PLRCentrifugeBackend) else driver
-        sim_driver = sim_driver if sim_driver else SimCentrifugeDriver("centrifuge")
+    KIND: ClassVar[str] = "centrifuge"
 
-        super().__init__(name, 
-            driver,
-            sim_driver,
-            sim)
+    def __init__(
+        self,
+        name: str,
+        sim_override: WorkflowRunMode | None = None,
+    ) -> None:
+        live, sim_drv = resolve_drivers(
+            self.KIND, name, SimCentrifugeDriver,
+        )
+        super().__init__(name, live, sim_drv, sim_override=sim_override)
 
-    async def centrifuge(self, speed: int, duration: int) -> None:
-        """Spin the centrifuge at a specified speed for a specified duration."""    
-        await self.driver.centrifuge(speed, duration)
+    async def centrifuge(self, g: int, duration: int) -> None:
+        await self.driver.centrifuge(CentrifugeRequest(g=float(g), duration=float(duration)))

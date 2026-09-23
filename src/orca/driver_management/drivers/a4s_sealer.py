@@ -1,65 +1,30 @@
-import asyncio
+from typing import ClassVar
 
-import logging
-from orca.devices.device_interfaces import ISealer, ITempGettable, ITempSettable
-from cheshire_drivers import ISealerDriver, PLRSealerBackendWrapper, SimSealerDriver
-from orca.resource_models.simulation_manager import SimulationManager
+from cheshire_drivers.interfaces import ISealerDriver
+from cheshire_drivers.sims import SimSealerDriver
+from cheshire_drivers.plr import A4SSealerDriver
 from orca.resource_models.devices import Device
-from orca.resource_models.labware import LabwareInstance
-from pylabrobot.sealing.a4s_backend import A4SBackend
-
-orca_logger = logging.getLogger("orca")
-
-
-
-class SimulationA4SBackend:
-    """A simulation backend for the A4S sealer."""
-    def __init__(self, port: str, timeout: int = 20, sim_time: float = 0.1):
-        self._simulated_temperature = 25.0  # Default simulated temperature
-        self._sim_time = sim_time
-
-    async def setup(self) -> None:
-        """Simulate the setup of the A4S sealer."""
-        orca_logger.info("Simulating setup of A4S sealer")
-        await asyncio.sleep(self._sim_time)
-
-    async def open(self) -> None:
-        """Simulate opening the sealer."""
-        orca_logger.info("Simulating opening the sealer")
-        await asyncio.sleep(self._sim_time)
-
-    async def close(self) -> None:
-        """Simulate closing the sealer."""
-        orca_logger.info("Simulating closing the sealer")
-        await asyncio.sleep(self._sim_time)
-
-    async def seal(self, temperature: int, duration: float) -> None:
-        """Simulate sealing by just waiting for the duration."""
-        orca_logger.info(f"Simulating sealing at {temperature}°C for {duration} seconds")
-        await asyncio.sleep(duration)
-
-    async def set_temperature(self, temperature: float) -> None:
-        """Set the simulated temperature."""
-        orca_logger.info(f"Setting simulated temperature to {temperature}°C")
-        self._simulated_temperature = temperature
-
-    async def get_temperature(self) -> float:
-        """Get the current simulated temperature."""
-        orca_logger.info(f"Getting simulated temperature: {self._simulated_temperature}°C")
-        return self._simulated_temperature
 
 
 class A4SSealer(Device[ISealerDriver]):
+    KIND: ClassVar[str] = "sealer"
+
     def __init__(
         self,
         name: str,
         port: str,
-        timeout: int = 20,
-        sim: bool = False
+        timeout: int | None = None,
     ):
-        self.a4s_driver = A4SBackend(port, timeout)
-        self.a4s_sim_driver = SimulationA4SBackend(port, timeout)
-        super().__init__(name, 
-                         PLRSealerBackendWrapper(self.a4s_driver),
-                        SimSealerDriver(name),
-                        sim)
+        """``timeout`` is how long the driver waits on the serial link before giving up.
+
+        Leave it unset. The driver then derives a budget that outlasts every
+        command it declares, so an overrunning seal reaches the engine's abort and
+        the operator gets the recoverable-timeout decision. The 20s this used to
+        hardcode sat under a `seal` the engine allows 600s, so a normal seal cycle
+        came back as a transport error.
+        """
+        super().__init__(
+            name,
+            A4SSealerDriver(port=port, timeout=timeout),
+            SimSealerDriver(name),
+        )

@@ -1,131 +1,89 @@
 # Orca: Lab Automation Scheduler
 
-Orca is a laboratory automation scheduler designed for parallel processing of laboratory workflows. It coordinates devices (liquid handlers, centrifuges, sealers, etc.) and manages labware movement across your lab system.
-
-**Stopping Orca**: To stop Orca, terminate the program (Ctrl+C).
+Orca is a laboratory automation scheduler for workflows that run in parallel. It coordinates devices (liquid handlers, shakers, centrifuges, sealers, plate readers) and moves labware between them. Workflows are plain Python, so they live in your repo and diff like any other source file.
 
 ## Features
 
-- **Git & Diff Friendly** - Workflows are Python code that integrates into your repo
-- **Event Bus** - Subscribe to events for custom integrations
-- **Parallel Processing** - Multiple labware threads run concurrently
-- **Modular Design** - Swap methods, run workflows or single methods
-- **Resource Pools** - Dynamic resource selection at runtime
-- **Python Scripting** - Custom logic when needed
-
-## Quick Start
-
-```bash
-git clone https://github.com/Cheshire-Labs/orca.git
-cd orca
-pip install -e .
-
-# Run the SMC Assay demo
-python ./examples/smc_assay/smc_assay_example.py
-```
+- **Parallel labware threads** - many pieces of labware move through the system at the same time.
+- **Reservation-based scheduling** - devices and positions are reserved before use.
+- **Resource pools** - an action targets a pool and the runtime picks a free device.
+- **Event bus** - subscribe to status changes for custom integrations.
+- **Standalone methods** - run a whole workflow, or run a single method on its own.
+- **Four decorator levels** - `@orca.action`, `@orca.method`, `@orca.thread`, `@orca.workflow`.
 
 ## Installation
 
-**From GitHub (recommended)**:
+Orca needs Python 3.10 or newer. Install it from GitHub into a new virtual environment:
+
 ```bash
 git clone https://github.com/Cheshire-Labs/orca.git
 cd orca
-pip install -e .
+python -m venv .venv
+.venv\Scripts\activate          # Windows
+# source .venv/bin/activate     # Linux, macOS
+pip install -e ".[dev]"
 ```
 
-**From PyPI**:
-```bash
-pip install cheshire-orca
-```
+pip also installs Orca's driver layer, [cheshire-drivers](https://github.com/Cheshire-Labs/cheshire-drivers), from GitHub at the release this version of Orca pins. cheshire-drivers installs a fork of PyLabRobot under the name `pylabrobot`, which replaces any upstream PyLabRobot already in the environment. That is why the environment should be a new one. The cheshire-drivers README explains the fork.
 
-## Basic Example
+The `cheshire-orca` package on PyPI is the old 0.x release, not this one. The `[dev]` extra adds the test tooling (pytest, black). To run the tests, also clone [orca-client](https://github.com/Cheshire-Labs/orca-client) beside `orca`; see [CONTRIBUTING](./CONTRIBUTING).
+
+## Example
+
+An **action** is one step at one device. A **method** is a sequence of actions. A **labware thread** is one piece of labware moving through the system. A **workflow** composes threads. This is abridged from [examples/hamilton_smc/workflows/hamilton_smc_assay.py](./examples/hamilton_smc/workflows/hamilton_smc_assay.py). `plate_1` is a `PlateTemplate` declared in that file, and `shaker_collection` is a device pool from the topology:
 
 ```python
-import asyncio
-from orca.sdk.labware import PlateTemplate
-from orca.sdk.devices import Shaker, Transporter
-from orca.sdk.actions import Shake
-from orca.sdk.workflow import MethodTemplate, ThreadTemplate, WorkflowTemplate
-from orca.sdk.system import SdkToSystemBuilder, WorkflowExecutor, ResourceRegistry, SystemMap
-from orca.sdk.events import EventBus
-from cheshire_drivers import SimShakerDriver, SimTransporterDriver
+@orca.action(device=shaker_collection, inputs=[plate_1])
+async def shake_2hrs(ctx: ActionContext):
+    await ctx.device().shake(duration=7200, speed=875)
 
-# Define labware
-plate = PlateTemplate("sample_plate", lambda name: None)
+@orca.method
+async def incubate_2hrs(ctx: MethodContext):
+    yield shake_2hrs
 
-# Define devices
-shaker = Shaker("shaker", SimShakerDriver("shaker"), sim=True)
-arm = Transporter("arm", SimTransporterDriver("arm"), "teachpoints/arm.json")
+# The stacker dispenses the plate. A bare "stacker_3" would mean an operator places it.
+@orca.thread(labware=plate_1, start=("stacker_3", DISPENSE), end="waste_1")
+async def plate_1_journey(ctx: ThreadContext):
+    yield incubate_2hrs
 
-# Register resources
-registry = ResourceRegistry()
-registry.add_resources([shaker, arm])
-
-# Create system map
-system_map = SystemMap(registry)
-system_map.assign_resource({"shaker": shaker})
-
-# Define action and method
-shake_action = Shake(resource=shaker, duration=60, speed=500,
-                     inputs=[plate], outputs=[plate])
-shake_method = MethodTemplate("shake_method", actions=[shake_action])
-
-# Define thread and workflow
-plate_thread = ThreadTemplate(
-    labware_template=plate,
-    start=system_map.get_location("start_pad"),
-    end=system_map.get_location("end_pad"),
-    methods=[shake_method]
-)
-
-workflow = WorkflowTemplate(name="simple_workflow")
-workflow.add_thread(plate_thread, is_start=True)
-
-# Build and run
-event_bus = EventBus()
-builder = SdkToSystemBuilder(
-    name="Example System",
-    description="Simple example",
-    labwares=[plate],
-    resources=registry,
-    system_map=system_map,
-    methods=[shake_method],
-    workflows=[workflow],
-    event_bus=event_bus
-)
-system = builder.get_system()
-
-async def run():
-    await system.initialize_all()
-    executor = WorkflowExecutor(workflow, system)
-    await executor.start()
-
-asyncio.run(run())
+@orca.workflow(name="hamilton_smc_assay")
+def workflow(wf: WorkflowContext):
+    wf.start(plate_1_journey)
 ```
 
-## Supported Devices
+Run the full assay in simulation with `python -m examples.hamilton_smc.hamilton_smc_example`.
 
-| Device | Description | Import |
-|--------|-------------|--------|
-| Venus | Hamilton MLSTAR, Vantage liquid handlers | `Venus` |
-| A4SSealer | Azenta A4S plate sealer | `A4SSealer` |
-| Sealer | Generic sealer (PLR backends) | `Sealer` |
-| Shaker | Generic shaker (PLR backends) | `Shaker` |
-| Centrifuge | Generic centrifuge (PLR backends) | `Centrifuge` |
-| HumanTransfer | Manual plate movement with prompts | `HumanTransfer` |
-| Transporter | Robotic arm (PLR backends) | `Transporter` |
+## Command line
 
-All devices are imported from `orca.sdk.devices`.
+The `orca` command drives a local daemon over REST. Run these from the repo root. The daemon imports the topology and workflow modules you name, from the directory `orca start` ran in:
+
+```bash
+orca start
+orca topology mount examples.hamilton_smc.topology:build_topology --sim
+orca workflow load examples.hamilton_smc.workflows.hamilton_smc_assay:build_workflow
+orca run hamilton_smc_assay --run-mode PURE_SIM --wait
+orca shutdown
+```
+
+Every `orca run` needs `--run-mode`. `PURE_SIM` runs every device in simulation. `orca --help` lists the other commands.
 
 ## Documentation
 
-Full documentation available at: https://cheshirelabs.io/docs/orca-oss/intro
+**Full documentation is at https://cheshirelabs.io/docs/orca/intro**, including the quickstart, the SDK reference and the supported devices.
 
 ## Examples
 
-- [SMC Assay](./examples/smc_assay/smc_assay_example.py) - Full workflow with simulated devices
-- [Simple Venus Method](./examples/simple_venus_example/simple_venus_example.py) - Venus driver integration
-- [PyLabRobot Example](./examples/pylabrobot_example/pylabrobot_example.py) - PLR driver integration
+Each runs to completion in simulation, with no hardware. Run them from the repo root:
+
+| Example | Command |
+|---|---|
+| [Hamilton SMC assay](./examples/hamilton_smc/hamilton_smc_example.py): immunoassay with inline PyLabRobot pipetting on an ML STAR pair | `python -m examples.hamilton_smc.hamilton_smc_example` |
+| [Opentrons Flex SMC assay](./examples/opentrons_flex_smc/opentrons_flex_smc_example.py): the same assay on an Opentrons Flex | `python -m examples.opentrons_flex_smc.opentrons_flex_smc_example` |
+| [SMC assay](./examples/smc_assay/run_pure_sim.py): the same assay driven by protocol files | `python -m examples.smc_assay.run_pure_sim` |
+| [PyLabRobot walkthrough](./examples/pylabrobot_example/pylabrobot_example.py): most SDK features in one workflow, with a cherry pick from a CSV worklist and a serial dilution | `python -m examples.pylabrobot_example.pylabrobot_example` |
+| [Multi-lineage](./examples/multi_lineage/multi_lineage_example.py): several sample plates feeding one shared reservoir, with the group count set at submission | `python -m examples.multi_lineage.multi_lineage_example` |
+| [Hamilton VENUS](./examples/simple_venus_example/simple_venus_example.py): runs VENUS methods, with a person moving the plates. Each move waits for you to press Enter; `--live` drives a real Hamilton | `python -m examples.simple_venus_example.simple_venus_example` |
+| [Volume tracking](./examples/volume_tracking_example.py): how dispensed volume is recorded per well, with no workflow | `python -m examples.volume_tracking_example` |
 
 ## Acknowledgements
 
@@ -144,15 +102,29 @@ Orca builds on the work of the [PyLabRobot](https://github.com/PyLabRobot/pylabr
 }
 ```
 
+## Security
+
+**This release is meant for internal use only**: a lab machine or an internal
+network you control, operated by people you trust.
+
+The daemon has no authentication. `orca start` binds 127.0.0.1, and every route
+on it is open to every process on that computer. Workflows and methods are Python
+source that the daemon imports and runs. Run it on a machine only your operators
+use, and do not expose the port through a tunnel, a proxy or a container port
+map. [SECURITY.md](./SECURITY.md) has the detail and the address to report a
+vulnerability to.
+
 ## Contributing
 
 See [CONTRIBUTING](./CONTRIBUTING) for guidelines.
 
-Cheshire Labs follows an open core business model with dual licensing. Contributors must submit a contributor license agreement.
+Contributors must sign the [Cheshire Labs Contributor Agreement](https://cla-assistant.io/Cheshire-Labs/orca), which assigns copyright in the contribution to Cheshire Labs.
 
 ## License
 
-This project is released under [AGPLv3 license](./LICENSE). Plugins, scripts, and drivers are considered derivatives.
+Source-available under the [Server Side Public License v1 (SSPL-1.0)](./LICENSE)
+from 2.0.0 onward. Releases up to and including 1.0.0 were AGPL-3.0.
+[NOTICE](./NOTICE) names the copyright holder.
 
 ## Contact
 
