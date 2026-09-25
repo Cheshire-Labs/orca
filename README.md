@@ -102,6 +102,10 @@ Orca builds on the work of the [PyLabRobot](https://github.com/PyLabRobot/pylabr
 }
 ```
 
+## Dedication
+
+Orca is dedicated to the memory of my mom, Joanne Hull Salmi. See [DEDICATION.md](./DEDICATION.md).
+
 ## Security
 
 **This release is meant for internal use only**: a lab machine or an internal
