@@ -285,9 +285,9 @@ class DeviceFacade(IDeviceFacade):
             raise DeviceUnderExternalControlError(device_name)
         start = time.monotonic()
         with mode_scope(mode if mode is not None else OPERATOR_DEVICE_WRITE_BASE):
-            # IGenericExecutable is a locally-driven device's own command verb
-            # (VENUS). Everything else is reached over the gateway, where the
-            # advertised set is the gate.
+            # IGenericExecutable is a locally-driven device's own command verb.
+            # Everything else is reached over the gateway, where the advertised
+            # set is the gate.
             if isinstance(device, IGenericExecutable):
                 await device.execute(command, options or {})
                 value: JsonValue = None

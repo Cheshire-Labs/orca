@@ -14,6 +14,7 @@ from cheshire_drivers.gantry_models import GantryParkPosition, ParkGantryRequest
 
 from orca.devices.devices import CannotStepAsideError, LiquidHandler
 from orca.runtime.device_factory_context import use_device_factory
+from orca.runtime.run_modes import WorkflowRunMode, mode_scope
 
 from tests.test_helpers import _SingleDriverFactory
 
@@ -77,14 +78,63 @@ async def test_a_handler_that_can_neither_park_nor_home_says_so(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """The bench defect. Nothing was declared, so this is not a broken promise
-    and does not raise -- but it must not read as though the gantry moved."""
+    and does not raise -- but it must not read as though the gantry moved.
+
+    Seeded LIVE because that is the run the bench was on. Unseeded resolves
+    PURE_SIM, where the driver named is orca's own simulator and the warning
+    carries no instruction.
+    """
     handler = _handler_with(_DriverThatStaysPut())
 
     with caplog.at_level(logging.WARNING, logger="orca"):
-        await handler._step_aside()
+        with mode_scope(WorkflowRunMode.LIVE):
+            await handler._step_aside()
 
     assert "cannot be moved off its own deck" in caplog.text
     assert "_DriverThatStaysPut" in caplog.text
+
+
+async def test_simulation_does_not_tell_an_operator_to_bind_another_driver(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Every shipped sim example runs a handler whose sim driver cannot park.
+
+    The fact is still reported, so a reader is not left guessing why nothing
+    moved, but "bind a driver that can park" names orca's own simulator there:
+    not the driver the deployment chose, and not one the reader can replace.
+    """
+    handler = _handler_with(_DriverThatStaysPut())
+
+    with caplog.at_level(logging.INFO, logger="orca"):
+        with mode_scope(WorkflowRunMode.PURE_SIM):
+            await handler._step_aside()
+
+    assert "nothing parks a gantry in simulation" in caplog.text
+    assert "Bind a driver" not in caplog.text
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+async def test_a_sim_run_does_not_use_up_the_warning_a_live_run_is_owed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The message is latched per device so a run does not repeat it every hop.
+
+    Latching on "already said something" would let a PURE_SIM pass swallow the
+    warning a later LIVE submission in the same process has to get.
+    """
+    handler = _handler_with(_DriverThatStaysPut())
+
+    with mode_scope(WorkflowRunMode.PURE_SIM):
+        await handler._step_aside()
+    # Whatever the sim pass said is not what this asserts, and it lands in
+    # caplog whether or not the block below raised the level.
+    caplog.clear()
+
+    with caplog.at_level(logging.WARNING, logger="orca"):
+        with mode_scope(WorkflowRunMode.LIVE):
+            await handler._step_aside()
+
+    assert "cannot be moved off its own deck" in caplog.text
 
 
 async def test_a_declared_park_the_driver_cannot_honor_refuses() -> None:

@@ -82,13 +82,13 @@ class _DeviceThatCountsItsHooks(UniversalMockDevice):
 
     async def _do_notify_placed(
         self, labware: LabwareInstance, mover: IPlateMover,
-        target: str | None = None,
+        target: str | None = None, site: str | None = None,
     ) -> None:
         self.arrival_hooks += 1
         if self.refuse_next_arrival:
             self.refuse_next_arrival = False
             raise RuntimeError("Simulated device fault while accepting the plate")
-        await super()._do_notify_placed(labware, mover, target)
+        await super()._do_notify_placed(labware, mover, target, site)
 
 
 async def _build() -> tuple[

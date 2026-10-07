@@ -461,7 +461,9 @@ class LiquidHandler(_LiquidHandlerBase):
             trust_driver_state=trust_driver_state,
         )
         self._park_gripper_at = park_gripper_at
-        self._warned_it_cannot_step_aside = False
+        # Keyed by resolved mode: which driver cannot park, and whether that is
+        # worth a warning, both change with the mode.
+        self._told_it_cannot_step_aside: set[WorkflowRunMode] = set()
         self._deck_layout_store: IDeckLayoutStore = deck_layout_store or NullDeckLayoutStore()
         self._deck_layout = deck_layout
         self._gripper: TransporterBase | None = None
@@ -731,7 +733,7 @@ class LiquidHandler(_LiquidHandlerBase):
         answers this exactly."""
         return self._gripper is not None and mover is self._gripper
 
-    async def _do_notify_placed(self, labware: LabwareInstance, mover: IPlateMover, target: str | None = None) -> None:
+    async def _do_notify_placed(self, labware: LabwareInstance, mover: IPlateMover, target: str | None = None, site: str | None = None) -> None:
         if target is None:
             await self.driver.close()
             return
@@ -767,7 +769,7 @@ class LiquidHandler(_LiquidHandlerBase):
         ))
         self._world_instances()[labware.name] = labware.id
 
-    async def _do_notify_picked(self, labware: LabwareInstance, mover: IPlateMover, target: str | None = None) -> None:
+    async def _do_notify_picked(self, labware: LabwareInstance, mover: IPlateMover, target: str | None = None, site: str | None = None) -> None:
         # Un-materialize only on a true departure (external arm pick); a
         # gripper hop keeps the plate in the driver world for its move_plate.
         if self._is_internal_hop(mover):
@@ -784,12 +786,12 @@ class LiquidHandler(_LiquidHandlerBase):
         state = await driver.get_deck_state(GetDeckStateRequest())
         return any(resource.name == name for resource in state.labware)
 
-    async def _do_prepare_for_pick(self, labware: LabwareInstance, mover: IPlateMover, target: str | None = None) -> None:
+    async def _do_prepare_for_pick(self, labware: LabwareInstance, mover: IPlateMover, target: str | None = None, site: str | None = None) -> None:
         if target is None or self._is_internal_hop(mover):
             return
         await self.driver.open()
 
-    async def _do_prepare_for_place(self, labware: LabwareInstance, mover: IPlateMover, target: str | None = None) -> None:
+    async def _do_prepare_for_place(self, labware: LabwareInstance, mover: IPlateMover, target: str | None = None, site: str | None = None) -> None:
         if self._is_internal_hop(mover):
             return
         await self.driver.open()
@@ -901,11 +903,30 @@ class LiquidHandler(_LiquidHandlerBase):
         self._warn_it_cannot_step_aside(driver)
         return None
 
-    def _warn_it_cannot_step_aside(self, driver: object) -> None:
-        """Once per device: a run makes this hop repeatedly."""
-        if self._warned_it_cannot_step_aside:
+    def _warn_it_cannot_step_aside(
+        self, driver: ILiquidHandlerWithProtocolDriver,
+    ) -> None:
+        """Once per device per mode: a run makes this hop repeatedly.
+
+        PURE_SIM gets the same fact at INFO with no instruction attached. The
+        driver named there is orca's own simulator, not the one a wire run
+        binds, so "bind a driver that can park" points at a driver the reader
+        never chose and cannot replace. Every shipped sim example reaches this,
+        and a warning nobody can act on is the one an operator learns to skip.
+        """
+        mode = self.effective_mode
+        if mode in self._told_it_cannot_step_aside:
             return
-        self._warned_it_cannot_step_aside = True
+        self._told_it_cannot_step_aside.add(mode)
+        if mode is WorkflowRunMode.PURE_SIM:
+            orca_logger.info(
+                "%s: nothing parks a gantry in simulation. Its simulator (%s) "
+                "does not declare IGantryParking. The driver that has to park "
+                "is the one a DEVICE_SIM or LIVE run binds.",
+                self.name,
+                type(driver).__name__,
+            )
+            return
         orca_logger.warning(
             "%s: cannot be moved off its own deck. Its driver (%s) does not "
             "declare IGantryParking, so an arm reaching into this deck meets "

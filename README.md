@@ -26,6 +26,8 @@ pip install -e ".[dev]"
 
 pip also installs Orca's driver layer, [cheshire-drivers](https://github.com/Cheshire-Labs/cheshire-drivers), from GitHub at the release this version of Orca pins. cheshire-drivers installs a fork of PyLabRobot under the name `pylabrobot`, which replaces any upstream PyLabRobot already in the environment. That is why the environment should be a new one. The cheshire-drivers README explains the fork.
 
+The first Orca command you run after installing prints nothing for up to half a minute while Python compiles the bytecode for Orca, cheshire-drivers and PyLabRobot. It is not hung. Every run after that starts in a few seconds.
+
 The `cheshire-orca` package on PyPI is the old 0.x release, not this one. The `[dev]` extra adds the test tooling (pytest, black). To run the tests, also clone [orca-client](https://github.com/Cheshire-Labs/orca-client) beside `orca`; see [CONTRIBUTING](./CONTRIBUTING).
 
 ## Example
@@ -73,7 +75,7 @@ Every `orca run` needs `--run-mode`. `PURE_SIM` runs every device in simulation.
 
 ## Examples
 
-Each runs to completion in simulation, with no hardware. Run them from the repo root:
+None of these need hardware. All but the Venus example run to completion on their own; the Venus example hands every plate move to a person, so it waits for you to press Enter and needs a terminal you can type into. Run them from the repo root:
 
 | Example | Command |
 |---|---|
