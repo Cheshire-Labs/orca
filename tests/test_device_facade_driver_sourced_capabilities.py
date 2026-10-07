@@ -18,7 +18,7 @@ from typing import Callable, ClassVar
 
 import pytest
 
-from cheshire_drivers.interfaces import IProtocolRunnerDriver
+from cheshire_drivers.labware_handoff import IgnoresLabwareHandoff
 from cheshire_drivers.protocol_runner_models import RunProtocolRequest
 from cheshire_drivers.sims import SimLiquidHandlerDriver
 from orca.devices.devices import (
@@ -41,7 +41,7 @@ from orca.runtime.facades.devices import (
 )
 
 
-class _ProtocolOnlyLiquidHandlerDriver(IProtocolRunnerDriver):
+class _ProtocolOnlyLiquidHandlerDriver(IgnoresLabwareHandoff):
     """Bravo-style protocol-only LH driver: advertises `{IProtocolRunner}`.
 
     A real protocol-only liquid handler (Agilent Bravo + VWorks, Hamilton

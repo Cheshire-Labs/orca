@@ -35,6 +35,8 @@ class LabwareStagingBridge(ILabwarePlaceable):
     def __init__(self, name: str, device: Device) -> None:
         self._name = name
         self._device = device
+        # The bare site label ('sample_site'), which the device's hooks receive.
+        self._site = name.split("/", 1)[1] if "/" in name else name
         self._occupancy = PositionOccupancy(name)
 
     @property
@@ -83,14 +85,14 @@ class LabwareStagingBridge(ILabwarePlaceable):
         # Same lock the action dispatcher holds, so a place can't drive the
         # device concurrently. Order is always transporter.lock then device.lock.
         async with self._device.lock.held_for("prepare_for_place"):
-            await self._device._do_prepare_for_place(labware, mover)
+            await self._device._do_prepare_for_place(labware, mover, site=self._site)
 
     async def prepare_for_pick(self, labware: LabwareInstance, mover: IPlateMover) -> None:
         if self._occupancy.accessible_labware is labware:
             return
         orca_logger.info(f"{self} - preparing for pick of {labware}")
         async with self._device.lock.held_for("prepare_for_pick"):
-            await self._device._do_prepare_for_pick(labware, mover)
+            await self._device._do_prepare_for_pick(labware, mover, site=self._site)
             self._occupancy.reached(labware, Reach.AT_HAND)
 
     async def notify_placed(self, labware: LabwareInstance, mover: IPlateMover) -> None:
@@ -104,7 +106,7 @@ class LabwareStagingBridge(ILabwarePlaceable):
         # Projection op + ledger write share ONE device.lock section, else a
         # concurrent reconcile sees a torn state (move then record).
         async with self._device.lock.held_for("notify_placed"):
-            await self._device._do_notify_placed(labware, mover)
+            await self._device._do_notify_placed(labware, mover, site=self._site)
             self._occupancy.reached(labware, Reach.INSIDE)
 
     async def notify_picked(self, labware: LabwareInstance, mover: IPlateMover) -> None:
@@ -115,7 +117,7 @@ class LabwareStagingBridge(ILabwarePlaceable):
         orca_logger.info(f"{self} - labware {labware} picked from stage")
         self._occupancy.leave(labware)
         async with self._device.lock.held_for("notify_picked"):
-            await self._device._do_notify_picked(labware, mover)
+            await self._device._do_notify_picked(labware, mover, site=self._site)
 
     def reset_loaded_labware(self) -> None:
         """Drop every reference this site holds. Driven by clear-all, which

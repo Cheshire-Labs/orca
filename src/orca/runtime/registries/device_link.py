@@ -83,6 +83,11 @@ class _AgentHeld(Protocol):
     def instrument_is_held_remotely(self) -> bool: ...
 
 
+def is_agent_held(driver: DriverPairElement) -> bool:
+    """Whether a device bridge holds this driver's instrument."""
+    return isinstance(driver, _AgentHeld)
+
+
 def mark_agent_held(driver: DriverPairElement) -> DriverPairElement:
     """Record that this driver reaches its instrument through a device bridge.
 

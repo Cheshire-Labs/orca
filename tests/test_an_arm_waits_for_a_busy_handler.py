@@ -38,7 +38,7 @@ from orca.resource_models.labware_placeable_interface import IPlateMover
 from orca.resource_models.location import Location
 from orca.resource_models.plate_pad import PlatePad
 from orca.runtime.device_factory_context import use_device_factory
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.runtime.run_modes import WorkflowRunMode, mode_scope
 
 from tests.test_helpers import _SingleDriverFactory
 
@@ -323,12 +323,18 @@ async def test_a_remote_handler_that_advertises_no_parking_is_not_asked(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Structurally it looks able, so asking anyway would fail every handoff into
-    that deck on a deployment that simply has nothing to park."""
+    that deck on a deployment that simply has nothing to park.
+
+    Seeded LIVE because a remote handler is a wire deployment. Unseeded resolves
+    PURE_SIM, where the driver named is orca's own simulator and the message
+    carries no instruction.
+    """
     driver = _RemoteHandlerWithNoGantryToPark()
     handler = _handler(driver)
 
     with caplog.at_level(logging.WARNING, logger="orca"):
-        await handler.step_aside_for(_Arm())
+        with mode_scope(WorkflowRunMode.LIVE):
+            await handler.step_aside_for(_Arm())
 
     assert driver.asks == 0
     assert "cannot be moved off its own deck" in caplog.text

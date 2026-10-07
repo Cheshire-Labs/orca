@@ -145,7 +145,7 @@ class TestLabwareStagingBridgeHookDelegation:
         nest = LabwareStagingBridge("dev1", device)
         labware = await create_test_plate_template("plate").create_instance()
         await (nest.notify_placed(labware, EXTERNAL_MOVER))
-        device._do_notify_placed.assert_called_once_with(labware, EXTERNAL_MOVER)
+        device._do_notify_placed.assert_called_once_with(labware, EXTERNAL_MOVER, site="dev1")
 
     async def test_delegates_prepare_for_place(self) -> None:
         device = UniversalMockDevice("dev1")
@@ -153,7 +153,7 @@ class TestLabwareStagingBridgeHookDelegation:
         nest = LabwareStagingBridge("dev1", device)
         labware = await create_test_plate_template("plate").create_instance()
         await (nest.prepare_for_place(labware, EXTERNAL_MOVER))
-        device._do_prepare_for_place.assert_called_once_with(labware, EXTERNAL_MOVER)
+        device._do_prepare_for_place.assert_called_once_with(labware, EXTERNAL_MOVER, site="dev1")
 
     async def test_delegates_prepare_for_pick(self) -> None:
         device = UniversalMockDevice("dev1")
@@ -162,7 +162,7 @@ class TestLabwareStagingBridgeHookDelegation:
         labware = await create_test_plate_template("plate").create_instance()
         await (nest.notify_placed(labware, EXTERNAL_MOVER))
         await (nest.prepare_for_pick(labware, EXTERNAL_MOVER))
-        device._do_prepare_for_pick.assert_called_once_with(labware, EXTERNAL_MOVER)
+        device._do_prepare_for_pick.assert_called_once_with(labware, EXTERNAL_MOVER, site="dev1")
 
     async def test_delegates_notify_picked(self) -> None:
         device = UniversalMockDevice("dev1")
@@ -172,4 +172,4 @@ class TestLabwareStagingBridgeHookDelegation:
         await (nest.notify_placed(labware, EXTERNAL_MOVER))
         await (nest.prepare_for_pick(labware, EXTERNAL_MOVER))
         await (nest.notify_picked(labware, EXTERNAL_MOVER))
-        device._do_notify_picked.assert_called_once_with(labware, EXTERNAL_MOVER)
+        device._do_notify_picked.assert_called_once_with(labware, EXTERNAL_MOVER, site="dev1")

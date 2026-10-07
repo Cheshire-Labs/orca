@@ -272,16 +272,16 @@ class Device(IDevice, IModeAware, Generic[TDriver], ABC):
         """
         return tuple(lw.id for lw in self.all_loaded_labware)
 
-    async def _do_prepare_for_place(self, labware: LabwareInstance, mover: IPlateMover, target: str | None = None) -> None:
+    async def _do_prepare_for_place(self, labware: LabwareInstance, mover: IPlateMover, target: str | None = None, site: str | None = None) -> None:
         await self.driver.open()
 
-    async def _do_prepare_for_pick(self, labware: LabwareInstance, mover: IPlateMover, target: str | None = None) -> None:
+    async def _do_prepare_for_pick(self, labware: LabwareInstance, mover: IPlateMover, target: str | None = None, site: str | None = None) -> None:
         await self.driver.open()
 
-    async def _do_notify_picked(self, labware: LabwareInstance, mover: IPlateMover, target: str | None = None) -> None:
+    async def _do_notify_picked(self, labware: LabwareInstance, mover: IPlateMover, target: str | None = None, site: str | None = None) -> None:
         await self.driver.close()
 
-    async def _do_notify_placed(self, labware: LabwareInstance, mover: IPlateMover, target: str | None = None) -> None:
+    async def _do_notify_placed(self, labware: LabwareInstance, mover: IPlateMover, target: str | None = None, site: str | None = None) -> None:
         await self.driver.close()
 
     def __str__(self) -> str:

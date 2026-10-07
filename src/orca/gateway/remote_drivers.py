@@ -68,7 +68,7 @@ from cheshire_drivers.liquid_handler_models import (
     ReturnTips96Request,
     RemoveDeckLabwareRequest,
 )
-from cheshire_drivers.protocol_runner_models import RunProtocolRequest
+from cheshire_drivers.protocol_runner_models import LabwareHandoffRequest, RunProtocolRequest
 from cheshire_drivers.reader_models import ReadRequest
 from cheshire_drivers.sealer_models import SealRequest
 from cheshire_drivers.shaker_models import (
@@ -431,7 +431,23 @@ class RemoteDelidderDriver(_RemoteDriverBase, IDelidderDriver):
         await self._send("delid", request.model_dump(exclude_none=True))
 
 
-class RemoteProtocolRunnerDriver(_RemoteDriverBase, IProtocolRunnerDriver):
+class _ForwardsLabwareHandoff(_RemoteDriverBase, IProtocolRunnerDriver):
+    """Forwards the four labware handoff hooks over the wire."""
+
+    async def prepare_for_place(self, request: LabwareHandoffRequest) -> None:
+        await self._send("prepare_for_place", request.model_dump(exclude_none=True))
+
+    async def notify_placed(self, request: LabwareHandoffRequest) -> None:
+        await self._send("notify_placed", request.model_dump(exclude_none=True))
+
+    async def prepare_for_pick(self, request: LabwareHandoffRequest) -> None:
+        await self._send("prepare_for_pick", request.model_dump(exclude_none=True))
+
+    async def notify_picked(self, request: LabwareHandoffRequest) -> None:
+        await self._send("notify_picked", request.model_dump(exclude_none=True))
+
+
+class RemoteProtocolRunnerDriver(_ForwardsLabwareHandoff):
     """`IProtocolRunnerDriver` whose every method forwards over the wire."""
 
     interfaces: ClassVar[frozenset[str]] = frozenset({"IProtocolRunner"})
@@ -440,7 +456,7 @@ class RemoteProtocolRunnerDriver(_RemoteDriverBase, IProtocolRunnerDriver):
         await self._send("run_protocol", request.model_dump(exclude_none=True))
 
 
-class RemotePlateWasherDriver(_RemoteDriverBase, IPlateWasherDriver):
+class RemotePlateWasherDriver(_ForwardsLabwareHandoff, IPlateWasherDriver):
     """`IPlateWasherDriver` whose every method forwards over the wire.
 
     PlateWasher inherits from `IProtocolRunnerDriver`, so the only abstract
@@ -636,13 +652,28 @@ class RemoteLiquidHandlerDriver(_RemoteLiquidHandlerWireMixin):
     interfaces: ClassVar[frozenset[str]] = frozenset({"ILiquidHandler"})
 
     async def run_protocol(self, request: RunProtocolRequest) -> None:
-        raise RunProtocolNotSupportedError(
+        raise self._no_protocol_runner("run_protocol")
+
+    async def prepare_for_place(self, request: LabwareHandoffRequest) -> None:
+        raise self._no_protocol_runner("prepare_for_place")
+
+    async def notify_placed(self, request: LabwareHandoffRequest) -> None:
+        raise self._no_protocol_runner("notify_placed")
+
+    async def prepare_for_pick(self, request: LabwareHandoffRequest) -> None:
+        raise self._no_protocol_runner("prepare_for_pick")
+
+    async def notify_picked(self, request: LabwareHandoffRequest) -> None:
+        raise self._no_protocol_runner("notify_picked")
+
+    def _no_protocol_runner(self, command: str) -> RunProtocolNotSupportedError:
+        return RunProtocolNotSupportedError(
             f"Device {self._name!r} advertises {sorted(self.interfaces)!r} and "
-            f"has no IProtocolRunner capability; run_protocol is not supported."
+            f"has no IProtocolRunner capability; {command} is not supported."
         )
 
 
-class RemoteLiquidHandlerWithProtocolDriver(_RemoteLiquidHandlerWireMixin):
+class RemoteLiquidHandlerWithProtocolDriver(_ForwardsLabwareHandoff, _RemoteLiquidHandlerWireMixin):
     """plr + protocol liquid handler (advertises `{ILiquidHandler, IProtocolRunner}`).
 
     A Hamilton ML STAR + Venus, an Agilent Bravo + VWorks with PLR atomic ops,
@@ -657,7 +688,7 @@ class RemoteLiquidHandlerWithProtocolDriver(_RemoteLiquidHandlerWireMixin):
         await self._forward_run_protocol(request)
 
 
-class RemoteProtocolOnlyLiquidHandlerDriver(_RemoteLiquidHandlerWireMixin):
+class RemoteProtocolOnlyLiquidHandlerDriver(_ForwardsLabwareHandoff, _RemoteLiquidHandlerWireMixin):
     """protocol-only liquid handler (advertises `{IProtocolRunner}`).
 
     An Agilent Bravo + VWorks driven exclusively by vendor protocol files (no

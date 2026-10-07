@@ -6,7 +6,7 @@ The orca facade behind `orca device ...` and the daemon routes read a different
 source: the orca-side interface bridge. Anything the driver forwards to a vendor
 object (a PF400 controller command, the Flex gripper's jaws) was therefore
 listed nowhere, refused by `device invoke`, and refused by `device send` unless
-the device happened to implement IGenericExecutable, which only a VENUS does.
+the device happened to implement IGenericExecutable.
 
 `invoke` also stripped everything up to the last dot before dispatching, so a
 prefixed vendor name (`gripper.ungrip`) would have reached for `ungrip` on the

@@ -338,8 +338,11 @@ class SystemMap(ILocationRegistry, IResourceLocator, IResourceLocationObserver, 
                 # Two movers reach one node pair, and multi-mover edges are
                 # not modelled. First writer wins; rejecting breaks hamilton_smc.
                 orca_logger.warning(
-                    "add_edge: %s -> %s is already served by %s; %s is shadowed and "
-                    "will never route over this pair. Multi-mover edges aren't modelled.",
+                    "add_edge: %s -> %s is already served by %s, so %s is "
+                    "shadowed and will never carry between them. orca models "
+                    "one mover per pair of positions, so a handler with its own "
+                    "gripper inside an arm's reach always lands here. It is not "
+                    "a topology error and there is nothing to change.",
                     start, end, incumbent.name, transporter.name,
                 )
             return
