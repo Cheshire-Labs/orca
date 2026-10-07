@@ -6,6 +6,13 @@ registers a workflow on it; `POST /unload` tears it down. Routes that
 require a loaded system check via `_require_system_runtime` and return 409
 when the slot is empty.
 
+The daemon serves the device-bridge gateway itself, so it is also the host that
+injects gateway state into the runtime: `app.state.device_connections` adapts the
+connection tracker `/ws/devices` writes, and `POST /mount-topology` passes it to
+the `SystemRuntime` as both the gateway registry and the unified device
+registry's connection source. A runtime built without it reads
+`NullDeviceConnectionSource` and reports every connected bridge as absent.
+
 `create_app` takes two injection points:
 - `initial_system_runtime`: tests pass a pre-started SystemRuntime to skip
   the mount path. Production passes None; `POST /mount-topology` populates it.
@@ -23,6 +30,13 @@ from fastapi.responses import JSONResponse
 from orca.daemon.event_stream import SseEventSink
 from orca.daemon.operations_router import create_operations_router
 from orca.daemon.routes import create_router
+from cheshire_drivers.gateway_protocol import DeviceConnectInfo
+from orca.gateway.connection_source import DeviceConnectionSource
+from orca.gateway.controller import device_controller
+from orca.gateway.controller.disconnect_grace import DisconnectGrace
+from orca.gateway.mode_resolution import system_mode_resolver
+from orca.gateway.registry import device_connection_tracker
+from orca.gateway.remote_device_factory import RemoteDeviceFactory
 from orca.gateway.websocket.connection_events import connection_events
 from orca.gateway.websocket.manager import connection_manager
 from orca.gateway.websocket.health_monitor import WireHealthMonitor
@@ -32,6 +46,7 @@ from orca.runtime.deployment_registries import (
     DeploymentRegistries,
     build_in_memory_deployment_layer,
 )
+from orca.runtime.run_modes import OPERATOR_DEVICE_WRITE_BASE
 from orca.runtime.system_runtime import SystemRuntime
 
 
@@ -47,20 +62,51 @@ async def _emit_dropped_disconnects(
             await connection_events.emit_disconnected(device_id)
 
 
+def _install_disconnect_grace(app: FastAPI) -> None:
+    """Give the controller the per-device grace each topology card declares."""
+
+    async def _resolve_disconnect_timeout(device_id: str) -> float | None:
+        runtime: SystemRuntime | None = app.state.system_runtime
+        if runtime is None:
+            return None
+        entry = await runtime.device_registry.get(device_id)
+        if entry is None or entry.topology_card is None:
+            return None
+        return entry.topology_card.disconnect_timeout_seconds
+
+    grace = DisconnectGrace()
+    grace.set_topology_resolver(_resolve_disconnect_timeout)
+    device_controller.set_disconnect_grace(grace)
+
+
+async def _resume_commands_on_reconnect(
+    device: DeviceConnectInfo, _client_id: str,
+) -> None:
+    await device_controller.on_device_reconnected(device.name)
+
+
 @asynccontextmanager
 async def _daemon_lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Run the stale-connection sweep for the daemon's /ws/devices gateway.
+    """Run the daemon's /ws/devices gateway for the life of the app.
 
-    Without this, missed-heartbeat connections are never pruned and
-    device.disconnected never fires for dead device bridges. The monitor stops
-    on shutdown.
+    The stale-connection sweep prunes dead bridges and fires
+    device.disconnected for them. The controller's disconnect grace and
+    reconnect hook are wired for the life of the app, and removed on shutdown.
     """
     monitor = WireHealthMonitor(connection_manager)
     monitor.start(on_dropped=_emit_dropped_disconnects)
     app.state.wire_health_monitor = monitor
+    _install_disconnect_grace(app)
+    connection_events.subscribe_disconnected(device_controller.on_device_disconnected)
+    connection_events.subscribe_connected(_resume_commands_on_reconnect)
     try:
         yield
     finally:
+        connection_events.unsubscribe_connected(_resume_commands_on_reconnect)
+        connection_events.unsubscribe_disconnected(
+            device_controller.on_device_disconnected,
+        )
+        device_controller.set_disconnect_grace(DisconnectGrace())
         await monitor.stop()
         # Dispose the daemon-lifetime store engines (access-config + catalog) so
         # their aiosqlite worker threads do not outlive the loop at process exit.
@@ -110,6 +156,20 @@ def create_app(
         app.state.store_factory, app.state.deployment_registries = (
             build_in_memory_deployment_layer()
         )
+
+    # Every runtime this daemon mounts reads connections from the tracker that
+    # /ws/devices writes.
+    app.state.device_connections = DeviceConnectionSource(device_connection_tracker)
+    # Bound while a topology is imported, so every device it declares is
+    # driven through the device bridge.
+    app.state.device_factory = RemoteDeviceFactory(
+        controller=device_controller,
+        mode_resolver=system_mode_resolver(
+            lambda: app.state.system_runtime,
+            when_unseeded=OPERATOR_DEVICE_WRITE_BASE,
+        ),
+        profile_source=device_connection_tracker.peek_interfaces,
+    )
 
     # One sink for the daemon's lifetime. SSE subscribers register queues
     # on this; the /mount-topology route hands it to each new SystemRuntime.

@@ -75,7 +75,7 @@ Every `orca run` needs `--run-mode`. `PURE_SIM` runs every device in simulation.
 
 ## Examples
 
-None of these need hardware. All but the Venus example run to completion on their own; the Venus example hands every plate move to a person, so it waits for you to press Enter and needs a terminal you can type into. Run them from the repo root:
+None of these need hardware. Each runs to completion on its own. Run them from the repo root:
 
 | Example | Command |
 |---|---|
@@ -84,7 +84,7 @@ None of these need hardware. All but the Venus example run to completion on thei
 | [SMC assay](./examples/smc_assay/run_pure_sim.py): the same assay driven by protocol files | `python -m examples.smc_assay.run_pure_sim` |
 | [PyLabRobot walkthrough](./examples/pylabrobot_example/pylabrobot_example.py): most SDK features in one workflow, with a cherry pick from a CSV worklist and a serial dilution | `python -m examples.pylabrobot_example.pylabrobot_example` |
 | [Multi-lineage](./examples/multi_lineage/multi_lineage_example.py): several sample plates feeding one shared reservoir, with the group count set at submission | `python -m examples.multi_lineage.multi_lineage_example` |
-| [Hamilton VENUS](./examples/simple_venus_example/simple_venus_example.py): runs VENUS methods, with a person moving the plates. Each move waits for you to press Enter; `--live` drives a real Hamilton | `python -m examples.simple_venus_example.simple_venus_example` |
+| [Hamilton VENUS](./examples/simple_venus_example/simple_venus_example.py): runs VENUS methods, with a person moving the plates | `python -m examples.simple_venus_example.simple_venus_example` |
 | [Volume tracking](./examples/volume_tracking_example.py): how dispensed volume is recorded per well, with no workflow | `python -m examples.volume_tracking_example` |
 
 ## Acknowledgements

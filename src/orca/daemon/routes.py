@@ -139,6 +139,7 @@ from orca.daemon.schemas import (
     VariablesListResponse,
     WorkflowTemplateDTO,
 )
+from orca.runtime.device_factory_context import use_device_factory
 from orca.runtime.run_modes import WorkflowRunMode
 from orca.runtime.sim_diagnostics import enable_sim_coroutine_diagnostics
 from orca.runtime.runtime_interface import (
@@ -383,7 +384,8 @@ async def _build_and_start(
         )
         request.app.state.store_factory = stores
     try:
-        topology = system_builder.load_topology_spec(body.spec, stores)
+        with use_device_factory(request.app.state.device_factory):
+            topology = system_builder.load_topology_spec(body.spec, stores)
     except system_builder.SpecFormatError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except system_builder.ModuleImportError as e:
@@ -396,12 +398,13 @@ async def _build_and_start(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
     try:
-        build = await build_system(
-            name=body.spec,
-            topology=topology,
-            stores=stores,
-            workflow=None,
-        )
+        with use_device_factory(request.app.state.device_factory):
+            build = await build_system(
+                name=body.spec,
+                topology=topology,
+                stores=stores,
+                workflow=None,
+            )
     except Exception as e:
         # The builder names the offending teachpoint and lists what was
         # registered; letting it escape turns that into an empty 500.
@@ -413,6 +416,9 @@ async def _build_and_start(
     # Reconcile access-config seeds into the SQLite store; the async Service
     # write cannot run at the sync stores.access_configs(seed=...) call.
     await stores.apply_seeds()
+    # One adapter passed twice below, so `runtime.gateway` and the unified
+    # registry's connection card cannot answer differently about one bridge.
+    device_connections = request.app.state.device_connections
     # `body.sim` only feeds /health; each submission picks its own run mode.
     rt = SystemRuntime(
         build.system,
@@ -422,6 +428,8 @@ async def _build_and_start(
         grip_profile_service=stores.grip_profiles(),
         profile_store=stores.profiles(),
         labware_catalog_store=stores.labware_catalog_store(),
+        gateway_registry=device_connections,
+        connection_source=device_connections,
     )
     if body.sim:
         # Report un-awaited coroutines for the whole sim run; a hardware mount leaves logging alone.
