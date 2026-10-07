@@ -9,10 +9,11 @@ itself, from a directory that is not the repo root, as a reader would.
 
 import importlib
 import pathlib
-import re
 from collections.abc import Awaitable, Callable
 
 import pytest
+from cheshire_drivers.sims import SimTransporterDriver
+from cheshire_drivers.transporter_models import PickAtCoordsRequest, PlaceAtCoordsRequest
 
 pytest.importorskip("pylabrobot", reason="pylabrobot not installed")
 
@@ -49,24 +50,30 @@ async def test_the_smc_example_runs_to_completion(
     await _run("examples.smc_assay.smc_assay_example", "run", (True,))
 
 
-async def test_the_venus_example_tells_the_operator_which_site_each_plate_goes_to(
+async def test_the_venus_example_moves_each_plate_to_its_site(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Its transporter is a person: every pick and place prints a prompt and waits for Enter."""
-    prompts: list[str] = []
+    """Its transporter is a person; in simulation each pick and place still names the site."""
+    picks: list[str] = []
+    places: list[str] = []
+    pick = SimTransporterDriver.pick_at_coords
+    place = SimTransporterDriver.place_at_coords
 
-    def confirm(prompt: str = "") -> str:
-        prompts.append(prompt)
-        return ""
+    async def record_pick(self: SimTransporterDriver, request: PickAtCoordsRequest) -> None:
+        picks.append(request.teachpoint.position_id)
+        await pick(self, request)
+
+    async def record_place(self: SimTransporterDriver, request: PlaceAtCoordsRequest) -> None:
+        places.append(request.teachpoint.position_id)
+        await place(self, request)
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("builtins.input", confirm)
+    monkeypatch.setattr(SimTransporterDriver, "pick_at_coords", record_pick)
+    monkeypatch.setattr(SimTransporterDriver, "place_at_coords", record_place)
     await _run("examples.simple_venus_example.simple_venus_example", "run", (True,))
 
-    picks = [re.search(r"PICK UP .* from '(.+)'", p) for p in prompts[0::2]]
-    places = [re.search(r"PLACE .* at '(.+)'", p) for p in prompts[1::2]]
-    moves = [(pick.group(1), place.group(1)) for pick, place in zip(picks, places) if pick and place]
-    assert len(moves) * 2 == len(prompts), prompts
+    moves = list(zip(picks, places))
+    assert len(picks) == len(places), (picks, places)
     assert ("plate_pad_1", "ml_star_position_1/sample_site") in moves, moves
     assert ("plate_pad_3", "ml_star_position_1/transfer_site") in moves, moves
     assert all(place != "ml_star_position_1" for _, place in moves), moves

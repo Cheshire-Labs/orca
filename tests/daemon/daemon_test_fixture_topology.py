@@ -17,6 +17,8 @@ from collections.abc import AsyncGenerator
 
 import orca.orca as orca
 from orca.resource_models.resource_pool import ResourcePool
+from orca.runtime.device_factory import SimDeviceFactory
+from orca.runtime.device_factory_context import use_device_factory
 from orca.runtime.store_factory import IRuntimeStoreFactory
 from orca.sdk.build import Topology
 from orca.workflow_models.action_context import ActionContext
@@ -34,10 +36,14 @@ from tests.test_helpers import (
 
 
 def build_topology(stores: IRuntimeStoreFactory) -> Topology:
-    """One shaker + one transporter + one pad. Fresh objects per call."""
+    """One shaker + one transporter + one pad. Fresh objects per call.
+
+    The transporter is a local simulator: no orca-client stands behind this fixture.
+    """
     del stores
     shaker = create_test_device("shaker1")
-    transporter = create_test_transporter("robot1", ["shaker1", "pad1"])
+    with use_device_factory(SimDeviceFactory()):
+        transporter = create_test_transporter("robot1", ["shaker1", "pad1"])
     from orca.resource_models.plate_pad import PlatePad
 
     return Topology(

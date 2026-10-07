@@ -1,14 +1,11 @@
-"""A Venus run end to end, down to a fake HxRun.exe, in both places Venus can run.
+"""A Venus run end to end through the device bridge, down to a fake HxRun.exe.
 
-- Through the device bridge: a fake controller plays orca-client and hands each
-  wire command to a real `VenusProtocolDriver`, the way orca-client does.
-- On the Hamilton PC itself: orca runs with no device bridge, and Venus builds
-  that driver from its own arguments.
-
-Either way the arm puts the plate on a Venus site, the pick/place hook methods
-run with the plate and the site, the action's method runs with its values, a
-failed method stops the plate, and the volumes and tips the action declares land
-in the labware record only when the method succeeds.
+A fake controller plays orca-client and hands each wire command to a real
+`VenusProtocolDriver`, the way orca-client does. The arm puts the plate on a
+Venus site, the pick/place hook methods run with the plate and the site, the
+action's method runs with its values, a failed method stops the plate, and the
+volumes and tips the action declares land in the labware record only when the
+method succeeds.
 """
 import os
 import pathlib
@@ -17,8 +14,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from enum import Enum
-from typing import Any, Callable, Dict, Optional, cast
+from typing import Any, Dict, Optional, cast
 
 import pytest
 from pydantic import BaseModel, JsonValue
@@ -29,7 +25,7 @@ from cheshire_drivers import Teachpoint
 from cheshire_drivers.driver_errors import outcome_of
 from cheshire_drivers.protocol_runner_request_validation import wrap_protocol_runner_payload
 from cheshire_drivers.sims import SimStorageDriver, SimTransporterDriver
-from cheshire_drivers.venus_driver import VenusProtocolDriver
+from cheshire_drivers.venus_driver import SimulationVenusProtocolDriver, VenusProtocolDriver
 from orca.devices.devices import Storage
 from orca.devices.venus import Venus
 from orca.gateway.controller.controller import DeviceController
@@ -65,11 +61,6 @@ if pathlib.Path(sys.argv[2]).name == os.environ.get("FAKE_HXRUN_FAILS", ""):
     sys.exit(3)
 """
 
-
-
-class Where(Enum):
-    THROUGH_THE_BRIDGE = "through the bridge"
-    ON_THE_HAMILTON_PC = "on the Hamilton PC"
 
 
 class _HxRunCall(BaseModel):
@@ -108,14 +99,6 @@ class _FakeHamiltonPc:
     def orca_client_driver(self) -> VenusProtocolDriver:
         return VenusProtocolDriver(
             "ml_star", exe_path=str(self.exe), methods_folder=str(self.methods),
-            prepare_place_protocol="PrepPlace.hsl", placed_protocol="Placed.hsl",
-            prepare_pick_protocol="PrepPick.hsl", picked_protocol="Picked.hsl",
-        )
-
-    def venus_on_this_pc(self) -> Venus:
-        return Venus(
-            "ml_star", site_names=["sample_site", "reservoir_site", "tips_site"],
-            exe_path=str(self.exe), methods_folder=str(self.methods),
             prepare_place_protocol="PrepPlace.hsl", placed_protocol="Placed.hsl",
             prepare_pick_protocol="PrepPick.hsl", picked_protocol="Picked.hsl",
         )
@@ -192,12 +175,9 @@ def hamilton_pc(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> _Fak
     return _FakeHamiltonPc(tmp_path, monkeypatch)
 
 
-def _devices(hamilton_pc: _FakeHamiltonPc, where: Where, stores: InMemoryRuntimeStoreFactory) -> tuple[Venus, Storage, Storage, Transporter]:
+def _devices(hamilton_pc: _FakeHamiltonPc, stores: InMemoryRuntimeStoreFactory) -> tuple[Venus, Storage, Storage, Transporter]:
     def build() -> tuple[Venus, Storage, Storage, Transporter]:
-        venus = (
-            Venus("ml_star", site_names=["sample_site", "reservoir_site", "tips_site"])
-            if where is Where.THROUGH_THE_BRIDGE else hamilton_pc.venus_on_this_pc()
-        )
+        venus = Venus("ml_star", site_names=["sample_site", "reservoir_site", "tips_site"])
         arm = Transporter(
             "arm",
             teachpoint_store=stores.teachpoints("arm", seed=[
@@ -208,13 +188,11 @@ def _devices(hamilton_pc: _FakeHamiltonPc, where: Where, stores: InMemoryRuntime
         )
         return venus, Storage("stacker"), Storage("waste"), arm
 
-    if where is Where.ON_THE_HAMILTON_PC:
-        return build()
     with use_device_factory(_VenusOnTheBridge(_OrcaClient(hamilton_pc.orca_client_driver()))):
         return build()
 
 
-async def _build(hamilton_pc: _FakeHamiltonPc, where: Where) -> SystemBuild:
+async def _build(hamilton_pc: _FakeHamiltonPc) -> SystemBuild:
     stores = InMemoryRuntimeStoreFactory()
     sample_plate = PlateTemplate(
         "sample_plate", labware_type="Cor_Falcon_96_wellplate_340ul_Fb_Black",
@@ -225,7 +203,7 @@ async def _build(hamilton_pc: _FakeHamiltonPc, where: Where) -> SystemBuild:
         initial_state=LabwareInitialState(uniform_volume=300.0),
     )
     tips = TipRackTemplate("tips", labware_type="hamilton_96_tiprack_10uL_filter", with_tips=True)
-    ml_star, stacker, waste, arm = _devices(hamilton_pc, where, stores)
+    ml_star, stacker, waste, arm = _devices(hamilton_pc, stores)
 
     @orca.action(
         device=ml_star,
@@ -281,19 +259,14 @@ async def _build(hamilton_pc: _FakeHamiltonPc, where: Where) -> SystemBuild:
     return await orca.build_system(name="Venus Buffer", workflow=workflow, topology=topology, stores=stores)
 
 
-async def _submit(build: SystemBuild, where: Where, mode: WorkflowRunMode) -> tuple[SystemRuntime, str]:
-    """Through the bridge, the way a hosted deployment and the daemon submit; on the PC, the way `SystemBuild.run` does."""
-    if where is Where.THROUGH_THE_BRIDGE:
-        runtime = SystemRuntime(
-            build.system, event_bus=build.event_bus,
-            gateway_registry=NullGatewayRegistry(), connection_source=_connected(),
-        )
-        await runtime.start()
-        return runtime, (await runtime.submit_workflow("venus_buffer_wf", mode=mode)).id
-    runtime = SystemRuntime(build.system, event_bus=build.event_bus)
+async def _submit(build: SystemBuild, mode: WorkflowRunMode) -> tuple[SystemRuntime, str]:
+    """The way a hosted deployment and the daemon submit."""
+    runtime = SystemRuntime(
+        build.system, event_bus=build.event_bus,
+        gateway_registry=NullGatewayRegistry(), connection_source=_connected(),
+    )
     await runtime.start()
-    assert build.workflow is not None
-    return runtime, (await runtime.submit(build.workflow, mode=mode)).execution_id
+    return runtime, (await runtime.submit_workflow("venus_buffer_wf", mode=mode)).id
 
 
 def _labware_id(build: SystemBuild, template_name: str) -> str:
@@ -308,12 +281,11 @@ async def _wells(runtime: SystemRuntime, build: SystemBuild, template_name: str)
 
 @pytest.mark.slow
 @pytest.mark.asyncio
-@pytest.mark.parametrize("where", list(Where))
 async def test_the_hooks_and_the_method_run_on_the_hamilton_pc_with_the_plate_and_its_site(
-    hamilton_pc: _FakeHamiltonPc, where: Where,
+    hamilton_pc: _FakeHamiltonPc,
 ) -> None:
-    build = await _build(hamilton_pc, where)
-    runtime, execution_id = await _submit(build, where, WorkflowRunMode.LIVE)
+    build = await _build(hamilton_pc)
+    runtime, execution_id = await _submit(build, WorkflowRunMode.LIVE)
     statuses = await run_to_quiescence(runtime, execution_id)
 
     assert statuses and all(s == "COMPLETED" for s in statuses.values()), statuses
@@ -331,17 +303,12 @@ async def test_the_hooks_and_the_method_run_on_the_hamilton_pc_with_the_plate_an
 
 @pytest.mark.slow
 @pytest.mark.asyncio
-@pytest.mark.parametrize("where, mode", [
-    (Where.THROUGH_THE_BRIDGE, WorkflowRunMode.LIVE),
-    (Where.THROUGH_THE_BRIDGE, WorkflowRunMode.PURE_SIM),
-    (Where.ON_THE_HAMILTON_PC, WorkflowRunMode.LIVE),
-    (Where.ON_THE_HAMILTON_PC, WorkflowRunMode.PURE_SIM),
-])
+@pytest.mark.parametrize("mode", [WorkflowRunMode.LIVE, WorkflowRunMode.PURE_SIM])
 async def test_the_declared_volumes_and_tips_land_in_the_labware_record(
-    hamilton_pc: _FakeHamiltonPc, where: Where, mode: WorkflowRunMode,
+    hamilton_pc: _FakeHamiltonPc, mode: WorkflowRunMode,
 ) -> None:
-    build = await _build(hamilton_pc, where)
-    runtime, execution_id = await _submit(build, where, mode)
+    build = await _build(hamilton_pc)
+    runtime, execution_id = await _submit(build, mode)
     statuses = await run_to_quiescence(runtime, execution_id)
 
     assert statuses and all(s == "COMPLETED" for s in statuses.values()), statuses
@@ -354,13 +321,12 @@ async def test_the_declared_volumes_and_tips_land_in_the_labware_record(
 
 @pytest.mark.slow
 @pytest.mark.asyncio
-@pytest.mark.parametrize("where", list(Where))
 async def test_a_failed_venus_method_pauses_the_plate_and_records_nothing(
-    hamilton_pc: _FakeHamiltonPc, monkeypatch: pytest.MonkeyPatch, where: Where,
+    hamilton_pc: _FakeHamiltonPc, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("FAKE_HXRUN_FAILS", "AddBuffer.hsl")
-    build = await _build(hamilton_pc, where)
-    runtime, execution_id = await _submit(build, where, WorkflowRunMode.LIVE)
+    build = await _build(hamilton_pc)
+    runtime, execution_id = await _submit(build, WorkflowRunMode.LIVE)
     paused = await wait_for_paused_thread(runtime, execution_id, timeout=30.0)
 
     assert paused.pause_reason == "error"
@@ -374,27 +340,8 @@ async def test_a_failed_venus_method_pauses_the_plate_and_records_nothing(
     await runtime.shutdown()
 
 
-@pytest.mark.parametrize("make_venus, named", [
-    (lambda: Venus("ml_star", methods_folder="D:/Methods", placed_protocol="Placed.hsl"),
-     "methods_folder, placed_protocol"),
-    (lambda: Venus("ml_star", exe_path=r"C:\Program Files (x86)\HAMILTON\Bin\HxRun.exe"), "exe_path"),
-])
-def test_a_venus_under_a_device_bridge_refuses_every_hamilton_pc_setting_it_is_given(
-    hamilton_pc: _FakeHamiltonPc, make_venus: Callable[[], Venus], named: str,
-) -> None:
-    """Under a bridge, orca-client's settings are the ones that run; a second copy here would be ignored."""
-    with use_device_factory(_VenusOnTheBridge(_OrcaClient(hamilton_pc.orca_client_driver()))):
-        with pytest.raises(ValueError, match=f"reads {named} from orca-client"):
-            make_venus()
+def test_a_venus_with_no_device_bridge_only_simulates() -> None:
+    """Orca never runs HxRun itself: with no factory bound, Venus methods are simulated."""
+    venus = Venus("ml_star")
 
-
-def test_a_venus_given_settings_under_a_local_factory_drives_hxrun_on_this_pc(
-    hamilton_pc: _FakeHamiltonPc,
-) -> None:
-    """A local factory (a sim default or a test's) is not a bridge, so the settings still apply."""
-    with use_device_factory(SimDeviceFactory()):
-        venus = Venus("ml_star", exe_path=str(hamilton_pc.exe), methods_folder=str(hamilton_pc.methods))
-        bare = Venus("ml_star_2")
-
-    assert isinstance(venus.live_driver, VenusProtocolDriver)
-    assert not isinstance(bare.live_driver, VenusProtocolDriver)
+    assert isinstance(venus.live_driver, SimulationVenusProtocolDriver)

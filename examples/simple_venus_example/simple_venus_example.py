@@ -1,7 +1,7 @@
 """Venus Protocol Driver example: thin entry point composing topology + workflow.
 
 Demonstrates a workflow that runs Hamilton Venus methods and transfers
-labware using a human transporter (manual pick/place with Enter confirmation).
+labware using a human transporter.
 
 See ``topology.py`` and ``workflow.py`` for the physical layout and workflow
 definition.
@@ -10,11 +10,11 @@ Run, from the repo root::
 
     python -m examples.simple_venus_example.simple_venus_example
 
-Each plate move waits for you to press Enter. Add ``--live`` to run the methods
-on a Hamilton with VENUS installed; the default is simulation.
+This runs in simulation. To run on a Hamilton, mount the topology on ``orca start``
+and run orca-client on the Hamilton PC with a ``venus`` device for ``ml_star`` and
+a ``human`` device for ``human_transfer``. orca-client then prompts at each plate move.
 """
 
-import argparse
 import asyncio
 import logging
 
@@ -56,6 +56,4 @@ async def run(sim: bool) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--live", action="store_true", help="drive a real Hamilton through VENUS")
-    asyncio.run(run(sim=not parser.parse_args().live))
+    asyncio.run(run(sim=True))
