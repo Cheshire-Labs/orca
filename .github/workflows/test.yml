@@ -1,0 +1,89 @@
+name: Tests
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+
+# New pushes to a PR cancel its in-flight run; on main head_ref is empty so the
+# group falls back to run_id (unique) and main runs never cancel each other.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  fast-tests:
+    name: Fast tests
+    runs-on: ubuntu-latest
+    # Runaway backstop only (~10 min typical). GitHub's default is 6h, which a
+    # single hung test would bill in full.
+    timeout-minutes: 30
+    # Draft PRs run zero CI no matter how many times they're pushed. Marking a
+    # PR ready (ready_for_review) is the trigger. Push to main always runs.
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
+
+    env:
+      NO_COLOR: "1"
+      TERM: dumb
+
+    steps:
+      - name: Check out orca
+        uses: actions/checkout@v4
+
+      - name: Check out orca-client (source for the LH-profile parity guard)
+        uses: actions/checkout@v4
+        with:
+          repository: Cheshire-Labs/orca-client
+          ref: main
+          path: orca-client
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      # cheshire-drivers comes from the git tag pinned in pyproject.toml.
+      - name: Install orca
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run fast tests
+        env:
+          ORCA_CLIENT_REPO: ${{ github.workspace }}/orca-client
+        # -n 4 not auto: hosted runners report 1 physical core (auto = 1 worker,
+        # no speedup); the fast suite is wait-bound, so workers overlap the waits.
+        run: pytest -v --tb=short -n 4
+
+  slow-tests:
+    name: Slow tests
+    runs-on: ubuntu-latest
+    needs: fast-tests
+    # This job clears addopts, so the global --timeout=120 does not apply and
+    # some slow tests carry no timeout of their own. This is their only hang bound.
+    timeout-minutes: 60
+    # !cancelled(): a failing fast job must not silently skip the slow suite;
+    # a skipped job reads as fine in the PR UI.
+    if: ${{ !cancelled() && (github.event_name == 'push' || github.event.pull_request.draft == false) }}
+
+    steps:
+      - name: Check out orca
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install orca
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run slow tests
+        # No -x: the first failure must not hide the ones behind it.
+        run: pytest -v -s --tb=short -m slow --override-ini="addopts="
