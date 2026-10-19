@@ -96,6 +96,9 @@ def set_grip_profile(
     clear: List[str] = typer.Option(
         [], "--clear", help="Field to hand back to the arm underneath (repeatable).",
     ),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
+    ),
 ) -> None:
     """Change the numbers named and leave the rest inheriting.
 
@@ -117,6 +120,7 @@ def set_grip_profile(
         })
         body = GripProfilePatchRequest.model_validate({
             "set": patch.model_dump(exclude_none=True),
+            "reason": reason,
             "clear": clear,
         })
     except ValidationError as exc:
@@ -131,7 +135,10 @@ def set_grip_profile(
 @app.command("reset")
 def reset_grip_profile(
     labware_type: str = typer.Argument(..., help="Labware type."),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
+    ),
 ) -> None:
     """Discard everything measured for this labware type."""
-    get_client().grip_profiles_reset(labware_type)
+    get_client().grip_profiles_reset(labware_type, reason=reason)
     output.info(f"reset grip profile for [cyan]{labware_type}[/cyan]")

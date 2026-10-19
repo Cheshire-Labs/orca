@@ -14,7 +14,11 @@ is a primary key, not a position in a runtime tree).
 from typing import ClassVar
 from cheshire_drivers.move_parameters import MoveParameterPatch
 from pydantic import BaseModel
-from orca.operations._protocol import OperationError, OperationErrorCode, message_of
+from orca.operations._protocol import (
+    OperationError, OperationErrorCode, confirm_refused, message_of,
+)
+from orca.operations._spawn_incompatible import spawn_incompatible
+from orca.state.confirm_refusals import ConfirmRefusedError
 from orca.resource_models.device_error import SlotOccupiedError
 from orca.state.records import TrackingSource
 from orca.state.ops_store import OpsHistorySearchQuery
@@ -23,9 +27,11 @@ from orca.runtime.runtime_interface import (
     ClearSubmissionResult,
     ISystemRuntime,
     ActiveExecutionRefusedError,
+    BarcodeInUseError,
     LabwareNotFoundError,
     LocationReservedError,
     MoverHoldsNothingError,
+    SpawnIncompatibleError,
 )
 from orca.operations.labware_models import (
     CarryOverrideResponse,
@@ -100,6 +106,17 @@ def _location_reserved(exc: LocationReservedError) -> OperationError:
         inbound_labware=exc.inbound_labware,
         inbound_from=exc.inbound_from,
         awaiting_operator=exc.awaiting_operator,
+    )
+
+
+def _barcode_in_use(exc: BarcodeInUseError) -> OperationError:
+    return OperationError.typed(
+        OperationErrorCode.CONFLICT,
+        str(exc),
+        wire_code="barcode_in_use",
+        status_code=409,
+        barcode=exc.barcode,
+        existing_labware_id=exc.existing_labware_id,
     )
 
 
@@ -248,8 +265,10 @@ class EditLabwareBarcodeOperation:
         try:
             await self._runtime.labware.edit_barcode(
                 req.labware_id, req.new_barcode,
-                confirm=True,
+                reason=req.reason, confirm=True,
             )
+        except BarcodeInUseError as exc:
+            raise _barcode_in_use(exc) from exc
         except KeyError as exc:
             raise OperationError.not_found(
                 f"labware id {req.labware_id!r} not found",
@@ -280,7 +299,7 @@ class SetLabwareCarryOverrideOperation:
             )
         try:
             patch = await self._runtime.labware.set_carry_override(
-                req.labware_id, req.set, req.clear, confirm=True,
+                req.labware_id, req.set, req.clear, reason=req.reason, confirm=True,
             )
         except KeyError as exc:
             raise OperationError.not_found(
@@ -310,7 +329,7 @@ class ClearLabwareCarryOverrideOperation:
     ) -> CarryOverrideResponse:
         try:
             await self._runtime.labware.clear_carry_override(
-                req.labware_id, confirm=True,
+                req.labware_id, reason=req.reason, confirm=True,
             )
         except KeyError as exc:
             raise OperationError.not_found(
@@ -367,12 +386,16 @@ class RegisterLabwareOperation:
             snap = await self._runtime.labware.register(
                 req.template_name, labware_type=req.labware_type,
                 barcode=req.barcode, location=req.location,
-                confirm=True,
+                reason=req.reason, confirm=True,
             )
         except LocationReservedError as exc:
             raise _location_reserved(exc) from exc
         except SlotOccupiedError as exc:
             raise _slot_occupied(exc) from exc
+        except BarcodeInUseError as exc:
+            raise _barcode_in_use(exc) from exc
+        except SpawnIncompatibleError as exc:
+            raise spawn_incompatible(exc) from exc
         except KeyError as exc:
             missing = (
                 f"template {req.template_name!r}" if req.template_name is not None
@@ -386,7 +409,24 @@ class RegisterLabwareOperation:
             raise OperationError.invalid_input(str(exc)) from exc
         return RegisterLabwareResponse(
             labware=LabwareSnapshotModel.from_dc(snap),
+            adopted_thread_id=self._thread_carrying(snap.id),
         )
+
+    def _thread_carrying(self, labware_id: str) -> str | None:
+        """A freshly made labware has a new id, so only an adopted one is carried.
+
+        Reads thread ids, never snapshots: a snapshot of a sibling thread whose
+        position was dropped (aborted while waiting) raises, and must not hide
+        the thread that took this labware.
+        """
+        for execution in self._runtime.iter_executions():
+            workflow = execution.executing_workflow
+            if workflow is None:
+                continue
+            for thread in workflow.threads:
+                if thread.id == labware_id:
+                    return thread.id
+        return None
 
 
 # -- Get/SetWellVolumes (operator volume CRUD) ------------------------------
@@ -567,6 +607,8 @@ class ConfirmWellVolumesOperation:
                 f"labware id {req.labware_id!r} not found",
                 labware_id=req.labware_id,
             ) from exc
+        except ConfirmRefusedError as exc:
+            raise confirm_refused(exc, labware_id=req.labware_id) from exc
         except ValueError as exc:
             raise OperationError.invalid_input(str(exc)) from exc
         return _MutationResponse(labware_id=req.labware_id)
@@ -589,6 +631,8 @@ class ConfirmTipStateOperation:
                 f"labware id {req.labware_id!r} not found",
                 labware_id=req.labware_id,
             ) from exc
+        except ConfirmRefusedError as exc:
+            raise confirm_refused(exc, labware_id=req.labware_id) from exc
         except ValueError as exc:
             raise OperationError.invalid_input(str(exc)) from exc
         return _MutationResponse(labware_id=req.labware_id)
@@ -718,7 +762,7 @@ class ClearSubmissionLabwareOperation:
         try:
             result: ClearSubmissionResult = (
                 await self._runtime.labware.clear_submission_labware(
-                    req.submission_id, force=req.force,
+                    req.submission_id, force=req.force, reason=req.reason, confirm=True,
                 )
             )
         except ActiveExecutionRefusedError as exc:
@@ -806,7 +850,7 @@ class DischargeLabwareOperation:
     ) -> DischargeLabwareResponse:
         try:
             await self._runtime.labware.discharge_labware(
-                req.labware_id, force=req.force,
+                req.labware_id, force=req.force, reason=req.reason, confirm=True,
             )
         except ActiveExecutionRefusedError as exc:
             raise OperationError.typed(
@@ -843,7 +887,7 @@ class ClearAllLabwareOperation:
     ) -> ClearAllLabwareResponse:
         try:
             cleared = await self._runtime.labware.clear_all_labware(
-                force=req.force,
+                force=req.force, reason=req.reason, confirm=True,
             )
         except ActiveExecutionRefusedError as exc:
             raise OperationError.typed(

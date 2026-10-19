@@ -96,6 +96,7 @@ from orca.runtime.run_modes import (
     current_run_mode,
 )
 from orca.runtime.recoverable_timeout import recoverable_timeout_coordinator
+from orca.runtime.sim_pacing import SimPacer, current_sim_pacer, pacer_for_run_mode
 from orca.system.interfaces import IMethodRegistry
 from orca.variables.variable_store import IVariableResolver, NullVariableResolver
 from orca.workflow_models.method_context import MethodContext
@@ -706,6 +707,10 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         self._pause_reason = reason
         self._pause_request_event.set()
 
+    @property
+    def pause_requested(self) -> asyncio.Event:
+        return self._pause_request_event
+
     def request_pause(self, reason: str = "manual", message: str | None = None) -> None:
         """Request cooperative pause at the next safe point.
 
@@ -1168,6 +1173,15 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
                 self._check_abort_thread(decision, error)
                 raise error
 
+    def _sim_pacer(self) -> SimPacer | None:
+        """The run's pacer for a simulated thread; None for LIVE, which hardware paces."""
+        if self._thread_incident_declarer is None or self._context is None:
+            return None
+        return pacer_for_run_mode(
+            self._thread.run_mode,
+            self._thread_incident_declarer.sim_pacer_for(self._context.execution_id),
+        )
+
     async def start(self) -> None:
         # Seed the per-task run-mode ContextVar from this thread's stamped
         # run_mode, which Submission stamps on the LabwareThreadInstance.
@@ -1196,6 +1210,7 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         # (engine-bounded) from an ad-hoc one (gateway fail-fast timer).
         if self._context is not None:
             current_execution_id.set(self._context.execution_id)
+        current_sim_pacer.set(self._sim_pacer())
 
         try:
             await self._start_body()
@@ -2433,26 +2448,27 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         if decision == RecoveryDecision.ABORT_THREAD:
             raise _ThreadAbortedSignal(str(error))
 
-    async def hold_if_pause_requested(self) -> None:
+    async def hold_if_pause_requested(self, message: str | None = None) -> bool:
         """Hold a running action body where the operator already asked it to stop.
 
-        A manual step is the safest point the thread ever occupies: nothing is
-        in motion and the operator is standing at the instrument. Returning
-        from their confirm straight into the rest of the body would run it
-        after they asked the execution to stop.
+        A manual step, or a simulated step's wait, is the safest point the
+        thread ever occupies: nothing is in motion. Returning from a confirm
+        straight into the rest of the body would run it after the operator
+        asked the execution to stop. True when the body carries on here.
         """
         if not self._pause_request_event.is_set():
-            return
+            return True
         if self.status is not LabwareThreadStatus.EXECUTING_ACTION:
-            return
+            return False
         await self._handle_manual_pause(
             resume_event=ThreadEvent.ACTION_BODY_RESUMED,
-            message=(
+            message=message or (
                 "held at a confirmed manual step because the execution is "
                 "paused; resume to run the rest of the action"
             ),
             resuming_the_same_action=True,
         )
+        return self.status is LabwareThreadStatus.EXECUTING_ACTION
 
     async def _handle_manual_pause(
         self,
@@ -2720,6 +2736,7 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
                 self._status_manager, context,
                 self._labware_location_service, self._require_placer(),
                 self._move_handler,
+                pause_checkpoint=self,
             )
             try:
                 await executable_move_action.execute()

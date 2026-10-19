@@ -123,7 +123,7 @@ class IRuntimeStoreFactory(Protocol):
         Implementations whose stores need async setup (DB-backed catalog
         snapshot, network warm-up) do that work here; impls that are
         already sync-ready treat this as a no-op. Called exactly once per
-        build, before `deployment_package.system:build(stores)` runs.
+        build, before `build_system_from_package` runs.
         """
         ...
 

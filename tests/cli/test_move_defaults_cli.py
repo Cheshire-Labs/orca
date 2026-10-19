@@ -45,7 +45,7 @@ class _FakeClient:
         self.patched = (transporter_name, body)
         return _record(transporter_name)
 
-    def move_defaults_reset(self, transporter_name: str) -> None:
+    def move_defaults_reset(self, transporter_name: str, *, reason: str | None = None) -> None:
         self.reset = transporter_name
 
 

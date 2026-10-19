@@ -30,6 +30,7 @@ class _LabwareApplyingTheRule:
     async def set_carry_override(
         self, labware_id: str, patch: MoveParameterPatch,
         clear: tuple[MoveParameterField, ...] = (),
+        reason: str | None = None,
         confirm: bool = False,
     ) -> MoveParameterPatch:
         self.calls += 1

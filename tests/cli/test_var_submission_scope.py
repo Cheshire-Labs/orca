@@ -90,7 +90,7 @@ class TestSetWarnsWhenASubmissionStillWins:
 
         assert result.exit_code == 0, result.output
         client.variables_set_submission.assert_called_once_with(
-            EXECUTION_ID, SUBMISSION_ID, "inject_fault", False,
+            EXECUTION_ID, SUBMISSION_ID, "inject_fault", False, reason=None,
         )
         client.variables_set.assert_not_called()
 
@@ -109,7 +109,7 @@ class TestUnsetReachesTheSubmissionLayer:
 
         assert result.exit_code == 0, result.output
         client.variables_unset_submission.assert_called_once_with(
-            EXECUTION_ID, SUBMISSION_ID, "inject_fault",
+            EXECUTION_ID, SUBMISSION_ID, "inject_fault", reason=None,
         )
         client.variables_unset.assert_not_called()
 

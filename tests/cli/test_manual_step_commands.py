@@ -47,7 +47,9 @@ class _FakeClient:
         self.list_called_with = execution_id
         return self.pending
 
-    def manual_step_confirm(self, execution_id: str, step_id: str) -> None:
+    def manual_step_confirm(
+        self, execution_id: str, step_id: str, *, reason: str | None = None,
+    ) -> None:
         self.confirm_called_with = (execution_id, step_id)
 
 

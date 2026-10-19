@@ -8,8 +8,6 @@ freshness matters for test isolation -- two runs of the same test must never
 share device objects or their driver state.
 """
 
-from contextlib import nullcontext
-
 from cheshire_drivers import (
     AccessConfig,
     CartesianCoordinates,
@@ -24,11 +22,11 @@ from orca.resource_models.plate_pad import PlatePad
 from orca.resource_models.resource_pool import ResourcePool
 from orca.resource_models.translator import Translator
 from orca.resource_models.transporter import Transporter
-from orca.runtime.device_factory import SimDeviceFactory
-from orca.runtime.device_factory_context import is_factory_bound, use_device_factory
 from orca.runtime.store_factory import IRuntimeStoreFactory
 from orca.sdk.build import Topology
 
+
+SYSTEM_NAME = "SMC Assay"
 
 # A Bravo deck has 9 positions. Declaring fewer is not a smaller deck, it is a
 # capacity ceiling: a batched run keeps plate_1, neut_plate, tips_384 and the
@@ -136,71 +134,65 @@ def build_topology(stores: IRuntimeStoreFactory) -> Topology:
         Teachpoint("translator_2_end",    c(500, 0, 300, 0, 90, 180), orientation="right", access=default_horizontal),
     ]
 
-    # Devices. No-driver SDK ctor: the active factory supplies the (live, sim)
-    # pair. Sim drivers only when nothing outer is bound; tests inject custom
-    # drivers by binding their own factory via `use_device_factory(...)` before
-    # calling `build_topology`.
-    ctx = nullcontext() if is_factory_bound() else use_device_factory(SimDeviceFactory())
-    with ctx:
-        biotek_1 = PlateWasher("biotek_1")
-        biotek_2 = PlateWasher("biotek_2")
-        # VWorks owns these decks, but each protocol stages 3 labware at once
-        # (plate + tips + a second plate), and one position holds one labware.
-        bravo_96 = LiquidHandlerProtocol("bravo_96", site_names=_BRAVO_SITES)
-        bravo_384 = LiquidHandlerProtocol("bravo_384", site_names=_BRAVO_SITES)
-        sealer = Sealer("sealer")
-        centrifuge_device = Centrifuge("centrifuge")
-        # 12 stacked hotel shelves at one x/y, 40 mm z pitch. Plain pads, not a
-        # Storage device; kept OUT of the deadlock-resolution pool (parking spots
-        # belong to authors, resolution pads to the engine).
-        hotel_pads = {
-            f"hotel_pad_{i}": PlatePad(
-                f"hotel_pad_{i}", supports_deadlock_resolution=False,
-            )
-            for i in range(1, 13)
-        }
-        delidder = Delidder("delidder")
-        smc_pro = Reader("smc_pro")
-        waste_1 = Waste("waste_1")
-        waste_2 = Waste("waste_2")
+    biotek_1 = PlateWasher("biotek_1")
+    biotek_2 = PlateWasher("biotek_2")
+    # VWorks owns these decks, but each protocol stages 3 labware at once
+    # (plate + tips + a second plate), and one position holds one labware.
+    bravo_96 = LiquidHandlerProtocol("bravo_96", site_names=_BRAVO_SITES)
+    bravo_384 = LiquidHandlerProtocol("bravo_384", site_names=_BRAVO_SITES)
+    sealer = Sealer("sealer")
+    centrifuge_device = Centrifuge("centrifuge")
+    # 12 stacked hotel shelves at one x/y, 40 mm z pitch. Plain pads, not a
+    # Storage device; kept OUT of the deadlock-resolution pool (parking spots
+    # belong to authors, resolution pads to the engine).
+    hotel_pads = {
+        f"hotel_pad_{i}": PlatePad(
+            f"hotel_pad_{i}", supports_deadlock_resolution=False,
+        )
+        for i in range(1, 13)
+    }
+    delidder = Delidder("delidder")
+    smc_pro = Reader("smc_pro")
+    waste_1 = Waste("waste_1")
+    waste_2 = Waste("waste_2")
 
-        stackers = {f"stacker_{i}": Storage(f"stacker_{i}") for i in range(1, 9)}
-        shakers = {f"shaker_{i}": Shaker(f"shaker_{i}") for i in range(1, 11)}
+    stackers = {f"stacker_{i}": Storage(f"stacker_{i}") for i in range(1, 9)}
+    shakers = {f"shaker_{i}": Shaker(f"shaker_{i}") for i in range(1, 11)}
 
-        # General-purpose parking pads (deadlock resolution enabled by default): the
-        # move resolver stages a blocked plate here to free a route. pads 1-3 on
-        # ddr_1, 4-6 on ddr_2, 7-9 on ddr_3 (matching their teachpoint zones).
-        parking_pads = {f"pad_{i}": PlatePad(f"pad_{i}") for i in range(1, 10)}
+    # General-purpose parking pads (deadlock resolution enabled by default): the
+    # move resolver stages a blocked plate here to free a route. pads 1-3 on
+    # ddr_1, 4-6 on ddr_2, 7-9 on ddr_3 (matching their teachpoint zones).
+    parking_pads = {f"pad_{i}": PlatePad(f"pad_{i}") for i in range(1, 10)}
 
-        # Translator pads: deadlock resolution disabled on bridge endpoints so
-        # the resolver does not try to free a plate by moving it off the bridge.
-        translator_1_start = PlatePad("translator_1_start", supports_deadlock_resolution=False)
-        translator_1_end = PlatePad("translator_1_end", supports_deadlock_resolution=False)
-        translator_2_start = PlatePad("translator_2_start", supports_deadlock_resolution=False)
-        translator_2_end = PlatePad("translator_2_end", supports_deadlock_resolution=False)
+    # Translator pads: deadlock resolution disabled on bridge endpoints so
+    # the resolver does not try to free a plate by moving it off the bridge.
+    translator_1_start = PlatePad("translator_1_start", supports_deadlock_resolution=False)
+    translator_1_end = PlatePad("translator_1_end", supports_deadlock_resolution=False)
+    translator_2_start = PlatePad("translator_2_start", supports_deadlock_resolution=False)
+    translator_2_end = PlatePad("translator_2_end", supports_deadlock_resolution=False)
 
-        # Transporters. A translator is ONE carriage on a rail: start/end are the
-        # same pad at two positions.
-        ddr_1 = Transporter(
-            "ddr_1",
-            teachpoint_store=stores.teachpoints("ddr_1", seed=ddr_1_teachpoints),
-        )
-        ddr_2 = Transporter(
-            "ddr_2",
-            teachpoint_store=stores.teachpoints("ddr_2", seed=ddr_2_teachpoints),
-        )
-        ddr_3 = Transporter(
-            "ddr_3",
-            teachpoint_store=stores.teachpoints("ddr_3", seed=ddr_3_teachpoints),
-        )
-        translator_1 = Translator(
-            "translator_1",
-            teachpoint_store=stores.teachpoints("translator_1", seed=translator_1_teachpoints),
-        )
-        translator_2 = Translator(
-            "translator_2",
-            teachpoint_store=stores.teachpoints("translator_2", seed=translator_2_teachpoints),
-        )
+    # Transporters. A translator is ONE carriage on a rail: start/end are the
+    # same pad at two positions.
+    ddr_1 = Transporter(
+        "ddr_1",
+        teachpoint_store=stores.teachpoints("ddr_1", seed=ddr_1_teachpoints),
+    )
+    ddr_2 = Transporter(
+        "ddr_2",
+        teachpoint_store=stores.teachpoints("ddr_2", seed=ddr_2_teachpoints),
+    )
+    ddr_3 = Transporter(
+        "ddr_3",
+        teachpoint_store=stores.teachpoints("ddr_3", seed=ddr_3_teachpoints),
+    )
+    translator_1 = Translator(
+        "translator_1",
+        teachpoint_store=stores.teachpoints("translator_1", seed=translator_1_teachpoints),
+    )
+    translator_2 = Translator(
+        "translator_2",
+        teachpoint_store=stores.teachpoints("translator_2", seed=translator_2_teachpoints),
+    )
 
     shaker_collection = ResourcePool("shaker_collection", list(shakers.values()))
 

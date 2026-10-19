@@ -118,12 +118,15 @@ def create_deck_layout(
         ..., "--config-file",
         help="Path to a JSON file with the DeckLayoutConfig.",
     ),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
+    ),
 ) -> None:
     """Register a new deck layout. 404 if the device is not a liquid
     handler; 409 on a duplicate name. Rebuild-required to take effect."""
     config = _read_config_from_path(config_file)
     client = get_client()
-    created = client.deck_layouts_add(device_id, name, config)
+    created = client.deck_layouts_add(device_id, name, config, reason=reason)
     if output.get_mode().value == "json":
         output.emit_json(created.model_dump(mode="json"))
         return
@@ -138,12 +141,15 @@ def update_deck_layout(
     device_id: str = typer.Argument(..., help="Liquid handler device id."),
     name: str = typer.Argument(..., help="Deck layout name to update."),
     config_file: str = typer.Option(..., "--config-file"),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
+    ),
 ) -> None:
     """Update a deck layout. 404 on unknown device or name.
     Rebuild-required to take effect."""
     config = _read_config_from_path(config_file)
     client = get_client()
-    updated = client.deck_layouts_update(device_id, name, config)
+    updated = client.deck_layouts_update(device_id, name, config, reason=reason)
     if output.get_mode().value == "json":
         output.emit_json(updated.model_dump(mode="json"))
         return
@@ -157,10 +163,13 @@ def update_deck_layout(
 def delete_deck_layout(
     device_id: str = typer.Argument(..., help="Liquid handler device id."),
     name: str = typer.Argument(..., help="Deck layout name to delete."),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
+    ),
 ) -> None:
     """Delete a deck layout. 404 on unknown device or name."""
     client = get_client()
-    client.deck_layouts_delete(device_id, name)
+    client.deck_layouts_delete(device_id, name, reason=reason)
     output.info(
         f"deleted deck_layout [cyan]{name}[/cyan] on {device_id}",
     )

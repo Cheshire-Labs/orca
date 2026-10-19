@@ -827,7 +827,7 @@ class TestConcern5AbortReleasesReservation:
         # Run 1's plate physically remains on the shaker's only site
         # (persist-until-clear + single occupancy); clear it so run 2 can
         # use the slot, exactly as an operator would.
-        await f.runtime.labware.clear_all_labware()
+        await f.runtime.labware.clear_all_labware(confirm=True)
 
         f.device.should_fail = False
         record2 = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)

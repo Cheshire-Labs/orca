@@ -90,6 +90,9 @@ def create_access_config(
     gripper_offset: float = typer.Option(20.0, "--gripper-offset"),
     vertical_clearance: float = typer.Option(20.0, "--vertical-clearance"),
     horizontal_clearance: float = typer.Option(100.0, "--horizontal-clearance"),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
+    ),
 ) -> None:
     """Register a new access config. 409 on duplicate name."""
     config = _build_access_config(
@@ -97,7 +100,7 @@ def create_access_config(
         vertical_clearance, horizontal_clearance,
     )
     client = get_client()
-    created = client.access_configs_add(config)
+    created = client.access_configs_add(config, reason=reason)
     if output.get_mode().value == "json":
         output.emit_json(created.model_dump(mode="json"))
         return
@@ -111,6 +114,9 @@ def update_access_config(
     gripper_offset: float = typer.Option(20.0, "--gripper-offset"),
     vertical_clearance: float = typer.Option(20.0, "--vertical-clearance"),
     horizontal_clearance: float = typer.Option(100.0, "--horizontal-clearance"),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
+    ),
 ) -> None:
     """Update an access config. 404 if the name is unknown."""
     config = _build_access_config(
@@ -118,7 +124,7 @@ def update_access_config(
         vertical_clearance, horizontal_clearance,
     )
     client = get_client()
-    updated = client.access_configs_update(config)
+    updated = client.access_configs_update(config, reason=reason)
     if output.get_mode().value == "json":
         output.emit_json(updated.model_dump(mode="json"))
         return
@@ -128,8 +134,11 @@ def update_access_config(
 @app.command("delete")
 def delete_access_config(
     name: str = typer.Argument(..., help="Access config name to delete."),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
+    ),
 ) -> None:
     """Delete an access config. 409 if protected or still referenced."""
     client = get_client()
-    client.access_configs_delete(name)
+    client.access_configs_delete(name, reason=reason)
     output.info(f"deleted access_config [cyan]{name}[/cyan]")

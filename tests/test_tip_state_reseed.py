@@ -14,6 +14,7 @@ from collections.abc import AsyncGenerator
 
 import pytest
 
+from orca.state.confirm_refusals import NothingToConfirmError
 from orca.resource_models.labware import LabwareInstance, TipRackInstance
 from orca.state.contents import LabwareContentsLedger
 from orca.state.projections import (
@@ -474,8 +475,9 @@ class TestOperatorVerbs:
             state = await runtime.labware.get_tip_state(instance.id)
             assert state.positions_present == []
             assert state.provenance is Provenance.UNKNOWN
-            with pytest.raises(ValueError, match="set_tip_state"):
+            with pytest.raises(NothingToConfirmError, match="set_tip_state") as refusal:
                 await runtime.labware.confirm_tip_state(instance.id, confirm=True)
+            assert refusal.value.settle_with == "set-tip-state"
             ops = await system.ops_history.ops_for(instance.name)
             assert not [
                 o for o in ops if o.operation == DeviceOperation.SET_TIP_STATE

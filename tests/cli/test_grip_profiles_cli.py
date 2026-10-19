@@ -48,7 +48,7 @@ class _FakeClient:
         self.patched = (labware_type, body)
         return _record(labware_type)
 
-    def grip_profiles_reset(self, labware_type: str) -> None:
+    def grip_profiles_reset(self, labware_type: str, *, reason: str | None = None) -> None:
         self.reset = labware_type
 
 
@@ -153,7 +153,7 @@ def test_set_offers_every_field_the_grip_profile_layer_can_hold() -> None:
     from orca.runtime.move_parameters import SITE_OWNED_FIELDS
 
     offered = set(inspect.signature(set_grip_profile).parameters) - {
-        "labware_type", "clear",
+        "labware_type", "clear", "reason",
     }
     settable = set(MoveParameterPatch.model_fields) - set(SITE_OWNED_FIELDS)
 

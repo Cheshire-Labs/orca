@@ -14,11 +14,6 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from orca.daemon.app import create_app
-from orca.devices.devices import LiquidHandler
-from orca.runtime.deck_layout_service import seeded_deck_layout_service
-from orca.runtime.system_runtime import SystemRuntime
-
-from tests.test_system_runtime import _build_simple_system
 
 
 def _access_config_body(name: str = "vertical_a") -> dict:
@@ -43,28 +38,6 @@ async def empty_daemon_client() -> AsyncIterator[AsyncClient]:
         transport=ASGITransport(app=app), base_url="http://daemon.test",
     ) as c:
         yield c
-
-
-@pytest_asyncio.fixture
-async def lh_daemon_client() -> AsyncIterator[AsyncClient]:
-    """A daemon with a mounted system carrying one liquid handler."""
-    system, _ = await _build_simple_system()
-    lh = LiquidHandler(
-        name="lh1", sim=True,
-        deck_layout_store=seeded_deck_layout_service(),
-    )
-    system.add_resource(lh)
-    rt = SystemRuntime(system)
-    await rt.start()
-    app = create_app(initial_system_runtime=rt)
-    try:
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://daemon.test",
-        ) as c:
-            yield c
-    finally:
-        if rt.state.name == "RUNNING":
-            await rt.shutdown(confirm=True)
 
 
 # -- access-configs ----------------------------------------------------------

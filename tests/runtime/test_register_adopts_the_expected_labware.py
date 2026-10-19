@@ -19,6 +19,8 @@ import asyncio
 
 import pytest
 
+from orca.operations.labware import RegisterLabwareOperation
+from orca.operations.labware_models import RegisterLabwareRequest
 from orca.resource_models.labware_location_service import PlacementState
 from orca.runtime.labware_store import InMemoryLabwareStore
 from orca.runtime.registries import NullGatewayRegistry
@@ -257,3 +259,62 @@ async def test_asserting_an_expected_labware_is_where_it_belongs_really_places_i
         assert dict(await store.list_active_locations()) == {awaited_id: "pad1"}
     finally:
         await runtime.shutdown()
+
+
+async def test_the_register_answer_names_the_thread_that_adopted_the_labware() -> None:
+    runtime, _store = await _manual_place_runtime("wf_adopt_names_thread")
+    try:
+        submission = await runtime.submit_workflow(
+            "wf_adopt_names_thread", mode=WorkflowRunMode.LIVE,
+        )
+        awaited_id = await _await_parked_at_manual_place(runtime, submission.id)
+        [parked] = [
+            t for t in runtime.get_execution_detail(submission.id).threads
+            if t.labware_id == awaited_id
+        ]
+
+        response = await RegisterLabwareOperation(runtime).run(RegisterLabwareRequest(
+            template_name="plate_wf_adopt_names_thread", location="pad1",
+        ))
+
+        assert response.adopted_thread_id == parked.id
+    finally:
+        await runtime.shutdown()
+
+
+async def test_the_register_answer_names_no_thread_when_nothing_waited() -> None:
+    runtime, _store = await _manual_place_runtime("wf_adopt_names_none")
+    try:
+        response = await RegisterLabwareOperation(runtime).run(RegisterLabwareRequest(
+            template_name="plate_wf_adopt_names_none", location="pad1",
+        ))
+
+        assert response.adopted_thread_id is None
+    finally:
+        await runtime.shutdown()
+
+
+async def test_the_answer_names_the_thread_even_when_a_sibling_snapshot_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sibling thread aborted while waiting has no position, so its snapshot
+    raises. The lookup must not depend on snapshots at all."""
+    runtime, _store = await _manual_place_runtime("wf_adopt_sibling_fails")
+    try:
+        submission = await runtime.submit_workflow(
+            "wf_adopt_sibling_fails", mode=WorkflowRunMode.LIVE,
+        )
+        awaited_id = await _await_parked_at_manual_place(runtime, submission.id)
+
+        def _broken_detail(execution_id: str) -> None:
+            raise KeyError("a sibling thread has no position")
+
+        monkeypatch.setattr(runtime, "get_execution_detail", _broken_detail)
+        response = await RegisterLabwareOperation(runtime).run(RegisterLabwareRequest(
+            template_name="plate_wf_adopt_sibling_fails", location="pad1",
+        ))
+
+        assert response.adopted_thread_id == awaited_id
+    finally:
+        await runtime.shutdown()
+

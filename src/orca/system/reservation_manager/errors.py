@@ -8,6 +8,8 @@ from a stable path without crossing into module bodies.
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, List, Protocol, runtime_checkable
 
+from orca.runtime.sim_pacing import SimPacer
+
 
 @dataclass(frozen=True)
 class UnresolvableDeadlockContext:
@@ -262,6 +264,11 @@ class IThreadIncidentDeclarer(Protocol):
         it onto the per-thread ``recoverable_timeout_coordinator`` ContextVar at
         start so device dispatch beneath it can park a timed-out call.
         """
+        ...
+
+    def sim_pacer_for(self, execution_id: str) -> SimPacer | None:
+        """The pacer of a simulated execution; None for a LIVE one or an unknown id.
+        A thread seeds it onto ``current_sim_pacer`` at start (``orca.runtime.sim_pacing``)."""
         ...
 
     def declare_unresolved_anchor_insert(

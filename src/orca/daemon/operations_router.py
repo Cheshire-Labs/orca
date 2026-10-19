@@ -82,6 +82,7 @@ from orca.operations.execution import (
     GetExecutionOperation,
     ListExecutionsOperation,
     RemoveExecutionOperation,
+    SetExecutionTimeScaleOperation,
     StopExecutionOperation,
 )
 from orca.operations.execution_models import (
@@ -95,6 +96,8 @@ from orca.operations.execution_models import (
     ListExecutionsResponse,
     RemoveExecutionRequest,
     RemoveExecutionResponse,
+    SetExecutionTimeScaleRequest,
+    SetExecutionTimeScaleResponse,
     StopExecutionRequest,
     StopExecutionResponse,
 )
@@ -401,6 +404,13 @@ def create_operations_router() -> APIRouter:
         op_factory=lambda req: StopExecutionOperation(runtime=_resolve_runtime(req)),
         request_model=StopExecutionRequest,
         response_model=StopExecutionResponse,
+        tags=[RouteTag.EXECUTIONS],
+    )
+    bind_orca_rest(
+        router, path="/operations/set-execution-time-scale", method="POST",
+        op_factory=lambda req: SetExecutionTimeScaleOperation(runtime=_resolve_runtime(req)),
+        request_model=SetExecutionTimeScaleRequest,
+        response_model=SetExecutionTimeScaleResponse,
         tags=[RouteTag.EXECUTIONS],
     )
     bind_orca_rest(

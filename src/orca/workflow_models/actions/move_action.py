@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 import asyncio
 import logging
+import time
 import uuid
 from typing import List, Protocol, Sequence
 from orca.resource_models.device_error import DeviceUnderExternalControlError
@@ -17,7 +18,9 @@ from orca.system.reservation_manager.location_reservation import (
     LocationReservation,
     ReservationPriority,
 )
+from orca.runtime.sim_pacing import NOMINAL_PLATE_MOVE_SECONDS, current_sim_pacer
 from orca.workflow_models.action_state_machine import ActionEvent, ActionStateMachine
+from orca.workflow_models.pause_checkpoint import IPauseCheckpoint
 from orca.workflow_models.status_manager import StatusManager
 from orca.workflow_models.status_enums import ActionStatus
 
@@ -136,12 +139,14 @@ class ExecutableMoveAction(IMoveAction):
                  action: IMoveAction,
                  labware_location_service: ILabwareLocationService,
                  labware_placer: LabwarePlacer,
-                 slot_holder: IHoldsTheSourceSlot) -> None:
+                 slot_holder: IHoldsTheSourceSlot,
+                 pause_checkpoint: IPauseCheckpoint | None = None) -> None:
         super().__init__()
         self._status_manager = status_manager
         self._action = action
         self._context = context
         self._slot_holder = slot_holder
+        self._pause_checkpoint = pause_checkpoint
         self._labware_location_service = labware_location_service
         self._labware_placer = labware_placer
         self._state_machine = ActionStateMachine()
@@ -255,14 +260,36 @@ class ExecutableMoveAction(IMoveAction):
                     await self._finish_telling_the_target()
             else:
                 source_hold = await self._hold_the_slot_the_plate_is_still_in()
+                started_at = time.monotonic()
                 try:
                     await self._actuate()
                 finally:
                     if source_hold is not None:
                         source_hold.release_reservation()
+                await self._pace_the_move(started_at)
 
         if self._action.release_reservation_on_place:
             self._action.reservation.release_reservation()
+
+    async def _pace_the_move(self, started_at: float) -> None:
+        """A simulated move lasts a plate move's real time at the run's scale.
+
+        Only a simulated thread seeds a pacer; a LIVE thread returns at once.
+        A pause ends the wait and the move completes: a thread has no
+        checkpoint to hold at while MOVING, and it pauses at the boundary
+        just after.
+        """
+        pacer = current_sim_pacer.get()
+        if pacer is None:
+            return
+        pause_requested = (
+            None if self._pause_checkpoint is None
+            else self._pause_checkpoint.pause_requested
+        )
+        await pacer.pace(
+            pacer.remaining_after(NOMINAL_PLATE_MOVE_SECONDS, started_at),
+            pause_requested=pause_requested,
+        )
 
     async def _finish_telling_the_target(self) -> None:
         """Re-make the arrival call this move already owes the target.
@@ -657,11 +684,12 @@ class MoveAction(IMoveAction):
         labware_location_service: ILabwareLocationService,
         labware_placer: LabwarePlacer,
         slot_holder: IHoldsTheSourceSlot,
+        pause_checkpoint: IPauseCheckpoint | None = None,
     ) -> ExecutableMoveAction:
         """Two-stage lifecycle parallel to the LocationAction chain (W2):
         MoveAction (data) -> ExecutableMoveAction (execution-context bound).
         No AssignedMoveAction stage -- moves carry no labware-assignment slots."""
         return ExecutableMoveAction(
             status_manager, context, self, labware_location_service, labware_placer,
-            slot_holder,
+            slot_holder, pause_checkpoint=pause_checkpoint,
         )

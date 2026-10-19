@@ -266,7 +266,7 @@ async def test_the_operators_own_verbs_move_the_flags_they_are_shown() -> None:
     assert await entry.is_device_connected() is False, "nothing has run yet"
 
     await runtime.devices.initialize("shaker_1", confirm=True)
-    await runtime.devices.connect("shaker_1")
+    await runtime.devices.connect("shaker_1", confirm=True)
 
     entry = await runtime.device_registry.get("shaker_1")
     assert entry is not None

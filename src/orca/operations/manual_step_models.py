@@ -16,6 +16,7 @@ class ConfirmManualStepRequest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     execution_id: str
     step_id: str
+    reason: str | None = None
 
 
 class ConfirmManualStepResponse(BaseModel):

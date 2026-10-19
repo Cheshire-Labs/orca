@@ -253,6 +253,35 @@ async def test_a_declared_template_still_registers_by_name() -> None:
 
 
 @pytest.mark.asyncio
+async def test_the_snapshot_names_the_catalog_type_of_a_declared_template_instance() -> None:
+    runtime, _ = await _runtime(
+        _recorder(), wf_name="declared_type", store=InMemoryLabwareStore(),
+    )
+
+    snap = await runtime.labware.register(
+        "sample_plate", location=PLATE_SITE, confirm=True,
+    )
+
+    assert snap.labware_type == "Cor_Falcon_96_wellplate_340ul_Fb_Black"
+    [row] = [r for r in await runtime.labware.list_all() if r.id == snap.id]
+    assert row.labware_type == "Cor_Falcon_96_wellplate_340ul_Fb_Black"
+
+
+@pytest.mark.asyncio
+async def test_the_snapshot_names_the_catalog_type_of_an_ad_hoc_instance() -> None:
+    runtime, _ = await _runtime(
+        _recorder(), wf_name="adhoc_type", store=InMemoryLabwareStore(),
+    )
+
+    snap = await runtime.labware.register(
+        labware_type=TROUGH_TYPE, location=TROUGH_SITE, confirm=True,
+    )
+
+    assert snap.labware_type == TROUGH_TYPE
+    assert snap.template_name == adhoc_template_name(TROUGH_TYPE)
+
+
+@pytest.mark.asyncio
 async def test_naming_the_labware_no_way_is_refused() -> None:
     runtime, _ = await _runtime(
         _recorder(), wf_name="adhoc_named_none", store=InMemoryLabwareStore(),

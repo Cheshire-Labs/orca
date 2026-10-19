@@ -20,9 +20,9 @@ The binding is held in a `contextvars.ContextVar`, which means:
   concurrent topology builds in different tasks don't interfere.
 - Nested bindings stack and restore in LIFO order.
 
-A hosted deployment's `RuntimeLifecycle` wraps the deployment-package import in
-`with use_device_factory(remote_factory)` so every device constructed
-inside `system.py:build()` resolves drivers through `RemoteDeviceFactory`.
+A deployment that drives real devices wraps `build_system_from_package` in
+`with use_device_factory(remote_factory)` so every device the package's
+`build_topology` constructs resolves drivers through `RemoteDeviceFactory`.
 Standalone pure-sim entry points either (a) skip the binding entirely and let
 the subclass default to sim drivers, or (b) bind a `SimDeviceFactory`
 explicitly when they want the consistency of going through the factory
@@ -86,8 +86,7 @@ def use_device_factory(factory: IDeviceDriverProvider) -> Iterator[None]:
     Typical use::
 
         with use_device_factory(remote_factory):
-            module = importlib.import_module("deployment_package.system")
-            build = module.build(stores)  # devices construct here
+            build = await build_system_from_package("deployment_package", stores)
 
     """
     token = _active_factory.set(factory)

@@ -16,6 +16,11 @@ SettleNoun = Literal["tip-state", "well-volumes", "mounted-tips"]
 """What the verb is about. The half of a settle verb the subject decides."""
 
 
+def set_verb(noun: SettleNoun) -> str:
+    """The verb that states this noun outright, as `list-unsettled` spells it."""
+    return f"set-{noun}"
+
+
 @dataclass(frozen=True)
 class UnsettledSubject:
     """One thing nobody has settled, and the verb that settles it."""
@@ -84,5 +89,5 @@ def settle_verb(
         or not can_be_agreed_with
         or gaps & GAPS_THAT_LOST_WORK
     ):
-        return f"set-{noun}"
+        return set_verb(noun)
     return f"confirm-{noun}"

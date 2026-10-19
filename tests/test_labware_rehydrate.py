@@ -188,7 +188,7 @@ class TestClearAfterRehydrate:
         # Precondition: rehydrate placed the persisted plate on the leaf.
         assert pad1.labware is not None and pad1.labware.id == plate.id
 
-        await runtime.labware.clear_all_labware(force=True)
+        await runtime.labware.clear_all_labware(force=True, confirm=True)
 
         # One clear; every mirror layer agrees the plate is gone.
         assert pad1.labware is None, "leaf survived clear_all after rehydrate"

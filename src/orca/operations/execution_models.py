@@ -8,7 +8,7 @@ ever wanting the engine.
 import dataclasses
 from typing import Literal
 from typing_extensions import Self
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from orca.daemon.schemas import ThreadSnapshotDTO
 from orca.runtime.execution_phase import ExecutionPhase
 from orca.runtime.execution_record import ExecutionRecord
@@ -18,6 +18,7 @@ from orca.runtime.status_models import ExecutionDetail, ExecutionStatus, ThreadS
 class CloseExecutionRequest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     execution_id: str
+    reason: str | None = None
 
 
 class CloseExecutionResponse(BaseModel):
@@ -54,6 +55,9 @@ class ExecutionRecordModel(BaseModel):
     abort_armed: bool = False
     """Whether a second confirmed stop would abort. Set by the first stop
     call, cleared by resume."""
+    sim_time_scale: float | None = None
+    """Simulated time scale: 1 is real time, 0 is no pacing. None for a LIVE
+    run, and for a finished run read back from the store, which does not keep it."""
 
     @classmethod
     def from_record(cls, rec: ExecutionRecord) -> Self:
@@ -65,6 +69,7 @@ class ExecutionRecordModel(BaseModel):
             paused=rec.paused,
             pause_reason=rec.pause_reason,
             abort_armed=rec.abort_armed,
+            sim_time_scale=rec.sim_time_scale,
         )
 
     @classmethod
@@ -87,6 +92,7 @@ class ExecutionRecordModel(BaseModel):
             paused=status.paused,
             pause_reason=status.pause_reason,
             abort_armed=status.abort_armed,
+            sim_time_scale=status.sim_time_scale,
         )
 
 
@@ -127,6 +133,7 @@ class GetExecutionDetailResponse(BaseModel):
     paused: bool = False
     pause_reason: str | None = None
     abort_armed: bool = False
+    sim_time_scale: float | None = None
 
     @classmethod
     def from_detail(cls, detail: ExecutionDetail) -> Self:
@@ -153,6 +160,7 @@ class GetExecutionDetailResponse(BaseModel):
             paused=detail.paused,
             pause_reason=detail.pause_reason,
             abort_armed=detail.abort_armed,
+            sim_time_scale=detail.sim_time_scale,
         )
 
 
@@ -160,6 +168,7 @@ class StopExecutionRequest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     execution_id: str
     confirm: bool = False
+    reason: str | None = None
 
 
 class StopExecutionResponse(BaseModel):
@@ -189,9 +198,29 @@ class StopExecutionResponse(BaseModel):
     message: str
 
 
+class SetExecutionTimeScaleRequest(BaseModel):
+    """Change a simulated run's time scale while it runs. Applies at once, to
+    the step in progress too. Refused for a LIVE execution, which the
+    hardware paces."""
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    execution_id: str
+    sim_time_scale: float = Field(
+        ..., ge=0, allow_inf_nan=False, strict=True,
+        description="1 is real time, 0.1 is ten times faster, 0 is no pacing.",
+    )
+
+
+class SetExecutionTimeScaleResponse(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    execution_id: str
+    sim_time_scale: float
+    message: str
+
+
 class RemoveExecutionRequest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     execution_id: str
+    reason: str | None = None
 
 
 class RemoveExecutionResponse(BaseModel):

@@ -18,6 +18,7 @@ already wrong down as checked.
 
 import pytest
 
+from orca.state.confirm_refusals import WorkLostError
 from orca.state.provenance import Provenance
 from orca.state.records import ObservationGapCause
 from orca.runtime.sim_labware import SimPlateTemplate
@@ -212,10 +213,11 @@ class TestAConfirmTheRecordCannotBack:
                 ObservationGapCause.OPERATIONS_DROPPED,
             )
 
-            with pytest.raises(ValueError) as refusal:
+            with pytest.raises(WorkLostError) as refusal:
                 await runtime.labware.confirm_well_volumes(snap.id, confirm=True)
 
             assert "set_well_volumes" in str(refusal.value)
+            assert refusal.value.settle_with == "set-well-volumes"
             assert (await system.labware_contents.of(plate.ref)).provenance is (
                 Provenance.STALE
             ), "the refusal left the read asking to be looked at"
@@ -231,9 +233,10 @@ class TestAConfirmTheRecordCannotBack:
                 ObservationGapCause.OPERATIONS_DROPPED,
             )
 
-            with pytest.raises(ValueError) as refusal:
+            with pytest.raises(WorkLostError) as refusal:
                 await runtime.labware.confirm_tip_state(snap.id, confirm=True)
 
             assert "set_tip_state" in str(refusal.value)
+            assert refusal.value.settle_with == "set-tip-state"
         finally:
             await runtime.shutdown()

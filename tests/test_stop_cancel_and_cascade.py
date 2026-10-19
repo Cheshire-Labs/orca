@@ -733,7 +733,7 @@ class TestStopDoesNotWedgeNextRun:
 
             # Run 1's plate persists on the shaker site (persist-until-clear);
             # the operator clear frees it so run 2 tests only the reservation.
-            await runtime.labware.clear_all_labware()
+            await runtime.labware.clear_all_labware(confirm=True)
 
             # Second run: let the device complete normally this time. It must
             # acquire the (now-free) reservation and reach COMPLETED rather

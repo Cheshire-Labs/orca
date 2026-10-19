@@ -17,6 +17,10 @@ from dataclasses import dataclass
 
 from cheshire_drivers.move_parameters import MoveParameterField, MoveParameterPatch
 
+from orca.state.unsettled import SettleNoun, set_verb
+from orca.state.confirm_refusals import (
+    HeldByUnfinishedActionError, NothingToConfirmError, WorkLostError,
+)
 from orca.runtime.move_parameters import reject_contradiction
 
 from orca.resource_models.adhoc_labware import LabwareHasNoModel
@@ -41,6 +45,7 @@ from orca.runtime.execution import Execution
 from orca.runtime.interfaces import ILabwareStore
 from orca.runtime.runtime_interface import (
     ActiveExecutionRefusedError,
+    BarcodeInUseError,
     ClearSubmissionResult,
     IExecutionIterator,
     ILabwareFacade,
@@ -68,6 +73,11 @@ from orca.workflow_models.labware_threads.executing_labware_thread import (
 from orca.workflow_models.status_enums import LabwareThreadStatus
 
 orca_logger = logging.getLogger("orca")
+
+
+def _barcode_or_none(barcode: str | None) -> str | None:
+    """A blank barcode is no barcode, which any number of labware may have."""
+    return (barcode or "").strip() or None
 
 
 @dataclass(frozen=True)
@@ -137,6 +147,19 @@ class LabwareFacade(ILabwareFacade):
         if instance is None:
             raise KeyError(f"No labware with id '{labware_id}'")
         return await self._snapshot(instance)
+
+    async def _refuse_a_barcode_held_by_another(
+        self, barcode: str | None, labware_id: str | None,
+    ) -> None:
+        if barcode is None:
+            return
+        holder = await self._store.get_by_barcode(barcode)
+        if holder is None:
+            holder = next(
+                (lw for lw in self._system.labwares if lw.barcode == barcode), None,
+            )
+        if holder is not None and holder.id != labware_id:
+            raise BarcodeInUseError(barcode, holder.id)
 
     async def get_by_barcode(self, barcode: str) -> LabwareSnapshot:
         stored = await self._store.get_by_barcode(barcode)
@@ -209,7 +232,7 @@ class LabwareFacade(ILabwareFacade):
     )
     async def edit_location(
         self, labware_id: str, location: str,
-        reason: str | None = None,
+        *, reason: str | None = None,
     ) -> None:
         """Operator-asserted location change.
 
@@ -385,14 +408,22 @@ class LabwareFacade(ILabwareFacade):
     )
     async def edit_barcode(
         self, labware_id: str, new_barcode: str,
+        *, reason: str | None = None,
     ) -> None:
+        del reason  # consumed by @dangerous audit
         instance = await self._find_by_id(labware_id)
         if instance is None:
             raise KeyError(f"No labware with id '{labware_id}'")
-        # Mutate in-memory store: the store indexes by barcode so we must
-        # re-register to refresh the index. The store impl owns the lock.
-        instance.barcode = new_barcode
-        await self._store.register(instance)
+        barcode = _barcode_or_none(new_barcode)
+        await self._refuse_a_barcode_held_by_another(barcode, instance.id)
+        # The store indexes by barcode, so re-register to refresh the index.
+        previous = instance.barcode
+        instance.barcode = barcode
+        try:
+            await self._store.register(instance)
+        except BarcodeInUseError:
+            instance.barcode = previous
+            raise
 
     @dangerous(
         name="labware.set_carry_override",
@@ -406,6 +437,7 @@ class LabwareFacade(ILabwareFacade):
         self, labware_id: str,
         patch: MoveParameterPatch,
         clear: Sequence[MoveParameterField] = (),
+        *, reason: str | None = None,
     ) -> MoveParameterPatch:
         """Say how this one piece of labware is carried, over every other layer.
 
@@ -417,6 +449,7 @@ class LabwareFacade(ILabwareFacade):
         Setting and clearing land in one write, so a move between two edits
         never resolves against a mixture neither of them intended.
         """
+        del reason  # consumed by @dangerous audit
         reject_contradiction(patch, clear)
         instance = await self._require(labware_id)
         instance.carry_with(**{
@@ -433,8 +466,9 @@ class LabwareFacade(ILabwareFacade):
                 "is carried. If it was being carried higher or slower for a "
                 "reason, that reason stops applying on the next move.",
     )
-    async def clear_carry_override(self, labware_id: str) -> None:
+    async def clear_carry_override(self, labware_id: str, *, reason: str | None = None) -> None:
         """Drop the override; this labware resolves like any other again."""
+        del reason  # consumed by @dangerous audit
         instance = await self._require(labware_id)
         instance.carry_normally()
         await self._store.register(instance)
@@ -456,7 +490,7 @@ class LabwareFacade(ILabwareFacade):
     )
     async def reset_location(
         self, labware_id: str, location: str,
-        reason: str | None = None,
+        *, reason: str | None = None,
     ) -> None:
         """Say where the labware is AND forget everywhere it has been.
 
@@ -505,6 +539,7 @@ class LabwareFacade(ILabwareFacade):
         labware_type: str | None = None,
         barcode: str | None = None,
         location: str | None = None,
+        reason: str | None = None,
     ) -> LabwareSnapshot:
         """Record labware an operator has put down, optionally binding it to a
         physical Location slot.
@@ -535,15 +570,22 @@ class LabwareFacade(ILabwareFacade):
         them. A slot another thread has reserved is refused with
         ``LocationReservedError``, the same as the two verbs that state a
         position, naming the thread to clear. An occupied slot raises
-        ``SlotOccupiedError``. All three refuse before any registry mutation, so
-        operator state never lands partially-registered and the same call is the
-        fix once the cause is.
+        ``SlotOccupiedError``. A barcode another labware holds raises
+        ``BarcodeInUseError``; a removed labware still holds its barcode, and a
+        blank barcode counts as none. All four refuse before any registry
+        mutation, so operator state never lands partially-registered and the
+        same call is the fix once the cause is.
         """
+        del reason  # consumed by @dangerous audit
+        barcode = _barcode_or_none(barcode)
         template_name = await self._resolve_template_name(template_name, labware_type)
         target_location = None
         if location is not None:
             target_location = self._system.system_map.resolve_placement_location(location)
         adopted = self._adopt_expected(target_location, template_name)
+        await self._refuse_a_barcode_held_by_another(
+            barcode, adopted.id if adopted is not None else None,
+        )
         if adopted is not None:
             instance = adopted
         else:
@@ -649,7 +691,7 @@ class LabwareFacade(ILabwareFacade):
     )
     async def set_well_volumes(
         self, labware_id: str, volumes: dict[str, float],
-        reason: str | None = None,
+        *, reason: str | None = None,
     ) -> None:
         """Operator-asserted absolute per-well volumes.
 
@@ -686,7 +728,7 @@ class LabwareFacade(ILabwareFacade):
     )
     async def confirm_well_volumes(
         self, labware_id: str,
-        reason: str | None = None,
+        *, reason: str | None = None,
     ) -> None:
         """Operator agreement that the tracked volumes match the labware.
 
@@ -698,19 +740,18 @@ class LabwareFacade(ILabwareFacade):
         """
         del reason  # consumed by @dangerous audit; facade ignores body
         instance = await self._require(labware_id)
-        await self._refuse_a_confirm_the_record_cannot_back(
-            instance, "set_well_volumes",
-        )
+        await self._refuse_a_confirm_the_record_cannot_back(instance, "well-volumes")
         contents = await self._contents.of(instance.ref)
         if not contents.volumes:
-            raise ValueError(
+            raise NothingToConfirmError(
                 f"nothing has ever said what is in labware '{labware_id}', so "
-                f"there is nothing to confirm; state it with set_well_volumes"
+                f"there is nothing to confirm; state it with set_well_volumes",
+                settle_with=set_verb("well-volumes"),
             )
         await self._contents.assert_volumes(instance.ref, dict(contents.volumes))
 
     async def _refuse_a_confirm_the_record_cannot_back(
-        self, instance: LabwareInstance, settle_with: str,
+        self, instance: LabwareInstance, noun: SettleNoun,
     ) -> None:
         """Confirming is agreeing with the record, and there are two states the
         record is known not to describe.
@@ -719,11 +760,11 @@ class LabwareFacade(ILabwareFacade):
         read is behind and a confirm freezes the number it is behind by. An
         aborted action threw its operations away, so the read is wrong by an
         amount nothing can state, and the labware looks right to anyone
-        glancing at it. Both are settled by measuring and stating, never by
-        agreeing.
+        glancing at it. The first is settled by ending the action, the second
+        by measuring and stating.
         """
         if self._contents.is_behind(instance.name):
-            raise ValueError(
+            raise HeldByUnfinishedActionError(
                 f"an unfinished action has done things to '{instance.id}' that "
                 f"the record has not been told about, so there is nothing here "
                 f"worth agreeing with; settle the action (retry, continue or "
@@ -731,11 +772,12 @@ class LabwareFacade(ILabwareFacade):
             )
         ops = await self._contents.ops_of(instance.ref)
         if unsettled_gaps(ops, instance.name) & GAPS_THAT_LOST_WORK:
-            raise ValueError(
+            raise WorkLostError(
                 f"an aborted action lost work it had really done to "
                 f"'{instance.id}', so the record is wrong by an amount nothing "
                 f"can state and confirming it would mark that wrong number "
-                f"checked; measure it and state it with {settle_with}"
+                f"checked; measure it and state it with set_{noun.replace('-', '_')}",
+                settle_with=set_verb(noun),
             )
 
     async def resolve_contents(self, labware_id: str) -> ContentsResolution:
@@ -782,7 +824,7 @@ class LabwareFacade(ILabwareFacade):
     )
     async def set_tip_state(
         self, labware_id: str, tip_positions_present: list[str],
-        reason: str | None = None,
+        *, reason: str | None = None,
     ) -> None:
         """Operator-asserted absolute tip layout.
 
@@ -837,7 +879,7 @@ class LabwareFacade(ILabwareFacade):
     )
     async def confirm_tip_state(
         self, labware_id: str,
-        reason: str | None = None,
+        *, reason: str | None = None,
     ) -> None:
         """Operator agreement that the tracked layout matches the rack.
 
@@ -849,14 +891,13 @@ class LabwareFacade(ILabwareFacade):
         del reason  # consumed by @dangerous audit; facade ignores body
         instance = await self._require(labware_id)
         self._refuse_non_rack(instance)
-        await self._refuse_a_confirm_the_record_cannot_back(
-            instance, "set_tip_state",
-        )
+        await self._refuse_a_confirm_the_record_cannot_back(instance, "tip-state")
         positions = await self._projected_tip_positions(instance)
         if positions is None:
-            raise ValueError(
+            raise NothingToConfirmError(
                 f"nothing tracked on rack '{labware_id}' to confirm; "
-                f"assert the layout with set_tip_state instead"
+                f"assert the layout with set_tip_state instead",
+                settle_with=set_verb("tip-state"),
             )
         await self._contents.assert_tips(instance.ref, positions)
 
@@ -918,8 +959,14 @@ class LabwareFacade(ILabwareFacade):
 
     # -- Operator clear surfaces ---------------------------------------------
 
+    @dangerous(
+        name="labware.clear_submission",
+        level=DangerLevel.CRITICAL,
+        message="Clear the labware of submission '{submission_id}' from the "
+                "record. Deck residents declared leave-in-place are kept.",
+    )
     async def clear_submission_labware(
-        self, submission_id: str, *, force: bool = False,
+        self, submission_id: str, *, force: bool = False, reason: str | None = None,
     ) -> ClearSubmissionResult:
         """Walk every thread tied to ``submission_id`` and clear its
         labware unless the thread template declared ``end_leave_in_place``.
@@ -1063,8 +1110,14 @@ class LabwareFacade(ILabwareFacade):
             f"No mover named {mover_name!r}. Movers in this system: {known!r}."
         )
 
+    @dangerous(
+        name="labware.discharge",
+        level=DangerLevel.OPERATOR,
+        message="Discharge labware '{labware_id}': it leaves its position and "
+                "the live registry. Its record stays readable.",
+    )
     async def discharge_labware(
-        self, labware_id: str, *, force: bool = False,
+        self, labware_id: str, *, force: bool = False, reason: str | None = None,
     ) -> None:
         """Remove ONE labware instance from every runtime store.
 
@@ -1084,8 +1137,14 @@ class LabwareFacade(ILabwareFacade):
             )
         await self._wipe_labware(instance)
 
+    @dangerous(
+        name="labware.clear_all",
+        level=DangerLevel.CRITICAL,
+        message="Clear every labware from the record, deck residents included, "
+                "and reset every device's labware projection.",
+    )
     async def clear_all_labware(
-        self, *, force: bool = False,
+        self, *, force: bool = False, reason: str | None = None,
     ) -> list[str]:
         """Panic button: clear every labware in the runtime.
 
@@ -1287,6 +1346,7 @@ class LabwareFacade(ILabwareFacade):
             id=instance.id,
             name=instance.name,
             template_name=instance.template_name,
+            labware_type=instance.labware_type,
             barcode=instance.barcode,
             current_location=current_location,
             placement=placement,

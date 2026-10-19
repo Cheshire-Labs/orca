@@ -114,6 +114,7 @@ class SpawnThreadRequest(BaseModel):
             "template's default acquisition."
         ),
     )
+    reason: str | None = None
 
 
 class _ActionSnapshotProjection(BaseModel):
@@ -233,15 +234,7 @@ class RecoverThreadRequest(BaseModel):
     Manually-paused threads use Resume instead; this endpoint targets
     threads in error pause (`pause_reason="error"`).
 
-    No `reason` field: the underlying `runtime.threads.recover()` does
-    not accept a reason kwarg (the `@dangerous` decorator on it does
-    NOT have `requires_reason=True`). Earlier drafts threaded `reason`
-    through and crashed with `TypeError: got an unexpected keyword
-    argument 'reason'` at runtime; the MagicMock-driven tests didn't
-    catch it because `AsyncMock` accepts arbitrary kwargs. If audit-trail
-    reason is needed, the facade has to grow the parameter first
-    (or a separate audit-log helper has to record it out-of-band,
-    matching the pre-Phase-3 thread_mutation handler).
+    Takes no `reason`: a recovery is audited without one.
     """
     model_config = ConfigDict(frozen=True, extra="forbid")
 

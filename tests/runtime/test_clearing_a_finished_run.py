@@ -121,6 +121,7 @@ async def test_clearing_a_finished_run_takes_its_plates_and_leaves_the_resident(
 
         result = await runtime.labware.clear_submission_labware(
             submission.id, force=False,
+            confirm=True,
         )
 
         after = _ids_by_template(await runtime.labware.list_all())
@@ -150,6 +151,6 @@ async def test_a_submission_the_runtime_never_saw_is_an_error_not_an_empty_clear
     await runtime.start()
     try:
         with pytest.raises(KeyError):
-            await runtime.labware.clear_submission_labware("no-such-submission")
+            await runtime.labware.clear_submission_labware("no-such-submission", confirm=True)
     finally:
         await runtime.shutdown(confirm=True)

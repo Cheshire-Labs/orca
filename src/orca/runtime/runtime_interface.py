@@ -22,7 +22,7 @@ prompt template before confirming.
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Iterable, Iterator
 from dataclasses import dataclass
-from typing import Any, Callable, List, Literal, Optional, Protocol, Sequence, TypeVar, runtime_checkable
+from typing import Any, Callable, List, Literal, Mapping, Optional, Protocol, Sequence, TypeVar, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, JsonValue
 
@@ -280,19 +280,21 @@ class IVariableFacade(ABC):
     @abstractmethod
     def set(
         self, name: str, value: OptionValue, execution_id: str, *,
+        reason: str | None = None,
         confirm: bool = False,
     ) -> None: ...
 
     @abstractmethod
     def set_global(
         self, name: str, value: OptionValue, *,
+        reason: str | None = None,
         confirm: bool = False,
     ) -> None: ...
 
     @abstractmethod
     def set_submission(
         self, name: str, value: OptionValue, execution_id: str,
-        submission_id: str, *, confirm: bool = False,
+        submission_id: str, *, reason: str | None = None, confirm: bool = False,
     ) -> None:
         """Write the layer that outranks the per-execution partition.
 
@@ -303,12 +305,14 @@ class IVariableFacade(ABC):
     @abstractmethod
     def unset(
         self, name: str, execution_id: str, *,
+        reason: str | None = None,
         confirm: bool = False,
     ) -> None: ...
 
     @abstractmethod
     def unset_submission(
         self, name: str, execution_id: str, submission_id: str, *,
+        reason: str | None = None,
         confirm: bool = False,
     ) -> None:
         """Drop one submission's override so it falls through to the layers below."""
@@ -316,6 +320,7 @@ class IVariableFacade(ABC):
     @abstractmethod
     def unset_global(
         self, name: str, *,
+        reason: str | None = None,
         confirm: bool = False,
     ) -> None: ...
 
@@ -398,6 +403,7 @@ class ILabwareFacade(ABC):
     @abstractmethod
     async def edit_barcode(
         self, labware_id: str, new_barcode: str, *,
+        reason: str | None = None,
         confirm: bool = False,
     ) -> None: ...
 
@@ -406,12 +412,12 @@ class ILabwareFacade(ABC):
         self, labware_id: str,
         patch: MoveParameterPatch,
         clear: Sequence[MoveParameterField] = (),
-        *, confirm: bool = False,
+        *, reason: str | None = None, confirm: bool = False,
     ) -> MoveParameterPatch: ...
 
     @abstractmethod
     async def clear_carry_override(
-        self, labware_id: str, *, confirm: bool = False,
+        self, labware_id: str, *, reason: str | None = None, confirm: bool = False,
     ) -> None: ...
 
     @abstractmethod
@@ -427,6 +433,7 @@ class ILabwareFacade(ABC):
         labware_type: str | None = None,
         barcode: str | None = None,
         location: str | None = None,
+        reason: str | None = None,
         confirm: bool = False,
     ) -> LabwareSnapshot:
         """Record labware an operator has put down. Exactly one of
@@ -535,6 +542,7 @@ class ILabwareFacade(ABC):
     @abstractmethod
     async def clear_submission_labware(
         self, submission_id: str, *, force: bool = False,
+        reason: str | None = None, confirm: bool = False,
     ) -> ClearSubmissionResult:
         """Remove non-reuse-bound labware associated with a submission.
 
@@ -578,6 +586,7 @@ class ILabwareFacade(ABC):
     @abstractmethod
     async def discharge_labware(
         self, labware_id: str, *, force: bool = False,
+        reason: str | None = None, confirm: bool = False,
     ) -> None:
         """Remove ONE labware instance from the runtime state.
 
@@ -594,6 +603,7 @@ class ILabwareFacade(ABC):
     @abstractmethod
     async def clear_all_labware(
         self, *, force: bool = False,
+        reason: str | None = None, confirm: bool = False,
     ) -> list[str]:
         """Panic button: clear every Location and remove every labware.
 
@@ -655,6 +665,7 @@ class IDeviceFacade(ABC):
         mode: WorkflowRunMode | None = None,
         confirm: bool = False,
         vendor_confirm: bool = False,
+        reason: str | None = None,
     ) -> "DeviceInvocationResult": ...
 
     @abstractmethod
@@ -663,12 +674,14 @@ class IDeviceFacade(ABC):
         mode: WorkflowRunMode | None = None,
         confirm: bool = False,
         vendor_confirm: bool = False,
+        reason: str | None = None,
     ) -> "DeviceInvocationResult": ...
 
     @abstractmethod
     async def initialize(
         self, device_name: str, *,
         mode: WorkflowRunMode | None = None,
+        reason: str | None = None,
         confirm: bool = False,
     ) -> None: ...
 
@@ -676,12 +689,15 @@ class IDeviceFacade(ABC):
     async def connect(
         self, device_name: str, *,
         mode: WorkflowRunMode | None = None,
+        reason: str | None = None,
+        confirm: bool = False,
     ) -> None: ...
 
     @abstractmethod
     async def disconnect(
         self, device_name: str, *,
         mode: WorkflowRunMode | None = None,
+        reason: str | None = None,
         confirm: bool = False,
     ) -> None: ...
 
@@ -689,6 +705,7 @@ class IDeviceFacade(ABC):
     async def reconcile_deck(
         self, device_name: str, *,
         mode: WorkflowRunMode | None = None,
+        reason: str | None = None,
         confirm: bool = False,
     ) -> DeckComparison | None:
         """Re-seed one liquid handler from the world model (layout + occupancy).
@@ -705,7 +722,7 @@ class IDeviceFacade(ABC):
 
     @abstractmethod
     async def take_external_control(
-        self, device_name: str, reason: str | None = None,
+        self, device_name: str, *, reason: str | None = None,
         confirm: bool = False,
     ) -> None:
         """Claim a device for hands-on work until it is released.
@@ -717,14 +734,14 @@ class IDeviceFacade(ABC):
 
     @abstractmethod
     async def release_external_control(
-        self, device_name: str, confirm: bool = False,
+        self, device_name: str, *, reason: str | None = None, confirm: bool = False,
     ) -> None:
         """Hand the device back to the workflow. Idempotent."""
         ...
 
     @abstractmethod
     async def clear_fault(
-        self, device_name: str, confirm: bool = False,
+        self, device_name: str, *, reason: str | None = None, confirm: bool = False,
     ) -> DeviceFaultSummary | None:
         """Say a faulted device has been looked at. Returns what was cleared.
 
@@ -814,28 +831,28 @@ class IThreadFacade(ABC):
     @abstractmethod
     async def pause(
         self, execution_id: str, thread_id: str,
-        reason: str | None = None, *,
+        *, reason: str | None = None,
         confirm: bool = False,
     ) -> None: ...
 
     @abstractmethod
     async def resume(
         self, execution_id: str, thread_id: str,
-        reason: str | None = None, *,
+        *, reason: str | None = None,
         confirm: bool = False,
     ) -> None: ...
 
     @abstractmethod
     async def pause_all(
         self, execution_id: str,
-        reason: str | None = None, *,
+        *, reason: str | None = None,
         confirm: bool = False,
     ) -> dict[str, int]: ...
 
     @abstractmethod
     async def resume_all(
         self, execution_id: str,
-        reason: str | None = None, *,
+        *, reason: str | None = None,
         confirm: bool = False,
     ) -> dict[str, int]: ...
 
@@ -942,6 +959,7 @@ class IThreadFacade(ABC):
     async def spawn_thread(
         self, execution_id: str, template_name: str, *,
         labware_id: str | None = None,
+        reason: str | None = None,
         confirm: bool = False,
     ) -> ThreadSnapshot: ...
 
@@ -1089,6 +1107,7 @@ class IIncidentFacade(ABC):
     @abstractmethod
     async def acknowledge(
         self, incident_id: str, *,
+        reason: str | None = None,
         confirm: bool = False,
     ) -> None: ...
 
@@ -1096,8 +1115,26 @@ class IIncidentFacade(ABC):
     async def acknowledge_all(
         self, *,
         category: IncidentCategory | None = None,
+        reason: str | None = None,
         confirm: bool = False,
     ) -> int: ...
+
+    # -- Recoverable-timeout operator decisions --
+    @abstractmethod
+    def recoverable_timeout_extend(
+        self, incident_id: str, additional_seconds: float, *,
+        reason: str | None = None, confirm: bool = False,
+    ) -> None: ...
+
+    @abstractmethod
+    def recoverable_timeout_abort(
+        self, incident_id: str, operator: str, *, reason: str, confirm: bool = False,
+    ) -> None: ...
+
+    @abstractmethod
+    def recoverable_timeout_mark_complete(
+        self, incident_id: str, operator: str, *, reason: str, confirm: bool = False,
+    ) -> None: ...
 
 
 # -- IAccessConfigFacade -----------------------------------------------------
@@ -1123,17 +1160,17 @@ class IAccessConfigFacade(ABC):
 
     @abstractmethod
     async def add(
-        self, config: AccessConfig, *, confirm: bool = False,
+        self, config: AccessConfig, *, reason: str | None = None, confirm: bool = False,
     ) -> None: ...
 
     @abstractmethod
     async def update(
-        self, config: AccessConfig, *, confirm: bool = False,
+        self, config: AccessConfig, *, reason: str | None = None, confirm: bool = False,
     ) -> None: ...
 
     @abstractmethod
     async def delete(
-        self, name: str, *, confirm: bool = False,
+        self, name: str, *, reason: str | None = None, confirm: bool = False,
     ) -> bool: ...
 
 
@@ -1167,12 +1204,13 @@ class IMoveDefaultsFacade(ABC):
         patch: MoveParameterPatch,
         clear: Iterable[MoveParameterField] = (),
         *,
+        reason: str | None = None,
         confirm: bool = False,
     ) -> TransporterMoveDefaults: ...
 
     @abstractmethod
     async def reset(
-        self, transporter_name: str, *, confirm: bool = False,
+        self, transporter_name: str, *, reason: str | None = None, confirm: bool = False,
     ) -> bool: ...
 
 
@@ -1204,12 +1242,13 @@ class IGripProfileFacade(ABC):
         patch: MoveParameterPatch,
         clear: Iterable[MoveParameterField] = (),
         *,
+        reason: str | None = None,
         confirm: bool = False,
     ) -> LabwareGripProfile: ...
 
     @abstractmethod
     async def reset(
-        self, labware_type: str, *, confirm: bool = False,
+        self, labware_type: str, *, reason: str | None = None, confirm: bool = False,
     ) -> bool: ...
 
 
@@ -1254,19 +1293,19 @@ class IDeckLayoutFacade(ABC):
     @abstractmethod
     async def add(
         self, device_id: str, name: str, config: DeckLayoutConfig,
-        *, confirm: bool = False,
+        *, reason: str | None = None, confirm: bool = False,
     ) -> None: ...
 
     @abstractmethod
     async def update(
         self, device_id: str, name: str, config: DeckLayoutConfig,
-        *, confirm: bool = False,
+        *, reason: str | None = None, confirm: bool = False,
     ) -> None: ...
 
     @abstractmethod
     async def delete(
         self, device_id: str, name: str,
-        *, confirm: bool = False,
+        *, reason: str | None = None, confirm: bool = False,
     ) -> bool: ...
 
 
@@ -1304,25 +1343,25 @@ class ITeachpointFacade(ABC):
     @abstractmethod
     async def add(
         self, device_id: str, teachpoint: Teachpoint,
-        *, confirm: bool = False,
+        *, reason: str | None = None, confirm: bool = False,
     ) -> None: ...
 
     @abstractmethod
     async def update(
         self, device_id: str, teachpoint: Teachpoint,
-        *, confirm: bool = False,
+        *, reason: str | None = None, confirm: bool = False,
     ) -> None: ...
 
     @abstractmethod
     async def delete(
         self, device_id: str, position_id: str,
-        *, confirm: bool = False,
+        *, reason: str | None = None, confirm: bool = False,
     ) -> bool: ...
 
     @abstractmethod
     async def set_taught_with(
         self, device_id: str, position_id: str, labware_type: str | None,
-        *, confirm: bool = False,
+        *, reason: str | None = None, confirm: bool = False,
     ) -> Teachpoint: ...
 
     @abstractmethod
@@ -1330,13 +1369,13 @@ class ITeachpointFacade(ABC):
         self, device_id: str, position_id: str, labware_type: str,
         patch: MoveParameterPatch,
         clear: Sequence[str] = (),
-        *, confirm: bool = False,
+        *, reason: str | None = None, confirm: bool = False,
     ) -> Teachpoint: ...
 
     @abstractmethod
     async def clear_labware_override(
         self, device_id: str, position_id: str, labware_type: str,
-        *, confirm: bool = False,
+        *, reason: str | None = None, confirm: bool = False,
     ) -> bool: ...
 
 
@@ -1369,6 +1408,8 @@ class ISubmissionFacade(ABC):
         deployment_profile: str | None = None,
         mode: WorkflowRunMode | None = None,
         acknowledge_warnings: bool = False,
+        sim_time_scale: float | None = None,
+        reason: str | None = None,
         confirm: bool = False,
     ) -> SubmissionSnapshot: ...
 
@@ -1382,8 +1423,38 @@ class ISubmissionFacade(ABC):
 
     @abstractmethod
     def close_execution(
-        self, execution_id: str, *, confirm: bool = False,
+        self, execution_id: str, *, reason: str | None = None, confirm: bool = False,
     ) -> SubmissionCloseResult: ...
+
+    @abstractmethod
+    async def submit_workflow(
+        self,
+        workflow_name: str,
+        variables: Mapping[str, OptionValue] | None = None,
+        *,
+        mode: WorkflowRunMode | None = None,
+        acknowledge_warnings: bool = False,
+        sim_time_scale: float | None = None,
+        reason: str | None = None,
+        confirm: bool = False,
+    ) -> ExecutionRecord: ...
+
+    @abstractmethod
+    async def stop_execution(
+        self, execution_id: str, *,
+        abort: bool = False, reason: str | None = None, confirm: bool = False,
+    ) -> StopOutcome: ...
+
+    @abstractmethod
+    def remove_execution(
+        self, execution_id: str, *, reason: str | None = None, confirm: bool = False,
+    ) -> None: ...
+
+    @abstractmethod
+    async def confirm_manual_step(
+        self, execution_id: str, step_id: str, *,
+        reason: str | None = None, confirm: bool = False,
+    ) -> None: ...
 
 
 # -- IDeploymentProfileFacade ------------------------------------------------
@@ -1411,16 +1482,16 @@ class IDeploymentProfileFacade(ABC):
 
     @abstractmethod
     async def add(
-        self, profile: DeploymentProfile, *, confirm: bool = False,
+        self, profile: DeploymentProfile, *, reason: str | None = None, confirm: bool = False,
     ) -> None: ...
 
     @abstractmethod
     async def update(
-        self, profile: DeploymentProfile, *, confirm: bool = False,
+        self, profile: DeploymentProfile, *, reason: str | None = None, confirm: bool = False,
     ) -> None: ...
 
     @abstractmethod
-    async def delete(self, name: str, *, confirm: bool = False) -> bool: ...
+    async def delete(self, name: str, *, reason: str | None = None, confirm: bool = False) -> bool: ...
 
 
 # -- ITopologyRegistry / IGatewayRegistry -----------------------------------
@@ -1502,6 +1573,21 @@ class RunModeRequiredError(ValueError):
             "Submission requires a `run_mode` (PURE_SIM, DEVICE_SIM, or LIVE). "
             "No deployment-level default is applied at submit time."
         )
+
+
+class SimTimeScaleNotApplicableError(ValueError):
+    """Raised when a simulated time scale is given where none can apply.
+
+    A LIVE run is paced by its hardware, so a scale on a LIVE submission or on
+    a LIVE execution is a contradiction, not a setting. A JOIN_EXISTING
+    submission cannot carry one either: the scale belongs to the execution it
+    joins, and set-execution-time-scale changes that. Shape refusal -> 422.
+    """
+
+    def __init__(self, reason: str, execution_id: str | None = None) -> None:
+        self.reason = reason
+        self.execution_id = execution_id
+        super().__init__(f"sim_time_scale does not apply: {reason}")
 
 
 class SubmissionToPausedExecutionError(RuntimeError):
@@ -1991,9 +2077,9 @@ class SpawnIncompatibleError(RuntimeError):
         self.expected_template = expected_template
         self.actual_template = actual_template
         super().__init__(
-            f"Location '{location}' holds labware with template "
-            f"'{actual_template}' but reuse-bind expected template "
-            f"'{expected_template}'. Clear the location or fix the workflow."
+            f"A thread at '{location}' expects labware of template "
+            f"'{expected_template}', but got '{actual_template}'. Put the "
+            f"expected template there, or fix the workflow."
         )
 
 
@@ -2242,6 +2328,17 @@ class LabwareNotFoundError(KeyError):
         super().__init__(f"No labware with id '{labware_id}'")
 
 
+class BarcodeInUseError(RuntimeError):
+    """Another labware already holds this barcode."""
+
+    def __init__(self, barcode: str, existing_labware_id: str) -> None:
+        self.barcode = barcode
+        self.existing_labware_id = existing_labware_id
+        super().__init__(
+            f"Barcode {barcode!r} is already held by labware {existing_labware_id!r}"
+        )
+
+
 # -- IOpsHistoryFacade -------------------------------------------------------
 
 
@@ -2319,6 +2416,7 @@ class ISystemRuntime(Protocol):
         deployment_profile: str | None = None,
         *,
         mode: WorkflowRunMode | None = None,
+        sim_time_scale: float | None = None,
     ) -> ExecutionRecord: ...
 
     async def submit_method(
@@ -2345,11 +2443,13 @@ class ISystemRuntime(Protocol):
         self, execution_id: str, *, confirm: bool = False,
     ) -> StopOutcome: ...
 
+    def set_execution_time_scale(
+        self, execution_id: str, sim_time_scale: float,
+    ) -> float: ...
+
     async def abort_execution(self, execution_id: str) -> None: ...
 
-    def remove_execution(
-        self, execution_id: str, *, confirm: bool = False,
-    ) -> None: ...
+    def remove_execution(self, execution_id: str) -> None: ...
 
     # -- Operator manual steps --
     def list_pending_manual_steps(
@@ -2358,17 +2458,6 @@ class ISystemRuntime(Protocol):
 
     async def confirm_manual_step(
         self, execution_id: str, step_id: str,
-    ) -> None: ...
-
-    # -- Recoverable-timeout operator decisions --
-    def recoverable_timeout_extend(
-        self, incident_id: str, additional_seconds: float,
-    ) -> None: ...
-    def recoverable_timeout_abort(
-        self, incident_id: str, operator: str, reason: str,
-    ) -> None: ...
-    def recoverable_timeout_mark_complete(
-        self, incident_id: str, operator: str, reason: str,
     ) -> None: ...
 
     # -- Sub-facades --

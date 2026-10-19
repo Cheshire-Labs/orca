@@ -29,6 +29,10 @@ class LabwareSnapshotModel(BaseModel):
     id: str
     name: str
     template_name: str
+    labware_type: str = Field(description=(
+        "The catalog key, the one `GET /api/labware/{labware_type}` takes. A sim "
+        "template's placeholder, such as `_sim_plate`, and `unknown` are not in the catalog."
+    ))
     barcode: str | None = None
     current_location: str | None = None
     placement: PlacementState | None = None
@@ -44,6 +48,7 @@ class LabwareSnapshotModel(BaseModel):
         return cls(
             id=snap.id, name=snap.name,
             template_name=snap.template_name,
+            labware_type=snap.labware_type,
             barcode=snap.barcode,
             current_location=snap.current_location,
             placement=snap.placement,
@@ -134,6 +139,7 @@ class EditLabwareBarcodeRequest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     labware_id: str
     new_barcode: str
+    reason: str | None = None
 
 
 class SetLabwareCarryOverrideRequest(BaseModel):
@@ -141,6 +147,7 @@ class SetLabwareCarryOverrideRequest(BaseModel):
     labware_id: str
     set: MoveParameterPatch = MoveParameterPatch()
     clear: list[MoveParameterField] = []
+    reason: str | None = None
 
 
 class CarryOverrideResponse(BaseModel):
@@ -157,6 +164,7 @@ class CarryOverrideResponse(BaseModel):
 class ClearLabwareCarryOverrideRequest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     labware_id: str
+    reason: str | None = None
 
 
 class ResetLabwareLocationRequest(BaseModel):
@@ -189,6 +197,7 @@ class RegisterLabwareRequest(BaseModel):
     """Where it physically is: any deck site, device site, storage position or
     mover gripper the topology knows. Omitted, the labware exists but sits
     nowhere."""
+    reason: str | None = None
 
     @model_validator(mode="after")
     def _named_exactly_one_way(self) -> "RegisterLabwareRequest":
@@ -215,6 +224,9 @@ class RegisterLabwareResponse(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     labware: LabwareSnapshotModel
     status: Literal["registered"] = "registered"
+    adopted_thread_id: str | None = None
+    """The thread that was waiting for this labware and took it, or None when
+    nothing was waiting and a new labware was made."""
 
 
 class GetWellVolumesRequest(BaseModel):
@@ -436,6 +448,7 @@ class ClearSubmissionLabwareRequest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     submission_id: str
     force: bool = False
+    reason: str | None = None
 
 
 class ClearSubmissionLabwareResponse(BaseModel):
@@ -495,6 +508,7 @@ class DischargeLabwareRequest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     labware_id: str
     force: bool = False
+    reason: str | None = None
 
 
 class DischargeLabwareResponse(BaseModel):
@@ -512,6 +526,7 @@ class ClearAllLabwareRequest(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
     force: bool = False
+    reason: str | None = None
 
 
 class ClearAllLabwareResponse(BaseModel):

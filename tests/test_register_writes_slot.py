@@ -261,7 +261,7 @@ class TestSilentStallReproduction:
 
             # Operator physically picks the plate off the deck and informs
             # the engine via discharge.
-            await runtime.labware.discharge_labware(snap.id, force=True)
+            await runtime.labware.discharge_labware(snap.id, force=True, confirm=True)
             pad1 = system.system_map.get_location("pad1")
             assert pad1.labware is None
 
@@ -289,7 +289,7 @@ class TestRegisterClearToolIntegration:
             pad1 = system.system_map.get_location("pad1")
             assert pad1.labware is not None
 
-            await runtime.labware.discharge_labware(snap.id, force=True)
+            await runtime.labware.discharge_labware(snap.id, force=True, confirm=True)
             assert pad1.labware is None
         finally:
             await runtime.shutdown()
@@ -307,7 +307,7 @@ class TestRegisterClearToolIntegration:
             pad1 = system.system_map.get_location("pad1")
             assert pad1.labware is not None
 
-            cleared = await runtime.labware.clear_all_labware(force=True)
+            cleared = await runtime.labware.clear_all_labware(force=True, confirm=True)
             assert snap.id in cleared
             assert pad1.labware is None
         finally:

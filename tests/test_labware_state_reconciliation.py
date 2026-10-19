@@ -229,7 +229,7 @@ async def test_clear_all_wipes_every_holder() -> None:
     assert _resident_at(build) is not None, "resident never bound to its deck site"
     assert any(named_for_template(n, "reservoir") for n in await _deck_labware_names(lh)), "resident never reached the driver deck"
 
-    await runtime.labware.clear_all_labware(force=True)
+    await runtime.labware.clear_all_labware(force=True, confirm=True)
 
     assert _resident_at(build) is None, (
         "deck-site Location slot still holds the cleared resident"
@@ -342,7 +342,7 @@ async def test_reboot_after_clear_does_not_resurrect() -> None:
     store = InMemoryLabwareStore()
     build1, _, runtime1 = await _bind_resident(recorder1, store, wf_name="recon_reboot_clear")
     id1 = _require_resident(build1).id
-    await runtime1.labware.clear_all_labware(force=True)
+    await runtime1.labware.clear_all_labware(force=True, confirm=True)
 
     recorder2 = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
     build2, _ = await _build(recorder2, wf_name="recon_reboot_clear_2")
@@ -378,7 +378,7 @@ async def test_discharge_clears_deck_site_resident_slot() -> None:
     build, _, runtime = await _bind_resident(recorder, store, wf_name="recon_discharge")
     resident_id = _require_resident(build).id
 
-    await runtime.labware.discharge_labware(resident_id, force=True)
+    await runtime.labware.discharge_labware(resident_id, force=True, confirm=True)
 
     assert _resident_at(build) is None, "discharge left the deck-site Location slot stale"
     assert resident_id not in {lw.id for lw in build.system.labwares}, "still in registry"

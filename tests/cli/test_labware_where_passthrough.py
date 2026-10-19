@@ -29,6 +29,7 @@ def _labware(**overrides: Any) -> LabwareDTO:
         "id": "7faedeec-1234-4abc-9def-000000000001",
         "name": "plate-1",
         "template_name": "plate_96",
+        "labware_type": "Cor_96_wellplate_360ul_Fb",
         "barcode": None,
         "current_location": "pad1",
     }
@@ -161,7 +162,7 @@ class TestLabwareEditVerbsPrefix:
             ])
         assert result.exit_code == 0, result.output
         mock_local.return_value.labware_edit_barcode.assert_called_once_with(
-            plate.id, "BC-NEW",
+            plate.id, "BC-NEW", reason=None,
         )
 
     def test_reset_location_resolves_prefix(self) -> None:
@@ -233,6 +234,7 @@ class TestClientOrNoneVariants:
         snap = {
             "id": "7faedeec-1234-4abc-9def-000000000001",
             "name": "p", "template_name": "plate_96",
+            "labware_type": "Cor_96_wellplate_360ul_Fb",
             "barcode": None, "current_location": None,
         }
         client = _ProbeClient(_transport(200, {"labware": snap}))
@@ -257,6 +259,7 @@ class TestClientOrNoneVariants:
         snap = {
             "id": "7faedeec-1234-4abc-9def-000000000001",
             "name": "p", "template_name": "plate_96",
+            "labware_type": "Cor_96_wellplate_360ul_Fb",
             "barcode": "BC", "current_location": None,
         }
         client = _ProbeClient(_transport(200, {"labware": snap}))

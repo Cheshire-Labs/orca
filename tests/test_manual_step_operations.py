@@ -49,7 +49,11 @@ class _FakeRuntime:
             return self._records
         return [r for r in self._records if r.execution_id == execution_id]
 
-    async def confirm_manual_step(self, execution_id: str, step_id: str) -> None:
+    async def confirm_manual_step(
+        self, execution_id: str, step_id: str, *,
+        reason: str | None = None, confirm: bool = False,
+    ) -> None:
+        assert confirm, "the facade is @dangerous and refuses without confirm"
         if self._confirm_raises:
             raise KeyError(step_id)
         self.confirmed = (execution_id, step_id)
@@ -59,7 +63,7 @@ class _FakeRuntime:
         runtime.list_pending_manual_steps = MagicMock(
             side_effect=self.list_pending_manual_steps,
         )
-        runtime.confirm_manual_step = AsyncMock(
+        runtime.submissions.confirm_manual_step = AsyncMock(
             side_effect=self.confirm_manual_step,
         )
         return runtime

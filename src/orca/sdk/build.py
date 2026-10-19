@@ -412,15 +412,12 @@ async def add_workflow_template(
     for method_template in workflow.bundled_methods:
         # Registry keys by (workflow_name, name): same-object re-add is a
         # no-op, a distinct object under the same name in this workflow
-        # raises MethodTemplateNameCollisionError. Two workflows sharing a
-        # method name no longer collide.
+        # raises MethodTemplateNameCollisionError.
         if isinstance(method_template, MethodTemplate):
             system.add_method_template(workflow.name, method_template)
-    for thread_template in workflow.bundled_threads:
-        # Registry keys by (workflow_name, name): same-object re-add is a
-        # no-op, a distinct object under the same name in this workflow
-        # raises ThreadTemplateNameCollisionError. Two workflows sharing a
-        # thread name no longer collide.
+    # Same order as SdkToSystemBuilder at build time: wf.start/wf.thread first,
+    # then bundled-only threads. A same-object re-add is a no-op.
+    for thread_template in (*workflow.thread_templates, *workflow.bundled_threads):
         system.add_labware_thread_template(workflow.name, thread_template)
 
 

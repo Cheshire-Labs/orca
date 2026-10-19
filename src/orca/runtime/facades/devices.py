@@ -279,7 +279,9 @@ class DeviceFacade(IDeviceFacade):
         options: dict[str, JsonValue] | None = None,
         *, mode: WorkflowRunMode | None = None,
         vendor_confirm: bool = False,
+        reason: str | None = None,
     ) -> DeviceInvocationResult:
+        del reason  # consumed by @dangerous audit
         device = self._dispatch_target(device_name)
         if device is not None and device.under_external_control:
             raise DeviceUnderExternalControlError(device_name)
@@ -316,7 +318,9 @@ class DeviceFacade(IDeviceFacade):
         self, device_name: str, capability: str, kwargs: dict[str, JsonValue],
         *, mode: WorkflowRunMode | None = None,
         vendor_confirm: bool = False,
+        reason: str | None = None,
     ) -> DeviceInvocationResult:
+        del reason  # consumed by @dangerous audit
         device = self._dispatch_target(device_name)
         if device is not None and device.under_external_control:
             raise DeviceUnderExternalControlError(device_name)
@@ -384,7 +388,9 @@ class DeviceFacade(IDeviceFacade):
     )
     async def initialize(
         self, device_name: str, *, mode: WorkflowRunMode | None = None,
+        reason: str | None = None,
     ) -> None:
+        del reason  # consumed by @dangerous audit
         # Resolves through `_resolve` so this verb accepts Transporters
         # too (`ResourceRegistry.get_device` rejects them).
         #
@@ -395,9 +401,17 @@ class DeviceFacade(IDeviceFacade):
             await resource.initialize()
             await self._reseed_lh_deck_if_lh(resource)
 
+    @dangerous(
+        name="device.connect",
+        level=DangerLevel.OPERATOR,
+        message="Connect device '{device_name}': open its link and take its "
+                "session. Moves nothing.",
+    )
     async def connect(
         self, device_name: str, *, mode: WorkflowRunMode | None = None,
+        reason: str | None = None,
     ) -> None:
+        del reason  # consumed by @dangerous audit
         resource = self._resolve(device_name)
         with mode_scope(mode if mode is not None else OPERATOR_DEVICE_WRITE_BASE):
             await resource.connect()
@@ -412,7 +426,9 @@ class DeviceFacade(IDeviceFacade):
     )
     async def disconnect(
         self, device_name: str, *, mode: WorkflowRunMode | None = None,
+        reason: str | None = None,
     ) -> None:
+        del reason  # consumed by @dangerous audit
         resource = self._resolve(device_name)
         with mode_scope(mode if mode is not None else OPERATOR_DEVICE_WRITE_BASE):
             await resource.disconnect()
@@ -433,6 +449,7 @@ class DeviceFacade(IDeviceFacade):
     )
     async def reconcile_deck(
         self, device_name: str, *, mode: WorkflowRunMode | None = None,
+        reason: str | None = None,
     ) -> DeckComparison | None:
         """Force the deck reconcile pass for one liquid handler NOW.
 
@@ -443,6 +460,7 @@ class DeviceFacade(IDeviceFacade):
         that follows overwrites the driver's answer: whatever the two disagreed
         about would otherwise be gone with no record that it ever existed.
         """
+        del reason  # consumed by @dangerous audit
         resource = self._require_liquid_handler(device_name, "reconcile")
         with mode_scope(mode if mode is not None else OPERATOR_DEVICE_WRITE_BASE):
             comparison = await self._compare_and_report(resource)
@@ -458,7 +476,7 @@ class DeviceFacade(IDeviceFacade):
                 "the device by hand, and release it when you are done.",
     )
     async def take_external_control(
-        self, device_name: str, reason: str | None = None,
+        self, device_name: str, *, reason: str | None = None,
     ) -> None:
         """Claim a device for hands-on work until it is released.
 
@@ -475,8 +493,9 @@ class DeviceFacade(IDeviceFacade):
         message="Give '{device_name}' back to the workflow. Anything waiting on "
                 "it starts using it again, so be clear of the device first.",
     )
-    async def release_external_control(self, device_name: str) -> None:
+    async def release_external_control(self, device_name: str, *, reason: str | None = None) -> None:
         """Hand the device back. Idempotent."""
+        del reason  # consumed by @dangerous audit
         self._resolve(device_name).release_external_control_hold()
 
     async def compare_deck(
@@ -609,12 +628,13 @@ class DeviceFacade(IDeviceFacade):
                 "thread paused on this fault with RETRY, RETRY_OP or CONTINUE "
                 "says the same thing, and so does a clean initialize or home.",
     )
-    async def clear_fault(self, device_name: str) -> DeviceFaultSummary | None:
+    async def clear_fault(self, device_name: str, *, reason: str | None = None) -> DeviceFaultSummary | None:
         """Give a faulted device back to the workflow. Returns what was cleared.
 
         Idempotent, and it changes nothing on the instrument. It is a person
         saying they looked.
         """
+        del reason  # consumed by @dangerous audit
         self._resolve(device_name)
         summary = self._fault_summary(device_name)
         await self._faults.clear_fault(device_name)

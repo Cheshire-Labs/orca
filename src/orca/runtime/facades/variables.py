@@ -62,7 +62,9 @@ class VariableFacade(IVariableFacade):
     )
     def set(
         self, name: str, value: OptionValue, execution_id: str,
+        *, reason: str | None = None,
     ) -> None:
+        del reason  # consumed by @dangerous audit
         self._store.set(name, value, execution_id)
 
     @dangerous(
@@ -73,7 +75,9 @@ class VariableFacade(IVariableFacade):
     )
     def set_global(
         self, name: str, value: OptionValue,
+        *, reason: str | None = None,
     ) -> None:
+        del reason  # consumed by @dangerous audit
         self._store.set_global(name, value)
 
     @dangerous(
@@ -86,7 +90,9 @@ class VariableFacade(IVariableFacade):
     )
     def set_submission(
         self, name: str, value: OptionValue, execution_id: str, submission_id: str,
+        *, reason: str | None = None,
     ) -> None:
+        del reason  # consumed by @dangerous audit
         self._store.set_submission(name, value, execution_id, submission_id)
 
     @dangerous(
@@ -97,7 +103,9 @@ class VariableFacade(IVariableFacade):
     )
     def unset(
         self, name: str, execution_id: str,
+        *, reason: str | None = None,
     ) -> None:
+        del reason  # consumed by @dangerous audit
         self._store.unset(name, execution_id)
 
     @dangerous(
@@ -109,7 +117,9 @@ class VariableFacade(IVariableFacade):
     )
     def unset_submission(
         self, name: str, execution_id: str, submission_id: str,
+        *, reason: str | None = None,
     ) -> None:
+        del reason  # consumed by @dangerous audit
         self._store.unset_submission(name, execution_id, submission_id)
 
     @dangerous(
@@ -119,7 +129,8 @@ class VariableFacade(IVariableFacade):
                 "variable fall through to computed / default values. In-flight "
                 "actions will not see the removal.",
     )
-    def unset_global(self, name: str) -> None:
+    def unset_global(self, name: str, *, reason: str | None = None) -> None:
+        del reason  # consumed by @dangerous audit
         self._store.unset_global(name)
 
     @dangerous(
@@ -132,7 +143,7 @@ class VariableFacade(IVariableFacade):
     )
     def load_profile(
         self, execution_id: str, profile_path: str,
-        reason: str | None = None,
+        *, reason: str | None = None,
     ) -> None:
         del reason  # consumed by @dangerous audit; facade ignores body
         data = json.loads(Path(profile_path).read_text(encoding="utf-8"))

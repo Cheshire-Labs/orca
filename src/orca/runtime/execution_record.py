@@ -58,3 +58,6 @@ class ExecutionRecord:
     runtime paused itself."""
     abort_armed: bool = False
     """Whether a second confirmed stop would abort."""
+    sim_time_scale: float | None = None
+    """The simulated time scale: 1 is real time, 0 is no pacing. None for a
+    LIVE run, and for a finished run read back from the store, which does not keep it."""

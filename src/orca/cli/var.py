@@ -169,6 +169,9 @@ def set_var(
         help="Write the submission's own layer, which outranks the execution "
              "scope. Required to change what an already-submitted thread resolves.",
     ),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
+    ),
 ) -> None:
     """Set a variable in one execution's (or one submission's) scope."""
     client = get_client()
@@ -183,10 +186,10 @@ def set_var(
         ):
             output.confirmation_denied()
     if submission is not None:
-        client.variables_set_submission(eid, submission, name, coerced)
+        client.variables_set_submission(eid, submission, name, coerced, reason=reason)
         output.info(f"{name} = {coerced}  ({scope})")
         return
-    result = client.variables_set(eid, name, coerced)
+    result = client.variables_set(eid, name, coerced, reason=reason)
     output.info(f"{name} = {coerced}  ({scope})")
     _warn_if_shadowed(name, eid, result.shadowed_by)
 
@@ -195,6 +198,9 @@ def set_var(
 def set_global(
     name: str = typer.Argument(...),
     value: str = typer.Argument(...),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
+    ),
 ) -> None:
     """Set a variable globally (affects all executions without local override)."""
     client = get_client()
@@ -204,7 +210,7 @@ def set_global(
             f"Set global {name!r} = {coerced!r}?", default=False,
         ):
             output.confirmation_denied()
-    client.variables_set_global(name, coerced)
+    client.variables_set_global(name, coerced, reason=reason)
     output.info(f"global {name} = {coerced}")
 
 
@@ -216,6 +222,9 @@ def unset(
         None, "--submission",
         help="Clear this submission's own override so its threads fall through "
              "to the execution value.",
+    ),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
     ),
 ) -> None:
     """Remove a variable override (falls back to the layers below it)."""
@@ -229,9 +238,9 @@ def unset(
         ):
             output.confirmation_denied()
     if submission is None:
-        client.variables_unset(eid, name)
+        client.variables_unset(eid, name, reason=reason)
     else:
-        client.variables_unset_submission(eid, submission, name)
+        client.variables_unset_submission(eid, submission, name, reason=reason)
     output.info(f"unset {name} ({scope})")
 
 

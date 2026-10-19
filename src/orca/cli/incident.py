@@ -112,6 +112,9 @@ def ack(
     incident_id: str = typer.Argument(
         ..., help="Incident id (full or 4+ char prefix).",
     ),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
+    ),
 ) -> None:
     """Acknowledge one incident."""
     resolved = _resolve_incident_id(incident_id)
@@ -121,15 +124,18 @@ def ack(
         ):
             output.confirmation_denied()
     if active_backend() == "cloud":
-        cloud_client().incidents_ack(resolved)
+        cloud_client().incidents_ack(resolved, reason=reason)
     else:
-        local_client().incidents_ack(resolved)
+        local_client().incidents_ack(resolved, reason=reason)
     output.info(f"acknowledged incident {resolved[:8]}")
 
 
 @app.command("ack-all")
 def ack_all(
     category: str = typer.Option("", "--category"),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
+    ),
 ) -> None:
     """Acknowledge every unacknowledged incident (optionally by category)."""
     if not STATE.force:
@@ -139,9 +145,9 @@ def ack_all(
         ):
             output.confirmation_denied()
     if active_backend() == "cloud":
-        result = cloud_client().incidents_ack_all(category=category or None)
+        result = cloud_client().incidents_ack_all(category=category or None, reason=reason)
     else:
-        result = local_client().incidents_ack_all(category=category or None)
+        result = local_client().incidents_ack_all(category=category or None, reason=reason)
     output.info(f"acknowledged {result.acknowledged_count} incidents")
 
 
@@ -154,6 +160,9 @@ def recoverable_timeout_extend(
         ...,
         "--additional-seconds",
         help="How much extra time to grant before the next RECOVERABLE_TIMEOUT.",
+    ),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
     ),
 ) -> None:
     """Operator decision: give the held command more time.
@@ -169,7 +178,7 @@ def recoverable_timeout_extend(
         )
     client = get_client()
     result = client.recoverable_timeout_extend(
-        incident_id, additional_seconds,
+        incident_id, additional_seconds, reason=reason,
     )
     output.info(
         f"extended incident {result.incident_id[:8]} by "

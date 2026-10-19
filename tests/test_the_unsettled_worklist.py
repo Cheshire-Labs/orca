@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from orca.state.confirm_refusals import HeldByUnfinishedActionError, NothingToConfirmError, WorkLostError
 from orca.runtime.sim_labware import SimPlateTemplate
 from orca.state.provenance import Provenance
 from orca.state.records import (
@@ -247,8 +248,9 @@ class TestTheVerbTheRowNamesIsOneThatWorks:
                 "the row has to look agreeable, or it is not this bug"
             )
             assert row.settle_with == "set-well-volumes"
-            with pytest.raises(ValueError, match="nothing to confirm"):
+            with pytest.raises(NothingToConfirmError, match="nothing to confirm") as refusal:
                 await runtime.labware.confirm_well_volumes(plate.id, confirm=True)
+            assert refusal.value.settle_with == row.settle_with
         finally:
             await runtime.shutdown()
 
@@ -288,8 +290,9 @@ class TestTheVerbTheRowNamesIsOneThatWorks:
             listed = {item.subject: item for item in await runtime.unsettled_state()}
 
             assert listed[instance.name].settle_with == "set-tip-state"
-            with pytest.raises(ValueError, match="aborted action lost work"):
+            with pytest.raises(WorkLostError, match="aborted action lost work") as refusal:
                 await runtime.labware.confirm_tip_state(instance.id, confirm=True)
+            assert refusal.value.settle_with == listed[instance.name].settle_with
         finally:
             await runtime.shutdown()
 
@@ -316,5 +319,8 @@ class TestTheCaseNoVerbAnswers:
 
             assert row.settle_with is None
             assert "settle the action" in row.detail
+            with pytest.raises(HeldByUnfinishedActionError) as refusal:
+                await runtime.labware.confirm_tip_state(instance.id, confirm=True)
+            assert refusal.value.settle_with is None
         finally:
             await runtime.shutdown()

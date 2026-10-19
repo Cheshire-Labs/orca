@@ -167,6 +167,9 @@ def create_teachpoint(
         None, "--taught-with",
         help="Labware type this position was jogged to; grip heights read against it.",
     ),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
+    ),
 ) -> None:
     """Register a new teachpoint. 400 on bad coords or unknown access config,
     404 on unknown device, 409 on duplicate."""
@@ -174,7 +177,7 @@ def create_teachpoint(
     client = get_client()
     created = client.teachpoints_add(
         device_id, position_id, coord_type, coord_data,
-        access_config, gateway, orientation, taught_with,
+        access_config, gateway, orientation, taught_with, reason=reason,
     )
     if output.get_mode().value == "json":
         output.emit_json(created.model_dump(mode="json"))
@@ -208,6 +211,9 @@ def update_teachpoint(
         None, "--taught-with",
         help="Labware type this position was jogged to (only changed when passed).",
     ),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
+    ),
 ) -> None:
     """Update a teachpoint's coordinates. Access config, gateway, orientation
     and taught-with change only when their option is passed. Per-labware
@@ -219,7 +225,7 @@ def update_teachpoint(
         device_id, position_id, coord_data,
         access_config, gateway, orientation,
         access_config is not None, gateway is not None, orientation is not None,
-        taught_with, taught_with is not None,
+        taught_with, taught_with is not None, reason=reason,
     )
     if output.get_mode().value == "json":
         output.emit_json(updated.model_dump(mode="json"))
@@ -233,10 +239,13 @@ def update_teachpoint(
 def delete_teachpoint(
     device_id: str = typer.Argument(..., help="Transporter device id."),
     position_id: str = typer.Argument(..., help="Position identifier to delete."),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
+    ),
 ) -> None:
     """Delete a teachpoint. 404 if the teachpoint or device is unknown."""
     client = get_client()
-    client.teachpoints_delete(device_id, position_id)
+    client.teachpoints_delete(device_id, position_id, reason=reason)
     output.info(
         f"deleted teachpoint [cyan]{position_id}[/cyan] on {device_id}",
     )
@@ -271,6 +280,9 @@ def set_labware_override(
     clear: list[str] = typer.Option(
         [], "--clear", help="Field to hand back to the layers underneath (repeatable).",
     ),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
+    ),
 ) -> None:
     """Change how one labware type is handled at this one position."""
     try:
@@ -289,6 +301,7 @@ def set_labware_override(
         body = GripProfilePatchRequest.model_validate({
             "set": patch.model_dump(exclude_none=True),
             "clear": clear,
+            "reason": reason,
         })
     except ValidationError as exc:
         output.fail(str(exc), code=output.EXIT_USAGE)
@@ -307,10 +320,13 @@ def clear_labware_override(
     device_id: str = typer.Argument(..., help="Transporter device id."),
     position_id: str = typer.Argument(..., help="Position identifier."),
     labware_type: str = typer.Argument(..., help="Labware type to stop excepting."),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
+    ),
 ) -> None:
     """Handle this labware the way the position handles everything else."""
     get_client().teachpoints_clear_labware_override(
-        device_id, position_id, labware_type,
+        device_id, position_id, labware_type, reason=reason,
     )
     output.info(
         f"cleared the [cyan]{labware_type}[/cyan] override at "

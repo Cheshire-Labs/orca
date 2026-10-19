@@ -201,7 +201,7 @@ async def test_discharging_a_plate_a_pure_sim_run_left_behind_clears_that_deck()
         ]
         assert rows, "the reservoir on the deck is not in the ledger"
         for row in rows:
-            await runtime.labware.discharge_labware(row.id, force=True)
+            await runtime.labware.discharge_labware(row.id, force=True, confirm=True)
 
         left_behind = {
             n for n in await _deck_names(sim) if named_for_template(n, "reservoir")
@@ -242,7 +242,7 @@ async def test_the_discharge_leaves_the_plate_beside_it_on_that_same_deck() -> N
 
         for row in await runtime.labware.list_all():
             if row.name in set(going):
-                await runtime.labware.discharge_labware(row.id, force=True)
+                await runtime.labware.discharge_labware(row.id, force=True, confirm=True)
 
         after = await _deck_names(sim)
         assert set(staying) <= after, (
@@ -279,7 +279,7 @@ async def test_clear_all_empties_the_deck_a_pure_sim_run_filled() -> None:
         }
         assert residents, "the run left nothing on the sim deck to clear"
 
-        await runtime.labware.clear_all_labware(force=True)
+        await runtime.labware.clear_all_labware(force=True, confirm=True)
 
         left_behind = residents & await _deck_names(sim)
         assert not left_behind, (
@@ -419,7 +419,7 @@ async def test_a_finished_run_leaves_nothing_a_discharge_cannot_reach() -> None:
         rows = await runtime.labware.list_all()
         assert rows, "the run recorded no labware to discharge"
         for row in rows:
-            await runtime.labware.discharge_labware(row.id, force=True)
+            await runtime.labware.discharge_labware(row.id, force=True, confirm=True)
         assert not await runtime.labware.list_all(), "the ledger still holds rows"
 
         left_behind = {
@@ -505,7 +505,7 @@ async def test_clear_all_reaches_a_resident_no_orca_record_knows_about() -> None
         ))
         assert "stranger" in await _deck_names(live)
 
-        await runtime.labware.clear_all_labware(force=True)
+        await runtime.labware.clear_all_labware(force=True, confirm=True)
 
         assert "stranger" not in await _deck_names(live), (
             "clear-all left a plate on the live deck because it only reset the "

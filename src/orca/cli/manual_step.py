@@ -73,10 +73,13 @@ def confirm(
     execution: str = typer.Option(
         ..., "--execution", help="Execution id or prefix the step belongs to.",
     ),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
+    ),
 ) -> None:
     """Confirm a pending manual step, releasing the parked thread.
 
-    SAFE: fires immediately, no confirmation prompt.
+    Fires immediately, with no confirmation prompt.
     """
     if active_backend() == "cloud":
         client = cloud_client()
@@ -84,5 +87,5 @@ def confirm(
         client = local_client()
     ids = [r.id for r in client.list_executions()]
     eid = resolve.resolve_execution_id(execution, ids)
-    client.manual_step_confirm(eid, step_id)
+    client.manual_step_confirm(eid, step_id, reason=reason)
     output.info(f"confirmed manual step {step_id} in {eid[:8]}")

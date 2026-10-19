@@ -483,7 +483,7 @@ class TestPanicButtonReachesADeviceOwnedGripper:
             await pick_and_record(build, gripper, source, labware)
             assert gripper.labware is labware
 
-            await runtime.labware.clear_all_labware(force=True)
+            await runtime.labware.clear_all_labware(force=True, confirm=True)
 
             assert gripper.labware is None, (
                 "the panic button must free a wedged gripper; otherwise every later "

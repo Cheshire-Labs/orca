@@ -87,7 +87,9 @@ class TeachpointFacade(ITeachpointFacade):
     )
     async def add(
         self, device_id: str, teachpoint: Teachpoint,
+        *, reason: str | None = None,
     ) -> None:
+        del reason  # consumed by @dangerous audit
         transporter = self._get_transporter(device_id)
         await transporter.teachpoint_store.add(teachpoint)
         # The route graph is built from the teachpoints that existed at
@@ -107,7 +109,9 @@ class TeachpointFacade(ITeachpointFacade):
     )
     async def update(
         self, device_id: str, teachpoint: Teachpoint,
+        *, reason: str | None = None,
     ) -> None:
+        del reason  # consumed by @dangerous audit
         transporter = self._get_transporter(device_id)
         await transporter.teachpoint_store.update(teachpoint)
         # Coordinates live in the store, not in the edges, so a re-teach leaves
@@ -124,7 +128,8 @@ class TeachpointFacade(ITeachpointFacade):
                 "Workflows that move to this position_id will fail at "
                 "dispatch time after deletion.",
     )
-    async def delete(self, device_id: str, position_id: str) -> bool:
+    async def delete(self, device_id: str, position_id: str, *, reason: str | None = None) -> bool:
+        del reason  # consumed by @dangerous audit
         return await self._store_for(device_id).delete(position_id)
 
     @dangerous(
@@ -137,8 +142,10 @@ class TeachpointFacade(ITeachpointFacade):
     )
     async def set_taught_with(
         self, device_id: str, position_id: str, labware_type: str | None,
+        *, reason: str | None = None,
     ) -> Teachpoint:
         """Name the labware this position was jogged to, or `None` to unsay it."""
+        del reason  # consumed by @dangerous audit
         store = self._store_for(device_id)
         existing = await self._require(store, device_id, position_id)
         existing.taught_with = labware_type
@@ -157,6 +164,7 @@ class TeachpointFacade(ITeachpointFacade):
         self, device_id: str, position_id: str, labware_type: str,
         patch: MoveParameterPatch,
         clear: Sequence[MoveParameterField] = (),
+        *, reason: str | None = None,
     ) -> Teachpoint:
         """Merge an exception for one labware type at one position.
 
@@ -165,6 +173,7 @@ class TeachpointFacade(ITeachpointFacade):
         against a mixture neither call intended. An override edited down to
         nothing is dropped, so "no exception here" has one representation.
         """
+        del reason  # consumed by @dangerous audit
         reject_contradiction(patch, clear)
         store = self._store_for(device_id)
         existing = await self._require(store, device_id, position_id)
@@ -187,8 +196,10 @@ class TeachpointFacade(ITeachpointFacade):
     )
     async def clear_labware_override(
         self, device_id: str, position_id: str, labware_type: str,
+        *, reason: str | None = None,
     ) -> bool:
         """Remove one labware's exception. False when there was none."""
+        del reason  # consumed by @dangerous audit
         store = self._store_for(device_id)
         existing = await self._require(store, device_id, position_id)
         if labware_type not in existing.by_labware:

@@ -87,6 +87,9 @@ def set_move_defaults(
             "z-offset, speed."
         ),
     ),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
+    ),
 ) -> None:
     """Change the numbers named and leave the rest alone.
 
@@ -105,6 +108,7 @@ def set_move_defaults(
         })
         body = MoveDefaultsPatchRequest.model_validate({
             "set": patch.model_dump(exclude_none=True),
+            "reason": reason,
             "clear": [field.replace("-", "_") for field in clear],
         })
     except ValidationError as exc:
@@ -115,8 +119,11 @@ def set_move_defaults(
 @app.command("reset")
 def reset_move_defaults(
     transporter_name: str = typer.Argument(..., help="Transporter name."),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
+    ),
 ) -> None:
     """Discard everything tuned for this arm and put it back on the seed."""
     client = get_client()
-    client.move_defaults_reset(transporter_name)
+    client.move_defaults_reset(transporter_name, reason=reason)
     output.info(f"reset move defaults for [cyan]{transporter_name}[/cyan]")

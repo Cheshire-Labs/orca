@@ -29,7 +29,9 @@ class ConfirmManualStepOperation:
 
     async def run(self, req: ConfirmManualStepRequest) -> ConfirmManualStepResponse:
         try:
-            await self._runtime.confirm_manual_step(req.execution_id, req.step_id)
+            await self._runtime.submissions.confirm_manual_step(
+                req.execution_id, req.step_id, reason=req.reason, confirm=True,
+            )
         except KeyError as exc:
             raise OperationError.not_found(
                 f"manual step {req.step_id!r} not found in execution "

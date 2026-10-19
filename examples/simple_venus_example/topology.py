@@ -17,6 +17,10 @@ from orca.runtime.store_factory import IRuntimeStoreFactory
 from orca.sdk.build import Topology
 
 
+SYSTEM_NAME = "Venus Example"
+SYSTEM_DESCRIPTION = "Venus Example System"
+
+
 def build_topology(stores: IRuntimeStoreFactory) -> Topology:
     """Build a fresh Venus example topology.
 

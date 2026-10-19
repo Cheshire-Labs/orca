@@ -98,7 +98,7 @@ async def test_manual_remove_clears_the_persisted_position() -> None:
         )
 
         # The operator physically takes the plate off and confirms.
-        await runtime.labware.discharge_labware(labware_id, force=False)
+        await runtime.labware.discharge_labware(labware_id, force=False, confirm=True)
 
         execution = runtime._executions[execution_id]
         await asyncio.wait_for(asyncio.shield(execution.task), timeout=15.0)

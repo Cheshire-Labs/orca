@@ -284,6 +284,14 @@ def run(
              "declares a sim-direction sim_override (the "
              "LIVE_SUBMISSION_WITH_SIM_OVERRIDES_UNACKNOWLEDGED gate).",
     ),
+    time_scale: float | None = typer.Option(
+        None, "--time-scale", min=0.0,
+        help="Simulated time scale: 1 is real time, 0.1 ten times faster, 0 no "
+             "pacing. Omit for the deployment default. Not for LIVE.",
+    ),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
+    ),
 ) -> None:
     """Submit a workflow for execution. Fire-and-forget by default; use --wait to block.
 
@@ -347,6 +355,8 @@ def run(
             workflow, variables, run_mode=run_mode_value,
             profile_path=profile_path,
             acknowledge_warnings=confirm,
+            reason=reason,
+            sim_time_scale=time_scale,
         )
         client = local_client
     else:
@@ -354,6 +364,8 @@ def run(
         record = client.submit_workflow(
             workflow, variables, run_mode=run_mode_value,
             acknowledge_warnings=confirm,
+            reason=reason,
+            sim_time_scale=time_scale,
         )
     resolve.record_last_execution(record.id)
     output.info(

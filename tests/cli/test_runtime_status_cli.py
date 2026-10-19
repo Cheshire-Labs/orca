@@ -45,9 +45,9 @@ def fake_built_false(monkeypatch: pytest.MonkeyPatch) -> Iterator[_FakeCloudClie
             built=False,
             last_build_error={
                 "type": "ModuleNotFoundError",
-                "message": "No module named 'deployment_package.system'",
+                "message": "No module named 'deployment_package.topology'",
                 "hint": (
-                    "Deployment package missing. Drop system.py on disk + "
+                    "Deployment package missing. Drop topology.py on disk + "
                     "submit topology + workflows, then runtime_reload."
                 ),
             },

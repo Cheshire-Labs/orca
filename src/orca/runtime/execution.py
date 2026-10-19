@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from orca.runtime.execution_phase import ExecutionPhase
+from orca.runtime.sim_pacing import SimPacer
 from orca.runtime.stall_detector import StallReport
 from orca.runtime.submission import Submission
 from orca.system.system_interface import ISystem
@@ -52,6 +53,9 @@ class Execution:
     stall_event: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
     stall_report: StallReport | None = field(default=None, repr=False)
 
+    # The pace of a simulated run. None for a LIVE run: the hardware sets its pace.
+    sim_pacer: SimPacer | None = field(default=None, repr=False)
+
     @property
     def is_paused(self) -> bool:
         return self.paused_at is not None
@@ -61,6 +65,10 @@ class Execution:
         """Who set the latch, or None when it is not set. The hold reason
         outlives a resume, so it only means anything while paused."""
         return self.new_threads_hold_reason if self.is_paused else None
+
+    @property
+    def sim_time_scale(self) -> float | None:
+        return None if self.sim_pacer is None else self.sim_pacer.time_scale
 
 
 @dataclass(frozen=True)

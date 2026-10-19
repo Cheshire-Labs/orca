@@ -87,7 +87,7 @@ def test_workflow_load_local_calls_load_workflow() -> None:
         )
     assert result.exit_code == 0, result.output
     mock_client.return_value.load_workflow.assert_called_once_with(
-        "pkg.mod:build_workflow",
+        "pkg.mod:build_workflow", reason=None,
     )
     assert "simple_workflow" in result.output
 

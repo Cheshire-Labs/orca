@@ -36,7 +36,7 @@ class TestClearAllConfirmation:
             result = runner.invoke(app, ["labware", "clear-all", "--yes"])
         assert result.exit_code == 0
         assert "cleared 2 labware" in result.output
-        mock_cloud.return_value.labware_clear_all.assert_called_once_with(force=False)
+        mock_cloud.return_value.labware_clear_all.assert_called_once_with(force=False, reason=None)
 
     def test_yes_combined_with_force(self) -> None:
         """`--yes --force` is the documented panic recipe."""
@@ -48,7 +48,7 @@ class TestClearAllConfirmation:
                 app, ["labware", "clear-all", "--yes", "--force"],
             )
         assert result.exit_code == 0
-        mock_cloud.return_value.labware_clear_all.assert_called_once_with(force=True)
+        mock_cloud.return_value.labware_clear_all.assert_called_once_with(force=True, reason=None)
 
     def test_tty_decline_aborts(self) -> None:
         """On a TTY, answering 'n' to the confirm aborts with exit code 1."""
@@ -71,7 +71,7 @@ class TestClearAllConfirmation:
             }
             result = runner.invoke(app, ["labware", "clear-all"])
         assert result.exit_code == 0, result.output
-        mock_cloud.return_value.labware_clear_all.assert_called_once_with(force=False)
+        mock_cloud.return_value.labware_clear_all.assert_called_once_with(force=False, reason=None)
 
 
 class TestClearSubmissionNoPromptRequired:
@@ -92,7 +92,7 @@ class TestClearSubmissionNoPromptRequired:
             )
         assert result.exit_code == 0
         mock_cloud.return_value.labware_clear_submission.assert_called_once_with(
-            "sub-xyz", force=False,
+            "sub-xyz", force=False, reason=None,
         )
 
     def test_discharge_no_prompt(self) -> None:
@@ -103,5 +103,18 @@ class TestClearSubmissionNoPromptRequired:
             result = runner.invoke(app, ["labware", "discharge", "lw-1"])
         assert result.exit_code == 0
         mock_cloud.return_value.labware_discharge.assert_called_once_with(
-            "lw-1", force=False,
+            "lw-1", force=False, reason=None,
         )
+
+
+def test_discharge_passes_the_reason_to_the_client() -> None:
+    with patch("orca.cli.labware.get_client") as mock_cloud:
+        mock_cloud.return_value.labware_discharge.return_value = {
+            "cleared_labware_ids": ["lw-1"],
+        }
+        result = runner.invoke(app, ["labware", "discharge", "lw-1", "--reason", "picked it up"])
+    assert result.exit_code == 0, result.output
+    mock_cloud.return_value.labware_discharge.assert_called_once_with(
+        "lw-1", force=False, reason="picked it up",
+    )
+

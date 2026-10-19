@@ -41,7 +41,7 @@ class _FakeClient:
         self, device_id: str, position_id: str, coord_type: str,
         coords: dict, access_config_name: str | None,
         gateway: str | None, orientation: str | None,
-        taught_with: str | None = None,
+        taught_with: str | None = None, *, reason: str | None = None,
     ) -> TeachpointDTO:
         self.added = {
             "taught_with": taught_with,
@@ -58,6 +58,7 @@ class _FakeClient:
         orientation: str | None, update_access_config: bool,
         update_gateway: bool, update_orientation: bool,
         taught_with: str | None = None, update_taught_with: bool = False,
+        *, reason: str | None = None,
     ) -> TeachpointDTO:
         self.updated = {
             "taught_with": taught_with,
@@ -71,7 +72,7 @@ class _FakeClient:
         }
         return _dto(position_id)
 
-    def teachpoints_delete(self, device_id: str, position_id: str) -> None:
+    def teachpoints_delete(self, device_id: str, position_id: str, *, reason: str | None = None) -> None:
         self.deleted = (device_id, position_id)
 
 

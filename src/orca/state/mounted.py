@@ -11,9 +11,13 @@ device or a rack to an object.
 
 from dataclasses import dataclass
 
+from orca.state.confirm_refusals import (
+    HeldByUnfinishedActionError, NothingToConfirmError, WorkLostError,
+)
 from orca.state.ops_history import OpsHistory
 from orca.state.ops_store import ops_for_device
 from orca.state.provenance import Provenance
+from orca.state.unsettled import set_verb
 from orca.state.records import (
     GAPS_THAT_LOST_WORK,
     HeadObservationGapDetails,
@@ -215,22 +219,24 @@ class MountedTipsLedger:
         """
         mounted = await self.of(device_name)
         if mounted.provenance is Provenance.UNKNOWN:
-            raise ValueError(
+            raise NothingToConfirmError(
                 f"nothing has ever said what {device_name!r} is carrying, so "
-                f"there is nothing to confirm; state it with set_mounted_tips"
+                f"there is nothing to confirm; state it with set_mounted_tips",
+                settle_with=set_verb("mounted-tips"),
             )
         if self._ops_history.unrecorded.touches_device(device_name):
-            raise ValueError(
+            raise HeldByUnfinishedActionError(
                 f"an unfinished action has already picked up or dropped tips on "
                 f"{device_name!r} and the record has not been told, so there is "
                 f"nothing here worth agreeing with; settle the action (retry, "
                 f"continue or abort) and the record catches up on its own"
             )
         if mounted.gaps & GAPS_THAT_LOST_WORK:
-            raise ValueError(
+            raise WorkLostError(
                 f"an aborted action lost the record of tips it moved on "
                 f"{device_name!r}, so agreeing with this read would write down a "
                 f"head that may be carrying more than it says; look at the head "
-                f"and state it with set_mounted_tips"
+                f"and state it with set_mounted_tips",
+                settle_with=set_verb("mounted-tips"),
             )
         await self._ops_history.append_confirm_mounted_tips(device_name)

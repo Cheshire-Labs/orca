@@ -574,6 +574,9 @@ class _FakeDeclarer:
     def recoverable_timeout_coordinator(self) -> RecoverableTimeoutCoordinator:
         return self._coordinator
 
+    def sim_pacer_for(self, execution_id: str) -> None:
+        return None
+
     def declare_unresolved_anchor_insert(
         self, execution_id: str, thread_id: str, anchor_name: str,
         direction: str, target_type: str, item_name: str | None,

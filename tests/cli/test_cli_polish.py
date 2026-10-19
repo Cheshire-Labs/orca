@@ -74,7 +74,7 @@ def test_edit_barcode_accepts_flag_form() -> None:
             labware_mod.app, ["edit-barcode", "lw-1", "--barcode", "BC9"],
         )
     assert result.exit_code == 0, result.output
-    mock_client.labware_edit_barcode.assert_called_once_with("lw-1", "BC9")
+    mock_client.labware_edit_barcode.assert_called_once_with("lw-1", "BC9", reason=None)
 
 
 def test_edit_barcode_accepts_positional_form() -> None:
@@ -88,7 +88,9 @@ def test_edit_barcode_accepts_positional_form() -> None:
             labware_mod.app, ["edit-barcode", "lw-1", "BC-positional"],
         )
     assert result.exit_code == 0, result.output
-    mock_client.labware_edit_barcode.assert_called_once_with("lw-1", "BC-positional")
+    mock_client.labware_edit_barcode.assert_called_once_with(
+        "lw-1", "BC-positional", reason=None,
+    )
 
 
 def test_edit_barcode_rejects_conflicting_values() -> None:

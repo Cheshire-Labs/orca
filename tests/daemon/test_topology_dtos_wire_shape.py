@@ -180,13 +180,15 @@ def test_labware_template_dto_wire_shape() -> None:
     """LabwareTemplateDTO must mirror LabwareTemplateSnapshot byte-for-byte."""
     snap = LabwareTemplateSnapshot(
         name="plate_1",
-        type_name="MicroPlate96Well",
+        type_name="PlateTemplate",
+        labware_type="Cor_96_wellplate_360ul_Fb",
     )
     dto = LabwareTemplateDTO.from_dc(snap)
     payload = json.loads(dto.model_dump_json())
     assert payload == {
         "name": "plate_1",
-        "type_name": "MicroPlate96Well",
+        "type_name": "PlateTemplate",
+        "labware_type": "Cor_96_wellplate_360ul_Fb",
     }
 
 
