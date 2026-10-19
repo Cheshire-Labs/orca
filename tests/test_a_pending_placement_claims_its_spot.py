@@ -231,7 +231,7 @@ async def _collect_finished_plates(bench: Bench, execution_id: str) -> dict[str,
         statuses = []
         for thread in bench.runtime.list_threads(execution_id):
             if thread.status == awaiting and thread.labware_id is not None:
-                await bench.runtime.labware.discharge_labware(thread.labware_id)
+                await bench.runtime.labware.discharge_labware(thread.labware_id, confirm=True)
             statuses.append(thread.status)
         return bool(statuses) and all(s in terminal for s in statuses)
 

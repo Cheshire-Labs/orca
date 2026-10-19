@@ -34,6 +34,7 @@ def _labware(**overrides: Any) -> LabwareDTO:
         "id": "7faedeec-1234-4abc-9def-000000000001",
         "name": "plate-1",
         "template_name": "plate_96",
+        "labware_type": "Cor_96_wellplate_360ul_Fb",
         "barcode": None,
         "current_location": "pad1",
     }
@@ -64,6 +65,25 @@ class TestFindIdOrNone:
     def test_returns_none_for_ambiguous(self) -> None:
         candidates = ["abc-1111", "abc-2222"]
         assert resolve.find_id_or_none("abc-", candidates) is None
+
+
+# -- labware list: the type column ------------------------------------------
+
+
+def test_labware_list_shows_each_rows_catalog_type() -> None:
+    with patch("orca.cli.labware.get_client") as mock_local:
+        mock_local.return_value.labware_list.return_value = [_labware()]
+        result = runner.invoke(app, ["labware", "list"])
+    assert result.exit_code == 0, result.output
+    assert "Cor_96_wellplate_360ul_Fb" in result.output
+
+
+def test_labware_where_shows_the_catalog_type() -> None:
+    with patch("orca.cli.labware.get_client") as mock_local:
+        mock_local.return_value.labware_list.return_value = [_labware()]
+        result = runner.invoke(app, ["labware", "where", "7faedeec"])
+    assert result.exit_code == 0, result.output
+    assert "Cor_96_wellplate_360ul_Fb" in result.output
 
 
 # -- labware where: prefix + barcode + no-leak --------------------------------

@@ -90,11 +90,13 @@ class _FakeCloud:
     def incidents_get(self, incident_id: str) -> IncidentDTO:
         return self.incidents[0]
 
-    def incidents_ack(self, incident_id: str) -> IncidentAckResponse:
+    def incidents_ack(self, incident_id: str, *, reason: str | None = None) -> IncidentAckResponse:
         self.ack_called_with = incident_id
         return IncidentAckResponse(acknowledged_count=1)
 
-    def incidents_ack_all(self, category: str | None = None) -> IncidentAckResponse:
+    def incidents_ack_all(
+        self, category: str | None = None, *, reason: str | None = None,
+    ) -> IncidentAckResponse:
         self.ack_all_called = True
         return IncidentAckResponse(acknowledged_count=3)
 
@@ -113,7 +115,9 @@ class _FakeCloud:
         self.ops_history_called_with = execution_id
         return OpsHistoryGetResponseDTO(execution_id=execution_id, records=[])
 
-    def execution_close(self, execution_id: str) -> ExecutionCloseResponseDTO:
+    def execution_close(
+        self, execution_id: str, *, reason: str | None = None,
+    ) -> ExecutionCloseResponseDTO:
         self.close_called_with = execution_id
         return ExecutionCloseResponseDTO(execution_id=execution_id, phase="draining")
 

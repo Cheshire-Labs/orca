@@ -102,6 +102,10 @@ def workflow_load(
         help="Cloud only: commit message for the submitted workflow source.",
         hidden=not cloud_backend_installed(),
     ),
+    reason: str | None = typer.Option(
+        None, "--reason",
+        help="Why, for the audit trail.",
+    ),
 ) -> None:
     """Load a workflow: validate + register on the runtime. Does NOT run it.
 
@@ -117,7 +121,7 @@ def workflow_load(
     if active_backend() == "local":
         from orca.cli.client import LocalDaemonClient
         client = LocalDaemonClient()
-        registered = client.load_workflow(target)
+        registered = client.load_workflow(target, reason=reason)
         output.info(f"loaded workflow {registered!r}")
         return
 
@@ -140,6 +144,7 @@ def workflow_load(
     cloud = cloud_client()
     payload = cloud.workflow_load(
         name=name, source=source.read_text(encoding="utf-8"), message=message,
+        reason=reason,
     )
     if output.get_mode().value == "json":
         output.emit_json(payload.model_dump(mode="json"))

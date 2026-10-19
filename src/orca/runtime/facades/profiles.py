@@ -42,7 +42,8 @@ class DeploymentProfileFacade(IDeploymentProfileFacade):
             + _NEXT_SUBMIT_NOTE
         ),
     )
-    async def add(self, profile: DeploymentProfile) -> None:
+    async def add(self, profile: DeploymentProfile, *, reason: str | None = None) -> None:
+        del reason  # consumed by @dangerous audit
         await self._store.add(profile)
 
     @dangerous(
@@ -53,7 +54,8 @@ class DeploymentProfileFacade(IDeploymentProfileFacade):
             + _NEXT_SUBMIT_NOTE
         ),
     )
-    async def update(self, profile: DeploymentProfile) -> None:
+    async def update(self, profile: DeploymentProfile, *, reason: str | None = None) -> None:
+        del reason  # consumed by @dangerous audit
         await self._store.update(profile)
 
     @dangerous(
@@ -64,5 +66,6 @@ class DeploymentProfileFacade(IDeploymentProfileFacade):
             + _NEXT_SUBMIT_NOTE
         ),
     )
-    async def delete(self, name: str) -> bool:
+    async def delete(self, name: str, *, reason: str | None = None) -> bool:
+        del reason  # consumed by @dangerous audit
         return await self._store.delete(name)

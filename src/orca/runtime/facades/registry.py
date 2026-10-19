@@ -146,6 +146,7 @@ class RegistryFacade(IRegistryFacade):
             LabwareTemplateSnapshot(
                 name=t.name,
                 type_name=type(t).__name__,
+                labware_type=t.labware_type,
             )
             for t in self._system.labware_templates
         ]
@@ -265,7 +266,7 @@ class RegistryFacade(IRegistryFacade):
     )
     async def cancel_reservation(
         self, execution_id: str, reservation_id: str,
-        reason: str | None = None,
+        *, reason: str | None = None,
     ) -> None:
         del reason  # consumed by @dangerous audit; facade ignores body
         self._cancel_reservation_fn(execution_id, reservation_id)

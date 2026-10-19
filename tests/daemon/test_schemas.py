@@ -203,6 +203,7 @@ def test_execution_detail_wire_format() -> None:
         "paused": False,
         "pause_reason": None,
         "abort_armed": False,
+        "sim_time_scale": None,
     }
     actual = json.loads(dto.model_dump_json())
     assert actual == expected

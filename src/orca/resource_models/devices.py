@@ -123,6 +123,12 @@ class Device(IDevice, IModeAware, Generic[TDriver], ABC):
         timing = collect_command_timings(type(self.live_driver)).get(command)
         return timing.max_seconds if timing is not None else None
 
+    def command_typical_seconds(self, command: str) -> float | None:
+        """The advertised normal-case duration for ``command``, or None if unset.
+        A simulated run paces a step that declares no duration by it."""
+        timing = collect_command_timings(type(self.live_driver)).get(command)
+        return timing.typical_seconds if timing is not None else None
+
     @property
     def is_initialized(self) -> bool:
         return self.driver.is_initialized

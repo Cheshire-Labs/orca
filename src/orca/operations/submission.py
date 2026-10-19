@@ -20,15 +20,17 @@ wire model in between.
 
 import dataclasses
 import logging
-from typing import ClassVar, Protocol, runtime_checkable
+from typing import ClassVar, Mapping, Protocol, runtime_checkable
 from pydantic import BaseModel
 from orca.operations._protocol import OperationError, OperationErrorCode
+from orca.operations._spawn_incompatible import spawn_incompatible
 from orca.runtime.run_modes import WorkflowRunMode
 from orca.runtime.runtime_interface import (
     ConcurrentLiveSimRefusedError,
     LiveSubmissionWithSimOverridesUnacknowledgedError,
     ReuseThreadCannotBeEntryError,
     RunModeMismatchError,
+    SimTimeScaleNotApplicableError,
     SpawnIncompatibleError,
     StartLocationsOccupiedError,
     SubmissionBlockedByOrphanedBacklogError,
@@ -75,6 +77,8 @@ class _SubmissionFacadeProtocol(Protocol):
         deployment_profile: str | None = None,
         mode: WorkflowRunMode | None = None,
         acknowledge_warnings: bool = False,
+        sim_time_scale: float | None = None,
+        reason: str | None = None,
         confirm: bool = False,
     ) -> SubmissionSnapshot: ...
 
@@ -83,6 +87,18 @@ class _SubmissionFacadeProtocol(Protocol):
     ) -> list[SubmissionSnapshot]: ...
 
     def get_submission(self, submission_id: str) -> SubmissionSnapshot: ...
+
+    async def submit_workflow(
+        self,
+        workflow_name: str,
+        variables: Mapping[str, OptionValue] | None = None,
+        *,
+        mode: WorkflowRunMode | None = None,
+        acknowledge_warnings: bool = False,
+        sim_time_scale: float | None = None,
+        reason: str | None = None,
+        confirm: bool = False,
+    ) -> ExecutionRecord: ...
 
 
 @runtime_checkable
@@ -161,6 +177,21 @@ def _build_runtime_groups(
             name=g.name,
         )
         for g in groups
+    )
+
+
+def _raise_sim_time_scale_not_applicable(
+    exc: SimTimeScaleNotApplicableError,
+) -> OperationError:
+    """A time scale where none can apply: a LIVE run, or a joining submission.
+    A shape refusal, 422, like the LIVE-override gate."""
+    return OperationError.typed(
+        OperationErrorCode.INVALID_INPUT,
+        str(exc),
+        wire_code="SIM_TIME_SCALE_NOT_APPLICABLE",
+        status_code=422,
+        reason=exc.reason,
+        execution_id=exc.execution_id,
     )
 
 
@@ -298,24 +329,6 @@ def _raise_start_locations_occupied(
     )
 
 
-def _raise_spawn_incompatible(exc: SpawnIncompatibleError) -> OperationError:
-    """A spawn-action found labware of the wrong template at the start slot.
-
-    Status 409: operator pre-loaded the wrong labware (or the workflow
-    is mis-specified). Extras pin the location plus expected vs actual
-    template names so the operator can correct it.
-    """
-    return OperationError.typed(
-        OperationErrorCode.CONFLICT,
-        str(exc),
-        wire_code="spawn_incompatible",
-        status_code=409,
-        location=exc.location,
-        expected_template=exc.expected_template,
-        actual_template=exc.actual_template,
-    )
-
-
 def _raise_reuse_thread_cannot_be_entry(
     exc: ReuseThreadCannotBeEntryError,
 ) -> OperationError:
@@ -336,15 +349,7 @@ def _raise_reuse_thread_cannot_be_entry(
 
 
 def _is_legacy_shape(req: SubmitExecutionRequest) -> bool:
-    """Detect the legacy single-workflow path.
-
-    Legacy = no groups + STANDALONE + no operator/profile metadata + no
-    ``acknowledge_warnings`` request. Anything else routes through
-    ``submissions.submit_group`` (where ``acknowledge_warnings`` is on
-    the ``ISystemRuntime`` interface). The interface-level
-    ``submit_workflow`` does not surface the kwarg, so we re-route the
-    LIVE-override-acknowledgement flow through the multi-group path.
-    """
+    """Legacy = no groups, STANDALONE, no operator or profile, no ``acknowledge_warnings``."""
     return (
         req.groups is None
         and req.batch_mode == "STANDALONE"
@@ -419,17 +424,22 @@ class SubmitExecutionOperation:
         run_mode: WorkflowRunMode | None,
     ) -> SubmitExecutionResponse:
         try:
-            record = await self._runtime.submit_workflow(
+            record = await self._runtime.submissions.submit_workflow(
                 req.workflow_name,
                 req.variables or {},
                 mode=run_mode,
+                sim_time_scale=req.sim_time_scale,
+                reason=req.reason,
+                confirm=True,
             )
+        except SimTimeScaleNotApplicableError as exc:
+            raise _raise_sim_time_scale_not_applicable(exc) from exc
         except LiveSubmissionWithSimOverridesUnacknowledgedError as exc:
             raise _raise_live_sim_overrides_unacknowledged(exc) from exc
         except StartLocationsOccupiedError as exc:
             raise _raise_start_locations_occupied(exc) from exc
         except SpawnIncompatibleError as exc:
-            raise _raise_spawn_incompatible(exc) from exc
+            raise spawn_incompatible(exc) from exc
         except ReuseThreadCannotBeEntryError as exc:
             raise _raise_reuse_thread_cannot_be_entry(exc) from exc
         except RunModeMismatchError as exc:
@@ -473,14 +483,18 @@ class SubmitExecutionOperation:
                 deployment_profile=req.deployment_profile,
                 mode=run_mode,
                 acknowledge_warnings=req.acknowledge_warnings,
+                sim_time_scale=req.sim_time_scale,
+                reason=req.reason,
                 confirm=True,
             )
+        except SimTimeScaleNotApplicableError as exc:
+            raise _raise_sim_time_scale_not_applicable(exc) from exc
         except LiveSubmissionWithSimOverridesUnacknowledgedError as exc:
             raise _raise_live_sim_overrides_unacknowledged(exc) from exc
         except StartLocationsOccupiedError as exc:
             raise _raise_start_locations_occupied(exc) from exc
         except SpawnIncompatibleError as exc:
-            raise _raise_spawn_incompatible(exc) from exc
+            raise spawn_incompatible(exc) from exc
         except ReuseThreadCannotBeEntryError as exc:
             raise _raise_reuse_thread_cannot_be_entry(exc) from exc
         except RunModeMismatchError as exc:

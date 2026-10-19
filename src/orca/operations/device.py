@@ -19,7 +19,8 @@ field rename on the dataclass surfaces at type-check time.
 import dataclasses
 from typing import ClassVar
 from pydantic import BaseModel
-from orca.operations._protocol import OperationError
+from orca.operations._protocol import OperationError, confirm_refused
+from orca.state.confirm_refusals import ConfirmRefusedError
 from orca.runtime.runtime_interface import ISystemRuntime
 from orca.system.system_interface import DeckComparison
 from orca.operations.device_models import (
@@ -117,7 +118,7 @@ class InitializeDeviceOperation:
     async def run(self, req: InitializeDeviceRequest) -> InitializeDeviceResponse:
         try:
             await self._runtime.devices.initialize(
-                req.device_name, mode=req.mode, confirm=True,
+                req.device_name, mode=req.mode, reason=req.reason, confirm=True,
             )
         except KeyError as exc:
             raise OperationError.not_found(
@@ -142,7 +143,9 @@ class ConnectDeviceOperation:
 
     async def run(self, req: ConnectDeviceRequest) -> ConnectDeviceResponse:
         try:
-            await self._runtime.devices.connect(req.device_name, mode=req.mode)
+            await self._runtime.devices.connect(
+                req.device_name, mode=req.mode, reason=req.reason, confirm=True,
+            )
         except KeyError as exc:
             raise OperationError.not_found(
                 f"device {req.device_name!r} not found",
@@ -164,7 +167,7 @@ class DisconnectDeviceOperation:
     async def run(self, req: DisconnectDeviceRequest) -> DisconnectDeviceResponse:
         try:
             await self._runtime.devices.disconnect(
-                req.device_name, mode=req.mode, confirm=True,
+                req.device_name, mode=req.mode, reason=req.reason, confirm=True,
             )
         except KeyError as exc:
             raise OperationError.not_found(
@@ -195,7 +198,7 @@ class ReconcileDeckOperation:
     async def run(self, req: ReconcileDeckRequest) -> ReconcileDeckResponse:
         try:
             comparison = await self._runtime.devices.reconcile_deck(
-                req.device_name, mode=req.mode, confirm=True,
+                req.device_name, mode=req.mode, reason=req.reason, confirm=True,
             )
         except KeyError as exc:
             raise OperationError.not_found(
@@ -269,7 +272,7 @@ class ReleaseDeviceControlOperation:
     ) -> ReleaseDeviceControlResponse:
         try:
             await self._runtime.devices.release_external_control(
-                req.device_name, confirm=True,
+                req.device_name, reason=req.reason, confirm=True,
             )
         except KeyError as exc:
             raise OperationError.not_found(
@@ -299,7 +302,7 @@ class ClearDeviceFaultOperation:
     ) -> ClearDeviceFaultResponse:
         try:
             cleared = await self._runtime.devices.clear_fault(
-                req.device_name, confirm=True,
+                req.device_name, reason=req.reason, confirm=True,
             )
         except KeyError as exc:
             raise OperationError.not_found(
@@ -419,6 +422,8 @@ class ConfirmMountedTipsOperation:
             raise OperationError.not_found(
                 f"device {req.device_name!r} not found", device_name=req.device_name,
             ) from exc
+        except ConfirmRefusedError as exc:
+            raise confirm_refused(exc, device_name=req.device_name) from exc
         except ValueError as exc:
             raise OperationError.invalid_input(str(exc)) from exc
         return MountedTipsMutationResponse(device_name=req.device_name)

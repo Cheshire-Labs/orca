@@ -251,7 +251,7 @@ class TestVolumesSurviveDischarge:
                 ],
             ))
 
-            await runtime.labware.discharge_labware(snap.id)
+            await runtime.labware.discharge_labware(snap.id, confirm=True)
 
             assert (await runtime.labware.get_well_volumes(snap.id)).volumes == {
                 "A1": 20.0, "B1": 20.0,

@@ -58,7 +58,7 @@ def _make_snapshot(
 
 def _make_mock_runtime(snapshot: SubmissionSnapshot) -> MagicMock:
     runtime = MagicMock()
-    runtime.submit_workflow = AsyncMock(
+    runtime.submissions.submit_workflow = AsyncMock(
         return_value=ExecutionRecord(
             id=snapshot.execution_id,
             workflow_name=snapshot.workflow_name,
@@ -97,7 +97,7 @@ async def test_legacy_shape_routes_through_submit_workflow() -> None:
     ))
     assert resp.id == "sub-1"
     assert resp.execution_id == "exec-1"
-    runtime.submit_workflow.assert_awaited_once()
+    runtime.submissions.submit_workflow.assert_awaited_once()
     runtime.submissions.submit_group.assert_not_awaited()
     runtime.submissions.list_submissions.assert_called_once_with(execution_id="exec-1")
 
@@ -122,7 +122,7 @@ async def test_multi_group_shape_routes_through_submissions_submit_group() -> No
         run_mode="PURE_SIM",
     ))
     assert resp.group_count == 2
-    runtime.submit_workflow.assert_not_awaited()
+    runtime.submissions.submit_workflow.assert_not_awaited()
     runtime.submissions.submit_group.assert_awaited_once()
 
 
@@ -138,7 +138,7 @@ async def test_operator_id_forces_multi_group_path() -> None:
         operator_id="alice",
         run_mode="PURE_SIM",
     ))
-    runtime.submit_workflow.assert_not_awaited()
+    runtime.submissions.submit_workflow.assert_not_awaited()
     runtime.submissions.submit_group.assert_awaited_once()
 
 
@@ -154,7 +154,7 @@ async def test_join_existing_forces_multi_group_path() -> None:
         batch_mode="JOIN_EXISTING",
         run_mode="PURE_SIM",
     ))
-    runtime.submit_workflow.assert_not_awaited()
+    runtime.submissions.submit_workflow.assert_not_awaited()
     runtime.submissions.submit_group.assert_awaited_once()
 
 
@@ -178,7 +178,7 @@ async def test_run_mode_string_parsed_to_enum() -> None:
 @pytest.mark.asyncio
 async def test_legacy_keyerror_maps_to_not_found() -> None:
     runtime = MagicMock()
-    runtime.submit_workflow = AsyncMock(side_effect=KeyError("unknown_workflow"))
+    runtime.submissions.submit_workflow = AsyncMock(side_effect=KeyError("unknown_workflow"))
     op = SubmitExecutionOperation(runtime=runtime)
 
     with pytest.raises(OperationError) as excinfo:
@@ -191,7 +191,7 @@ async def test_legacy_keyerror_maps_to_not_found() -> None:
 @pytest.mark.asyncio
 async def test_legacy_runtime_error_maps_to_conflict() -> None:
     runtime = MagicMock()
-    runtime.submit_workflow = AsyncMock(side_effect=RuntimeError("invalid state"))
+    runtime.submissions.submit_workflow = AsyncMock(side_effect=RuntimeError("invalid state"))
     op = SubmitExecutionOperation(runtime=runtime)
 
     with pytest.raises(OperationError) as excinfo:

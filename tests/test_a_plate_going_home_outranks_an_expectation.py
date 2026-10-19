@@ -177,7 +177,7 @@ class TestThePlateComingHomeWins:
                 message="the first plate never got home to the shared pad",
             )
 
-            await bench.runtime.labware.discharge_labware(placed.id)
+            await bench.runtime.labware.discharge_labware(placed.id, confirm=True)
 
             waiting = [
                 t.id for t in bench.runtime.list_threads(execution_id)

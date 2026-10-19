@@ -16,6 +16,7 @@ from orca.daemon.app import create_app
 from orca.events.intervention import INCIDENT_ENTITY
 from orca.events.runtime_event import RuntimeEvent
 from orca.resource_models.device_error import CommandTimeoutAbortedError
+from orca.runtime.danger import clear_audit_trail, list_audit_entries
 from orca.runtime.incident_store import IncidentCategory
 from orca.runtime.system_runtime import SystemRuntime
 
@@ -87,8 +88,9 @@ async def _park_dispatch(rt: SystemRuntime, coro_factory) -> tuple[asyncio.Task,
     return task, sink.incident_id
 
 
-async def test_extend_route_lets_the_call_complete(rt_client) -> None:
+async def test_extend_route_lets_the_call_complete_and_records_the_reason(rt_client) -> None:
     rt, client = rt_client
+    clear_audit_trail()
 
     async def slow() -> str:
         # Stay in-flight until the recoverable-timeout incident is declared,
@@ -101,11 +103,16 @@ async def test_extend_route_lets_the_call_complete(rt_client) -> None:
     task, incident_id = await _park_dispatch(rt, slow)
     resp = await client.post(
         f"/incidents/{incident_id}/recoverable_timeout/extend",
-        json={"additional_seconds": 5.0},
+        json={"additional_seconds": 5.0, "reason": "device is slow today"},
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["decision"] == "extend"
     assert await task == "done"
+    [row] = [
+        r for r in list_audit_entries()
+        if r.action_name == "recoverable_timeout.extend"
+    ]
+    assert row.reason == "device is slow today"
 
 
 @pytest.mark.parametrize("additional_seconds", [0, -1])
@@ -126,7 +133,9 @@ async def test_extend_route_rejects_non_positive_seconds(
         )
         assert resp.status_code == 422, resp.text
     finally:
-        rt.recoverable_timeout_abort(incident_id, "cleanup", "test teardown")
+        rt.incidents.recoverable_timeout_abort(
+            incident_id, "cleanup", reason="test teardown", confirm=True,
+        )
         with pytest.raises(CommandTimeoutAbortedError):
             await task
 

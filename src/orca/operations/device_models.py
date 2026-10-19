@@ -92,6 +92,7 @@ class InitializeDeviceRequest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     device_name: str
     mode: WorkflowRunMode | None = None
+    reason: str | None = None
 
 
 class InitializeDeviceResponse(BaseModel):
@@ -104,6 +105,7 @@ class ConnectDeviceRequest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     device_name: str
     mode: WorkflowRunMode | None = None
+    reason: str | None = None
 
 
 class ConnectDeviceResponse(BaseModel):
@@ -116,6 +118,7 @@ class DisconnectDeviceRequest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     device_name: str
     mode: WorkflowRunMode | None = None
+    reason: str | None = None
 
 
 class DisconnectDeviceResponse(BaseModel):
@@ -128,6 +131,7 @@ class ReconcileDeckRequest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     device_name: str
     mode: WorkflowRunMode | None = None
+    reason: str | None = None
 
 
 class DeckDisagreementDTO(BaseModel):
@@ -186,6 +190,7 @@ class TakeDeviceControlResponse(BaseModel):
 class ReleaseDeviceControlRequest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     device_name: str
+    reason: str | None = None
 
 
 class ReleaseDeviceControlResponse(BaseModel):
@@ -197,6 +202,7 @@ class ReleaseDeviceControlResponse(BaseModel):
 class ClearDeviceFaultRequest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     device_name: str
+    reason: str | None = None
 
 
 class ClearDeviceFaultResponse(BaseModel):

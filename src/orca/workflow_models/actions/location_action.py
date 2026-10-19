@@ -485,6 +485,7 @@ class ActionBodyLocationAction(LocationAction):
             action_id=self._id,
             thread_id=thread_id,
             execution_id=self._execution_id,
+            pause_checkpoint=self._pause_checkpoint,
         )
 
         try:

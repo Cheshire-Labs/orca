@@ -130,6 +130,10 @@ class ExecutionDetail:
     abort_armed: bool = False
     """Whether a second confirmed stop would abort. Set by the first stop
     call, cleared by resume."""
+    sim_time_scale: float | None = None
+    """Wall seconds per real second of a simulated step: 1 is real time, 0 is
+    no pacing. None for a LIVE run, which the hardware paces, and for a
+    finished run read back from the store, which does not keep it."""
 
 
 @dataclass
@@ -153,6 +157,9 @@ class ExecutionStatus:
     runtime paused itself. None when not paused."""
     abort_armed: bool = False
     """Whether a second confirmed stop would abort."""
+    sim_time_scale: float | None = None
+    """The simulated time scale. None for a LIVE run,
+    and for a finished run read back from the store, which does not keep it."""
 
 
 # -- Labware + location --------------------------------------------------
@@ -163,6 +170,9 @@ class LabwareSnapshot:
     id: str
     name: str
     template_name: str
+    labware_type: str
+    """The catalog key, the one the daemon's ``GET /labware/{labware_type}`` takes. A sim
+    template's placeholder, such as ``_sim_plate``, and ``unknown`` are not in the catalog."""
     barcode: str | None
     current_location: str | None
     placement: PlacementState | None = None
@@ -649,6 +659,10 @@ class ResourcePoolSnapshot:
 class LabwareTemplateSnapshot:
     name: str
     type_name: str
+    """The template's Python class, e.g. ``PlateTemplate``."""
+    labware_type: str
+    """The catalog key, the one the daemon's ``GET /labware/{labware_type}`` takes. A sim
+    template's placeholder, such as ``_sim_plate``, is not in the catalog."""
 
 
 @dataclass(frozen=True)

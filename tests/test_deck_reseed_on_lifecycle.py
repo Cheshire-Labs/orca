@@ -54,7 +54,7 @@ async def test_connect_re_seeds_the_deck() -> None:
     try:
         configures = _count(recorder, "configure_deck")
 
-        await runtime.devices.connect(lh.name)
+        await runtime.devices.connect(lh.name, confirm=True)
 
         assert _count(recorder, "configure_deck") == configures + 1
     finally:

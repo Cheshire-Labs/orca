@@ -23,6 +23,9 @@ from orca.runtime.store_factory import IRuntimeStoreFactory
 from orca.sdk.build import Topology
 
 
+SYSTEM_NAME = "Multi-Lineage"
+
+
 def _make_teachpoints(
     names: List[str], access: AccessConfig,
 ) -> List[Teachpoint]:
@@ -43,9 +46,8 @@ def _make_teachpoints(
 def build_topology(stores: IRuntimeStoreFactory) -> Topology:
     """Build a fresh multi-lineage topology.
 
-    Devices use the no-driver SDK ctor; the active factory (SimDeviceFactory
-    by default for standalone, RemoteDeviceFactory under a hosted deployment) supplies the (live,
-    sim) pair.
+    Devices use the no-driver SDK constructor: a bound factory supplies the
+    (live, sim) pair, and the sim default applies when none is bound.
     """
     # The mix converges two labware (sample + reservoir), so its device needs one
     # position per input; a protocol-driven liquid handler declares them via site_names.

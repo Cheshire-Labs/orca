@@ -340,7 +340,7 @@ class LabwareInstance:
         return self._barcode
 
     @barcode.setter
-    def barcode(self, value: str) -> None:
+    def barcode(self, value: str | None) -> None:
         self._barcode = value
 
     @property

@@ -27,6 +27,7 @@ from orca.events.execution_context import (
     DeviceFaultContext,
     ExecutionContext,
     ExecutionLifecycleContext,
+    ExecutionTimeScaleContext,
     GroupLifecycleContext,
     IncidentContext,
     SubmissionExecutionContext,
@@ -41,6 +42,7 @@ from orca.runtime.danger import (
 )
 from orca.runtime.event_forwarder import _SystemEventForwarder
 from orca.runtime.execution import Execution, ExecutionPhase, StopOutcome
+from orca.runtime.sim_pacing import SimPacer, validate_time_scale
 from orca.runtime.execution_record import ExecutionRecord, ExecutionState
 from orca.runtime.facades.deck_layouts import DeckLayoutFacade
 from orca.runtime.facades.devices import DeviceFacade
@@ -122,6 +124,7 @@ from orca.state.unsettled import (
     SettleNoun,
     UnsettledSubject,
     is_unsettled,
+    set_verb,
     settle_verb,
 )
 from orca.state.records import ObservationGapCause, OperationRecord
@@ -157,6 +160,7 @@ from orca.runtime.runtime_interface import (
     RunModeRequiredError,
     StartLocationsOccupiedError,
     SubmissionBlockedByOrphanedBacklogError,
+    SimTimeScaleNotApplicableError,
     SubmissionToPausedExecutionError,
 )
 from orca.runtime.runtime_state import RuntimeState
@@ -320,6 +324,15 @@ _TERMINAL_PHASES = frozenset({
 })
 
 
+def _check_time_scale_applies(mode: WorkflowRunMode, sim_time_scale: float | None) -> None:
+    """A scale is a number >= 0, and only a simulated run can carry one."""
+    if sim_time_scale is None:
+        return
+    validate_time_scale(sim_time_scale)
+    if mode is WorkflowRunMode.LIVE:
+        raise SimTimeScaleNotApplicableError("a LIVE run is paced by its hardware")
+
+
 def _phase_to_state(phase: ExecutionPhase) -> ExecutionState:
     """Map T6 ExecutionPhase to our flat ExecutionState for the daemon API.
 
@@ -446,7 +459,7 @@ def _head_detail(
         return _unrecorded_detail(f"what {name!r} is carrying")
     if ObservationGapCause.OPERATIONS_DROPPED in gaps:
         return _dropped_detail(
-            f"what {name!r} is carrying", "set-mounted-tips",
+            f"what {name!r} is carrying", set_verb("mounted-tips"),
         )
     return f"what {name!r} is carrying was known, then nobody was watching"
 
@@ -494,8 +507,11 @@ class SystemRuntime:
         labware_catalog_store: LabwareCatalogService | None = None,
         stall_check_interval: float | None = 10.0,
         stall_required_stable_ticks: int = 2,
+        default_sim_time_scale: float = 0.0,
     ) -> None:
         self._system = system
+        # What a simulated submission runs at when it names no scale of its own.
+        self._default_sim_time_scale = validate_time_scale(default_sim_time_scale)
         self._labware_store: ILabwareStore = labware_store or InMemoryLabwareStore()
         # Built lazily on first access; disposed at shutdown only when we own it
         # (an injected catalog is the injector's to close, e.g. a Postgres one).
@@ -630,7 +646,9 @@ class SystemRuntime:
             cancel_reservation_fn=self.cancel_reservation,
             connections=self._connection_source,
         )
-        self._incidents = IncidentFacade(self._incident_service)
+        self._incidents = IncidentFacade(
+            self._incident_service, self._recoverable_timeouts,
+        )
         self._teachpoints = TeachpointFacade(system)
         self._deck_layouts = DeckLayoutFacade(system)
         self._submissions = SubmissionFacade(self)
@@ -683,7 +701,7 @@ class SystemRuntime:
                 provenance=provenance,
                 detail=_contents_detail(
                     provenance, labware.name,
-                    settle_with=f"set-{noun}",
+                    settle_with=set_verb(noun),
                     unrecorded=held,
                     gaps=gaps,
                 ),
@@ -1600,6 +1618,7 @@ class SystemRuntime:
         deployment_profile: str | None = None,
         mode: WorkflowRunMode | None = None,
         acknowledge_warnings: bool = False,
+        sim_time_scale: float | None = None,
     ) -> Submission:
         """Accept a submission of labware groups for a workflow execution.
 
@@ -1642,6 +1661,12 @@ class SystemRuntime:
         # run_mode is required; there is no deployment fallback.
         if mode is None:
             raise RunModeRequiredError()
+        _check_time_scale_applies(mode, sim_time_scale)
+        if batch_mode is BatchMode.JOIN_EXISTING and sim_time_scale is not None:
+            raise SimTimeScaleNotApplicableError(
+                "the scale belongs to the execution a JOIN_EXISTING submission "
+                "joins; change it with set-execution-time-scale",
+            )
 
         # 1b. LIVE/DEVICE_SIM wire guard across executions.
         # See ConcurrentLiveSimRefusedError for why they can't overlap.
@@ -1740,9 +1765,13 @@ class SystemRuntime:
                         f"start a new execution, or wait for this one to terminate."
                     )
                 else:
-                    execution, inject = self._build_fresh_execution(workflow, groups)
+                    execution, inject = self._build_fresh_execution(
+                    workflow, groups, mode=mode, sim_time_scale=sim_time_scale,
+                )
             else:
-                execution, inject = self._build_fresh_execution(workflow, groups)
+                execution, inject = self._build_fresh_execution(
+                    workflow, groups, mode=mode, sim_time_scale=sim_time_scale,
+                )
 
             submission = Submission(
                 id=str(uuid.uuid4()),
@@ -1765,10 +1794,23 @@ class SystemRuntime:
 
         return submission
 
+    def _pacer_for_new_execution(
+        self, mode: WorkflowRunMode, sim_time_scale: float | None,
+    ) -> SimPacer | None:
+        """A simulated run gets a pacer at the asked-for scale or the deployment
+        default. A LIVE run gets none, so no step of it is ever paced."""
+        if mode is WorkflowRunMode.LIVE:
+            return None
+        scale = self._default_sim_time_scale if sim_time_scale is None else sim_time_scale
+        return SimPacer(scale)
+
     def _build_fresh_execution(
         self,
         workflow: WorkflowTemplate,
         groups: Sequence[LabwareGroup],
+        *,
+        mode: WorkflowRunMode,
+        sim_time_scale: float | None,
     ) -> tuple[Execution, bool]:
         """Create a new Execution + task for ``workflow``; register it.
 
@@ -1798,8 +1840,12 @@ class SystemRuntime:
             workflow=workflow,
             system=self._system,
             task=task,
+            sim_pacer=self._pacer_for_new_execution(mode, sim_time_scale),
         )
         self._executions[execution_id] = execution
+        # Known to the forwarder from here: an operator's change between submit
+        # and the run task's start must still reach every sink.
+        self._forwarder.register_execution(execution_id)
         if groups:
             self._active_executions[workflow.name] = execution
         task.add_done_callback(lambda _t: self._on_task_done(execution_id))
@@ -2249,6 +2295,7 @@ class SystemRuntime:
             paused=execution.is_paused,
             pause_reason=execution.pause_reason,
             abort_armed=execution.abort_armed,
+            sim_time_scale=execution.sim_time_scale,
         )
 
     def _get_execution(self, execution_id: str) -> Execution:
@@ -2446,6 +2493,35 @@ class SystemRuntime:
             drain.add_done_callback(self._on_drain_done)
         return self.resume_all_threads(execution_id)
 
+    def set_execution_time_scale(self, execution_id: str, sim_time_scale: float) -> float:
+        """Change a simulated execution's time scale. Applies at once: every
+        paced step in progress re-plans the rest of its wait at the new scale.
+
+        A LIVE execution has no pacer and refuses; so does a finished one.
+        Emits ``EXECUTION.<id>.TIME_SCALE_CHANGED`` so every viewer's control
+        follows.
+        """
+        execution = self._get_execution(execution_id)
+        if _phase_to_state(execution.phase).is_terminal():
+            raise RuntimeError(
+                f"Execution '{execution_id}' is {execution.phase.value}; "
+                f"its time scale cannot change"
+            )
+        if execution.sim_pacer is None:
+            raise SimTimeScaleNotApplicableError(
+                "a LIVE run is paced by its hardware", execution_id=execution_id,
+            )
+        execution.sim_pacer.set_time_scale(sim_time_scale)
+        self._safe_emit(
+            f"EXECUTION.{execution.id}.TIME_SCALE_CHANGED",
+            ExecutionTimeScaleContext(
+                execution_id=execution.id,
+                workflow_name=execution.workflow_name,
+                sim_time_scale=execution.sim_pacer.time_scale,
+            ),
+        )
+        return execution.sim_pacer.time_scale
+
     def _on_drain_done(self, task: asyncio.Task[None]) -> None:
         self._background_tasks.discard(task)
         if not task.cancelled() and task.exception() is not None:
@@ -2532,13 +2608,11 @@ class SystemRuntime:
             armed=True, aborted=False, phase=execution.phase,
         )
 
-    def remove_execution(self, execution_id: str, *, confirm: bool = False) -> None:
+    def remove_execution(self, execution_id: str) -> None:
         """Remove a completed or aborted execution and clear its events.
 
-        `confirm` accepted for Protocol conformance. The terminal-state guard
-        surfaces as 409 at the route.
+        The terminal-state guard surfaces as 409 at the route.
         """
-        del confirm
         execution = self._get_execution(execution_id)
         state = _phase_to_state(execution.phase)
         if not state.is_terminal():
@@ -2577,6 +2651,7 @@ class SystemRuntime:
             paused=execution.is_paused,
             pause_reason=execution.pause_reason,
             abort_armed=execution.abort_armed,
+            sim_time_scale=execution.sim_time_scale,
         )
 
     # -- Blocker sources (see orca.runtime.blockers) ------------------------
@@ -3153,7 +3228,7 @@ class SystemRuntime:
              prevents them from racing ahead while the operator
              deliberates.
 
-        The operator resolves the incident through the runtime's
+        The operator resolves the incident through ``incidents.``
         ``recoverable_timeout_extend`` / ``_abort`` / ``_mark_complete``
         (exposed over REST / MCP / CLI). The coordinator settles the held
         call's eventual state and calls ``resume_all_threads(execution_id)``
@@ -3291,23 +3366,9 @@ class SystemRuntime:
         """
         return self._recoverable_timeouts
 
-    def recoverable_timeout_extend(
-        self, incident_id: str, additional_seconds: float,
-    ) -> None:
-        """Operator decision: grant the held command more time (re-arm timer)."""
-        self._recoverable_timeouts.extend(incident_id, additional_seconds)
-
-    def recoverable_timeout_abort(
-        self, incident_id: str, operator: str, reason: str,
-    ) -> None:
-        """Operator decision: fail the held command; failure policy fires."""
-        self._recoverable_timeouts.abort(incident_id, operator, reason)
-
-    def recoverable_timeout_mark_complete(
-        self, incident_id: str, operator: str, reason: str,
-    ) -> None:
-        """Operator decision: assert the device finished; synthesize success."""
-        self._recoverable_timeouts.mark_complete(incident_id, operator, reason)
+    def sim_pacer_for(self, execution_id: str) -> SimPacer | None:
+        execution = self._executions.get(execution_id)
+        return None if execution is None else execution.sim_pacer
 
     async def spawn_thread_in_execution(
         self,
@@ -3512,6 +3573,7 @@ class SystemRuntime:
         *,
         mode: WorkflowRunMode | None = None,
         acknowledge_warnings: bool = False,
+        sim_time_scale: float | None = None,
     ) -> ExecutionRecord:
         """Submit a workflow by name, get back a flat ExecutionRecord.
 
@@ -3540,6 +3602,7 @@ class SystemRuntime:
         return await self._submit_template(
             template, variables, deployment_profile,
             mode=mode, acknowledge_warnings=acknowledge_warnings,
+            sim_time_scale=sim_time_scale,
         )
 
     async def _submit_template(
@@ -3550,6 +3613,7 @@ class SystemRuntime:
         *,
         mode: WorkflowRunMode | None,
         acknowledge_warnings: bool,
+        sim_time_scale: float | None = None,
     ) -> ExecutionRecord:
         """Shared submit tail for submit_workflow and submit_method.
 
@@ -3560,6 +3624,8 @@ class SystemRuntime:
         """
         if mode is None:
             raise RunModeRequiredError()
+        # A shape refusal comes before the device gate: 422 before 409.
+        _check_time_scale_applies(mode, sim_time_scale)
         topology_names = [
             entry.name for entry in self._topology_registry.list_devices()
         ]
@@ -3571,6 +3637,7 @@ class SystemRuntime:
             deployment_profile=deployment_profile,
             mode=mode,
             acknowledge_warnings=acknowledge_warnings,
+            sim_time_scale=sim_time_scale,
         )
         execution = self._executions[submission.execution_id]
         # Eager-register so profile resolution (between submit and
@@ -3592,6 +3659,7 @@ class SystemRuntime:
             workflow_name=submission.workflow_name,
             status=_phase_to_state(execution.phase),
             error=execution.error,
+            sim_time_scale=execution.sim_time_scale,
         )
 
     async def submit_method(
@@ -3722,6 +3790,7 @@ class SystemRuntime:
             paused=status.paused,
             pause_reason=status.pause_reason,
             abort_armed=status.abort_armed,
+            sim_time_scale=status.sim_time_scale,
         )
 
     async def wait(self, execution_id: str) -> ExecutionRecord:
@@ -3933,7 +4002,6 @@ class SystemRuntime:
             id=execution_id,
             run_mode=run_mode,
         )
-        self._forwarder.register_execution(execution_id)
 
         self._system.variable_store.create_execution(workflow_instance.id, workflow.name)
         if submission.variables:

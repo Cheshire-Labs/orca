@@ -121,7 +121,7 @@ class TestIncidentAckPrefix:
                 app, ["--force", "incident", "ack", "7faedeec"],
             )
         assert result.exit_code == 0, result.output
-        mock_local.return_value.incidents_ack.assert_called_once_with(inc.id)
+        mock_local.return_value.incidents_ack.assert_called_once_with(inc.id, reason=None)
 
     def test_ambiguous_prefix_does_not_ack(self) -> None:
         a = _incident(id="abcdeeee-1111-4abc-9def-000000000001")
@@ -144,7 +144,7 @@ class TestIncidentAckPrefix:
                 app, ["--force", "incident", "ack", inc.id],
             )
         assert result.exit_code == 0, result.output
-        mock_local.return_value.incidents_ack.assert_called_once_with(inc.id)
+        mock_local.return_value.incidents_ack.assert_called_once_with(inc.id, reason=None)
 
 
 # -- submission detail: prefix resolution -----------------------------------

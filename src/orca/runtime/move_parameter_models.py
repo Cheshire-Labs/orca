@@ -69,6 +69,7 @@ class MoveDefaultsPatchRequest(BaseModel):
 
     set: MoveParameterPatch = MoveParameterPatch()
     clear: list[MoveParameterField] = []
+    reason: str | None = None
 
     @model_validator(mode="after")
     def _names_something(self) -> Self:
@@ -113,3 +114,4 @@ class GripProfilePatchRequest(BaseModel):
 
     set: MoveParameterPatch = MoveParameterPatch()
     clear: list[MoveParameterField] = []
+    reason: str | None = None

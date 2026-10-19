@@ -281,7 +281,7 @@ class TestTheMoveIsPlannedAgainFromWhereTheLabwareNowIs:
                 plate.labware_id, "pad3", confirm=True,
                 reason="Took it off the shaker and parked it on pad3.",
             )
-            await bench.runtime.labware.discharge_labware(blocker.id)
+            await bench.runtime.labware.discharge_labware(blocker.id, confirm=True)
 
             status = await asyncio.wait_for(
                 bench.runtime.wait(record.id), timeout=30.0,

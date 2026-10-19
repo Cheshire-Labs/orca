@@ -132,6 +132,23 @@ async def test_labware_register_creates_new_instance(
     assert snapshot["current_location"] == "pad1"
 
 
+async def test_labware_list_row_carries_the_labware_type(
+    labware_client: AsyncClient,
+) -> None:
+    """plate_96 is a SimPlateTemplate, so its type is the sim placeholder.
+
+    What is pinned is that the row carries the type at all."""
+    resp = await labware_client.post(
+        "/operations/register-labware",
+        json={"template_name": "plate_96", "location": "pad1"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["labware"]["labware_type"] == "_sim_plate"
+
+    rows = (await labware_client.get("/operations/list-labware")).json()["labware"]
+    assert [r["labware_type"] for r in rows if r["template_name"] == "plate_96"] == ["_sim_plate"]
+
+
 async def test_labware_register_unknown_template_returns_404(
     labware_client: AsyncClient,
 ) -> None:

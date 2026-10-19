@@ -2,7 +2,7 @@
 method on the orca context / labware surface. A bare call returns a
 coroutine, which is always truthy and silently dead-codes any conditional
 that uses it (the original case was `if not ctx.labware.can_continue():`
-at examples/smc_assay/workflow.py:282 -- a never-fired partial-fill exit).
+in examples/smc_assay/workflows/smc_assay.py -- a never-fired partial-fill exit).
 
 Pyright does not flag `not <coroutine>` or `await missing` patterns
 because they are syntactically valid, so this guard is the only catch.

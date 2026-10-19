@@ -4,12 +4,14 @@ Mirrors the read routes already in ``orca.daemon.routes`` and the
 access-config / deck-layout write pattern. Teachpoints live on a mounted
 system's transporter store; access-config names are resolved through the
 deployment registries. Proves happy-path create/update/delete plus the
-error mappings: bad coords -> 400, unknown access-config name -> 400,
-unknown device -> 404, duplicate -> 409, update/delete miss -> 404.
+error mappings: bad coords -> 400, a name ending in `/labware/<x>` -> 400,
+unknown access-config name -> 400, unknown device -> 404, duplicate -> 409,
+update/delete miss -> 404.
 """
 
 from collections.abc import AsyncIterator
 
+import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
@@ -273,3 +275,52 @@ async def test_a_teachpoint_named_for_a_deck_slot_survives_the_url(
     assert (
         await tp_client.get(f"/teachpoints/robot1/{slotted}")
     ).status_code == 404
+
+
+async def test_a_name_the_override_routes_capture_is_refused(
+    tp_client: AsyncClient,
+) -> None:
+    resp = await tp_client.post(
+        "/teachpoints", json=_create_body("flex_1/labware/B4"),
+    )
+
+    assert resp.status_code == 400, resp.text
+    assert "could never be deleted over REST" in resp.json()["detail"]
+    assert (
+        await tp_client.get("/teachpoints/robot1/flex_1/labware/B4")
+    ).status_code == 404
+
+
+async def test_delete_on_a_captured_name_clears_an_override_instead(
+    tp_client: AsyncClient,
+) -> None:
+    """Why the refusal exists: Starlette routes this DELETE to the override clear."""
+    await tp_client.post(
+        "/teachpoints",
+        json=_create_body("flex_1", by_labware={"B4": {"clearance": 45.0}}),
+    )
+
+    resp = await tp_client.delete("/teachpoints/robot1/flex_1/labware/B4")
+
+    assert resp.status_code == 204, resp.text
+    kept = await tp_client.get("/teachpoints/robot1/flex_1")
+    assert kept.status_code == 200
+    assert kept.json()["by_labware"] == {}
+
+
+@pytest.mark.parametrize(
+    "name", ["labware/B4", "flex_1/labware", "a/labware/b/c", "flex_1/labware_hotel"],
+)
+async def test_a_name_the_override_routes_miss_round_trips(
+    tp_client: AsyncClient, name: str,
+) -> None:
+    created = await tp_client.post("/teachpoints", json=_create_body(name))
+    assert created.status_code == 201, created.text
+
+    got = await tp_client.get(f"/teachpoints/robot1/{name}")
+    assert got.status_code == 200, got.text
+    assert got.json()["position_id"] == name
+
+    deleted = await tp_client.delete(f"/teachpoints/robot1/{name}")
+    assert deleted.status_code == 204, deleted.text
+    assert (await tp_client.get(f"/teachpoints/robot1/{name}")).status_code == 404

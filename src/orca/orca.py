@@ -69,6 +69,7 @@ from orca.workflow_models.thread_template import (
     register_pending_thread,
 )
 from orca.sdk.build import SystemBuild, Topology, build_system
+from orca.sdk.package import build_system_from_package, build_topology_from_module
 from orca.workflow_models.workflow_context import WorkflowContext
 from orca.workflow_models.workflow_templates import WorkflowTemplate
 

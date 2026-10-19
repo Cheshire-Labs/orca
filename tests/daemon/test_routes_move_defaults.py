@@ -11,6 +11,7 @@ from cheshire_drivers.move_parameters import SEED_MOVE_PARAMETERS
 from httpx import ASGITransport, AsyncClient
 
 from orca.daemon.app import create_app
+from orca.runtime.danger import clear_audit_trail, list_audit_entries
 from orca.runtime.system_runtime import SystemRuntime
 
 from tests.test_system_runtime import _build_simple_system
@@ -175,3 +176,20 @@ async def test_a_mounted_system_lists_its_arms_even_untuned(
     resp = await mounted_daemon_client.get("/move-defaults")
 
     assert [r["transporter_name"] for r in resp.json()] == ["robot1"]
+
+
+async def test_a_patch_and_a_reset_carry_the_reason_onto_the_audit_row(
+    empty_daemon_client,
+) -> None:
+    clear_audit_trail()
+
+    await empty_daemon_client.patch(
+        "/move-defaults/pf400",
+        json={"set": {"travel_margin": 25.0}, "reason": "new gripper"},
+    )
+    await empty_daemon_client.delete("/move-defaults/pf400", params={"reason": "start over"})
+
+    reasons = {r.action_name: r.reason for r in list_audit_entries()}
+    assert reasons["move_defaults.apply"] == "new gripper"
+    assert reasons["move_defaults.reset"] == "start over"
+

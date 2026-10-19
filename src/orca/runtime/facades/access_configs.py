@@ -42,7 +42,8 @@ class AccessConfigFacade(IAccessConfigFacade):
                 "teachpoints can reference it; existing teachpoints are "
                 "unaffected.",
     )
-    async def add(self, config: AccessConfig) -> None:
+    async def add(self, config: AccessConfig, *, reason: str | None = None) -> None:
+        del reason  # consumed by @dangerous audit
         await self._store.add(config)
 
     @dangerous(
@@ -52,7 +53,8 @@ class AccessConfigFacade(IAccessConfigFacade):
                 "referencing this config will resolve to the new values "
                 "on the next dispatch lookup.",
     )
-    async def update(self, config: AccessConfig) -> None:
+    async def update(self, config: AccessConfig, *, reason: str | None = None) -> None:
+        del reason  # consumed by @dangerous audit
         await self._store.update(config)
 
     @dangerous(
@@ -62,5 +64,6 @@ class AccessConfigFacade(IAccessConfigFacade):
                 "protected or still referenced by any teachpoint; the "
                 "store is the source of truth on both checks.",
     )
-    async def delete(self, name: str) -> bool:
+    async def delete(self, name: str, *, reason: str | None = None) -> bool:
+        del reason  # consumed by @dangerous audit
         return await self._store.delete(name)

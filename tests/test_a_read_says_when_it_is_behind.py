@@ -19,6 +19,7 @@ import pytest
 
 from cheshire_drivers import RecordingLiquidHandlerDriver
 from cheshire_drivers.plr import ChatterboxLiquidHandlerDriver
+from orca.state.confirm_refusals import HeldByUnfinishedActionError
 from orca.runtime.run_modes import WorkflowRunMode
 from orca.runtime.system_runtime import SystemRuntime
 from orca.workflow_models.status_enums import RecoveryDecision
@@ -126,6 +127,18 @@ class TestTheHeadDoesNotClaimToKnow:
         assert mounted.provenance is Provenance.STALE, (
             "the record has not heard about the pick this action already made"
         )
+
+    async def test_a_confirm_on_a_head_an_unfinished_action_touched_is_refused(
+        self,
+    ) -> None:
+        history = await _history_with_a_settled_rack()
+        action = _ActionHoldingOperations([_picked(["B1"], at=2.0)])
+        history.unrecorded.watch("act-2", action)
+
+        with pytest.raises(HeldByUnfinishedActionError) as refusal:
+            await MountedTipsLedger(history).confirm(_LH)
+
+        assert refusal.value.settle_with is None
 
     async def test_folding_the_action_makes_the_head_known_again(self) -> None:
         history = await _history_with_a_settled_rack()

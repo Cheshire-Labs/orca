@@ -98,6 +98,9 @@ class _FakeDevice:
         # this is never consulted; present to satisfy IDispatchableDevice.
         return None
 
+    def command_typical_seconds(self, command: str) -> float | None:
+        return None
+
 
 def _make_device(*args: Any, **kwargs: Any) -> _FakeDevice:
     return _FakeDevice(*args, **kwargs)
@@ -268,6 +271,9 @@ class _TimedDevice:
 
     def command_max_seconds(self, command: str) -> float | None:
         return self._max
+
+    def command_typical_seconds(self, command: str) -> float | None:
+        return None
 
 
 class TestDispatcherRecoverableTimeoutFallback:
@@ -765,6 +771,9 @@ class _ReconcilableDevice:
     def command_max_seconds(self, command: str) -> float | None:
         return None
 
+    def command_typical_seconds(self, command: str) -> float | None:
+        return None
+
 
 def _retry_once_handler() -> Callable[[Exception, str], Awaitable[RecoveryDecision]]:
     async def handler(exc: Exception, command: str) -> RecoveryDecision:
@@ -1043,6 +1052,9 @@ class _PickDevice:
         self.pick_up_tips = pick_up_tips
 
     def command_max_seconds(self, command: str) -> float | None:
+        return None
+
+    def command_typical_seconds(self, command: str) -> float | None:
         return None
 
 

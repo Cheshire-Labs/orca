@@ -58,7 +58,9 @@ class GripProfileFacade(IGripProfileFacade):
         labware_type: str,
         patch: MoveParameterPatch,
         clear: Iterable[MoveParameterField] = (),
+        *, reason: str | None = None,
     ) -> LabwareGripProfile:
+        del reason  # consumed by @dangerous audit
         clear = tuple(clear)
         reject_site_owned(patch, clear)
         reject_contradiction(patch, clear)
@@ -72,5 +74,6 @@ class GripProfileFacade(IGripProfileFacade):
                 "the way the arm holds anything else. Whatever this labware was "
                 "calibrated to is gone.",
     )
-    async def reset(self, labware_type: str) -> bool:
+    async def reset(self, labware_type: str, *, reason: str | None = None) -> bool:
+        del reason  # consumed by @dangerous audit
         return await self._service.delete(labware_type)

@@ -619,7 +619,7 @@ def runtime_torn_down_blocker(since: float | None = None) -> Blocker:
                     cli="",
                 ),
                 "Imports the deployment package as it stands. Needs a "
-                "system.py already in the worktree.",
+                "topology.py already in the worktree.",
                 recommended=True,
             ),
         ),

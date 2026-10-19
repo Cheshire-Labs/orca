@@ -208,7 +208,7 @@ async def test_discharging_one_labware_leaves_its_neighbour_projected() -> None:
     _, runtime, rack, plate = await _deck_with_a_rack_and_a_plate(recorder)
     try:
         recorder.calls.clear()
-        await runtime.labware.discharge_labware(plate.id, force=True)
+        await runtime.labware.discharge_labware(plate.id, force=True, confirm=True)
 
         touched = _labware_the_driver_was_told_about(recorder.calls)
         assert rack.name not in touched, (
@@ -286,7 +286,7 @@ async def test_clear_all_still_wipes_the_whole_deck() -> None:
     recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
     _, runtime, rack, plate = await _deck_with_a_rack_and_a_plate(recorder)
     try:
-        await runtime.labware.clear_all_labware(force=True)
+        await runtime.labware.clear_all_labware(force=True, confirm=True)
 
         state = await recorder.get_deck_state(GetDeckStateRequest())
         on_deck = {item.name for item in state.labware}
@@ -307,7 +307,7 @@ async def test_taking_a_labware_off_a_bare_driver_world_rebuilds_the_deck() -> N
     try:
         await lh.invalidate_deck_world()
         recorder.calls.clear()
-        await runtime.labware.discharge_labware(plate.id, force=True)
+        await runtime.labware.discharge_labware(plate.id, force=True, confirm=True)
 
         pushed = [call.method for call in recorder.calls]
         assert "configure_deck" in pushed, (

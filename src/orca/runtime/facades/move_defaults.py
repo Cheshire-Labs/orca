@@ -73,7 +73,9 @@ class MoveDefaultsFacade(IMoveDefaultsFacade):
         transporter_name: str,
         patch: MoveParameterPatch,
         clear: Iterable[MoveParameterField] = (),
+        *, reason: str | None = None,
     ) -> TransporterMoveDefaults:
+        del reason  # consumed by @dangerous audit
         clear = tuple(clear)
         reject_site_owned(patch, clear)
         reject_labware_owned(patch, clear)
@@ -88,7 +90,8 @@ class MoveDefaultsFacade(IMoveDefaultsFacade):
                 "back on the built-in seed. Whatever the arm was calibrated to "
                 "is gone; the seed is one machine's measurements, not this one's.",
     )
-    async def reset(self, transporter_name: str) -> bool:
+    async def reset(self, transporter_name: str, *, reason: str | None = None) -> bool:
+        del reason  # consumed by @dangerous audit
         return await self._service.delete(transporter_name)
 
 

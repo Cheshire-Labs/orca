@@ -195,12 +195,12 @@ class DeviceConnectionTracker:
     def peek_interfaces(self, name: str) -> Optional[frozenset[str]]:
         """Synchronously read a device's advertised interface set, or None.
 
-        Sync because the device factory builds drivers inside the synchronous
-        ``system.py:build()`` import, where awaiting is not possible. A single
-        dict lookup is atomic in CPython, so it needs no lock: the worst-case
-        race against a concurrent register/unregister returns either the old
-        or the new snapshot, never a torn read, and a stale profile is healed
-        on the next rebuild.
+        Sync because the device factory builds drivers while the package's
+        synchronous ``build_topology`` constructs devices, where awaiting is
+        not possible. A single dict lookup is atomic in CPython, so it needs
+        no lock: the worst-case race against a concurrent register/unregister
+        returns either the old or the new snapshot, never a torn read, and a
+        stale profile is healed on the next rebuild.
         """
         state = self._devices.get(name)
         if state is None:

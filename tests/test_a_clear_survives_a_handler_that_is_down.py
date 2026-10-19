@@ -155,7 +155,7 @@ async def test_a_discharge_completes_while_the_handler_is_down() -> None:
         assert registered.name in await _deck_names(sim)
         live.down = True
 
-        await runtime.labware.discharge_labware(registered.id, force=True)
+        await runtime.labware.discharge_labware(registered.id, force=True, confirm=True)
 
         assert not await runtime.labware.list_all(), (
             "the ledger kept the row, so the operator has no way to free the slot"
@@ -180,7 +180,7 @@ async def test_clear_all_completes_while_the_handler_is_down() -> None:
     try:
         live.down = True
 
-        cleared = await runtime.labware.clear_all_labware(force=True)
+        cleared = await runtime.labware.clear_all_labware(force=True, confirm=True)
 
         assert registered.id in cleared, f"clear-all reported {cleared}"
         assert not await runtime.labware.list_all(), "the ledger still holds rows"

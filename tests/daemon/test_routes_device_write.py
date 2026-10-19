@@ -8,10 +8,6 @@ Covers:
 - POST /devices/{name}/initialize: brings up + resets. Asks for no motion.
 - POST /devices/{name}/connect, /disconnect: the two ends of holding a device,
   neither of which moves it.
-
-The reason field is gone from execute and initialize (device verbs are operator
-commands during a run, not audit-worthy on their own). Labware
-operator-override verbs still require reason.
 """
 
 from unittest.mock import AsyncMock, patch

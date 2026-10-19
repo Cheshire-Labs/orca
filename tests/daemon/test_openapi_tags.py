@@ -81,6 +81,7 @@ def test_specific_tag_assignments(schema: dict[str, object]) -> None:
         "/operations/close-execution": "executions",
         "/operations/list-executions": "executions",
         "/operations/stop-execution": "executions",
+        "/operations/set-execution-time-scale": "executions",
         "/operations/list-labware": "labware",
         "/operations/edit-labware-barcode": "labware",
         "/operations/register-labware": "labware",

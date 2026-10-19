@@ -1,4 +1,4 @@
-"""Abstract multi-lineage example: thin entry point composing topology + workflow.
+"""Abstract multi-lineage example: thin entry point for standalone runs + tests.
 
 N parallel sample lineages feeding one shared reservoir. Non-SMC worked
 example for the T6 primitives:
@@ -32,8 +32,6 @@ from uuid import uuid4
 
 import orca.orca as orca
 
-from examples.multi_lineage.topology import build_topology
-from examples.multi_lineage.workflow import build_workflow
 from orca.runtime.labware_group import LabwareGroup, LabwareGroupMember
 from orca.runtime.run_modes import WorkflowRunMode
 from orca.runtime.store_factory import InMemoryRuntimeStoreFactory, IRuntimeStoreFactory
@@ -46,25 +44,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger("multi_lineage")
 
+WORKFLOW_NAME = "multi_lineage_example"
+
 
 async def build_multi_lineage(
     stores: IRuntimeStoreFactory | None = None,
 ) -> SystemBuild:
-    """Build a complete multi-lineage system with fresh topology and workflow.
+    """Build the multi-lineage system. Every call makes fresh devices.
 
-    Safe to call multiple times: every call creates fresh device instances
-    for test isolation. The returned ``SystemBuild`` carries the store
-    factory used to construct per-device stores at build time.
+    The returned ``SystemBuild`` carries the store factory used to construct
+    per-device stores at build time.
     """
     factory = stores if stores is not None else InMemoryRuntimeStoreFactory()
-    topology = build_topology(factory)
-    workflow = build_workflow(topology)
-    return await orca.build_system(
-        name="multi_lineage_system",
-        workflow=workflow,
-        topology=topology,
-        stores=factory,
-    )
+    build = await orca.build_system_from_package(__package__, factory)
+    # The package registers workflows by name; this runner runs the one it ships.
+    build.workflow = build.system.get_workflow_template(WORKFLOW_NAME)
+    return build
 
 
 def _sample_group() -> LabwareGroup:

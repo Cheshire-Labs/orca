@@ -1,5 +1,6 @@
 """The safe point a running action body offers back to its thread."""
 
+import asyncio
 from typing import Protocol
 
 
@@ -11,6 +12,16 @@ class IPauseCheckpoint(Protocol):
     only a point where nothing is in motion offers the checkpoint.
     """
 
-    async def hold_if_pause_requested(self) -> None:
-        """Latch PAUSED and wait for resume when a pause is pending, else return at once."""
+    @property
+    def pause_requested(self) -> asyncio.Event:
+        """Set while an operator pause is pending; a wait inside the body races it."""
+        ...
+
+    async def hold_if_pause_requested(self, message: str | None = None) -> bool:
+        """Latch PAUSED and wait for resume when a pause is pending, else return at once.
+
+        True when the body carries on here: nothing was pending, or the hold
+        ended in a resume into this same action. False when the body cannot
+        hold at this point, or the hold ended in a stop.
+        """
         ...

@@ -78,10 +78,10 @@ def list_labware() -> None:
         return
     output.emit_table(
         "Labware",
-        ["id", "template", "barcode", "location"],
+        ["id", "template", "type", "barcode", "location"],
         [
             [
-                i.id[:8], i.template_name,
+                i.id[:8], i.template_name, i.labware_type,
                 i.barcode or "", _where(i),
             ]
             for i in items
@@ -307,6 +307,7 @@ def where(
     if output.get_mode().value == "table":
         output.emit_kv(f"labware {snap.id[:8]}", [
             ("template", snap.template_name),
+            ("type", snap.labware_type),
             ("barcode", snap.barcode or ""),
             ("location", _where(snap)),
         ])
@@ -417,6 +418,9 @@ def carry(
     clear: list[str] = typer.Option(
         [], "--clear", help="Field to hand back to the layers underneath.",
     ),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
+    ),
 ) -> None:
     """Carry THIS one piece of labware with these numbers.
 
@@ -446,7 +450,7 @@ def carry(
         )
     client = get_client()
     resolved = _resolve_labware_id_or_passthrough(client, labware_id)
-    carried = client.labware_set_carry_override(resolved, patch, clear)
+    carried = client.labware_set_carry_override(resolved, patch, clear, reason=reason)
     named = carried.model_dump(exclude_none=True)
     if output.get_mode().value == "json":
         output.emit_json({"labware_id": resolved, "carry_override": named})
@@ -462,11 +466,14 @@ def carry_normally(
     labware_id: str = typer.Argument(
         ..., help="Labware id (full or 4+ char prefix).",
     ),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
+    ),
 ) -> None:
     """Carry this labware the way anything else of its type is carried."""
     client = get_client()
     resolved = _resolve_labware_id_or_passthrough(client, labware_id)
-    client.labware_clear_carry_override(resolved)
+    client.labware_clear_carry_override(resolved, reason=reason)
     output.info(f"labware [cyan]{resolved[:8]}[/cyan] carries normally again")
 
 
@@ -479,6 +486,9 @@ def edit_barcode(
     barcode_opt: str | None = typer.Option(
         None, "--barcode",
         help="Alternative form of the barcode argument.",
+    ),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
     ),
 ) -> None:
     """Update the barcode associated with a labware instance.
@@ -503,7 +513,7 @@ def edit_barcode(
         )
     client = get_client()
     resolved = _resolve_labware_id_or_passthrough(client, labware_id)
-    client.labware_edit_barcode(resolved, chosen)
+    client.labware_edit_barcode(resolved, chosen, reason=reason)
     output.info(f"labware [cyan]{resolved[:8]}[/cyan] -> barcode '{chosen}'")
 
 
@@ -540,6 +550,9 @@ def register(
     ),
     barcode: str = typer.Option("", "--barcode"),
     location: str = typer.Option("", "--location"),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
+    ),
 ) -> None:
     """Register a new labware instance mid-run.
 
@@ -558,6 +571,7 @@ def register(
         labware_type=labware_type or None,
         barcode=barcode or None,
         location=location or None,
+        reason=reason,
     )
     if output.get_mode().value == "json":
         output.emit_json(snap.model_dump(mode="json"))
@@ -814,6 +828,9 @@ def confirm_volumes(
 def clear_submission(
     submission_id: str = typer.Argument(..., help="Submission UUID to clear labware for."),
     force: bool = typer.Option(False, "--force", help="Bypass the active-execution refusal."),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
+    ),
 ) -> None:
     """Take a submission's labware off the platform, leaving deck residents.
 
@@ -822,7 +839,7 @@ def clear_submission(
     identity is what carries its volume and remaining tips to the next run.
     """
     client = get_client()
-    result = client.labware_clear_submission(submission_id, force=force)
+    result = client.labware_clear_submission(submission_id, force=force, reason=reason)
     if output.get_mode().value == "json":
         output.emit_json(result)
         return
@@ -846,10 +863,13 @@ def discharge(
         help="Bypass the active-thread refusal for EVERY thread. Not needed to "
              "release a manual-remove park; that thread is already exempt.",
     ),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
+    ),
 ) -> None:
     """Remove ONE labware from the runtime."""
     client = get_client()
-    result = client.labware_discharge(labware_id, force=force)
+    result = client.labware_discharge(labware_id, force=force, reason=reason)
     if output.get_mode().value == "json":
         output.emit_json(result)
         return
@@ -862,6 +882,9 @@ def clear_all(
     yes: bool = typer.Option(
         False, "--yes", "-y",
         help="Skip the interactive confirmation prompt (required on non-TTY).",
+    ),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
     ),
 ) -> None:
     """Panic button: clear EVERY labware in the runtime, deck residents included.
@@ -887,7 +910,7 @@ def clear_all(
             output.info("clear-all aborted by operator")
             raise typer.Exit(code=1)
     client = get_client()
-    result = client.labware_clear_all(force=force)
+    result = client.labware_clear_all(force=force, reason=reason)
     if output.get_mode().value == "json":
         output.emit_json(result)
         return

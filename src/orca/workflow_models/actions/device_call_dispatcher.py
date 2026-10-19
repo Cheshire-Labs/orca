@@ -15,7 +15,9 @@ and on failure -- so user code parked on
 propagates out of ``dispatch``.
 """
 
+import asyncio
 import logging
+import time
 from typing import Any, Awaitable, Callable, Iterable, List, Mapping, Protocol, Sequence, runtime_checkable
 
 from cheshire_drivers.liquid_handler_models import (
@@ -38,12 +40,14 @@ from orca.runtime.recoverable_timeout import (
     recoverable_timeout_coordinator,
 )
 from orca.runtime.run_modes import current_execution_id
+from orca.runtime.sim_pacing import PacingOutcome, current_sim_pacer, nominal_step_seconds
 from orca.workflow_models.actions.operation_recovery import (
     OperationDecisionSignal,
     device_op_recovery_handler,
 )
 from orca.workflow_models.device_handle import ActionRequest
 from orca.workflow_models.error_policy_overrides import OverrideWithPauseError
+from orca.workflow_models.pause_checkpoint import IPauseCheckpoint
 from orca.workflow_models.status_enums import RecoveryDecision
 
 logger = logging.getLogger("orca")
@@ -78,6 +82,8 @@ class IDispatchableDevice(Protocol):
     def under_external_control(self) -> bool: ...
 
     def command_max_seconds(self, command: str) -> float | None: ...
+
+    def command_typical_seconds(self, command: str) -> float | None: ...
 
 
 class PartialChannelFailureError(RuntimeError):
@@ -212,11 +218,13 @@ class DeviceCallDispatcher:
         action_id: str,
         thread_id: str,
         execution_id: str,
+        pause_checkpoint: IPauseCheckpoint | None = None,
     ) -> None:
         self._device = device
         self._action_id = action_id
         self._execution_id = execution_id
         self._interpreter = interpreter
+        self._pause_checkpoint = pause_checkpoint
         self._log_builder = (
             OperationLogBuilder(interpreter, operation_log, device.name, action_id, thread_id)
             if interpreter is not None else None
@@ -282,9 +290,13 @@ class DeviceCallDispatcher:
                         reconcile_pending = False
                         await self._reconcile_before_retry()
                     await self._check_tips_present(request, instances)
-                    return await self._call_with_recoverable_timeout(
+                    started_at = time.monotonic()
+                    result = await self._call_with_recoverable_timeout(
                         request.command, method, request.args, request.kwargs,
                     )
+                    owed = await self._pace_simulated_step(request, method, started_at)
+                await self._pace_what_a_pause_left(request.command, owed)
+                return result
             except (OverrideWithPauseError, CommandTimeoutAbortedError):
                 raise
             except Exception as exc:
@@ -297,6 +309,57 @@ class DeviceCallDispatcher:
                     reconcile_pending = True
                     continue
                 raise OperationDecisionSignal(decision, exc) from exc
+
+    async def _pace_simulated_step(
+        self,
+        request: ActionRequest,
+        method: Callable[..., Awaitable[Any]],
+        started_at: float,
+    ) -> float:
+        """Hold the device for the rest of the step's simulated length.
+
+        Only a simulated thread seeds a pacer; a LIVE thread returns here at
+        once, and so does a run at scale 0, which owes nothing. Returns the
+        simulated seconds still owed when a pause cut the wait short, else 0.
+        """
+        pacer = current_sim_pacer.get()
+        if pacer is None or pacer.time_scale == 0:
+            return 0.0
+        nominal = nominal_step_seconds(
+            method, request.args, request.kwargs,
+            typical_seconds=self._device.command_typical_seconds(request.command),
+        )
+        result = await pacer.pace(
+            pacer.remaining_after(nominal, started_at),
+            pause_requested=self._pause_requested(),
+        )
+        if result.outcome is PacingOutcome.PAUSE_REQUESTED:
+            return result.remaining_sim_seconds
+        return 0.0
+
+    def _pause_requested(self) -> asyncio.Event | None:
+        if self._pause_checkpoint is None:
+            return None
+        return self._pause_checkpoint.pause_requested
+
+    async def _pace_what_a_pause_left(self, command: str, owed: float) -> None:
+        """A pause landed mid-step: give the device back, hold at the thread's
+        checkpoint, then take the device again for what is left. Time spent
+        paused is not simulated time."""
+        pacer = current_sim_pacer.get()
+        while owed > 0 and pacer is not None and self._pause_checkpoint is not None:
+            carry_on = await self._pause_checkpoint.hold_if_pause_requested(
+                message="held inside a simulated step; resume to continue it",
+            )
+            if not carry_on:
+                return
+            async with self._device.lock.held_for(command):
+                result = await pacer.pace(
+                    owed, pause_requested=self._pause_checkpoint.pause_requested,
+                )
+            if result.outcome is not PacingOutcome.PAUSE_REQUESTED:
+                return
+            owed = result.remaining_sim_seconds
 
     async def _check_tips_present(
         self, request: ActionRequest, instances: Sequence[LabwareInstance],

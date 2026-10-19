@@ -1,4 +1,4 @@
-"""Regression for the SMC lab-sim hang (2026-05-14).
+"""Regression for a hang in the SMC assay with a shared method.
 
 A contributor thread (joined via ``orca.join``) on a shared method must NOT
 hold ``ExecutingMethod.shared_coord.resolving_action_lock`` while waiting

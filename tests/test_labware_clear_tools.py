@@ -128,7 +128,7 @@ class TestClearAllLabware:
             assert any(lw.id == snap.id for lw in system.labwares)
             assert await runtime.labware._store.get_by_id(snap.id) is not None
 
-            cleared = await runtime.labware.clear_all_labware(force=True)
+            cleared = await runtime.labware.clear_all_labware(force=True, confirm=True)
             assert snap.id in cleared
             assert not [lw for lw in system.labwares if lw.id == snap.id]
             # A lifecycle end is not a retraction: identity survives, only
@@ -151,7 +151,7 @@ class TestClearAllLabware:
             pad1.initialize_labware(instance)
             assert pad1.labware is instance
 
-            await runtime.labware.clear_all_labware(force=True)
+            await runtime.labware.clear_all_labware(force=True, confirm=True)
             assert pad1.labware is None
             assert not [lw for lw in system.labwares if lw.id == instance.id]
         finally:
@@ -188,7 +188,7 @@ class TestClearAllHolderContract:
             for holder in [*system.devices, *system.movers]:
                 _spy(holder)
 
-            await runtime.labware.clear_all_labware(force=True)
+            await runtime.labware.clear_all_labware(force=True, confirm=True)
 
             # Walks `movers`, not `transporters`: the production holder list covers
             # device-owned grippers, which are TransporterBase but not Transporter.
@@ -211,7 +211,7 @@ class TestClearAllHolderContract:
             setattr(
                 system.transporters[0], "reset_labware_state_everywhere", _boom)
 
-            cleared = await runtime.labware.clear_all_labware(force=True)
+            cleared = await runtime.labware.clear_all_labware(force=True, confirm=True)
 
             assert instance.id in cleared
             assert await runtime.labware._store.get_by_id(instance.id) is not None
@@ -300,7 +300,7 @@ class TestDischargeLabware:
             pad1 = system.system_map.get_location("pad1")
             pad1.initialize_labware(instance)
 
-            await runtime.labware.discharge_labware(instance.id, force=True)
+            await runtime.labware.discharge_labware(instance.id, force=True, confirm=True)
 
             assert not [lw for lw in system.labwares if lw.id == instance.id]
             assert pad1.labware is None
@@ -329,7 +329,7 @@ class TestDischargeLabware:
         facade = LabwareFacade(system, store, exec_iter)
 
         with pytest.raises(ActiveExecutionRefusedError):
-            await facade.discharge_labware(instance.id)
+            await facade.discharge_labware(instance.id, confirm=True)
 
     async def test_discharge_unknown_id_raises(self) -> None:
         system, _ = await _build_simple_system()
@@ -339,6 +339,7 @@ class TestDischargeLabware:
             with pytest.raises(KeyError):
                 await runtime.labware.discharge_labware(
                     "does-not-exist", force=False,
+                    confirm=True,
                 )
         finally:
             await runtime.shutdown()
@@ -378,6 +379,7 @@ class TestClearSubmissionLabware:
 
         result = await facade.clear_submission_labware(
             "sub-target", force=True,
+            confirm=True,
         )
 
         assert result.cleared == [target_lw.id]
@@ -413,7 +415,7 @@ class TestClearSubmissionLabware:
         )
         facade = LabwareFacade(system, store, exec_iter)
 
-        result = await facade.clear_submission_labware("sub-1", force=True)
+        result = await facade.clear_submission_labware("sub-1", force=True, confirm=True)
 
         assert result.cleared == [consumable.id]
         assert result.preserved_reuse_bound == [reagent.id]
@@ -441,7 +443,7 @@ class TestClearSubmissionLabware:
         facade = LabwareFacade(system, store, exec_iter)
 
         with pytest.raises(RuntimeError, match="active execution"):
-            await facade.clear_submission_labware("sub-1", force=False)
+            await facade.clear_submission_labware("sub-1", force=False, confirm=True)
 
         # Labware untouched.
         assert await store.get_by_id(lw.id) is not None
@@ -461,7 +463,7 @@ class TestClearSubmissionLabware:
         )
         facade = LabwareFacade(system, store, exec_iter)
 
-        result = await facade.clear_submission_labware("sub-1", force=True)
+        result = await facade.clear_submission_labware("sub-1", force=True, confirm=True)
 
         assert result.cleared == [lw.id]
         assert result.preserved_reuse_bound == []
@@ -496,7 +498,7 @@ class TestActiveExecutionRefusal:
         facade = LabwareFacade(system, store, exec_iter)
 
         with pytest.raises(RuntimeError, match="active thread"):
-            await facade.discharge_labware(lw.id, force=False)
+            await facade.discharge_labware(lw.id, force=False, confirm=True)
 
         assert await store.get_by_id(lw.id) is not None
 
@@ -521,7 +523,7 @@ class TestActiveExecutionRefusal:
         )
         facade = LabwareFacade(system, store, exec_iter)
 
-        await facade.discharge_labware(lw.id, force=False)
+        await facade.discharge_labware(lw.id, force=False, confirm=True)
 
         assert await store.get_by_id(lw.id) is not None
         assert store.get_location(lw.id) is None
@@ -549,7 +551,7 @@ class TestActiveExecutionRefusal:
         facade = LabwareFacade(system, store, exec_iter)
 
         with pytest.raises(RuntimeError, match="active thread"):
-            await facade.discharge_labware(lw.id, force=False)
+            await facade.discharge_labware(lw.id, force=False, confirm=True)
 
         assert await store.get_by_id(lw.id) is not None
 
@@ -568,7 +570,7 @@ class TestActiveExecutionRefusal:
         facade = LabwareFacade(system, store, exec_iter)
 
         with pytest.raises(RuntimeError, match="active execution"):
-            await facade.clear_all_labware(force=False)
+            await facade.clear_all_labware(force=False, confirm=True)
 
         assert await store.get_by_id(lw.id) is not None
 
@@ -585,7 +587,7 @@ class TestActiveExecutionRefusal:
         exec_iter = _StubExecutionIterator([])  # zero active executions
         facade = LabwareFacade(system, store, exec_iter)
 
-        await facade.discharge_labware(lw.id, force=False)
+        await facade.discharge_labware(lw.id, force=False, confirm=True)
 
         assert await store.get_by_id(lw.id) is not None
         assert store.get_location(lw.id) is None
@@ -600,7 +602,7 @@ class TestActiveExecutionRefusal:
         exec_iter = _StubExecutionIterator([])
         facade = LabwareFacade(system, store, exec_iter)
 
-        cleared = await facade.clear_all_labware(force=False)
+        cleared = await facade.clear_all_labware(force=False, confirm=True)
 
         assert lw.id in cleared
 
@@ -643,12 +645,13 @@ class TestActiveExecutionRefusalEndToEnd:
             runtime._executions[execution.id] = execution
             try:
                 with pytest.raises(RuntimeError, match="active execution"):
-                    await runtime.labware.clear_all_labware(force=False)
+                    await runtime.labware.clear_all_labware(force=False, confirm=True)
                 with pytest.raises(RuntimeError, match="active thread"):
-                    await runtime.labware.discharge_labware(lw.id, force=False)
+                    await runtime.labware.discharge_labware(lw.id, force=False, confirm=True)
                 with pytest.raises(RuntimeError, match="active execution"):
                     await runtime.labware.clear_submission_labware(
                         "sub-injected", force=False,
+                        confirm=True,
                     )
             finally:
                 task.cancel()
@@ -676,7 +679,7 @@ class TestTypedExceptions:
         facade = LabwareFacade(system, store, exec_iter)
 
         with pytest.raises(ActiveExecutionRefusedError) as excinfo:
-            await facade.clear_submission_labware("sub-x", force=False)
+            await facade.clear_submission_labware("sub-x", force=False, confirm=True)
 
         assert excinfo.value.scope == "submission"
         assert excinfo.value.submission_id == "sub-x"
@@ -695,7 +698,7 @@ class TestTypedExceptions:
         facade = LabwareFacade(system, store, exec_iter)
 
         with pytest.raises(ActiveExecutionRefusedError) as excinfo:
-            await facade.discharge_labware(lw.id, force=False)
+            await facade.discharge_labware(lw.id, force=False, confirm=True)
 
         assert excinfo.value.scope == "labware"
         assert excinfo.value.labware_id == lw.id
@@ -710,7 +713,7 @@ class TestTypedExceptions:
         facade = LabwareFacade(system, store, exec_iter)
 
         with pytest.raises(ActiveExecutionRefusedError) as excinfo:
-            await facade.clear_all_labware(force=False)
+            await facade.clear_all_labware(force=False, confirm=True)
 
         assert excinfo.value.scope == "all"
         assert excinfo.value.submission_id is None
@@ -724,7 +727,7 @@ class TestTypedExceptions:
         facade = LabwareFacade(system, store, exec_iter)
 
         with pytest.raises(LabwareNotFoundError) as excinfo:
-            await facade.discharge_labware("does-not-exist", force=False)
+            await facade.discharge_labware("does-not-exist", force=False, confirm=True)
 
         assert excinfo.value.labware_id == "does-not-exist"
 
@@ -781,7 +784,7 @@ class TestClearSubmissionTerminalExecution:
         facade = LabwareFacade(system, store, exec_iter)
 
         # No refusal: nothing is still carrying the plate.
-        result = await facade.clear_submission_labware("sub-x", force=False)
+        result = await facade.clear_submission_labware("sub-x", force=False, confirm=True)
 
         assert result.cleared == [lw.id]
         assert not [held for held in system.labwares if held.id == lw.id], (
@@ -830,6 +833,7 @@ class TestClearSubmissionTerminalExecution:
         try:
             result = await facade.clear_submission_labware(
                 "sub-finished", force=False,
+                confirm=True,
             )
         finally:
             still_running.task.cancel()
@@ -865,7 +869,7 @@ class TestClearSubmissionTerminalExecution:
         exec_iter = _StubExecutionIterator([execution])
         facade = LabwareFacade(system, store, exec_iter)
 
-        cleared = await facade.clear_all_labware(force=False)
+        cleared = await facade.clear_all_labware(force=False, confirm=True)
 
         assert lw.id in cleared
 
@@ -893,7 +897,7 @@ class TestClearAllAuthoritative:
         assert not [lw for lw in system.labwares if lw.id == phantom.id]
 
         facade = LabwareFacade(system, store, _StubExecutionIterator([]))
-        cleared = await facade.clear_all_labware(force=True)
+        cleared = await facade.clear_all_labware(force=True, confirm=True)
 
         assert phantom.id in cleared
         assert await store.list_active_locations() == []
@@ -910,7 +914,7 @@ class TestClearAllAuthoritative:
         assert system.labware_location_service.get_all()
 
         facade = LabwareFacade(system, store, _StubExecutionIterator([]))
-        await facade.clear_all_labware(force=True)
+        await facade.clear_all_labware(force=True, confirm=True)
 
         assert system.labware_location_service.get_all() == {}
 
@@ -936,7 +940,7 @@ class TestClearAllAuthoritative:
         assert transporter.driver._resource_at("pad1") is not None
 
         facade = LabwareFacade(system, store, _StubExecutionIterator([]))
-        await facade.clear_all_labware(force=True)
+        await facade.clear_all_labware(force=True, confirm=True)
 
         assert transporter.driver._resource_at("pad1") is None
         assert transporter.driver._resources_by_id == {}
@@ -964,7 +968,7 @@ class TestClearAllAuthoritative:
         system.transporters[0].reset_world = _boom
 
         facade = LabwareFacade(system, store, _StubExecutionIterator([]))
-        cleared = await facade.clear_all_labware(force=True)
+        cleared = await facade.clear_all_labware(force=True, confirm=True)
 
         assert phantom.id in cleared
         assert await store.list_active_locations() == []
@@ -1009,7 +1013,7 @@ class TestDischargeAgainstARehydratingStore:
             pad1 = system.system_map.get_location("pad1")
             assert pad1.labware is not None
 
-            await runtime.labware.discharge_labware(snap.id)
+            await runtime.labware.discharge_labware(snap.id, confirm=True)
 
             # A manual-remove park polls exactly this; leaving it set parks
             # the thread forever with the registry row already gone.
@@ -1050,4 +1054,4 @@ class TestDischargeAgainstARehydratingStore:
         facade = LabwareFacade(system, store, exec_iter)
 
         with pytest.raises(ActiveExecutionRefusedError):
-            await facade.discharge_labware(held.id)
+            await facade.discharge_labware(held.id, confirm=True)

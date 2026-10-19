@@ -15,6 +15,8 @@ from typing import Generic, Protocol, TypeVar, runtime_checkable
 from pydantic import JsonValue
 from typing_extensions import Self
 
+from orca.state.confirm_refusals import ConfirmRefusedError
+
 Req = TypeVar("Req", contravariant=True)
 Resp = TypeVar("Resp", covariant=True)
 
@@ -148,3 +150,17 @@ class Operation(Protocol, Generic[Req, Resp]):
     """
 
     async def run(self, req: Req, /) -> Resp: ...
+
+
+def confirm_refused(exc: ConfirmRefusedError, **subject: str) -> OperationError:
+    """A refused confirm, under the code that says why: 422."""
+    extras: dict[str, JsonValue] = dict(subject)
+    if exc.settle_with is not None:
+        extras["settle_with"] = exc.settle_with
+    return OperationError.typed(
+        OperationErrorCode.INVALID_INPUT,
+        str(exc),
+        wire_code=exc.wire_code,
+        status_code=422,
+        **extras,
+    )

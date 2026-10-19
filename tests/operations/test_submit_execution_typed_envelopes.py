@@ -39,8 +39,8 @@ from orca.runtime.runtime_interface import (
 
 def _make_runtime(submit_workflow_side_effect: Exception) -> Any:
     runtime = MagicMock()
-    runtime.submit_workflow = AsyncMock(side_effect=submit_workflow_side_effect)
     runtime.submissions = MagicMock()
+    runtime.submissions.submit_workflow = AsyncMock(side_effect=submit_workflow_side_effect)
     runtime.submissions.submit_group = AsyncMock(
         side_effect=submit_workflow_side_effect,
     )

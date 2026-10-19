@@ -86,6 +86,7 @@ from orca.daemon.schemas import (
     DeviceConnectResponse,
     DeviceDisconnectResponse,
     DeviceLifecycleRequest,
+    LabwareClearRequest,
     DeviceInitializeResponse,
     DeviceIntrospectionDTO,
     DeviceInvocationResultDTO,
@@ -142,11 +143,13 @@ from orca.daemon.schemas import (
 from orca.runtime.device_factory_context import use_device_factory
 from orca.runtime.run_modes import WorkflowRunMode
 from orca.runtime.sim_diagnostics import enable_sim_coroutine_diagnostics
+from orca.runtime.sim_pacing import validate_time_scale
 from orca.runtime.runtime_interface import (
     ConcurrentLiveSimRefusedError,
     LiveSubmissionWithSimOverridesUnacknowledgedError,
     RunModeMismatchError,
     RunModeRequiredError,
+    SimTimeScaleNotApplicableError,
     StartLocationsOccupiedError,
 )
 from orca.runtime.danger import list_audit_entries
@@ -277,6 +280,32 @@ def _raise_start_locations_occupied(
             },
         },
     )
+
+
+def _raise_sim_time_scale_not_applicable(exc: SimTimeScaleNotApplicableError) -> NoReturn:
+    """A time scale on a LIVE submission is a shape refusal: 422."""
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail={
+            "code": "SIM_TIME_SCALE_NOT_APPLICABLE",
+            "message": str(exc),
+            "extras": {"reason": exc.reason},
+        },
+    )
+
+
+def _default_sim_time_scale_from_env() -> float:
+    """``ORCA_SIM_TIME_SCALE`` is the deployment default; unset means 0, no pacing."""
+    raw = os.environ.get("ORCA_SIM_TIME_SCALE", "").strip()
+    if raw == "":
+        return 0.0
+    try:
+        return validate_time_scale(float(raw))
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"ORCA_SIM_TIME_SCALE is not a time scale: {e}",
+        )
 
 
 def _raise_live_sim_overrides_unacknowledged(
@@ -430,6 +459,7 @@ async def _build_and_start(
         labware_catalog_store=stores.labware_catalog_store(),
         gateway_registry=device_connections,
         connection_source=device_connections,
+        default_sim_time_scale=_default_sim_time_scale_from_env(),
     )
     if body.sim:
         # Report un-awaited coroutines for the whole sim run; a hardware mount leaves logging alone.
@@ -570,7 +600,9 @@ def create_router() -> APIRouter:
         except system_builder.FactoryReturnShapeError as e:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
         try:
-            await rt.registry.add_workflow_template(template, confirm=True)
+            await rt.registry.add_workflow_template(
+                template, reason=body.reason, confirm=True,
+            )
         except (KeyError, ValueError) as e:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=message_of(e))
         return RegisterWorkflowResponse(workflow_name=template.name)
@@ -621,13 +653,18 @@ def create_router() -> APIRouter:
                 )
 
         try:
-            rec = await rt.submit_workflow(
+            rec = await rt.submissions.submit_workflow(
                 body.workflow_name, body.variables,
                 mode=WorkflowRunMode[body.run_mode],
                 acknowledge_warnings=body.acknowledge_warnings,
+                sim_time_scale=body.sim_time_scale,
+                reason=body.reason,
+                confirm=True,
             )
         except RunModeRequiredError as e:
             _raise_run_mode_required(e)
+        except SimTimeScaleNotApplicableError as e:
+            _raise_sim_time_scale_not_applicable(e)
         except LiveSubmissionWithSimOverridesUnacknowledgedError as e:
             _raise_live_sim_overrides_unacknowledged(e)
         except RunModeMismatchError as e:
@@ -912,7 +949,7 @@ def create_router() -> APIRouter:
         request: Request, name: str, body: VariableSetRequest,
     ) -> VariableSetResponse:
         rt = _require_system_runtime(request)
-        rt.variables.set_global(name, body.value, confirm=True)
+        rt.variables.set_global(name, body.value, reason=body.reason, confirm=True)
         return VariableSetResponse(name=name, value=body.value)
 
     # Submission-scope writes sit under a static "/submissions" prefix so the
@@ -930,7 +967,8 @@ def create_router() -> APIRouter:
         rt = _require_system_runtime(request)
         try:
             rt.variables.set_submission(
-                name, body.value, execution_id, submission_id, confirm=True,
+                name, body.value, execution_id, submission_id,
+                reason=body.reason, confirm=True,
             )
         except KeyError as e:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=message_of(e))
@@ -943,6 +981,7 @@ def create_router() -> APIRouter:
     )
     async def variables_unset_submission(
         request: Request, execution_id: str, submission_id: str, name: str,
+        reason: str | None = Query(None),
     ) -> VariableUnsetResponse:
         """Drop one submission's override so it falls through to the layers below."""
         rt = _require_system_runtime(request)
@@ -951,7 +990,7 @@ def create_router() -> APIRouter:
                 name, execution_id, submission_id,
             )
             rt.variables.unset_submission(
-                name, execution_id, submission_id, confirm=True,
+                name, execution_id, submission_id, reason=reason, confirm=True,
             )
         except KeyError as e:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=message_of(e))
@@ -963,10 +1002,10 @@ def create_router() -> APIRouter:
         tags=[RouteTag.VARIABLES],
     )
     async def variables_unset_global(
-        request: Request, name: str,
+        request: Request, name: str, reason: str | None = Query(None),
     ) -> VariableUnsetResponse:
         rt = _require_system_runtime(request)
-        rt.variables.unset_global(name, confirm=True)
+        rt.variables.unset_global(name, reason=reason, confirm=True)
         return VariableUnsetResponse()
 
     @router.put(
@@ -980,7 +1019,7 @@ def create_router() -> APIRouter:
     ) -> VariableSetResponse:
         rt = _require_system_runtime(request)
         try:
-            rt.variables.set(name, body.value, execution_id, confirm=True)
+            rt.variables.set(name, body.value, execution_id, reason=body.reason, confirm=True)
             resolution = rt.variables.explain(name, execution_id)
         except KeyError as e:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=message_of(e))
@@ -995,11 +1034,11 @@ def create_router() -> APIRouter:
         tags=[RouteTag.VARIABLES],
     )
     async def variables_unset(
-        request: Request, execution_id: str, name: str,
+        request: Request, execution_id: str, name: str, reason: str | None = Query(None),
     ) -> VariableUnsetResponse:
         rt = _require_system_runtime(request)
         try:
-            rt.variables.unset(name, execution_id, confirm=True)
+            rt.variables.unset(name, execution_id, reason=reason, confirm=True)
         except KeyError as e:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=message_of(e))
         return VariableUnsetResponse()
@@ -1141,11 +1180,11 @@ def create_router() -> APIRouter:
         tags=[RouteTag.ACCESS_CONFIGS],
     )
     async def access_configs_create(
-        request: Request, body: AccessConfigDTO,
+        request: Request, body: AccessConfigDTO, reason: str | None = Query(None),
     ) -> AccessConfigDTO:
         registries = get_deployment_registries(request)
         try:
-            await registries.access_configs.add(body, confirm=True)
+            await registries.access_configs.add(body, reason=reason, confirm=True)
         except ValueError as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT, detail=str(exc),
@@ -1158,7 +1197,7 @@ def create_router() -> APIRouter:
         tags=[RouteTag.ACCESS_CONFIGS],
     )
     async def access_configs_update(
-        request: Request, name: str, body: AccessConfigDTO,
+        request: Request, name: str, body: AccessConfigDTO, reason: str | None = Query(None),
     ) -> AccessConfigDTO:
         if body.name != name:
             raise HTTPException(
@@ -1167,7 +1206,7 @@ def create_router() -> APIRouter:
             )
         registries = get_deployment_registries(request)
         try:
-            await registries.access_configs.update(body, confirm=True)
+            await registries.access_configs.update(body, reason=reason, confirm=True)
         except KeyError as exc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail=message_of(exc),
@@ -1180,11 +1219,11 @@ def create_router() -> APIRouter:
         tags=[RouteTag.ACCESS_CONFIGS],
     )
     async def access_configs_delete(
-        request: Request, name: str,
+        request: Request, name: str, reason: str | None = Query(None),
     ) -> None:
         registries = get_deployment_registries(request)
         try:
-            deleted = await registries.access_configs.delete(name, confirm=True)
+            deleted = await registries.access_configs.delete(name, reason=reason, confirm=True)
         except (ProtectedAccessConfigError, AccessConfigInUseError) as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT, detail=str(exc),
@@ -1229,7 +1268,7 @@ def create_router() -> APIRouter:
         registries = get_deployment_registries(request)
         try:
             return await registries.grip_profiles.apply(
-                labware_type, body.set, body.clear, confirm=True,
+                labware_type, body.set, body.clear, reason=body.reason, confirm=True,
             )
         except ValueError as exc:
             raise HTTPException(
@@ -1241,10 +1280,14 @@ def create_router() -> APIRouter:
         status_code=status.HTTP_204_NO_CONTENT,
         tags=[RouteTag.GRIP_PROFILES],
     )
-    async def grip_profiles_reset(request: Request, labware_type: str) -> None:
+    async def grip_profiles_reset(
+        request: Request, labware_type: str, reason: str | None = Query(None),
+    ) -> None:
         """Discard everything measured for this type."""
         registries = get_deployment_registries(request)
-        if not await registries.grip_profiles.reset(labware_type, confirm=True):
+        if not await registries.grip_profiles.reset(
+            labware_type, reason=reason, confirm=True,
+        ):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"labware type {labware_type!r} has no grip profile",
@@ -1287,7 +1330,7 @@ def create_router() -> APIRouter:
         registries = get_deployment_registries(request)
         try:
             return await registries.move_defaults.apply(
-                transporter_name, body.set, body.clear, confirm=True,
+                transporter_name, body.set, body.clear, reason=body.reason, confirm=True,
             )
         except ValueError as exc:
             raise HTTPException(
@@ -1300,11 +1343,13 @@ def create_router() -> APIRouter:
         tags=[RouteTag.MOVE_DEFAULTS],
     )
     async def move_defaults_reset(
-        request: Request, transporter_name: str,
+        request: Request, transporter_name: str, reason: str | None = Query(None),
     ) -> None:
         """Discard everything tuned for this arm and put it back on the seed."""
         registries = get_deployment_registries(request)
-        if not await registries.move_defaults.reset(transporter_name, confirm=True):
+        if not await registries.move_defaults.reset(
+            transporter_name, reason=reason, confirm=True,
+        ):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"transporter {transporter_name!r} has no tuned move defaults",
@@ -1385,8 +1430,10 @@ def create_router() -> APIRouter:
             )
         return access
 
+    # Registered before the PUT and DELETE on `{name:path}`, which would
+    # otherwise swallow `.../labware/<type>` as part of a teachpoint name.
     @router.patch(
-        "/teachpoints/{device_id}/{position_id}/labware/{labware_type}",
+        "/teachpoints/{device_id}/{position_id:path}/labware/{labware_type}",
         response_model=TeachpointDTO,
         tags=[RouteTag.TEACHPOINTS],
     )
@@ -1399,7 +1446,7 @@ def create_router() -> APIRouter:
         try:
             tp = await rt.teachpoints.apply_labware_override(
                 device_id, position_id, labware_type,
-                body.set, body.clear, confirm=True,
+                body.set, body.clear, reason=body.reason, confirm=True,
             )
         except KeyError as exc:
             raise HTTPException(
@@ -1412,18 +1459,19 @@ def create_router() -> APIRouter:
         return TeachpointDTO.from_value(device_id, tp)
 
     @router.delete(
-        "/teachpoints/{device_id}/{position_id}/labware/{labware_type}",
+        "/teachpoints/{device_id}/{position_id:path}/labware/{labware_type}",
         status_code=status.HTTP_204_NO_CONTENT,
         tags=[RouteTag.TEACHPOINTS],
     )
     async def teachpoints_clear_labware_override(
         request: Request, device_id: str, position_id: str, labware_type: str,
+        reason: str | None = Query(None),
     ) -> None:
         """Hand this labware back to how the position handles everything else."""
         rt = _require_system_runtime(request)
         try:
             dropped = await rt.teachpoints.clear_labware_override(
-                device_id, position_id, labware_type, confirm=True,
+                device_id, position_id, labware_type, reason=reason, confirm=True,
             )
         except KeyError as exc:
             raise HTTPException(
@@ -1471,7 +1519,7 @@ def create_router() -> APIRouter:
             )
         rt = _require_system_runtime(request)
         try:
-            await rt.teachpoints.add(body.device_id, tp, confirm=True)
+            await rt.teachpoints.add(body.device_id, tp, reason=body.reason, confirm=True)
         except KeyError as exc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail=message_of(exc),
@@ -1541,7 +1589,7 @@ def create_router() -> APIRouter:
                 status_code=status.HTTP_400_BAD_REQUEST, detail=message_of(exc),
             )
         try:
-            await rt.teachpoints.update(device_id, tp, confirm=True)
+            await rt.teachpoints.update(device_id, tp, reason=body.reason, confirm=True)
         except KeyError as exc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail=message_of(exc),
@@ -1554,11 +1602,11 @@ def create_router() -> APIRouter:
         tags=[RouteTag.TEACHPOINTS],
     )
     async def teachpoints_delete(
-        request: Request, device_id: str, name: str,
+        request: Request, device_id: str, name: str, reason: str | None = Query(None),
     ) -> None:
         rt = _require_system_runtime(request)
         try:
-            deleted = await rt.teachpoints.delete(device_id, name, confirm=True)
+            deleted = await rt.teachpoints.delete(device_id, name, reason=reason, confirm=True)
         except KeyError as exc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail=message_of(exc),
@@ -1642,10 +1690,11 @@ def create_router() -> APIRouter:
     )
     async def deck_layouts_create(
         request: Request, device_id: str, name: str, body: DeckLayoutConfig,
+        reason: str | None = Query(None),
     ) -> DeckLayoutDTO:
         rt = _require_system_runtime(request)
         try:
-            await rt.deck_layouts.add(device_id, name, body, confirm=True)
+            await rt.deck_layouts.add(device_id, name, body, reason=reason, confirm=True)
         except ValueError as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT, detail=str(exc),
@@ -1663,10 +1712,11 @@ def create_router() -> APIRouter:
     )
     async def deck_layouts_update(
         request: Request, device_id: str, name: str, body: DeckLayoutConfig,
+        reason: str | None = Query(None),
     ) -> DeckLayoutDTO:
         rt = _require_system_runtime(request)
         try:
-            await rt.deck_layouts.update(device_id, name, body, confirm=True)
+            await rt.deck_layouts.update(device_id, name, body, reason=reason, confirm=True)
         except KeyError as exc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail=message_of(exc),
@@ -1679,11 +1729,11 @@ def create_router() -> APIRouter:
         tags=[RouteTag.DECK_LAYOUTS],
     )
     async def deck_layouts_delete(
-        request: Request, device_id: str, name: str,
+        request: Request, device_id: str, name: str, reason: str | None = Query(None),
     ) -> None:
         rt = _require_system_runtime(request)
         try:
-            deleted = await rt.deck_layouts.delete(device_id, name, confirm=True)
+            deleted = await rt.deck_layouts.delete(device_id, name, reason=reason, confirm=True)
         except KeyError as exc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail=message_of(exc),
@@ -1873,7 +1923,7 @@ def create_router() -> APIRouter:
         try:
             result = await rt.devices.execute(
                 device_name, body.command,
-                options=body.options, mode=body.mode, confirm=True,
+                options=body.options, mode=body.mode, reason=body.reason, confirm=True,
                 vendor_confirm=body.confirm,
             )
         except KeyError as e:
@@ -1907,7 +1957,7 @@ def create_router() -> APIRouter:
         try:
             result = await rt.devices.invoke(
                 device_name, body.capability,
-                kwargs=body.kwargs or {}, mode=body.mode, confirm=True,
+                kwargs=body.kwargs or {}, mode=body.mode, reason=body.reason, confirm=True,
                 vendor_confirm=body.confirm,
             )
         except KeyError as e:
@@ -1941,7 +1991,8 @@ def create_router() -> APIRouter:
         rt = _require_system_runtime(request)
         try:
             await rt.devices.initialize(
-                device_name, mode=body.mode if body else None, confirm=True,
+                device_name, mode=body.mode if body else None,
+                reason=body.reason if body else None, confirm=True,
             )
         except KeyError as e:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=message_of(e))
@@ -1962,6 +2013,7 @@ def create_router() -> APIRouter:
         try:
             await rt.devices.connect(
                 device_name, mode=body.mode if body else None,
+                reason=body.reason if body else None, confirm=True,
             )
         except KeyError as e:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=message_of(e))
@@ -1981,7 +2033,8 @@ def create_router() -> APIRouter:
         rt = _require_system_runtime(request)
         try:
             await rt.devices.disconnect(
-                device_name, mode=body.mode if body else None, confirm=True,
+                device_name, mode=body.mode if body else None,
+                reason=body.reason if body else None, confirm=True,
             )
         except KeyError as e:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=message_of(e))
@@ -2123,11 +2176,11 @@ def create_router() -> APIRouter:
         tags=[RouteTag.INCIDENTS],
     )
     async def incidents_ack(
-        request: Request, incident_id: str,
+        request: Request, incident_id: str, reason: str | None = Query(None),
     ) -> IncidentAckResponse:
         rt = _require_system_runtime(request)
         try:
-            await rt.incidents.acknowledge(incident_id, confirm=True)
+            await rt.incidents.acknowledge(incident_id, reason=reason, confirm=True)
         except KeyError:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -2139,6 +2192,7 @@ def create_router() -> APIRouter:
     async def incidents_ack_all(
         request: Request,
         category: str | None = Query(None),
+        reason: str | None = Query(None),
     ) -> IncidentAckResponse:
         from orca.runtime.incident_store import IncidentCategory
         rt = _require_system_runtime(request)
@@ -2154,7 +2208,7 @@ def create_router() -> APIRouter:
                         f"{[c.name for c in IncidentCategory]}"
                     ),
                 )
-        n = await rt.incidents.acknowledge_all(category=cat, confirm=True)
+        n = await rt.incidents.acknowledge_all(category=cat, reason=reason, confirm=True)
         return IncidentAckResponse(acknowledged_count=n)
 
     # -- Recoverable-timeout operator decisions ---------------------------
@@ -2172,7 +2226,9 @@ def create_router() -> APIRouter:
     ) -> RecoverableTimeoutDecisionResponse:
         rt = _require_system_runtime(request)
         try:
-            rt.recoverable_timeout_extend(incident_id, body.additional_seconds)
+            rt.incidents.recoverable_timeout_extend(
+                incident_id, body.additional_seconds, reason=body.reason, confirm=True,
+            )
         except KeyError:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -2197,8 +2253,8 @@ def create_router() -> APIRouter:
     ) -> RecoverableTimeoutDecisionResponse:
         rt = _require_system_runtime(request)
         try:
-            rt.recoverable_timeout_abort(
-                incident_id, body.operator_name, body.reason,
+            rt.incidents.recoverable_timeout_abort(
+                incident_id, body.operator_name, reason=body.reason, confirm=True,
             )
         except KeyError:
             raise HTTPException(
@@ -2220,8 +2276,8 @@ def create_router() -> APIRouter:
     ) -> RecoverableTimeoutDecisionResponse:
         rt = _require_system_runtime(request)
         try:
-            rt.recoverable_timeout_mark_complete(
-                incident_id, body.operator_name, body.reason,
+            rt.incidents.recoverable_timeout_mark_complete(
+                incident_id, body.operator_name, reason=body.reason, confirm=True,
             )
         except KeyError:
             raise HTTPException(
@@ -2332,13 +2388,13 @@ def create_router() -> APIRouter:
     async def labware_clear_submission(
         request: Request,
         submission_id: str = Query(...),
-        body: dict[str, bool] | None = None,
+        body: LabwareClearRequest | None = None,
     ) -> LabwareClearSubmissionResponse:
         rt = _require_system_runtime(request)
-        force = bool(body.get("force", False)) if body else False
+        body = body or LabwareClearRequest()
         try:
             result = await rt.labware.clear_submission_labware(
-                submission_id, force=force,
+                submission_id, force=body.force, reason=body.reason, confirm=True,
             )
         except KeyError as e:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=message_of(e))
@@ -2357,12 +2413,14 @@ def create_router() -> APIRouter:
     async def labware_discharge(
         request: Request,
         labware_id: str = Query(...),
-        body: dict[str, bool] | None = None,
+        body: LabwareClearRequest | None = None,
     ) -> LabwareClearResponse:
         rt = _require_system_runtime(request)
-        force = bool(body.get("force", False)) if body else False
+        body = body or LabwareClearRequest()
         try:
-            await rt.labware.discharge_labware(labware_id, force=force)
+            await rt.labware.discharge_labware(
+                labware_id, force=body.force, reason=body.reason, confirm=True,
+            )
         except KeyError as e:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=message_of(e))
         except (RuntimeError, ValueError) as e:
@@ -2376,12 +2434,14 @@ def create_router() -> APIRouter:
     )
     async def labware_clear_all(
         request: Request,
-        body: dict[str, bool] | None = None,
+        body: LabwareClearRequest | None = None,
     ) -> LabwareClearResponse:
         rt = _require_system_runtime(request)
-        force = bool(body.get("force", False)) if body else False
+        body = body or LabwareClearRequest()
         try:
-            cleared = await rt.labware.clear_all_labware(force=force)
+            cleared = await rt.labware.clear_all_labware(
+                force=body.force, reason=body.reason, confirm=True,
+            )
         except (RuntimeError, ValueError) as e:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
         return LabwareClearResponse(cleared_labware_ids=list(cleared))

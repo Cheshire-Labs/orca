@@ -189,6 +189,7 @@ def detail(
         ("status", detail_dto.status),
         ("paused", _paused_cell(detail_dto)),
         ("error", detail_dto.error or ""),
+        ("sim_time_scale", _time_scale_cell(detail_dto.sim_time_scale)),
         ("threads_total", str(detail_dto.total_thread_count)),
         ("threads_active", str(detail_dto.active_thread_count)),
         ("threads_completed", str(detail_dto.completed_thread_count)),
@@ -218,6 +219,34 @@ def detail(
         )
 
 
+def _time_scale_cell(scale: float | None) -> str:
+    return "(hardware pace, or not kept after the run)" if scale is None else f"{scale:g}"
+
+
+@app.command("time-scale")
+def time_scale(
+    execution_id: str = typer.Argument(...),
+    sim_time_scale: float = typer.Argument(
+        ..., min=0.0,
+        help="1 is real time, 0.1 is ten times faster, 0 is no pacing.",
+    ),
+) -> None:
+    """Set a simulated run's time scale. Applies at once, to the step in progress too.
+
+    A LIVE run is paced by its hardware and refuses.
+    """
+    client = get_client()
+    ids = [r.id for r in client.list_executions()]
+    eid = resolve.resolve_execution_id(execution_id, ids)
+    result = client.set_execution_time_scale(eid, sim_time_scale)
+    if output.get_mode().value == "json":
+        output.emit_json(result.model_dump(mode="json"))
+        return
+    output.info(
+        f"execution {eid[:8]} sim_time_scale={result.sim_time_scale:g} ({result.message})",
+    )
+
+
 @app.command("stop")
 def stop(
     execution_id: str = typer.Argument(...),
@@ -225,6 +254,9 @@ def stop(
         False, "--confirm",
         help="Confirm the abort. Without it, stop only pauses and arms the "
              "execution; a second call with --confirm aborts it.",
+    ),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
     ),
 ) -> None:
     """Stop a running execution: pause immediately, then confirm to abort.
@@ -244,7 +276,7 @@ def stop(
             default=False,
         ):
             output.confirmation_denied()
-    result = client.stop_execution(eid, confirm=confirm)
+    result = client.stop_execution(eid, confirm=confirm, reason=reason)
     if result.status == "aborted":
         output.info(f"execution {eid[:8]} aborted (phase={result.phase})")
     elif result.status == "already_terminal":
@@ -260,6 +292,9 @@ def stop(
 @app.command("remove")
 def remove(
     execution_id: str = typer.Argument(...),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
+    ),
 ) -> None:
     """Remove a terminal execution from the runtime's registry."""
     client = get_client()
@@ -268,13 +303,16 @@ def remove(
     if not STATE.force:
         if not typer.confirm(f"Remove execution {eid[:8]}?", default=False):
             output.confirmation_denied()
-    client.execution_remove(eid)
+    client.execution_remove(eid, reason=reason)
     output.info(f"removed execution {eid[:8]}")
 
 
 @app.command("close")
 def close(
     execution_id: str = typer.Argument(...),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
+    ),
 ) -> None:
     """Close an execution (ACCEPTING -> DRAINING).
 
@@ -295,9 +333,9 @@ def close(
         ):
             output.confirmation_denied()
     if active_backend() == "cloud":
-        resp = cloud_client().execution_close(eid)
+        resp = cloud_client().execution_close(eid, reason=reason)
     else:
-        resp = local_client().execution_close(eid)
+        resp = local_client().execution_close(eid, reason=reason)
     if output.get_mode().value == "json":
         output.emit_json(resp.model_dump(mode="json"))
         return
@@ -493,6 +531,9 @@ def thread_spawn(
     labware_id: str | None = typer.Option(
         None, "--labware-id", help="Attach this existing labware instance (optional).",
     ),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
+    ),
 ) -> None:
     """Manually create and start a thread inside an execution.
 
@@ -512,7 +553,7 @@ def thread_spawn(
             output.confirmation_denied()
     snap = client.spawn_thread(
         eid, template_name,
-        labware_id=labware_id,
+        labware_id=labware_id, reason=reason,
     )
     if output.get_mode().value == "json":
         output.emit_json(snap.model_dump(mode="json"))

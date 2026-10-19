@@ -1,7 +1,7 @@
 """Learn Orca in One File -- Comprehensive PLR Example.
 
-Thin entry point composing topology + workflow. See ``topology.py`` and
-``workflow.py`` for the physical layout and workflow definition.
+Thin entry point. See ``topology.py`` and ``workflows/learn_orca.py`` for the
+physical layout and workflow definition.
 
 Demonstrates every Orca SDK feature:
  1. Labware templates (PlateTemplate, TipRackTemplate, TroughTemplate)
@@ -13,7 +13,7 @@ Demonstrates every Orca SDK feature:
  7. Threads with orca.join (contributor labware) and orca.branch (QC pass/fail)
  8. SystemBoundEventHandler for observability
  9. Workflow: wf.start, wf.thread, wf.on, wf.variable
-10. build_system, then SystemBuild.run, which runs the workflow once on a SystemRuntime
+10. build_system_from_package, then SystemBuild.run, which runs the workflow once on a SystemRuntime
 
 Workflow story:
   1. Cherry pick from sample_plate to dest_plate (worklist CSV)
@@ -33,8 +33,6 @@ import sys
 
 import orca.orca as orca
 
-from examples.pylabrobot_example.topology import build_topology
-from examples.pylabrobot_example.workflow import build_workflow
 from orca.runtime.run_modes import WorkflowRunMode
 from orca.runtime.store_factory import InMemoryRuntimeStoreFactory
 from orca.sdk.build import SystemBuild
@@ -46,28 +44,20 @@ logging.basicConfig(
 )
 orca_logger = logging.getLogger("orca")
 
+WORKFLOW_NAME = "learn_orca"
+
 
 async def build_plr() -> SystemBuild:
-    """Build a complete PLR example system with fresh topology and workflow.
-
-    Safe to call multiple times: every call creates fresh device instances
-    for test isolation.
+    """Build the PLR example system. Every call makes fresh devices.
 
     Tests that need to inject a custom LH driver (e.g. ``RecordingLiquidHandlerDriver``)
-    bind a one-shot factory via ``use_device_factory(...)`` before calling
-    ``build_plr()``; ``build_topology`` honors the outer factory rather than
-    falling back to its default Chatterbox-on-LH binding.
+    bind a factory via ``use_device_factory(...)`` before calling ``build_plr()``;
+    a bound factory wins over the topology's ``SIM_DRIVERS``.
     """
-    stores = InMemoryRuntimeStoreFactory()
-    topology = build_topology(stores)
-    workflow = build_workflow(topology)
-    return await orca.build_system(
-        name="Learn Orca",
-        workflow=workflow,
-        topology=topology,
-        stores=stores,
-        description="Comprehensive example demonstrating every Orca SDK feature",
-    )
+    build = await orca.build_system_from_package(__package__, InMemoryRuntimeStoreFactory())
+    # The package registers workflows by name; this runner runs the one it ships.
+    build.workflow = build.system.get_workflow_template(WORKFLOW_NAME)
+    return build
 
 
 async def run(sim: bool = True) -> None:

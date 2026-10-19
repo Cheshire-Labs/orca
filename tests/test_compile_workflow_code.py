@@ -6,9 +6,9 @@ extraction; AST validation is the caller's responsibility.
 
 The canonical shape is a top-level ``build_workflow(topology)`` function
 whose body decorates @orca.workflow inside a closure. Cold-boot
-(deployment template's system.py walks workflows/ and calls
-build_workflow on each) and live-submit (this function) converge on
-the same import shape.
+(``build_system_from_package`` walks workflows/ and calls build_workflow
+on each) and live-submit (this function) converge on the same import
+shape.
 """
 
 import pytest

@@ -150,7 +150,7 @@ async def test_declared_sim_device_stays_off_the_live_driver() -> None:
 async def test_connect_and_disconnect_share_the_live_default() -> None:
     runtime, live, sim = await _build_runtime()
 
-    await runtime.devices.connect("shaker1")
+    await runtime.devices.connect("shaker1", confirm=True)
     await runtime.devices.disconnect("shaker1", confirm=True)
 
     assert live.calls == ["connect", "disconnect"]

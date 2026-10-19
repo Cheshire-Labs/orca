@@ -98,6 +98,24 @@ class SubmitExecutionRequest(BaseModel):
             "``--confirm`` to this field."
         ),
     )
+    sim_time_scale: float | None = Field(
+        default=None,
+        ge=0,
+        allow_inf_nan=False,
+        strict=True,
+        description=(
+            "Simulated time scale for this run: wall seconds per real second "
+            "of a step. 1 is real time, 0.1 is ten times faster, 0 is no "
+            "pacing. Omit for the deployment default (0). Only for PURE_SIM "
+            "and DEVICE_SIM: a LIVE submission that carries it is refused, "
+            "and so is a JOIN_EXISTING one (change the execution's scale with "
+            "set-execution-time-scale instead)."
+        ),
+    )
+    reason: str | None = Field(
+        default=None,
+        description="Why this run was submitted. Written onto the audit row.",
+    )
 
 
 class SubmitExecutionResponse(BaseModel):

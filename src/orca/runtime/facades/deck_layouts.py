@@ -85,7 +85,9 @@ class DeckLayoutFacade(IDeckLayoutFacade):
     )
     async def add(
         self, device_id: str, name: str, config: DeckLayoutConfig,
+        *, reason: str | None = None,
     ) -> None:
+        del reason  # consumed by @dangerous audit
         await self._store_for(device_id).add(name, config)
 
     @dangerous(
@@ -98,7 +100,9 @@ class DeckLayoutFacade(IDeckLayoutFacade):
     )
     async def update(
         self, device_id: str, name: str, config: DeckLayoutConfig,
+        *, reason: str | None = None,
     ) -> None:
+        del reason  # consumed by @dangerous audit
         await self._store_for(device_id).update(name, config)
 
     @dangerous(
@@ -109,7 +113,8 @@ class DeckLayoutFacade(IDeckLayoutFacade):
                 "running LiquidHandler was configured with this layout, "
                 "the next rebuild will fail to resolve it.",
     )
-    async def delete(self, device_id: str, name: str) -> bool:
+    async def delete(self, device_id: str, name: str, *, reason: str | None = None) -> bool:
+        del reason  # consumed by @dangerous audit
         return await self._store_for(device_id).delete(name)
 
     def _store_for(self, device_id: str) -> IDeckLayoutStore:

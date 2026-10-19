@@ -34,30 +34,30 @@ class _FakeClient:
         self.dl_updated: tuple[str, str, DeckLayoutConfig] | None = None
         self.dl_deleted: tuple[str, str] | None = None
 
-    def access_configs_add(self, config: AccessConfig) -> AccessConfig:
+    def access_configs_add(self, config: AccessConfig, *, reason: str | None = None) -> AccessConfig:
         self.ac_added = config
         return config
 
-    def access_configs_update(self, config: AccessConfig) -> AccessConfig:
+    def access_configs_update(self, config: AccessConfig, *, reason: str | None = None) -> AccessConfig:
         self.ac_updated = config
         return config
 
-    def access_configs_delete(self, name: str) -> None:
+    def access_configs_delete(self, name: str, *, reason: str | None = None) -> None:
         self.ac_deleted = name
 
     def deck_layouts_add(
-        self, device_id: str, name: str, config: DeckLayoutConfig,
+        self, device_id: str, name: str, config: DeckLayoutConfig, *, reason: str | None = None,
     ) -> DeckLayoutDTO:
         self.dl_added = (device_id, name, config)
         return DeckLayoutDTO(device_id=device_id, name=name, config=config)
 
     def deck_layouts_update(
-        self, device_id: str, name: str, config: DeckLayoutConfig,
+        self, device_id: str, name: str, config: DeckLayoutConfig, *, reason: str | None = None,
     ) -> DeckLayoutDTO:
         self.dl_updated = (device_id, name, config)
         return DeckLayoutDTO(device_id=device_id, name=name, config=config)
 
-    def deck_layouts_delete(self, device_id: str, name: str) -> None:
+    def deck_layouts_delete(self, device_id: str, name: str, *, reason: str | None = None) -> None:
         self.dl_deleted = (device_id, name)
 
 

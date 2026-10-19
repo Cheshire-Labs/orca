@@ -148,12 +148,17 @@ class SubmitWorkflowRequest(BaseModel):
     `LIVE_SUBMISSION_WITH_SIM_OVERRIDES_UNACKNOWLEDGED` gate. Default False
     causes the runtime to refuse the submission and return the override
     list so the operator can review.
+
+    `sim_time_scale`: the simulated run's pace, 1 is real time and 0 is no
+    pacing. Omit for the deployment default. Refused on a LIVE submission.
     """
     workflow_name: str
     variables: dict[str, OptionValueJson] | None = None
     profile_path: str | None = None
     run_mode: RunModeStr
     acknowledge_warnings: bool = False
+    sim_time_scale: float | None = Field(default=None, ge=0, allow_inf_nan=False, strict=True)
+    reason: str | None = None
 
 
 class SubmitMethodExecutionRequest(BaseModel):
@@ -224,6 +229,7 @@ class LabwareCatalogListResponse(BaseModel):
 
 class DeviceExecuteRequest(BaseModel):
     """POST /devices/{name}/execute body."""
+    reason: str | None = None
     command: str
     options: dict[str, JsonValue] | None = None
     mode: WorkflowRunMode | None = None
@@ -235,6 +241,7 @@ class DeviceExecuteRequest(BaseModel):
 
 class DeviceInvokeRequest(BaseModel):
     """POST /devices/{name}/invoke body."""
+    reason: str | None = None
     capability: str
     kwargs: dict[str, JsonValue] | None = None
     mode: WorkflowRunMode | None = None
@@ -265,6 +272,8 @@ class SubmissionSubmitRequest(BaseModel):
     deployment_profile: str | None = None
     run_mode: RunModeStr
     acknowledge_warnings: bool = False
+    sim_time_scale: float | None = Field(default=None, ge=0, allow_inf_nan=False, strict=True)
+    reason: str | None = None
 
 
 class LabwareGroupDTO(BaseModel):
@@ -306,6 +315,7 @@ class RegisterWorkflowRequest(BaseModel):
     The workflow is registered against the mounted topology; no execution
     starts."""
     spec: str
+    reason: str | None = None
 
 
 # -- Query-param DTOs --------------------------------------------------------
@@ -561,6 +571,9 @@ class ExecutionDetailDTO(_BaseDTO):
     runtime paused itself."""
     abort_armed: bool = False
     """Whether a second confirmed stop would abort."""
+    sim_time_scale: float | None = None
+    """The simulated time scale: 1 is real time, 0 is no pacing. None for a LIVE run,
+    and for a finished run read back from the store, which does not keep it."""
 
 
 class ExecutionRecordDTO(_BaseDTO):
@@ -587,6 +600,9 @@ class ExecutionRecordDTO(_BaseDTO):
     runtime paused itself."""
     abort_armed: bool = False
     """Whether a second confirmed stop would abort."""
+    sim_time_scale: float | None = None
+    """The simulated time scale: 1 is real time, 0 is no pacing. None for a LIVE run,
+    and for a finished run read back from the store, which does not keep it."""
 
 
 class SystemInfoDTO(_BaseDTO):
@@ -702,7 +718,12 @@ class IncidentAckResponse(BaseModel):
 
 class RecoverableTimeoutExtendRequest(BaseModel):
     """POST /incidents/{id}/recoverable_timeout/extend body."""
-    additional_seconds: float = Field(gt=0)
+    model_config = ConfigDict(extra="forbid")
+
+    additional_seconds: float = Field(
+        gt=0, description="How much extra time to grant before the next RECOVERABLE_TIMEOUT.",
+    )
+    reason: str | None = Field(default=None, description="Why, for the audit trail.")
 
 
 class RecoverableTimeoutOperatorRequest(BaseModel):
@@ -776,6 +797,7 @@ class VariablesListResponse(RootModel[dict[str, OptionValueJson]]):
 class VariableSetRequest(BaseModel):
     """PUT /variables/{execution_id}/{name} body."""
     value: OptionValueJson
+    reason: str | None = None
 
 
 class VariableUnsetResponse(BaseModel):
@@ -832,6 +854,7 @@ class LabwareDTO(_BaseDTO):
     id: str
     name: str
     template_name: str
+    labware_type: str
     barcode: str | None
     current_location: str | None
     placement: PlacementState | None = None
@@ -904,7 +927,14 @@ class CreateTeachpointRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     device_id: str
-    position_id: str
+    position_id: str = Field(
+        description=(
+            "Teachpoint name. May contain '/'. Refused if it ends in "
+            "'<something>/labware/<segment>', because a DELETE on that name "
+            "would reach the per-labware override clear route instead of "
+            "deleting the teachpoint."
+        ),
+    )
     coord_type: Literal["cartesian", "joint"]
     coords: dict[str, str | int | float]
     access_config_name: str | None = None
@@ -912,6 +942,7 @@ class CreateTeachpointRequest(BaseModel):
     orientation: Literal["left", "right"] | None = None
     taught_with: str | None = None
     by_labware: dict[str, MoveParameterPatch] = Field(default_factory=dict)
+    reason: str | None = None
 
     @model_validator(mode="after")
     def _orientation_matches_coord_type(self) -> Self:
@@ -937,6 +968,7 @@ class UpdateTeachpointRequest(BaseModel):
     update_gateway: bool = False
     update_orientation: bool = False
     update_taught_with: bool = False
+    reason: str | None = None
 
     @model_validator(mode="after")
     def _orientation_set_requires_value(self) -> Self:
@@ -1069,11 +1101,15 @@ class ResourcePoolDTO(_BaseDTO):
 class LabwareTemplateDTO(_BaseDTO):
     """Mirror of LabwareTemplateSnapshot.
 
-    Identity-only projection of a labware template (name + type_name).
-    Action inputs / declared tracking ride on richer registry DTOs.
+    `type_name` is the template class; `labware_type` is the catalog key. A sim
+    template's placeholder, such as `_sim_plate`, is not in the catalog.
     """
     name: str
-    type_name: str
+    type_name: str = Field(description="The template's Python class, e.g. `PlateTemplate`.")
+    labware_type: str = Field(description=(
+        "The catalog key, the one `GET /labware/{labware_type}` takes. A sim "
+        "template's placeholder, such as `_sim_plate`, is not in the catalog."
+    ))
 
 
 class TopologyViewResponse(_BaseDTO):
@@ -1288,6 +1324,15 @@ class DeviceLifecycleRequest(BaseModel):
     means. Omitted = LIVE, the operator default; the topology sim_override
     ratchet applies on top either way."""
     mode: WorkflowRunMode | None = None
+    reason: str | None = None
+
+
+class LabwareClearRequest(BaseModel):
+    """Body for the daemon's clear-submission, discharge and clear-all routes."""
+    model_config = ConfigDict(extra="forbid")
+
+    force: bool = False
+    reason: str | None = None
 
 
 class DeviceInitializeResponse(BaseModel):

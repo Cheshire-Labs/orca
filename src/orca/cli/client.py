@@ -34,6 +34,7 @@ from pydantic import JsonValue
 from orca.runtime.run_modes import WorkflowRunMode
 from orca.cli import output
 from orca.cli.control_plane import (
+    optional_reason,
     AuditEntryDTO as ControlPlaneAuditEntryDTO,
     DeviceDTO as ControlPlaneDeviceDTO,
     DeviceIntrospectionDTO as ControlPlaneDeviceIntrospectionDTO,
@@ -51,6 +52,7 @@ from orca.cli.control_plane import (
     OpsHistoryGetResponseDTO,
     OpsHistorySearchResponseDTO,
     RuntimeStatusResponseDTO,
+    SetExecutionTimeScaleResultDTO,
     StopExecutionResultDTO,
     TopologySourceDTO,
     TopologyViewDTO,
@@ -64,6 +66,9 @@ from orca.daemon.lifecycle import (
 from orca.operations.submission_models import SubmitExecutionResponse
 from orca.daemon.schemas import (
     AccessConfigDTO,
+    DeviceLifecycleRequest,
+    LabwareClearRequest,
+    RecoverableTimeoutExtendRequest,
     GripProfileDTO,
     GripProfilePatchRequest,
     MoveDefaultsDTO,
@@ -137,6 +142,7 @@ from orca.operations.execution_models import (
     CloseExecutionRequest,
     GetExecutionDetailRequest,
     RemoveExecutionRequest,
+    SetExecutionTimeScaleRequest,
     StopExecutionRequest,
 )
 from orca.operations.manual_step_models import (
@@ -357,12 +363,12 @@ class LocalDaemonClient:
         self._check(resp)
         return MountTopologyResponse.model_validate(resp.json()).runtime_state
 
-    def load_workflow(self, spec: str) -> str:
+    def load_workflow(self, spec: str, *, reason: str | None = None) -> str:
         """POST /workflows. Registers a workflow from a ``build_workflow(topology)``
         factory spec against the mounted topology. Returns the workflow name."""
-        body = RegisterWorkflowRequest(spec=spec)
+        body = RegisterWorkflowRequest(spec=spec, reason=reason)
         with self._client(timeout_s=_IMPORT_TIMEOUT_S) as c:
-            resp = c.post("/workflows", json=body.model_dump(mode="json"))
+            resp = c.post("/workflows", json=body.model_dump(mode="json", exclude_none=True))
         self._check(resp)
         return RegisterWorkflowResponse.model_validate(resp.json()).workflow_name
 
@@ -375,6 +381,8 @@ class LocalDaemonClient:
         run_mode: RunModeStr,
         profile_path: str | None = None,
         acknowledge_warnings: bool = False,
+        reason: str | None = None,
+        sim_time_scale: float | None = None,
     ) -> ControlPlaneExecutionRecordDTO:
         """Submit a workflow.
 
@@ -402,6 +410,8 @@ class LocalDaemonClient:
             profile_path=profile_path,
             run_mode=run_mode,
             acknowledge_warnings=acknowledge_warnings,
+            reason=reason,
+            sim_time_scale=sim_time_scale,
         )
         with self._client() as c:
             resp = c.post("/executions", json=request.model_dump(exclude_none=True))
@@ -467,9 +477,11 @@ class LocalDaemonClient:
         return ControlPlaneExecutionDetailDTO.model_validate(resp.json())
 
     def stop_execution(
-        self, execution_id: str, *, confirm: bool = False,
+        self, execution_id: str, *, confirm: bool = False, reason: str | None = None,
     ) -> StopExecutionResultDTO:
-        body = StopExecutionRequest(execution_id=execution_id, confirm=confirm)
+        body = StopExecutionRequest(
+            execution_id=execution_id, confirm=confirm, reason=reason,
+        )
         with self._client() as c:
             resp = c.post(
                 "/operations/stop-execution",
@@ -477,6 +489,20 @@ class LocalDaemonClient:
             )
         self._check(resp)
         return StopExecutionResultDTO.model_validate(resp.json())
+
+    def set_execution_time_scale(
+        self, execution_id: str, sim_time_scale: float,
+    ) -> SetExecutionTimeScaleResultDTO:
+        body = SetExecutionTimeScaleRequest(
+            execution_id=execution_id, sim_time_scale=sim_time_scale,
+        )
+        with self._client() as c:
+            resp = c.post(
+                "/operations/set-execution-time-scale",
+                json=body.model_dump(mode="json"),
+            )
+        self._check(resp)
+        return SetExecutionTimeScaleResultDTO.model_validate(resp.json())
 
     # -- Threads --------------------------------------------------------------
 
@@ -737,8 +763,9 @@ class LocalDaemonClient:
 
     def variables_set(
         self, execution_id: str, name: str, value: OptionValueJson,
+        *, reason: str | None = None,
     ) -> VariableSetResponse:
-        body = VariableSetRequest(value=value)
+        body = VariableSetRequest(value=value, reason=reason)
         with self._client() as c:
             resp = c.put(
                 f"/variables/{execution_id}/{name}",
@@ -749,9 +776,9 @@ class LocalDaemonClient:
 
     def variables_set_submission(
         self, execution_id: str, submission_id: str, name: str,
-        value: OptionValueJson,
+        value: OptionValueJson, *, reason: str | None = None,
     ) -> None:
-        body = VariableSetRequest(value=value)
+        body = VariableSetRequest(value=value, reason=reason)
         with self._client() as c:
             resp = c.put(
                 f"/variables/submissions/{execution_id}/{submission_id}/{name}",
@@ -759,8 +786,10 @@ class LocalDaemonClient:
             )
         self._check(resp)
 
-    def variables_set_global(self, name: str, value: OptionValueJson) -> None:
-        body = VariableSetRequest(value=value)
+    def variables_set_global(
+        self, name: str, value: OptionValueJson, *, reason: str | None = None,
+    ) -> None:
+        body = VariableSetRequest(value=value, reason=reason)
         with self._client() as c:
             resp = c.put(
                 f"/variables/global/{name}",
@@ -768,17 +797,23 @@ class LocalDaemonClient:
             )
         self._check(resp)
 
-    def variables_unset(self, execution_id: str, name: str) -> None:
+    def variables_unset(
+        self, execution_id: str, name: str, *, reason: str | None = None,
+    ) -> None:
         with self._client() as c:
-            resp = c.delete(f"/variables/{execution_id}/{name}")
+            resp = c.delete(
+                f"/variables/{execution_id}/{name}",
+                params=optional_reason(reason),
+            )
         self._check(resp)
 
     def variables_unset_submission(
-        self, execution_id: str, submission_id: str, name: str,
+        self, execution_id: str, submission_id: str, name: str, *, reason: str | None = None,
     ) -> None:
         with self._client() as c:
             resp = c.delete(
                 f"/variables/submissions/{execution_id}/{submission_id}/{name}",
+                params=optional_reason(reason),
             )
         self._check(resp)
 
@@ -921,24 +956,32 @@ class LocalDaemonClient:
         self._check(resp)
         return AccessConfigDTO.model_validate(resp.json())
 
-    def access_configs_add(self, config: AccessConfigDTO) -> AccessConfigDTO:
+    def access_configs_add(
+        self, config: AccessConfigDTO, *, reason: str | None = None,
+    ) -> AccessConfigDTO:
         with self._client() as c:
-            resp = c.post("/access-configs", json=config.model_dump(mode="json"))
-        self._check(resp)
-        return AccessConfigDTO.model_validate(resp.json())
-
-    def access_configs_update(self, config: AccessConfigDTO) -> AccessConfigDTO:
-        with self._client() as c:
-            resp = c.put(
-                f"/access-configs/{config.name}",
-                json=config.model_dump(mode="json"),
+            resp = c.post(
+                "/access-configs", json=config.model_dump(mode="json"),
+                params=optional_reason(reason),
             )
         self._check(resp)
         return AccessConfigDTO.model_validate(resp.json())
 
-    def access_configs_delete(self, name: str) -> None:
+    def access_configs_update(
+        self, config: AccessConfigDTO, *, reason: str | None = None,
+    ) -> AccessConfigDTO:
         with self._client() as c:
-            resp = c.delete(f"/access-configs/{name}")
+            resp = c.put(
+                f"/access-configs/{config.name}",
+                json=config.model_dump(mode="json"),
+                params=optional_reason(reason),
+            )
+        self._check(resp)
+        return AccessConfigDTO.model_validate(resp.json())
+
+    def access_configs_delete(self, name: str, *, reason: str | None = None) -> None:
+        with self._client() as c:
+            resp = c.delete(f"/access-configs/{name}", params=optional_reason(reason))
         self._check(resp)
 
     def grip_profiles_list(self) -> list[GripProfileDTO]:
@@ -964,9 +1007,9 @@ class LocalDaemonClient:
         self._check(resp)
         return GripProfileDTO.model_validate(resp.json())
 
-    def grip_profiles_reset(self, labware_type: str) -> None:
+    def grip_profiles_reset(self, labware_type: str, *, reason: str | None = None) -> None:
         with self._client() as c:
-            resp = c.delete(f"/grip-profiles/{labware_type}")
+            resp = c.delete(f"/grip-profiles/{labware_type}", params=optional_reason(reason))
         self._check(resp)
 
     def move_defaults_list(self) -> list[MoveDefaultsDTO]:
@@ -992,9 +1035,9 @@ class LocalDaemonClient:
         self._check(resp)
         return MoveDefaultsDTO.model_validate(resp.json())
 
-    def move_defaults_reset(self, transporter_name: str) -> None:
+    def move_defaults_reset(self, transporter_name: str, *, reason: str | None = None) -> None:
         with self._client() as c:
-            resp = c.delete(f"/move-defaults/{transporter_name}")
+            resp = c.delete(f"/move-defaults/{transporter_name}", params=optional_reason(reason))
         self._check(resp)
 
     def teachpoints_list(self, device_id: str) -> list[TeachpointDTO]:
@@ -1025,6 +1068,7 @@ class LocalDaemonClient:
         gateway: str | None,
         orientation: str | None,
         taught_with: str | None = None,
+        *, reason: str | None = None,
     ) -> TeachpointDTO:
         body = {
             "device_id": device_id,
@@ -1035,6 +1079,7 @@ class LocalDaemonClient:
             "gateway": gateway,
             "orientation": orientation,
             "taught_with": taught_with,
+            **optional_reason(reason),
         }
         with self._client() as c:
             resp = c.post("/teachpoints", json=body)
@@ -1054,6 +1099,7 @@ class LocalDaemonClient:
         update_orientation: bool,
         taught_with: str | None = None,
         update_taught_with: bool = False,
+        *, reason: str | None = None,
     ) -> TeachpointDTO:
         body = {
             "coords": dict(coords),
@@ -1065,6 +1111,7 @@ class LocalDaemonClient:
             "update_orientation": update_orientation,
             "taught_with": taught_with,
             "update_taught_with": update_taught_with,
+            **optional_reason(reason),
         }
         with self._client() as c:
             resp = c.put(f"/teachpoints/{device_id}/{position_id}", json=body)
@@ -1085,18 +1132,24 @@ class LocalDaemonClient:
         return TeachpointDTO.model_validate(resp.json())
 
     def teachpoints_clear_labware_override(
-        self, device_id: str, position_id: str, labware_type: str,
+        self, device_id: str, position_id: str, labware_type: str, *, reason: str | None = None,
     ) -> None:
         with self._client() as c:
             resp = c.delete(
                 f"/teachpoints/{device_id}/{position_id}"
                 f"/labware/{labware_type}",
+                params=optional_reason(reason),
             )
         self._check(resp)
 
-    def teachpoints_delete(self, device_id: str, position_id: str) -> None:
+    def teachpoints_delete(
+        self, device_id: str, position_id: str, *, reason: str | None = None,
+    ) -> None:
         with self._client() as c:
-            resp = c.delete(f"/teachpoints/{device_id}/{position_id}")
+            resp = c.delete(
+                f"/teachpoints/{device_id}/{position_id}",
+                params=optional_reason(reason),
+            )
         self._check(resp)
 
     def deck_layouts_list(
@@ -1152,10 +1205,12 @@ class LocalDaemonClient:
         pending = resp.json().get("pending", [])
         return [PendingManualStepDTO.model_validate(x) for x in pending]
 
-    def manual_step_confirm(self, execution_id: str, step_id: str) -> None:
-        """Confirm one pending operator manual step (SAFE; fires immediately)."""
+    def manual_step_confirm(
+        self, execution_id: str, step_id: str, *, reason: str | None = None,
+    ) -> None:
+        """Confirm one pending operator manual step."""
         body = ConfirmManualStepRequest(
-            execution_id=execution_id, step_id=step_id,
+            execution_id=execution_id, step_id=step_id, reason=reason,
         )
         with self._client() as c:
             resp = c.post(
@@ -1180,30 +1235,35 @@ class LocalDaemonClient:
         return DeckLayoutDTO.model_validate(resp.json())
 
     def deck_layouts_add(
-        self, device_id: str, name: str, config: DeckLayoutConfig,
+        self, device_id: str, name: str, config: DeckLayoutConfig, *, reason: str | None = None,
     ) -> DeckLayoutDTO:
         with self._client() as c:
             resp = c.post(
                 f"/deck-layouts/{device_id}/{name}",
                 json=config.model_dump(mode="json"),
+                params=optional_reason(reason),
             )
         self._check(resp)
         return DeckLayoutDTO.model_validate(resp.json())
 
     def deck_layouts_update(
-        self, device_id: str, name: str, config: DeckLayoutConfig,
+        self, device_id: str, name: str, config: DeckLayoutConfig, *, reason: str | None = None,
     ) -> DeckLayoutDTO:
         with self._client() as c:
             resp = c.put(
                 f"/deck-layouts/{device_id}/{name}",
                 json=config.model_dump(mode="json"),
+                params=optional_reason(reason),
             )
         self._check(resp)
         return DeckLayoutDTO.model_validate(resp.json())
 
-    def deck_layouts_delete(self, device_id: str, name: str) -> None:
+    def deck_layouts_delete(self, device_id: str, name: str, *, reason: str | None = None) -> None:
         with self._client() as c:
-            resp = c.delete(f"/deck-layouts/{device_id}/{name}")
+            resp = c.delete(
+                f"/deck-layouts/{device_id}/{name}",
+                params=optional_reason(reason),
+            )
         self._check(resp)
 
     def labware_edit_location(
@@ -1219,9 +1279,11 @@ class LocalDaemonClient:
             )
         self._check(resp)
 
-    def labware_edit_barcode(self, labware_id: str, barcode: str) -> None:
+    def labware_edit_barcode(
+        self, labware_id: str, barcode: str, *, reason: str | None = None,
+    ) -> None:
         body = EditLabwareBarcodeRequest(
-            labware_id=labware_id, new_barcode=barcode,
+            labware_id=labware_id, new_barcode=barcode, reason=reason,
         )
         with self._client() as c:
             resp = c.post(
@@ -1232,10 +1294,10 @@ class LocalDaemonClient:
 
     def labware_set_carry_override(
         self, labware_id: str, patch: MoveParameterPatch,
-        clear: Sequence[MoveParameterField] = (),
+        clear: Sequence[MoveParameterField] = (), *, reason: str | None = None,
     ) -> MoveParameterPatch:
         body = SetLabwareCarryOverrideRequest(
-            labware_id=labware_id, set=patch, clear=list(clear),
+            labware_id=labware_id, set=patch, clear=list(clear), reason=reason,
         )
         with self._client() as c:
             resp = c.post(
@@ -1245,8 +1307,10 @@ class LocalDaemonClient:
         self._check(resp)
         return CarryOverrideResponse.model_validate(resp.json()).carry_override
 
-    def labware_clear_carry_override(self, labware_id: str) -> None:
-        body = ClearLabwareCarryOverrideRequest(labware_id=labware_id)
+    def labware_clear_carry_override(
+        self, labware_id: str, *, reason: str | None = None,
+    ) -> None:
+        body = ClearLabwareCarryOverrideRequest(labware_id=labware_id, reason=reason)
         with self._client() as c:
             resp = c.post(
                 "/operations/clear-labware-carry-override",
@@ -1272,10 +1336,11 @@ class LocalDaemonClient:
         labware_type: str | None = None,
         barcode: str | None = None,
         location: str | None = None,
+        reason: str | None = None,
     ) -> LabwareDTO:
         body = RegisterLabwareRequest(
             template_name=template_name, labware_type=labware_type,
-            barcode=barcode, location=location,
+            barcode=barcode, location=location, reason=reason,
         )
         with self._client() as c:
             resp = c.post(
@@ -1479,9 +1544,11 @@ class LocalDaemonClient:
         self, device_name: str, command: str,
         options: dict[str, JsonValue] | None = None,
         *, mode: WorkflowRunMode | None = None, confirm: bool = False,
+        reason: str | None = None,
     ) -> DeviceInvocationResultDTO:
         body = DeviceExecuteRequest(
             command=command, options=options, mode=mode, confirm=confirm,
+            reason=reason,
         )
         with self._client(waits_on_hardware=True) as c:
             resp = c.post(
@@ -1495,9 +1562,11 @@ class LocalDaemonClient:
         self, device_name: str, capability: str,
         kwargs: dict[str, JsonValue] | None = None,
         *, mode: WorkflowRunMode | None = None, confirm: bool = False,
+        reason: str | None = None,
     ) -> DeviceInvocationResultDTO:
         body = DeviceInvokeRequest(
             capability=capability, kwargs=kwargs, mode=mode, confirm=confirm,
+            reason=reason,
         )
         with self._client(waits_on_hardware=True) as c:
             resp = c.post(
@@ -1509,35 +1578,45 @@ class LocalDaemonClient:
 
     def device_initialize(
         self, device_name: str, *, mode: WorkflowRunMode | None = None,
+        reason: str | None = None,
     ) -> None:
+        body = DeviceLifecycleRequest(mode=mode, reason=reason)
         with self._client(waits_on_hardware=True) as c:
             resp = c.post(
-                f"/devices/{device_name}/initialize", json=_mode_body(mode),
+                f"/devices/{device_name}/initialize",
+                json=body.model_dump(mode="json", exclude_none=True) or None,
             )
         self._check(resp)
 
     def device_connect(
         self, device_name: str, *, mode: WorkflowRunMode | None = None,
+        reason: str | None = None,
     ) -> None:
+        body = DeviceLifecycleRequest(mode=mode, reason=reason)
         with self._client(waits_on_hardware=True) as c:
             resp = c.post(
-                f"/devices/{device_name}/connect", json=_mode_body(mode),
+                f"/devices/{device_name}/connect",
+                json=body.model_dump(mode="json", exclude_none=True) or None,
             )
         self._check(resp)
 
     def device_disconnect(
         self, device_name: str, *, mode: WorkflowRunMode | None = None,
+        reason: str | None = None,
     ) -> None:
+        body = DeviceLifecycleRequest(mode=mode, reason=reason)
         with self._client(waits_on_hardware=True) as c:
             resp = c.post(
-                f"/devices/{device_name}/disconnect", json=_mode_body(mode),
+                f"/devices/{device_name}/disconnect",
+                json=body.model_dump(mode="json", exclude_none=True) or None,
             )
         self._check(resp)
 
     def device_reconcile_deck(
         self, device_name: str, *, mode: WorkflowRunMode | None = None,
+        reason: str | None = None,
     ) -> ReconcileDeckResponse:
-        body = ReconcileDeckRequest(device_name=device_name, mode=mode)
+        body = ReconcileDeckRequest(device_name=device_name, mode=mode, reason=reason)
         with self._client(waits_on_hardware=True) as c:
             resp = c.post(
                 "/operations/reconcile-deck",
@@ -1607,8 +1686,10 @@ class LocalDaemonClient:
             )
         self._check(resp)
 
-    def device_release_control(self, device_name: str) -> None:
-        body = ReleaseDeviceControlRequest(device_name=device_name)
+    def device_release_control(
+        self, device_name: str, *, reason: str | None = None,
+    ) -> None:
+        body = ReleaseDeviceControlRequest(device_name=device_name, reason=reason)
         with self._client() as c:
             resp = c.post(
                 "/operations/release-device-control",
@@ -1616,8 +1697,10 @@ class LocalDaemonClient:
             )
         self._check(resp)
 
-    def device_clear_fault(self, device_name: str) -> ClearDeviceFaultResponse:
-        body = ClearDeviceFaultRequest(device_name=device_name)
+    def device_clear_fault(
+        self, device_name: str, *, reason: str | None = None,
+    ) -> ClearDeviceFaultResponse:
+        body = ClearDeviceFaultRequest(device_name=device_name, reason=reason)
         with self._client() as c:
             resp = c.post(
                 "/operations/clear-device-fault",
@@ -1630,12 +1713,13 @@ class LocalDaemonClient:
 
     def spawn_thread(
         self, execution_id: str, template_name: str,
-        labware_id: str | None = None,
+        labware_id: str | None = None, *, reason: str | None = None,
     ) -> ThreadSnapshotDTO:
         body = SpawnThreadRequest(
             execution_id=execution_id,
             template_name=template_name,
             labware_id=labware_id,
+            reason=reason,
         )
         with self._client() as c:
             resp = c.post(
@@ -1701,8 +1785,10 @@ class LocalDaemonClient:
         self._check(resp)
         return GetSubmissionResponse.model_validate(resp.json()).submission
 
-    def execution_close(self, execution_id: str) -> SubmissionCloseResponse:
-        body = CloseExecutionRequest(execution_id=execution_id)
+    def execution_close(
+        self, execution_id: str, *, reason: str | None = None,
+    ) -> SubmissionCloseResponse:
+        body = CloseExecutionRequest(execution_id=execution_id, reason=reason)
         with self._client() as c:
             resp = c.post(
                 "/operations/close-execution",
@@ -1713,8 +1799,8 @@ class LocalDaemonClient:
 
     # -- Execution remove + Reservation cancel ------------------------------
 
-    def execution_remove(self, execution_id: str) -> None:
-        body = RemoveExecutionRequest(execution_id=execution_id)
+    def execution_remove(self, execution_id: str, *, reason: str | None = None) -> None:
+        body = RemoveExecutionRequest(execution_id=execution_id, reason=reason)
         with self._client() as c:
             resp = c.post(
                 "/operations/remove-execution",
@@ -1758,30 +1844,41 @@ class LocalDaemonClient:
         self._check(resp)
         return IncidentDTO.model_validate(resp.json())
 
-    def incidents_ack(self, incident_id: str) -> IncidentAckResponse:
+    def incidents_ack(
+        self, incident_id: str, *, reason: str | None = None,
+    ) -> IncidentAckResponse:
         with self._client() as c:
-            resp = c.post(f"/incidents/{incident_id}/ack")
+            resp = c.post(
+                f"/incidents/{incident_id}/ack", params=optional_reason(reason),
+            )
         self._check(resp)
         return IncidentAckResponse.model_validate(resp.json())
 
     def incidents_ack_all(
-        self, category: str | None = None,
+        self, category: str | None = None, *, reason: str | None = None,
     ) -> IncidentAckResponse:
         query = IncidentAckAllQuery(category=category)
         with self._client() as c:
-            resp = c.post("/incidents/ack-all", params=query.model_dump(exclude_none=True))
+            resp = c.post(
+                "/incidents/ack-all",
+                params={**query.model_dump(exclude_none=True), **optional_reason(reason)},
+            )
         self._check(resp)
         return IncidentAckResponse.model_validate(resp.json())
 
     # -- Recoverable-timeout operator decisions ------------------------------
 
     def recoverable_timeout_extend(
-        self, incident_id: str, additional_seconds: float,
+        self, incident_id: str, additional_seconds: float, *,
+        reason: str | None = None,
     ) -> RecoverableTimeoutDecisionResponse:
+        body = RecoverableTimeoutExtendRequest(
+            additional_seconds=additional_seconds, reason=reason,
+        )
         with self._client() as c:
             resp = c.post(
                 f"/incidents/{incident_id}/recoverable_timeout/extend",
-                json={"additional_seconds": additional_seconds},
+                json=body.model_dump(mode="json"),
             )
         self._check(resp)
         return RecoverableTimeoutDecisionResponse.model_validate(resp.json())
@@ -1947,7 +2044,7 @@ class LocalDaemonClient:
     # -- Labware runtime mutations (clear / discharge) -----------------------
 
     def labware_clear_submission(
-        self, submission_id: str, force: bool = False,
+        self, submission_id: str, force: bool = False, *, reason: str | None = None,
     ) -> dict[str, list[str]]:
         """POST /labware/runtime/clear-submission. Clears non-reuse-bound
         labware from the named submission; returns both ``cleared`` and
@@ -1956,7 +2053,7 @@ class LocalDaemonClient:
             resp = c.post(
                 "/labware/runtime/clear-submission",
                 params={"submission_id": submission_id},
-                json={"force": force},
+                json=LabwareClearRequest(force=force, reason=reason).model_dump(mode="json"),
             )
         self._check(resp)
         response = LabwareClearSubmissionResponseDTO.model_validate(resp.json())
@@ -1966,7 +2063,7 @@ class LocalDaemonClient:
         }
 
     def labware_discharge(
-        self, labware_id: str, force: bool = False,
+        self, labware_id: str, force: bool = False, *, reason: str | None = None,
     ) -> dict[str, list[str]]:
         """POST /labware/runtime/discharge. Removes ONE labware instance from
         every runtime store."""
@@ -1974,21 +2071,21 @@ class LocalDaemonClient:
             resp = c.post(
                 "/labware/runtime/discharge",
                 params={"labware_id": labware_id},
-                json={"force": force},
+                json=LabwareClearRequest(force=force, reason=reason).model_dump(mode="json"),
             )
         self._check(resp)
         response = LabwareClearResponseDTO.model_validate(resp.json())
         return {"cleared_labware_ids": list(response.cleared_labware_ids)}
 
     def labware_clear_all(
-        self, force: bool = False,
+        self, force: bool = False, *, reason: str | None = None,
     ) -> dict[str, list[str]]:
         """POST /labware/runtime/clear-all. Panic button: clears every labware
         in the runtime."""
         with self._client() as c:
             resp = c.post(
                 "/labware/runtime/clear-all",
-                json={"force": force},
+                json=LabwareClearRequest(force=force, reason=reason).model_dump(mode="json"),
             )
         self._check(resp)
         response = LabwareClearResponseDTO.model_validate(resp.json())

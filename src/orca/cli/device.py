@@ -268,6 +268,9 @@ def send(
              "raw vendor console, whose payload nothing between here and the "
              "controller can read. No other command needs it.",
     ),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
+    ),
 ) -> None:
     """Send a command to a device by name.
 
@@ -278,7 +281,7 @@ def send(
     client = get_client()
     opts = _parse_options(params, options)
     result = client.device_execute(
-        name, command, options=opts, mode=mode, confirm=confirm,
+        name, command, options=opts, mode=mode, confirm=confirm, reason=reason,
     )
     _emit_invocation_result(result)
 
@@ -302,6 +305,9 @@ def invoke(
              "raw vendor console, whose payload nothing between here and the "
              "controller can read. No other command needs it.",
     ),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
+    ),
 ) -> None:
     """Invoke a method on a device.
 
@@ -314,7 +320,7 @@ def invoke(
     client = get_client()
     kwargs = _parse_options(params, kwargs_pairs)
     result = client.device_invoke(
-        name, capability, kwargs=kwargs, mode=mode, confirm=confirm,
+        name, capability, kwargs=kwargs, mode=mode, confirm=confirm, reason=reason,
     )
     _emit_invocation_result(result)
 
@@ -323,6 +329,9 @@ def invoke(
 def initialize(
     name: str = typer.Argument(...),
     mode: WorkflowRunMode | None = typer.Option(None, "--mode", help=MODE_HELP),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
+    ),
 ) -> None:
     """Initialize or re-initialize a device.
 
@@ -333,7 +342,7 @@ def initialize(
     A clean run clears any fault standing on the device.
     """
     client = get_client()
-    client.device_initialize(name, mode=mode)
+    client.device_initialize(name, mode=mode, reason=reason)
     output.info(f"device {name} initialized")
 
 
@@ -341,6 +350,9 @@ def initialize(
 def connect(
     name: str = typer.Argument(...),
     mode: WorkflowRunMode | None = typer.Option(None, "--mode", help=MODE_HELP),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
+    ),
 ) -> None:
     """Open the link to a device. Moves nothing and readies nothing.
 
@@ -348,7 +360,7 @@ def connect(
     step that makes it ready to command.
     """
     client = get_client()
-    client.device_connect(name, mode=mode)
+    client.device_connect(name, mode=mode, reason=reason)
     output.info(f"device {name} connected")
 
 
@@ -356,6 +368,9 @@ def connect(
 def disconnect(
     name: str = typer.Argument(...),
     mode: WorkflowRunMode | None = typer.Option(None, "--mode", help=MODE_HELP),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
+    ),
 ) -> None:
     """Hand a device back. Moves nothing, but ends the session.
 
@@ -363,7 +378,7 @@ def disconnect(
     power while connected (a PF400 arm) drops it here.
     """
     client = get_client()
-    client.device_disconnect(name, mode=mode)
+    client.device_disconnect(name, mode=mode, reason=reason)
     output.info(f"device {name} disconnected")
 
 
@@ -413,6 +428,9 @@ def release_hold(
 def reconcile_deck(
     name: str = typer.Argument(..., help="Liquid handler name."),
     mode: WorkflowRunMode | None = typer.Option(None, "--mode", help=MODE_HELP),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
+    ),
 ) -> None:
     """Re-seed a liquid handler from the world model. A state push, no motion.
 
@@ -423,7 +441,7 @@ def reconcile_deck(
     through orca re-seed automatically.
     """
     client = get_client()
-    result = client.device_reconcile_deck(name, mode=mode)
+    result = client.device_reconcile_deck(name, mode=mode, reason=reason)
     _report_disagreements(name, result.disagreements)
     output.info(f"device {name} deck re-seeded from the world model")
 
@@ -548,16 +566,22 @@ def take_control(
 @app.command("release-control")
 def release_control(
     name: str = typer.Argument(..., help="Device or transporter name."),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
+    ),
 ) -> None:
     """Give a device back to the workflow. Be clear of it first."""
     client = get_client()
-    client.device_release_control(name)
+    client.device_release_control(name, reason=reason)
     output.info(f"device {name} released")
 
 
 @app.command("clear-fault")
 def clear_fault(
     name: str = typer.Argument(..., help="Device or transporter name."),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
+    ),
 ) -> None:
     """Say a device has been looked at after a command left it part-way through.
 
@@ -571,7 +595,7 @@ def clear_fault(
     Reach for this when the machine is fit but neither of those applies.
     """
     client = get_client()
-    result = client.device_clear_fault(name)
+    result = client.device_clear_fault(name, reason=reason)
     if result.cleared is None:
         output.info(f"device {name} had no fault")
         return

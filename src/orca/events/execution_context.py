@@ -68,6 +68,11 @@ class ExecutionLifecycleContext(WorkflowExecutionContext):
     reason: Optional[str] = None
 
 
+class ExecutionTimeScaleContext(WorkflowExecutionContext):
+    """Context for EXECUTION.<id>.TIME_SCALE_CHANGED: the simulated time scale now in force."""
+    sim_time_scale: float
+
+
 class OperatorInstructionContext(WorkflowExecutionContext):
     """Context for OPERATOR.INSTRUCTION events raised by ctx.manual_step.
 
@@ -153,6 +158,7 @@ ExecutionContext = Union[
     SubmissionExecutionContext,
     GroupLifecycleContext,
     ExecutionLifecycleContext,
+    ExecutionTimeScaleContext,
     OperatorInstructionContext,
     ManualInterventionContext,
     CustomEventContext,

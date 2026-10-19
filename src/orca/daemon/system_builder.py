@@ -3,7 +3,8 @@
 `spec` is `module:factory` -- e.g. `examples.hamilton_smc.topology:build_topology`.
 
 The daemon ingress is split:
-- `load_topology_spec(spec, stores)` calls a `build_topology(stores)` factory
+- `load_topology_spec(spec, stores)` calls a `build_topology(stores)` factory,
+  with the module's `SIM_DRIVERS` bound when no device factory is bound yet,
   and returns the `Topology` the daemon builds an empty SystemRuntime from.
 - `load_workflow_spec(spec, topology)` calls a `build_workflow(topology)`
   factory and returns the `WorkflowTemplate` to register on the running
@@ -20,10 +21,11 @@ HTTP status codes:
 
 import importlib
 from pathlib import Path
-from typing import Callable, TypeVar
+from types import ModuleType
 
 from orca.runtime.store_factory import IRuntimeStoreFactory
 from orca.sdk.build import Topology
+from orca.sdk.package import declared_sim_drivers_bound
 from orca.workflow_models.workflow_templates import WorkflowTemplate
 
 
@@ -47,11 +49,8 @@ class FactoryReturnShapeError(TypeError):
     """Factory returned an object of the wrong type."""
 
 
-_T = TypeVar("_T")
-
-
-def _resolve_factory(spec: str) -> Callable[..., object]:
-    """Import and return the callable named by a `module:factory` spec."""
+def _resolve_factory(spec: str) -> tuple[ModuleType, str]:
+    """Import a `module:factory` spec; return the module and the name of the callable it names."""
     if ":" not in spec:
         raise SpecFormatError(
             f"spec must be 'module:factory', got {spec!r}",
@@ -74,17 +73,19 @@ def _resolve_factory(spec: str) -> Callable[..., object]:
         raise FactoryNotCallableError(
             f"{spec!r} is not callable",
         )
-    return factory
+    return module, factory_name
 
 
 def load_topology_spec(spec: str, stores: IRuntimeStoreFactory) -> Topology:
     """Resolve a `module:build_topology` spec to a `Topology`.
 
     The factory is called with the daemon's store factory so calibration
-    registries (teachpoints, deck layouts) seed correctly.
+    registries (teachpoints, deck layouts) seed correctly, and with the
+    module's `SIM_DRIVERS` bound unless a device factory is bound already.
     """
-    factory = _resolve_factory(spec)
-    result = factory(stores)
+    module, factory_name = _resolve_factory(spec)
+    with declared_sim_drivers_bound(module):
+        result = getattr(module, factory_name)(stores)
     if not isinstance(result, Topology):
         raise FactoryReturnShapeError(
             f"{spec!r} returned {type(result).__name__!r}; expected "
@@ -99,8 +100,8 @@ def load_workflow_spec(spec: str, topology: Topology) -> WorkflowTemplate:
     The factory is called with the already-mounted topology so device
     references resolve against the live system map.
     """
-    factory = _resolve_factory(spec)
-    result = factory(topology)
+    module, factory_name = _resolve_factory(spec)
+    result = getattr(module, factory_name)(topology)
     if not isinstance(result, WorkflowTemplate):
         raise FactoryReturnShapeError(
             f"{spec!r} returned {type(result).__name__!r}; expected "

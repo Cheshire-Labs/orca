@@ -142,7 +142,7 @@ class ThreadFacade(IThreadFacade):
     )
     async def pause(
         self, execution_id: str, thread_id: str,
-        reason: str | None = None,
+        *, reason: str | None = None,
     ) -> None:
         del reason  # consumed by @dangerous audit trail
         self._runtime.pause_thread(execution_id, thread_id)
@@ -156,7 +156,7 @@ class ThreadFacade(IThreadFacade):
     )
     async def resume(
         self, execution_id: str, thread_id: str,
-        reason: str | None = None,
+        *, reason: str | None = None,
     ) -> None:
         del reason  # consumed by @dangerous audit trail
         self._runtime.resume_thread(execution_id, thread_id)
@@ -170,7 +170,7 @@ class ThreadFacade(IThreadFacade):
     )
     async def pause_all(
         self, execution_id: str,
-        reason: str | None = None,
+        *, reason: str | None = None,
     ) -> dict[str, int]:
         del reason  # consumed by @dangerous audit trail
         return self._runtime.pause_execution(execution_id)
@@ -190,7 +190,7 @@ class ThreadFacade(IThreadFacade):
     )
     async def resume_all(
         self, execution_id: str,
-        reason: str | None = None,
+        *, reason: str | None = None,
     ) -> dict[str, int]:
         del reason  # consumed by @dangerous audit trail
         return self._runtime.resume_execution(execution_id)
@@ -465,7 +465,9 @@ class ThreadFacade(IThreadFacade):
     async def spawn_thread(
         self, execution_id: str, template_name: str, *,
         labware_id: str | None = None,
+        reason: str | None = None,
     ) -> ThreadSnapshot:
+        del reason  # consumed by @dangerous audit
         return await self._runtime.spawn_thread_in_execution(
             execution_id, template_name, labware_id=labware_id,
         )

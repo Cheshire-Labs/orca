@@ -145,7 +145,7 @@ class SpawnThreadOperation:
         try:
             snap = await self._runtime.threads.spawn_thread(
                 req.execution_id, req.template_name,
-                labware_id=req.labware_id, confirm=True,
+                labware_id=req.labware_id, reason=req.reason, confirm=True,
             )
         except KeyError as exc:
             missing = exc.args[0] if exc.args else (

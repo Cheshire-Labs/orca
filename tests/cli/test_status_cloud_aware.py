@@ -56,8 +56,8 @@ def test_status_cloud_not_built_shows_error(monkeypatch: pytest.MonkeyPatch) -> 
             built=False,
             last_build_error={
                 "type": "ModuleNotFoundError",
-                "message": "No module named 'deployment_package.system'",
-                "hint": "Drop system.py + submit topology, then runtime_reload.",
+                "message": "No module named 'deployment_package.topology'",
+                "hint": "Drop topology.py + submit topology, then runtime_reload.",
             },
         ),
     )

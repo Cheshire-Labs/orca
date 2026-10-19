@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from orca.state.confirm_refusals import NothingToConfirmError, WorkLostError
 from orca.operations.device import GetMountedTipsOperation
 from orca.operations.device_models import (
     GetMountedTipsRequest,
@@ -403,11 +404,24 @@ class TestTheLedgerReadsEveryExecution:
             _LH, ObservationGapCause.OPERATIONS_DROPPED,
         )
 
-        with pytest.raises(ValueError) as refusal:
+        with pytest.raises(WorkLostError) as refusal:
             await ledger.confirm(_LH)
 
         assert "set_mounted_tips" in str(refusal.value)
+        assert refusal.value.settle_with == "set-mounted-tips"
         assert (await ledger.of(_LH)).provenance is Provenance.STALE
+
+    async def test_a_confirm_is_refused_on_a_head_nobody_has_stated(
+        self,
+    ) -> None:
+        history = OpsHistory(JsonlOpsHistoryStore.ephemeral())
+        ledger = MountedTipsLedger(history)
+
+        with pytest.raises(NothingToConfirmError) as refusal:
+            await ledger.confirm(_LH)
+
+        assert refusal.value.settle_with == "set-mounted-tips"
+        assert (await ledger.of(_LH)).provenance is Provenance.UNKNOWN
 
     async def test_picks_from_two_executions_fold_as_one_head(self) -> None:
         history = OpsHistory(JsonlOpsHistoryStore.ephemeral())

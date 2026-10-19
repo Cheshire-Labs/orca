@@ -12,8 +12,8 @@ Pattern:
 
 import csv
 import logging
-import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, cast
 
 import orca.orca as orca
@@ -46,7 +46,7 @@ class CherryPickTransfer:
     volume: float
 
 
-def load_worklist(path: str) -> List[CherryPickTransfer]:
+def load_worklist(path: Path) -> List[CherryPickTransfer]:
     with open(path, newline="") as f:
         reader_csv = csv.DictReader(f)
         return [
@@ -59,7 +59,8 @@ def load_worklist(path: str) -> List[CherryPickTransfer]:
         ]
 
 
-WORKLIST_PATH = os.path.join(os.path.dirname(__file__), "cherry_pick_worklist.csv")
+# The worklist sits at the package root, one folder up from workflows/.
+WORKLIST_PATH = Path(__file__).resolve().parent.parent / "cherry_pick_worklist.csv"
 
 
 # --- Labware templates (stateless, safe to share across builds) ---

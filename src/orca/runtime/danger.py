@@ -169,7 +169,8 @@ class ActionRegistry:
 class AuditEntry:
     """One successful dangerous-action invocation.
 
-    Written by the @dangerous decorator on every confirmed call. UIs can
+    Written by the @dangerous decorator on every confirmed call, and by
+    `record_audit` for an audited action done outside its facade. UIs can
     query the ring buffer via `list_audit_entries()` and downstream sinks
     can subscribe to the `orca.audit` logger for persistence.
     """
@@ -181,7 +182,7 @@ class AuditEntry:
 
 
 class AuditTrail:
-    """In-memory ring buffer of successful @dangerous invocations.
+    """In-memory ring buffer of successful audited actions.
 
     Bounded to avoid unbounded growth on long-running daemons. Persistence
     is opt-in via the `orca.audit` logger (see `audit_logger`): wire a file
@@ -336,14 +337,34 @@ def _record_audit(
     """Append an audit entry and emit a log record after a confirmed call."""
     call_args = _bind_call_args(func, args, kwargs)
     call_args.pop("reason", None)
-    entry = AuditEntry(
+    _write_audit(name, level, reason, call_args)
+
+
+def record_audit(
+    name: str, reason: str | None, call_args: dict[str, JsonValue],
+) -> None:
+    """Write the audit row for a registered action done outside its facade.
+
+    The level comes from the registry, so an unknown name raises KeyError.
+    """
+    level = describe_action(name).danger_level
+    kept = {k: v for k, v in call_args.items() if k not in ("reason", "confirm")}
+    _write_audit(name, level, reason, kept)
+
+
+def _write_audit(
+    name: str,
+    level: DangerLevel,
+    reason: str | None,
+    call_args: dict[str, JsonValue],
+) -> None:
+    _AUDIT_TRAIL.record(AuditEntry(
         timestamp=time.time(),
         action_name=name,
         danger_level=level,
         reason=reason,
         call_args=call_args,
-    )
-    _AUDIT_TRAIL.record(entry)
+    ))
     audit_logger.info(
         "%s level=%s reason=%r args=%r",
         name, level.name, reason, call_args,

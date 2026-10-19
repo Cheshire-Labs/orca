@@ -101,7 +101,7 @@ def _runtime(labware_name: str = "assay_plate") -> _FakeRuntime:
     )
     snapshot = LabwareSnapshot(
         id="lw-1", name=labware_name, template_name=labware_name,
-        barcode=None, current_location="lh_1",
+        labware_type="Cor_96_wellplate_360ul_Fb", barcode=None, current_location="lh_1",
     )
     return _FakeRuntime(
         labware=_FakeLabwareFacade(

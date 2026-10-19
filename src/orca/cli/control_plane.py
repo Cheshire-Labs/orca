@@ -96,6 +96,11 @@ from orca.operations.thread_models import InsertWhere, ReplaceResult
 from orca.state.records import TrackingRecord
 
 
+def optional_reason(reason: str | None) -> dict[str, str]:
+    """The audit reason as a body or query entry, left out when not given."""
+    return {"reason": reason} if reason is not None else {}
+
+
 class _CPModel(BaseModel):
     """Base for control-plane DTOs.
 
@@ -129,6 +134,9 @@ class ExecutionRecordDTO(_CPModel):
     runtime paused itself."""
     abort_armed: bool = False
     """Whether a second confirmed stop would abort."""
+    sim_time_scale: float | None = None
+    """The simulated time scale: 1 is real time, 0 is no pacing. None for a LIVE run,
+    and for a finished run read back from the store, which does not keep it."""
 
 
 class _CPSubmissionDTO(_CPModel):
@@ -211,6 +219,9 @@ class ExecutionDetailDTO(_CPModel):
     runtime paused itself."""
     abort_armed: bool = False
     """Whether a second confirmed stop would abort."""
+    sim_time_scale: float | None = None
+    """The simulated time scale: 1 is real time, 0 is no pacing. None for a LIVE run,
+    and for a finished run read back from the store, which does not keep it."""
 
 
 class MoverHoldReleaseDTO(_CPModel):
@@ -239,6 +250,15 @@ class ExecutionCloseResponseDTO(_CPModel):
     execution_id: str
     phase: str
     status: str = "closed"
+
+
+class SetExecutionTimeScaleResultDTO(_CPModel):
+    """Return shape of `execution time-scale`: the scale now in force and a
+    plain reading of it. Field-equal to ``SetExecutionTimeScaleResponse``."""
+
+    execution_id: str
+    sim_time_scale: float
+    message: str
 
 
 class StopExecutionResultDTO(_CPModel):
@@ -757,6 +777,8 @@ class IControlPlaneClient(Protocol):
         *,
         run_mode: RunModeStr,
         acknowledge_warnings: bool = False,
+        reason: str | None = None,
+        sim_time_scale: float | None = None,
     ) -> ExecutionRecordDTO: ...
 
     def submit_method(
@@ -776,10 +798,14 @@ class IControlPlaneClient(Protocol):
     def get_execution(self, execution_id: str) -> ExecutionDetailDTO: ...
 
     def stop_execution(
-        self, execution_id: str, *, confirm: bool = False,
+        self, execution_id: str, *, confirm: bool = False, reason: str | None = None,
     ) -> StopExecutionResultDTO: ...
 
-    def execution_remove(self, execution_id: str) -> None: ...
+    def set_execution_time_scale(
+        self, execution_id: str, sim_time_scale: float,
+    ) -> SetExecutionTimeScaleResultDTO: ...
+
+    def execution_remove(self, execution_id: str, *, reason: str | None = None) -> None: ...
 
     def list_devices(self) -> Sequence[DeviceDTO]: ...
 
@@ -804,7 +830,9 @@ class IControlPlaneClient(Protocol):
         self, device_name: str, *, reason: str | None = None,
     ) -> None: ...
 
-    def device_clear_fault(self, device_name: str) -> ClearDeviceFaultResponse: ...
+    def device_clear_fault(
+        self, device_name: str, *, reason: str | None = None,
+    ) -> ClearDeviceFaultResponse: ...
 
     def health(self) -> bool: ...
 
@@ -906,19 +934,24 @@ class IControlPlaneClient(Protocol):
 
     def variables_set(
         self, execution_id: str, name: str, value: OptionValueJson,
+        *, reason: str | None = None,
     ) -> VariableSetResponse: ...
 
     def variables_set_submission(
         self, execution_id: str, submission_id: str, name: str,
-        value: OptionValueJson,
+        value: OptionValueJson, *, reason: str | None = None,
     ) -> None: ...
 
-    def variables_set_global(self, name: str, value: OptionValueJson) -> None: ...
+    def variables_set_global(
+        self, name: str, value: OptionValueJson, *, reason: str | None = None,
+    ) -> None: ...
 
-    def variables_unset(self, execution_id: str, name: str) -> None: ...
+    def variables_unset(
+        self, execution_id: str, name: str, *, reason: str | None = None,
+    ) -> None: ...
 
     def variables_unset_submission(
-        self, execution_id: str, submission_id: str, name: str,
+        self, execution_id: str, submission_id: str, name: str, *, reason: str | None = None,
     ) -> None: ...
 
     def variables_list_all(self) -> Sequence[CrossExecVariableDTO]: ...
@@ -929,13 +962,15 @@ class IControlPlaneClient(Protocol):
 
     def access_configs_get(self, name: str) -> AccessConfigDTO: ...
 
-    def access_configs_add(self, config: AccessConfigDTO) -> AccessConfigDTO: ...
-
-    def access_configs_update(
-        self, config: AccessConfigDTO,
+    def access_configs_add(
+        self, config: AccessConfigDTO, *, reason: str | None = None,
     ) -> AccessConfigDTO: ...
 
-    def access_configs_delete(self, name: str) -> None: ...
+    def access_configs_update(
+        self, config: AccessConfigDTO, *, reason: str | None = None,
+    ) -> AccessConfigDTO: ...
+
+    def access_configs_delete(self, name: str, *, reason: str | None = None) -> None: ...
 
     def grip_profiles_list(self) -> Sequence[GripProfileDTO]: ...
 
@@ -945,7 +980,7 @@ class IControlPlaneClient(Protocol):
         self, labware_type: str, body: GripProfilePatchRequest,
     ) -> GripProfileDTO: ...
 
-    def grip_profiles_reset(self, labware_type: str) -> None: ...
+    def grip_profiles_reset(self, labware_type: str, *, reason: str | None = None) -> None: ...
 
     def move_defaults_list(self) -> Sequence[MoveDefaultsDTO]: ...
 
@@ -955,7 +990,7 @@ class IControlPlaneClient(Protocol):
         self, transporter_name: str, body: MoveDefaultsPatchRequest,
     ) -> MoveDefaultsDTO: ...
 
-    def move_defaults_reset(self, transporter_name: str) -> None: ...
+    def move_defaults_reset(self, transporter_name: str, *, reason: str | None = None) -> None: ...
 
     def teachpoints_list(self, device_id: str) -> Sequence[TeachpointDTO]: ...
 
@@ -975,6 +1010,7 @@ class IControlPlaneClient(Protocol):
         gateway: str | None,
         orientation: str | None,
         taught_with: str | None = None,
+        *, reason: str | None = None,
     ) -> TeachpointDTO: ...
 
     def teachpoints_update(
@@ -990,6 +1026,7 @@ class IControlPlaneClient(Protocol):
         update_orientation: bool,
         taught_with: str | None = None,
         update_taught_with: bool = False,
+        *, reason: str | None = None,
     ) -> TeachpointDTO: ...
 
     def teachpoints_set_labware_override(
@@ -998,10 +1035,12 @@ class IControlPlaneClient(Protocol):
     ) -> TeachpointDTO: ...
 
     def teachpoints_clear_labware_override(
-        self, device_id: str, position_id: str, labware_type: str,
+        self, device_id: str, position_id: str, labware_type: str, *, reason: str | None = None,
     ) -> None: ...
 
-    def teachpoints_delete(self, device_id: str, position_id: str) -> None: ...
+    def teachpoints_delete(
+        self, device_id: str, position_id: str, *, reason: str | None = None,
+    ) -> None: ...
 
     def deck_layouts_list(
         self, device_id: str,
@@ -1012,14 +1051,14 @@ class IControlPlaneClient(Protocol):
     def deck_layouts_get(self, device_id: str, name: str) -> DeckLayoutDTO: ...
 
     def deck_layouts_add(
-        self, device_id: str, name: str, config: DeckLayoutConfig,
+        self, device_id: str, name: str, config: DeckLayoutConfig, *, reason: str | None = None,
     ) -> DeckLayoutDTO: ...
 
     def deck_layouts_update(
-        self, device_id: str, name: str, config: DeckLayoutConfig,
+        self, device_id: str, name: str, config: DeckLayoutConfig, *, reason: str | None = None,
     ) -> DeckLayoutDTO: ...
 
-    def deck_layouts_delete(self, device_id: str, name: str) -> None: ...
+    def deck_layouts_delete(self, device_id: str, name: str, *, reason: str | None = None) -> None: ...
 
     # -- Reservations ----------------------------------------------------
 
@@ -1082,28 +1121,34 @@ class IControlPlaneClient(Protocol):
         self, device_name: str, command: str,
         options: dict[str, JsonValue] | None = None,
         *, mode: WorkflowRunMode | None = None, confirm: bool = False,
+        reason: str | None = None,
     ) -> DeviceInvocationResultDTO: ...
 
     def device_invoke(
         self, device_name: str, capability: str,
         kwargs: dict[str, JsonValue] | None = None,
         *, mode: WorkflowRunMode | None = None, confirm: bool = False,
+        reason: str | None = None,
     ) -> DeviceInvocationResultDTO: ...
 
     def device_initialize(
         self, device_name: str, *, mode: WorkflowRunMode | None = None,
+        reason: str | None = None,
     ) -> None: ...
 
     def device_connect(
         self, device_name: str, *, mode: WorkflowRunMode | None = None,
+        reason: str | None = None,
     ) -> None: ...
 
     def device_disconnect(
         self, device_name: str, *, mode: WorkflowRunMode | None = None,
+        reason: str | None = None,
     ) -> None: ...
 
     def device_reconcile_deck(
         self, device_name: str, *, mode: WorkflowRunMode | None = None,
+        reason: str | None = None,
     ) -> ReconcileDeckResponse: ...
 
     def device_compare_deck(
@@ -1114,7 +1159,9 @@ class IControlPlaneClient(Protocol):
         self, device_name: str, *, reason: str | None = None,
     ) -> None: ...
 
-    def device_release_control(self, device_name: str) -> None: ...
+    def device_release_control(
+        self, device_name: str, *, reason: str | None = None,
+    ) -> None: ...
 
     # -- Threads (per-execution reads + single-thread pause/resume/recover + spawn) --
 
@@ -1140,7 +1187,7 @@ class IControlPlaneClient(Protocol):
 
     def spawn_thread(
         self, execution_id: str, template_name: str,
-        labware_id: str | None = None,
+        labware_id: str | None = None, *, reason: str | None = None,
     ) -> DaemonThreadSnapshotDTO: ...
 
     # -- Labware instance ops --------------------------------------------
@@ -1167,14 +1214,18 @@ class IControlPlaneClient(Protocol):
         self, labware_id: str, location: str, reason: str,
     ) -> None: ...
 
-    def labware_edit_barcode(self, labware_id: str, barcode: str) -> None: ...
+    def labware_edit_barcode(
+        self, labware_id: str, barcode: str, *, reason: str | None = None,
+    ) -> None: ...
 
     def labware_set_carry_override(
         self, labware_id: str, patch: MoveParameterPatch,
-        clear: Sequence[MoveParameterField] = (),
+        clear: Sequence[MoveParameterField] = (), *, reason: str | None = None,
     ) -> MoveParameterPatch: ...
 
-    def labware_clear_carry_override(self, labware_id: str) -> None: ...
+    def labware_clear_carry_override(
+        self, labware_id: str, *, reason: str | None = None,
+    ) -> None: ...
 
     def labware_reset_location(
         self, labware_id: str, location: str, reason: str,
@@ -1185,6 +1236,7 @@ class IControlPlaneClient(Protocol):
         labware_type: str | None = None,
         barcode: str | None = None,
         location: str | None = None,
+        reason: str | None = None,
     ) -> LabwareDTO: ...
 
     def labware_get_well_volumes(
@@ -1261,7 +1313,8 @@ class IControlPlaneClient(Protocol):
     # -- Recoverable-timeout operator decisions (both backends) ----------
 
     def recoverable_timeout_extend(
-        self, incident_id: str, additional_seconds: float,
+        self, incident_id: str, additional_seconds: float, *,
+        reason: str | None = None,
     ) -> RecoverableTimeoutDecisionResponse: ...
 
     def recoverable_timeout_abort(
@@ -1295,15 +1348,15 @@ class IControlPlaneClient(Protocol):
     ) -> LabwareJourneyResponseDTO: ...
 
     def labware_clear_submission(
-        self, submission_id: str, force: bool = False,
+        self, submission_id: str, force: bool = False, *, reason: str | None = None,
     ) -> dict[str, list[str]]: ...
 
     def labware_discharge(
-        self, labware_id: str, force: bool = False,
+        self, labware_id: str, force: bool = False, *, reason: str | None = None,
     ) -> dict[str, list[str]]: ...
 
     def labware_clear_all(
-        self, force: bool = False,
+        self, force: bool = False, *, reason: str | None = None,
     ) -> dict[str, list[str]]: ...
 
     def state_unsettled(self) -> UnsettledStateResponse: ...
@@ -1328,7 +1381,9 @@ class ICloudControlPlaneClient(IControlPlaneClient, Protocol):
 
     # -- Execution + thread verbs the loopback daemon does not serve ------
 
-    def execution_close(self, execution_id: str) -> ExecutionCloseResponseDTO: ...
+    def execution_close(
+        self, execution_id: str, *, reason: str | None = None,
+    ) -> ExecutionCloseResponseDTO: ...
 
     def pause_all_threads(
         self, execution_id: str, reason: str | None = None,
@@ -1342,7 +1397,9 @@ class ICloudControlPlaneClient(IControlPlaneClient, Protocol):
         self, execution_id: str | None,
     ) -> list[PendingManualStepDTO]: ...
 
-    def manual_step_confirm(self, execution_id: str, step_id: str) -> None: ...
+    def manual_step_confirm(
+        self, execution_id: str, step_id: str, *, reason: str | None = None,
+    ) -> None: ...
 
     # -- Incidents -------------------------------------------------------
 
@@ -1355,10 +1412,12 @@ class ICloudControlPlaneClient(IControlPlaneClient, Protocol):
 
     def incidents_get(self, incident_id: str) -> IncidentDTO: ...
 
-    def incidents_ack(self, incident_id: str) -> IncidentAckResponse: ...
+    def incidents_ack(
+        self, incident_id: str, *, reason: str | None = None,
+    ) -> IncidentAckResponse: ...
 
     def incidents_ack_all(
-        self, category: str | None = None,
+        self, category: str | None = None, *, reason: str | None = None,
     ) -> IncidentAckResponse: ...
 
     # -- Code in the server-side worktree --------------------------------
@@ -1380,7 +1439,7 @@ class ICloudControlPlaneClient(IControlPlaneClient, Protocol):
     def list_workflows(self) -> Sequence[WorkflowSummaryDTO]: ...
 
     def workflow_load(
-        self, name: str, source: str, message: str,
+        self, name: str, source: str, message: str, *, reason: str | None = None,
     ) -> SubmitModuleResponseDTO: ...
 
     def workflow_delete(

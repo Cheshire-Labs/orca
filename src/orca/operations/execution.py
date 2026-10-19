@@ -33,11 +33,11 @@ service passes ``None``.
 
 from typing import ClassVar, Literal
 from pydantic import BaseModel
-from orca.operations._protocol import OperationError
+from orca.operations._protocol import OperationError, OperationErrorCode
 from orca.runtime.execution_phase import ExecutionPhase
 from orca.runtime.execution_record import ExecutionRecord, ExecutionState
 from orca.runtime.status_models import ExecutionDetail
-from orca.runtime.runtime_interface import ISystemRuntime
+from orca.runtime.runtime_interface import ISystemRuntime, SimTimeScaleNotApplicableError
 from orca.operations.execution_models import (
     CloseExecutionRequest,
     CloseExecutionResponse,
@@ -50,6 +50,8 @@ from orca.operations.execution_models import (
     ListExecutionsResponse,
     RemoveExecutionRequest,
     RemoveExecutionResponse,
+    SetExecutionTimeScaleRequest,
+    SetExecutionTimeScaleResponse,
     StopExecutionRequest,
     StopExecutionResponse,
 )
@@ -80,7 +82,7 @@ class CloseExecutionOperation:
     async def run(self, req: CloseExecutionRequest) -> CloseExecutionResponse:
         try:
             result = self._runtime.submissions.close_execution(
-                req.execution_id, confirm=True,
+                req.execution_id, reason=req.reason, confirm=True,
             )
         except KeyError as exc:
             raise OperationError.not_found(
@@ -157,6 +159,7 @@ class ListExecutionsOperation:
                 paused=exe.is_paused,
                 pause_reason=exe.pause_reason,
                 abort_armed=exe.abort_armed,
+                sim_time_scale=exe.sim_time_scale,
             ))
             live_ids.add(exe.id)
         if self._terminal_list is not None:
@@ -209,8 +212,8 @@ class StopExecutionOperation:
 
     async def run(self, req: StopExecutionRequest) -> StopExecutionResponse:
         try:
-            outcome = await self._runtime.stop_execution(
-                req.execution_id, confirm=req.confirm,
+            outcome = await self._runtime.submissions.stop_execution(
+                req.execution_id, abort=req.confirm, reason=req.reason, confirm=True,
             )
         except KeyError as exc:
             raise OperationError.not_found(
@@ -241,6 +244,58 @@ class StopExecutionOperation:
         )
 
 
+# -- SetExecutionTimeScaleOperation ------------------------------------------
+
+
+def _time_scale_message(scale: float) -> str:
+    if scale == 0:
+        return "no pacing: every simulated step completes as fast as it can"
+    if scale == 1:
+        return "real time"
+    if scale < 1:
+        return f"{1 / scale:g}x faster than real time"
+    return f"{scale:g}x slower than real time"
+
+
+class SetExecutionTimeScaleOperation:
+    Request: ClassVar[type[BaseModel]] = SetExecutionTimeScaleRequest
+    Response: ClassVar[type[BaseModel]] = SetExecutionTimeScaleResponse
+
+    def __init__(self, runtime: ISystemRuntime):
+        self._runtime = runtime
+
+    async def run(self, req: SetExecutionTimeScaleRequest) -> SetExecutionTimeScaleResponse:
+        try:
+            scale = self._runtime.set_execution_time_scale(
+                req.execution_id, req.sim_time_scale,
+            )
+        except KeyError as exc:
+            raise OperationError.not_found(
+                f"execution {req.execution_id!r} not found",
+                execution_id=req.execution_id,
+            ) from exc
+        except SimTimeScaleNotApplicableError as exc:
+            raise OperationError.typed(
+                OperationErrorCode.INVALID_INPUT,
+                str(exc),
+                wire_code="SIM_TIME_SCALE_NOT_APPLICABLE",
+                status_code=422,
+                reason=exc.reason,
+                execution_id=req.execution_id,
+            ) from exc
+        except ValueError as exc:
+            raise OperationError.invalid_input(str(exc)) from exc
+        except RuntimeError as exc:
+            raise OperationError.conflict(
+                str(exc), execution_id=req.execution_id,
+            ) from exc
+        return SetExecutionTimeScaleResponse(
+            execution_id=req.execution_id,
+            sim_time_scale=scale,
+            message=_time_scale_message(scale),
+        )
+
+
 # -- RemoveExecutionOperation ------------------------------------------------
 
 
@@ -253,7 +308,9 @@ class RemoveExecutionOperation:
 
     async def run(self, req: RemoveExecutionRequest) -> RemoveExecutionResponse:
         try:
-            self._runtime.remove_execution(req.execution_id, confirm=True)
+            self._runtime.submissions.remove_execution(
+                req.execution_id, reason=req.reason, confirm=True,
+            )
         except KeyError as exc:
             raise OperationError.not_found(
                 f"execution {req.execution_id!r} not found",

@@ -122,6 +122,14 @@ def submit(
         help="Acknowledge a LIVE submission against devices whose topology "
              "declares a sim-direction sim_override.",
     ),
+    time_scale: float | None = typer.Option(
+        None, "--time-scale", min=0.0,
+        help="Simulated time scale: 1 is real time, 0.1 ten times faster, 0 no "
+             "pacing. Omit for the deployment default. Not for LIVE.",
+    ),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
+    ),
 ) -> None:
     """Submit a workflow with zero or more labware groups.
 
@@ -202,6 +210,8 @@ def submit(
         deployment_profile=profile or None,
         run_mode=run_mode_value,
         acknowledge_warnings=confirm,
+        sim_time_scale=time_scale,
+        reason=reason,
     )
     snap = client.submission_submit(request)
     resolve.record_last_execution(snap.execution_id)

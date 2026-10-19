@@ -16,6 +16,8 @@ from orca.runtime.system_runtime import SystemRuntime
 from tests.test_system_runtime import _build_simple_system
 
 
+SLASHED = "flex_1/B4-slot"
+
 _CARTESIAN_COORDS = {
     "x": 1.0, "y": 2.0, "z": 3.0, "yaw": 0.0, "pitch": 90.0, "roll": 180.0,
 }
@@ -53,6 +55,7 @@ async def tp_client() -> AsyncIterator[AsyncClient]:
         ) as c:
             await c.post("/access-configs", json=_access_config_body())
             await c.post("/teachpoints", json=_create_body())
+            await c.post("/teachpoints", json=_create_body(SLASHED))
             yield c
     finally:
         if rt.state.name == "RUNNING":
@@ -232,3 +235,29 @@ async def test_a_field_that_is_not_a_move_parameter_is_refused(
     )
 
     assert resp.status_code == 422, resp.text
+
+
+async def test_an_override_on_a_slashed_position_can_be_set(
+    tp_client: AsyncClient,
+) -> None:
+    resp = await tp_client.patch(
+        f"/teachpoints/robot1/{SLASHED}/labware/deep_well", json=_override(45.0),
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["by_labware"] == {"deep_well": {"clearance": 45.0}}
+
+
+async def test_an_override_on_a_slashed_position_can_be_cleared(
+    tp_client: AsyncClient,
+) -> None:
+    await tp_client.patch(
+        f"/teachpoints/robot1/{SLASHED}/labware/deep_well", json=_override(45.0),
+    )
+
+    resp = await tp_client.delete(f"/teachpoints/robot1/{SLASHED}/labware/deep_well")
+
+    assert resp.status_code == 204, resp.text
+    got = await tp_client.get(f"/teachpoints/robot1/{SLASHED}")
+    assert got.status_code == 200, "the clear must not delete the teachpoint itself"
+    assert got.json()["by_labware"] == {}

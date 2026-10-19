@@ -1,10 +1,10 @@
-"""Venus Protocol Driver example: thin entry point composing topology + workflow.
+"""Venus Protocol Driver example: thin entry point for standalone runs + tests.
 
 Demonstrates a workflow that runs Hamilton Venus methods and transfers
 labware using a human transporter.
 
-See ``topology.py`` and ``workflow.py`` for the physical layout and workflow
-definition.
+See ``topology.py`` and ``workflows/example_workflow.py`` for the physical
+layout and workflow definition.
 
 Run, from the repo root::
 
@@ -20,8 +20,6 @@ import logging
 
 import orca.orca as orca
 
-from examples.simple_venus_example.topology import build_topology
-from examples.simple_venus_example.workflow import build_workflow
 from orca.runtime.run_modes import WorkflowRunMode
 from orca.runtime.store_factory import InMemoryRuntimeStoreFactory
 from orca.sdk.build import SystemBuild
@@ -29,23 +27,15 @@ from orca.sdk.build import SystemBuild
 
 orca_logger = logging.getLogger("orca")
 
+WORKFLOW_NAME = "example_workflow"
+
 
 async def build_venus() -> SystemBuild:
-    """Build a complete Venus example with fresh topology and workflow.
-
-    Safe to call multiple times: every call creates fresh device instances
-    for test isolation.
-    """
-    stores = InMemoryRuntimeStoreFactory()
-    topology = build_topology(stores)
-    workflow = build_workflow(topology)
-    return await orca.build_system(
-        "Venus Example",
-        workflow=workflow,
-        topology=topology,
-        stores=stores,
-        description="Venus Example System",
-    )
+    """Build the Venus example system. Every call makes fresh devices."""
+    build = await orca.build_system_from_package(__package__, InMemoryRuntimeStoreFactory())
+    # The package registers workflows by name; this runner runs the one it ships.
+    build.workflow = build.system.get_workflow_template(WORKFLOW_NAME)
+    return build
 
 
 async def run(sim: bool) -> None:
