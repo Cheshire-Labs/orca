@@ -1,5 +1,8 @@
 # Orca: Lab Automation Scheduler
 
+> [!CAUTION]
+> **Do not use this release.** v2.3.0 has been withdrawn because of a significant bug. A fixed release is in progress.
+
 Orca is a laboratory automation scheduler for workflows that run in parallel. It coordinates devices (liquid handlers, shakers, centrifuges, sealers, plate readers) and moves labware between them. Workflows are plain Python, so they live in your repo and diff like any other source file.
 
 ## Features
