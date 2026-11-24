@@ -12,10 +12,11 @@ from collections.abc import AsyncGenerator
 import pytest
 
 from orca.resource_models.location import Location
+from orca.state.contents import LabwareContentsLedger
 from orca.state.ops_history import OpsHistory
 from orca.resource_models.plate_pad import PlatePad
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.sim_labware import SimPlateTemplate
+from orca.modes.run_modes import WorkflowRunMode
+from orca.resource_models.sim_labware import SimPlateTemplate
 from orca.workflow_models.method_template import IMethodTemplate
 from orca.workflow_models.thread_context import ThreadContext
 from orca.workflow_models.thread_template import ThreadTemplate
@@ -23,6 +24,7 @@ from orca.workflow_models.workflows.workflow_factories import (
     MethodFactory,
     ThreadFactory,
 )
+from tests.memory_activity import memory_ops_store
 
 
 async def _empty_thread(ctx: ThreadContext) -> AsyncGenerator[IMethodTemplate, None]:
@@ -42,7 +44,7 @@ class TestLabwareThreadInstanceRunModeField:
 
     @pytest.mark.asyncio
     async def test_factory_stamps_run_mode_on_instance(self) -> None:
-        factory = ThreadFactory(MethodFactory(), OpsHistory())
+        factory = ThreadFactory(MethodFactory(), LabwareContentsLedger(OpsHistory(store=memory_ops_store())))
         template = _make_template()
         thread = await factory.create_instance(
             template, run_mode=WorkflowRunMode.LIVE,
@@ -51,7 +53,7 @@ class TestLabwareThreadInstanceRunModeField:
 
     @pytest.mark.asyncio
     async def test_factory_run_mode_is_required(self) -> None:
-        factory = ThreadFactory(MethodFactory(), OpsHistory())
+        factory = ThreadFactory(MethodFactory(), LabwareContentsLedger(OpsHistory(store=memory_ops_store())))
         template = _make_template()
         with pytest.raises(TypeError):
             # Omitting run_mode is the behavior under test; pyright flags the missing required arg.
@@ -59,14 +61,14 @@ class TestLabwareThreadInstanceRunModeField:
 
     @pytest.mark.asyncio
     async def test_run_mode_distinct_per_thread_instance(self) -> None:
-        factory = ThreadFactory(MethodFactory(), OpsHistory())
+        factory = ThreadFactory(MethodFactory(), LabwareContentsLedger(OpsHistory(store=memory_ops_store())))
         t1 = await factory.create_instance(
-            _make_template("plate_a"), run_mode=WorkflowRunMode.PURE_SIM,
+            _make_template("plate_a"), run_mode=WorkflowRunMode.CHECK_RUN,
         )
         t2 = await factory.create_instance(
             _make_template("plate_b"), run_mode=WorkflowRunMode.LIVE,
         )
-        assert t1.run_mode is WorkflowRunMode.PURE_SIM
+        assert t1.run_mode is WorkflowRunMode.CHECK_RUN
         assert t2.run_mode is WorkflowRunMode.LIVE
 
 
@@ -75,9 +77,9 @@ class TestLabwareThreadInstanceSetRunMode:
 
     @pytest.mark.asyncio
     async def test_set_run_mode_overrides_factory_value(self) -> None:
-        factory = ThreadFactory(MethodFactory(), OpsHistory())
+        factory = ThreadFactory(MethodFactory(), LabwareContentsLedger(OpsHistory(store=memory_ops_store())))
         thread = await factory.create_instance(
-            _make_template(), run_mode=WorkflowRunMode.PURE_SIM,
+            _make_template(), run_mode=WorkflowRunMode.CHECK_RUN,
         )
         thread.set_run_mode(WorkflowRunMode.LIVE)
         assert thread.run_mode is WorkflowRunMode.LIVE
@@ -91,7 +93,7 @@ class TestWorkflowFactoryPropagatesRunMode:
         from orca.workflow_models.workflows.workflow_factories import WorkflowFactory
         from orca.workflow_models.workflow_templates import WorkflowTemplate
 
-        thread_factory = ThreadFactory(MethodFactory(), OpsHistory())
+        thread_factory = ThreadFactory(MethodFactory(), LabwareContentsLedger(OpsHistory(store=memory_ops_store())))
         workflow_factory = WorkflowFactory(thread_factory)
 
         template = _make_template()
@@ -101,16 +103,16 @@ class TestWorkflowFactoryPropagatesRunMode:
         threads = await workflow_factory.build_entry_threads_for(
             wf,
             submission_id="sub-1",
-            run_mode=WorkflowRunMode.DEVICE_SIM,
+            run_mode=WorkflowRunMode.SIM,
         )
-        assert all(t.run_mode is WorkflowRunMode.DEVICE_SIM for t in threads)
+        assert all(t.run_mode is WorkflowRunMode.SIM for t in threads)
 
     @pytest.mark.asyncio
     async def test_single_lineage_create_instance_propagates_run_mode(self) -> None:
         from orca.workflow_models.workflows.workflow_factories import WorkflowFactory
         from orca.workflow_models.workflow_templates import WorkflowTemplate
 
-        thread_factory = ThreadFactory(MethodFactory(), OpsHistory())
+        thread_factory = ThreadFactory(MethodFactory(), LabwareContentsLedger(OpsHistory(store=memory_ops_store())))
         workflow_factory = WorkflowFactory(thread_factory)
 
         template = _make_template()
@@ -134,7 +136,7 @@ class TestSubmissionRunModeReachesEntryThreads:
         # and verifies the entry threads carry that mode. Acceptance test for
         # the full plumbing from the user-facing submit() call all the way to
         # the thread-instance field.
-        from orca.runtime.sim_labware import SimPlateTemplate
+        from orca.resource_models.sim_labware import SimPlateTemplate
         from orca import orca as orca_sdk
 
         plate = SimPlateTemplate("e2e_plate")

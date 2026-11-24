@@ -93,7 +93,7 @@ async def test_occupied_deck_site_blocks_foreign_labware_until_departure() -> No
     from orca.system.reservation_manager.reservation_manager import (
         LocationReservationManager,
     )
-    from orca.system.resource_registry import ResourceRegistry
+    from orca.resource_models.resource_registry import ResourceRegistry
     from orca.system.system_map import SystemMap
 
     class _Owner:
@@ -102,6 +102,7 @@ async def test_occupied_deck_site_blocks_foreign_labware_until_departure() -> No
     system_map = SystemMap(ResourceRegistry())
     site = DeckSiteLocation(
         "mlstar_1/carrier-7-1", _Owner(), mutex_position_id="mlstar_1",
+        site_name="carrier-7-1",
     )
     await system_map.add_site_location(site)
     manager = LocationReservationManager(system_map)

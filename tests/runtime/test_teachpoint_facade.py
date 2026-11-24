@@ -5,11 +5,10 @@
 - Unknown device_id raises KeyError so REST/MCP can translate to 404.
 """
 
-from typing import List, Optional
+from typing import List
 
 import pytest
 from cheshire_drivers.teachpoints import (
-    AccessConfig,
     CartesianCoordinates,
     JointCoordinates,
     Teachpoint,
@@ -17,9 +16,9 @@ from cheshire_drivers.teachpoints import (
 
 from orca.resource_models.transporter import Transporter
 from orca.runtime.facades.teachpoints import TeachpointFacade
-from orca.runtime.teachpoint_service import seeded_teachpoint_service
-from orca.system.resource_registry import ResourceRegistry
+from orca.resource_models.resource_registry import ResourceRegistry
 from orca.system.system_map import SystemMap
+from tests.setup_package import teachpoint_file, with_teachpoints
 
 
 def _cartesian_tp(name: str, x: float = 100.0) -> Teachpoint:
@@ -77,10 +76,9 @@ def _build_facade(
     """
     transporters: dict[str, Transporter] = {}
     for name, seed in transporter_seeds.items():
-        transporters[name] = Transporter(
+        transporters[name] = with_teachpoints(Transporter(
             name=name,
-            teachpoint_store=seeded_teachpoint_service(seed),
-        )
+        ), teachpoint_file(seed))
     fake_system = _FakeSystemWithTransporters(transporters)
     facade = TeachpointFacade(fake_system)
     return facade, transporters

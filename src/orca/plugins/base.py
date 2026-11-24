@@ -2,14 +2,13 @@
 
 OrcaPlugin is the foundation for extending Orca with custom behavior.
 Plugins receive RuntimeEvents from the SystemEventBus (all executions)
-and can interact with the live system via self.system.
+and can read the live system via self.system. A plugin offers no commands.
+A plugin is a watcher: one that raises is logged, and the other plugins and
+the code that emitted the event carry on.
 
 Examples of plugins:
-    - Tracking: method progress, labware journeys, timing metrics
     - Notifications: webhook calls, email alerts on errors
-    - Frontend backends: serve live status to a custom GUI
-    - AI integration: feed events to an AI agent for decision-making
-    - Variable control: set runtime variables based on sensor data
+    - Metrics: step timings sent to a monitoring system
 
 Writing a plugin:
 
@@ -28,26 +27,8 @@ Writing a plugin:
     # self.system is auto-injected when the plugin is registered
 """
 
-from dataclasses import dataclass
-from typing import Awaitable, Callable
-
 from orca.events.event_handlers import SystemBoundEventHandler
 from orca.events.runtime_event import RuntimeEvent
-
-
-@dataclass(frozen=True)
-class PluginCommand:
-    """A command that a plugin exposes to CLI/MCP/REST interfaces.
-
-    The handler is async so plugins can read OpsHistory or other async
-    system facades; the dispatcher (``SystemRuntime.execute_plugin_command``)
-    awaits the result and returns its string body to the caller.
-    """
-
-    name: str
-    description: str
-    usage: str
-    handler: Callable[[list[str]], Awaitable[str]]
 
 
 class OrcaPlugin(SystemBoundEventHandler):
@@ -59,15 +40,8 @@ class OrcaPlugin(SystemBoundEventHandler):
 
     self.system is available for querying or interacting with the live
     system (threads, devices, workflows, etc.).
-
-    Override get_commands() to expose plugin-specific commands to
-    CLI/MCP/REST interfaces.
     """
 
     def handle_runtime_event(self, event: RuntimeEvent) -> None:
         """Called for every RuntimeEvent across all executions. Override to react."""
         ...
-
-    def get_commands(self) -> list[PluginCommand]:
-        """Return commands this plugin exposes to CLI/MCP/REST. Default: none."""
-        return []

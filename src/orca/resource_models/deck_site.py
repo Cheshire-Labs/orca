@@ -2,6 +2,7 @@ from typing import List, Optional
 
 from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.labware_placeable_interface import ILabwarePlaceable, IPlateMover
+from orca.resource_models.labware_directory import LabwarePlacements
 from orca.resource_models.position_occupancy import PositionOccupancy
 
 
@@ -21,6 +22,9 @@ class DeckSite(ILabwarePlaceable):
     def name(self) -> str:
         return self._name
 
+    def bind_placements(self, placements: LabwarePlacements) -> None:
+        self._occupancy.bind_placements(placements)
+
     @property
     def labware(self) -> Optional[LabwareInstance]:
         return self._occupancy.labware
@@ -36,17 +40,19 @@ class DeckSite(ILabwarePlaceable):
     def initialize_labware(self, labware: LabwareInstance) -> None:
         self._occupancy.arrive(labware)
 
-    async def prepare_for_pick(self, labware: LabwareInstance, mover: IPlateMover) -> None:
+    async def prepare_for_pick(self, labware: LabwareInstance | None, mover: IPlateMover) -> None:
         pass
 
-    async def prepare_for_place(self, labware: LabwareInstance, mover: IPlateMover) -> None:
+    async def prepare_for_place(self, labware: LabwareInstance | None, mover: IPlateMover) -> None:
         pass
 
-    async def notify_picked(self, labware: LabwareInstance, mover: IPlateMover) -> None:
-        self._occupancy.leave(labware)
+    async def notify_picked(self, labware: LabwareInstance | None, mover: IPlateMover) -> None:
+        if labware is not None:
+            self._occupancy.leave(labware)
 
-    async def notify_placed(self, labware: LabwareInstance, mover: IPlateMover) -> None:
-        self._occupancy.arrive(labware)
+    async def notify_placed(self, labware: LabwareInstance | None, mover: IPlateMover) -> None:
+        if labware is not None:
+            self._occupancy.arrive(labware)
 
     async def dispose_labware(self, labware: LabwareInstance) -> None:
         self._occupancy.leave(labware)

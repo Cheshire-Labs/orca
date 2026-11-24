@@ -13,7 +13,7 @@ from collections.abc import AsyncGenerator
 import pytest
 
 import orca.orca as orca
-from orca.runtime.runtime_interface import ReuseThreadCannotBeEntryError
+from orca.workflow_models.errors import ReuseThreadCannotBeEntryError
 from orca.spawn import REUSE_EXISTING
 from orca.workflow_models.action_template import ActionTemplate
 from orca.workflow_models.method_context import MethodContext

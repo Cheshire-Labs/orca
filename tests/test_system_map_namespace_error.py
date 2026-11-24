@@ -20,7 +20,7 @@ import pytest
 
 from orca.resource_models.location import Location
 from orca.resource_models.plate_pad import PlatePad
-from orca.system.resource_registry import ResourceRegistry
+from orca.resource_models.resource_registry import ResourceRegistry
 from orca.system.system_map import SystemMap
 
 
@@ -110,6 +110,7 @@ async def _system_map_with_a_two_site_device() -> SystemMap:
         await sm.add_site_location(DeckSiteLocation(
             site, owner=_Owner("mlstar"), resource=DeckSite(site),
             mutex_position_id="mlstar",
+        site_name=site,
         ))
     return sm
 
@@ -145,6 +146,7 @@ async def _system_map_with_a_single_site_device() -> SystemMap:
     await sm.add_site_location(DeckSiteLocation(
         "shaker_1/nest", owner=_Owner("shaker_1"), resource=DeckSite("shaker_1/nest"),
         mutex_position_id="shaker_1",
+        site_name="nest",
     ))
     return sm
 

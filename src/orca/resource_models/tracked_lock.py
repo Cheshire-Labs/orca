@@ -31,7 +31,7 @@ orca_logger = logging.getLogger("orca")
 
 # Below this a wait is ordinary turn-taking and not worth a line.
 _WAIT_WORTH_REPORTING_SECONDS = 1.0
-# One line per lock per window: park_gantry retries its acquire every couple
+# One line per lock per window: the reach-in lease retries its acquire every couple
 # of seconds for 15 minutes, and unthrottled that buries the rest of the log.
 _WAIT_REPORT_INTERVAL_SECONDS = 30.0
 
@@ -47,6 +47,7 @@ class TrackedLock:
         self._name = name
         self._lock = asyncio.Lock()
         self._holder: Optional[str] = None
+        self._holding_task: Optional[asyncio.Task[object]] = None
         self._last_reported = 0.0
         self._last_start_reported = 0.0
 
@@ -63,6 +64,10 @@ class TrackedLock:
         return self._lock.locked()
 
     @property
+    def held_by_this_task(self) -> bool:
+        return self._holding_task is not None and self._holding_task is asyncio.current_task()
+
+    @property
     def wait_subject(self) -> str:
         """This lock and whoever holds it right now, in operator words."""
         held_by = self._holder or "a call that has not named itself"
@@ -70,7 +75,13 @@ class TrackedLock:
 
     @asynccontextmanager
     async def held_for(self, purpose: str) -> AsyncIterator[None]:
-        """Hold the lock for the duration of the block, on the record."""
+        """Hold the lock for the duration of the block, on the record.
+
+        A task that already holds it passes straight through: the outer hold covers the inner one.
+        """
+        if self.held_by_this_task:
+            yield
+            return
         slot = current_lock_wait.get()
         waiter = f"{purpose} ({slot.owner})" if slot is not None else purpose
         started = time.monotonic()
@@ -86,9 +97,11 @@ class TrackedLock:
                 slot.clear_wait()
         self._report_wait(waiter, time.monotonic() - started)
         self._holder = waiter
+        self._holding_task = asyncio.current_task()
         try:
             yield
         finally:
+            self._holding_task = None
             self._holder = None
             self._lock.release()
 

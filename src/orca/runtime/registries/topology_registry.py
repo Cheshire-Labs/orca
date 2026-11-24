@@ -1,7 +1,7 @@
 """SystemTopologyRegistry: walks the System graph to enumerate declared devices.
 
 This is the source-available, in-process implementation of `ITopologyRegistry`. It reads
-from `system.resource_registry`: every `Transporter(...)`, `Shaker(...)`,
+from `resource_models.resource_registry`: every `Transporter(...)`, `Shaker(...)`,
 `LiquidHandler(...)`, etc. registered there counts as a topology declaration.
 For each device the registry emits a `TopologyDeviceEntry` carrying the
 operator-visible name, the kind label (e.g. ``"shaker"``), the
@@ -17,7 +17,7 @@ display the same label on both sides.
 from orca.gateway.gateway_backed_driver import GatewayBackedDriver
 from orca.resource_models.devices import Device
 from orca.resource_models.transporter import Transporter
-from orca.runtime.runtime_interface import ITopologyRegistry
+from orca.runtime.registry_protocols import ITopologyRegistry
 from orca.runtime.status_models import TopologyDeviceEntry
 from orca.system.system_interface import ISystem
 
@@ -46,13 +46,7 @@ class SystemTopologyRegistry(ITopologyRegistry):
 
     @staticmethod
     def _build_entry(resource: Device | Transporter) -> TopologyDeviceEntry:
-        # Topology cards describe the deployment's declared capability
-        # surface, which is the live driver's contract. Reading through
-        # `resource.driver` (the dispatch property) would leak the sim
-        # driver's interfaces under an unseeded `current_run_mode` because
-        # dispatch falls back to PURE_SIM there. Sim and live drivers are
-        # not required to declare identical `interfaces` ClassVar sets.
-        driver = resource.live_driver
+        driver = resource.driver
         # A local driver's ClassVar IS its declaration. A gateway-built one's is
         # a placeholder until its client connects and fills the advertised card.
         gateway_backed = isinstance(driver, GatewayBackedDriver)
@@ -77,6 +71,5 @@ class SystemTopologyRegistry(ITopologyRegistry):
             kind=type(resource).KIND,
             interfaces=interfaces,
             position_ids=position_ids,
-            sim_override=resource.sim_override,
             interfaces_are_class_defaults=interfaces_are_class_defaults,
         )

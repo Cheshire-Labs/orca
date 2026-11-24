@@ -13,18 +13,20 @@ was already sitting in front of it, with no pause, no error and nothing on any
 surface to say what was missing.
 """
 
+from orca.config import OrcaConfig
 import asyncio
 from collections.abc import AsyncGenerator
 
-import pytest
 
 import orca.orca as orca
 from orca.events.event_bus import EventBus
 from orca.resource_models.location import LabwareLocationEvent, Location
 from orca.resource_models.resource_pool import ResourcePool
 from orca.resource_models.transporter import Transporter
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from orca.runtime.system_runtime import ExecutionState, SystemRuntime
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
 from orca.sdk.system import ResourceRegistry, SystemMap
 from orca.sdk.workflow import WorkflowTemplate
 from orca.system.SdkToSystemBuilder import SdkToSystemBuilder
@@ -40,10 +42,12 @@ from tests.mock import UniversalMockDevice
 from tests.test_helpers import (
     create_test_plate_template,
     create_test_teachpoints,
-    seeded_teachpoint_service,
     wait_for_paused_thread,
     wire_system_map,
 )
+from tests.setup_package import teachpoint_file
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 OWNER_SITE = "dev1/site-1"
 JOINER_SITE = "dev1/site-2"
@@ -53,12 +57,10 @@ class _ArmThatJamsOnOnePlace(Transporter):
     """Fails the place at one position, so a move gets as far as the jaws."""
 
     def __init__(self, name: str, position_ids: list[str]) -> None:
-        super().__init__(
-            name,
-            teachpoint_store=seeded_teachpoint_service(
+        super().__init__(name)
+        self.bind_teachpoints(teachpoint_file(
                 create_test_teachpoints(position_ids)
-            ),
-        )
+            ))
         self.jam_at: str | None = None
 
     async def place(self, location: Location) -> None:
@@ -144,11 +146,14 @@ async def _build_rendezvous() -> tuple[
         name="test_system", description="",
         labwares=[owner_plate, joiner_plate],
         resources_registry=registry, system_map=system_map,
-        workflows=[workflow], event_bus=event_bus,
+        workflows=[workflow], event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     return (
-        SystemRuntime(builder.get_system(), event_bus=event_bus),
+        await memory_runtime(builder.get_system(), event_bus=event_bus),
         workflow, arm, device,
     )
 
@@ -166,7 +171,7 @@ async def test_a_hand_finished_move_reaches_the_action_waiting_on_it() -> None:
     await runtime.start()
     try:
         record = await runtime.submit_workflow(
-            workflow.name, mode=WorkflowRunMode.PURE_SIM,
+            workflow.name, mode=WorkflowRunMode.CHECK_RUN,
         )
         paused = await wait_for_paused_thread(runtime, record.id)
         assert paused.labware_id is not None

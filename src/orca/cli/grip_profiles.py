@@ -13,7 +13,7 @@ from pydantic import ValidationError
 
 from orca.cli import output
 from orca.cli.backend import get_client
-from orca.daemon.schemas import GripProfileDTO, GripProfilePatchRequest
+from orca.operations.wire_models import GripProfileDTO, GripProfilePatchRequest
 
 
 app = typer.Typer(

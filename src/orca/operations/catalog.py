@@ -1,3 +1,10 @@
+from orca.operations.catalog_models import (
+    GET_METHOD_ROUTE,
+    GET_WORKFLOW_ROUTE,
+    LIST_METHODS_ROUTE,
+    LIST_THREAD_TEMPLATES_ROUTE,
+    LIST_WORKFLOWS_ROUTE,
+)
 """Catalog read Operations.
 
 Surfaces the `IRegistryFacade` catalog read methods that operators / AI
@@ -5,8 +12,6 @@ agents call to inventory the loaded system:
 - ListWorkflows / GetWorkflow
 - ListMethods / GetMethod
 - ListThreadTemplates
-- ListLocations
-- ListPlugins
 
 All read-only; no Scope dispatch; no @dangerous wrap.
 
@@ -14,37 +19,40 @@ Wire mirrors: the source snapshots are frozen dataclasses on
 ``orca.runtime.status_models`` (``WorkflowTemplateSnapshot``,
 ``MethodTemplateSnapshot``, ``ThreadTemplateSnapshot``,
 ``LocationSnapshot``). The Operations expose them as the typed
-``orca.daemon.schemas`` DTOs of the same shape; ``dataclasses.asdict``
+``orca.operations.wire_models`` DTOs of the same shape; ``dataclasses.asdict``
 + ``model_validate`` does the conversion field-by-field, so a snapshot
 field rename surfaces at type-check time instead of silently dropping.
 """
 
+from orca.operations.binding import RestBinding
 import dataclasses
 from typing import ClassVar
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
 
-from orca.daemon.schemas import (
-    LocationDTO,
+from orca.operations.wire_models import (
     MethodTemplateDTO,
     ThreadTemplateDTO,
     WorkflowTemplateDTO,
 )
-from orca.operations._protocol import OperationError
+from orca.operations.error_codes import ErrorCode
+from orca.operations.protocol import OperationError
+from orca.operations.catalog_models import (
+    EmptyRequest,
+    GetMethodRequest,
+    GetMethodResponse,
+    GetWorkflowRequest,
+    GetWorkflowResponse,
+    ListMethodsResponse,
+    ListThreadTemplatesResponse,
+    ListWorkflowsResponse,
+)
 from orca.runtime.runtime_interface import ISystemRuntime
 from orca.runtime.status_models import (
-    LocationSnapshot,
     MethodTemplateSnapshot,
     ThreadTemplateSnapshot,
     WorkflowTemplateSnapshot,
 )
-
-
-# -- Generic empty request --------------------------------------------------
-
-
-class _EmptyRequest(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
 
 
 # -- Snapshot -> DTO converters (typed; one per source dataclass) -----------
@@ -62,26 +70,18 @@ def _thread_to_dto(snap: ThreadTemplateSnapshot) -> ThreadTemplateDTO:
     return ThreadTemplateDTO.model_validate(dataclasses.asdict(snap))
 
 
-def _location_to_dto(snap: LocationSnapshot) -> LocationDTO:
-    return LocationDTO.model_validate(dataclasses.asdict(snap))
-
-
 # -- ListWorkflows ----------------------------------------------------------
 
 
-class ListWorkflowsResponse(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-    workflows: list[WorkflowTemplateDTO]
-
-
 class ListWorkflowsOperation:
-    Request: ClassVar[type[BaseModel]] = _EmptyRequest
-    Response: ClassVar[type[BaseModel]] = ListWorkflowsResponse
+    Request: ClassVar[type[BaseModel]] = LIST_WORKFLOWS_ROUTE.request
+    Response: ClassVar[type[BaseModel]] = LIST_WORKFLOWS_ROUTE.response
+    binding: ClassVar[RestBinding] = LIST_WORKFLOWS_ROUTE.binding
 
     def __init__(self, runtime: ISystemRuntime):
         self._runtime = runtime
 
-    async def run(self, req: _EmptyRequest) -> ListWorkflowsResponse:
+    async def run(self, req: EmptyRequest) -> ListWorkflowsResponse:
         del req
         snaps = self._runtime.registry.list_workflow_templates()
         return ListWorkflowsResponse(
@@ -92,19 +92,15 @@ class ListWorkflowsOperation:
 # -- ListMethods ------------------------------------------------------------
 
 
-class ListMethodsResponse(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-    methods: list[MethodTemplateDTO]
-
-
 class ListMethodsOperation:
-    Request: ClassVar[type[BaseModel]] = _EmptyRequest
-    Response: ClassVar[type[BaseModel]] = ListMethodsResponse
+    Request: ClassVar[type[BaseModel]] = LIST_METHODS_ROUTE.request
+    Response: ClassVar[type[BaseModel]] = LIST_METHODS_ROUTE.response
+    binding: ClassVar[RestBinding] = LIST_METHODS_ROUTE.binding
 
     def __init__(self, runtime: ISystemRuntime):
         self._runtime = runtime
 
-    async def run(self, req: _EmptyRequest) -> ListMethodsResponse:
+    async def run(self, req: EmptyRequest) -> ListMethodsResponse:
         del req
         snaps = self._runtime.registry.list_method_templates()
         return ListMethodsResponse(
@@ -115,19 +111,15 @@ class ListMethodsOperation:
 # -- ListThreadTemplates ----------------------------------------------------
 
 
-class ListThreadTemplatesResponse(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-    threads: list[ThreadTemplateDTO]
-
-
 class ListThreadTemplatesOperation:
-    Request: ClassVar[type[BaseModel]] = _EmptyRequest
-    Response: ClassVar[type[BaseModel]] = ListThreadTemplatesResponse
+    Request: ClassVar[type[BaseModel]] = LIST_THREAD_TEMPLATES_ROUTE.request
+    Response: ClassVar[type[BaseModel]] = LIST_THREAD_TEMPLATES_ROUTE.response
+    binding: ClassVar[RestBinding] = LIST_THREAD_TEMPLATES_ROUTE.binding
 
     def __init__(self, runtime: ISystemRuntime):
         self._runtime = runtime
 
-    async def run(self, req: _EmptyRequest) -> ListThreadTemplatesResponse:
+    async def run(self, req: EmptyRequest) -> ListThreadTemplatesResponse:
         del req
         snaps = self._runtime.registry.list_thread_templates()
         return ListThreadTemplatesResponse(
@@ -135,40 +127,7 @@ class ListThreadTemplatesOperation:
         )
 
 
-# -- ListLocations ----------------------------------------------------------
-
-
-class ListLocationsResponse(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-    locations: list[LocationDTO]
-
-
-class ListLocationsOperation:
-    Request: ClassVar[type[BaseModel]] = _EmptyRequest
-    Response: ClassVar[type[BaseModel]] = ListLocationsResponse
-
-    def __init__(self, runtime: ISystemRuntime):
-        self._runtime = runtime
-
-    async def run(self, req: _EmptyRequest) -> ListLocationsResponse:
-        del req
-        snaps = self._runtime.registry.list_locations()
-        return ListLocationsResponse(
-            locations=[_location_to_dto(s) for s in snaps],
-        )
-
-
 # -- GetWorkflow -------------------------------------------------------------
-
-
-class GetWorkflowRequest(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-    name: str
-
-
-class GetWorkflowResponse(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-    workflow: WorkflowTemplateDTO
 
 
 class GetWorkflowOperation:
@@ -182,8 +141,9 @@ class GetWorkflowOperation:
     serializable mirror.
     """
 
-    Request: ClassVar[type[BaseModel]] = GetWorkflowRequest
-    Response: ClassVar[type[BaseModel]] = GetWorkflowResponse
+    Request: ClassVar[type[BaseModel]] = GET_WORKFLOW_ROUTE.request
+    Response: ClassVar[type[BaseModel]] = GET_WORKFLOW_ROUTE.response
+    binding: ClassVar[RestBinding] = GET_WORKFLOW_ROUTE.binding
 
     def __init__(self, runtime: ISystemRuntime):
         self._runtime = runtime
@@ -192,24 +152,14 @@ class GetWorkflowOperation:
         snaps = self._runtime.registry.list_workflow_templates()
         match = next((s for s in snaps if s.name == req.name), None)
         if match is None:
-            raise OperationError.not_found(
+            raise OperationError.of(
+                ErrorCode.WORKFLOW_NOT_FOUND,
                 f"workflow {req.name!r} not found", workflow_name=req.name,
             )
         return GetWorkflowResponse(workflow=_workflow_to_dto(match))
 
 
 # -- GetMethod --------------------------------------------------------------
-
-
-class GetMethodRequest(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-    name: str
-    workflow_name: str | None = None
-
-
-class GetMethodResponse(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-    method: MethodTemplateDTO
 
 
 class GetMethodOperation:
@@ -222,8 +172,9 @@ class GetMethodOperation:
     the separate git-files surface each host exposes.
     """
 
-    Request: ClassVar[type[BaseModel]] = GetMethodRequest
-    Response: ClassVar[type[BaseModel]] = GetMethodResponse
+    Request: ClassVar[type[BaseModel]] = GET_METHOD_ROUTE.request
+    Response: ClassVar[type[BaseModel]] = GET_METHOD_ROUTE.response
+    binding: ClassVar[RestBinding] = GET_METHOD_ROUTE.binding
 
     def __init__(self, runtime: ISystemRuntime):
         self._runtime = runtime
@@ -233,13 +184,23 @@ class GetMethodOperation:
         if req.workflow_name is not None:
             snaps = [s for s in snaps if s.workflow_name == req.workflow_name]
         if not snaps:
-            raise OperationError.not_found(
+            raise OperationError.of(
+                ErrorCode.METHOD_NOT_FOUND,
                 f"method {req.name!r} not found", method_name=req.name,
             )
         if len(snaps) > 1:
             owners = sorted(s.workflow_name for s in snaps)
-            raise OperationError.invalid_input(
+            raise OperationError.validation_error(
                 f"method {req.name!r} is defined by multiple workflows "
                 f"{owners}; pass workflow_name to disambiguate",
             )
         return GetMethodResponse(method=_method_to_dto(snaps[0]))
+
+
+CATALOG_OPERATIONS = (
+    ListWorkflowsOperation,
+    ListMethodsOperation,
+    ListThreadTemplatesOperation,
+    GetWorkflowOperation,
+    GetMethodOperation,
+)

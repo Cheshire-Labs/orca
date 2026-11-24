@@ -13,7 +13,7 @@ from pydantic import ValidationError
 
 from orca.cli import output
 from orca.cli.backend import get_client
-from orca.daemon.schemas import MoveDefaultsDTO, MoveDefaultsPatchRequest
+from orca.operations.wire_models import MoveDefaultsDTO, MoveDefaultsPatchRequest
 
 
 app = typer.Typer(

@@ -3,12 +3,11 @@
 - `orca start`     spawns the daemon as a detached subprocess, polls /health,
                    prints the PID and port. Does NOT load a system; the
                    daemon is idle until `orca topology mount`.
-- `orca unload`    POST /unload. Tears down the loaded SystemRuntime; daemon
+- `orca unload`    POST /api/runtime/unload. Tears down the loaded SystemRuntime; daemon
                    keeps running, ready for another `orca topology mount`.
 - `orca shutdown`  POST /shutdown. Daemon unloads (if needed) then exits.
 
-Topology mount + workflow load are backend-dispatched verbs that live in
-`orca.cli.topology` / `orca.cli.registry`, not here.
+`orca topology mount` is a backend-dispatched verb in `orca.cli.topology`, not here.
 
 All HTTP calls dial http://127.0.0.1:<port> where port is read from the
 PID file.
@@ -18,41 +17,46 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
-import httpx
 import typer
 
 from orca.cli import output
+from orca.cli.client import OrcaClient
+from orca.cli.control_plane import ControlPlaneError
+from orca.operations.system_loading_models import UNLOAD_ROUTE
 from orca.daemon.lifecycle import (
     DaemonInfo,
     delete_pid_file,
     detect_live_daemon,
+    is_pid_alive,
     log_file_path,
     pick_free_port,
     pid_file_path as _pid_file_path,
     read_pid_file,
-)
-from orca.daemon.schemas import (
-    ErrorResponse,
-    ShutdownResponse,
-    UnloadResponse,
 )
 
 
 _HEALTH_POLL_INTERVAL_S = 0.1
 # A first start on a fresh install compiles every module it imports: 18 s on a laptop.
 _HEALTH_POLL_TIMEOUT_S = 60.0
-# The runtime's shutdown bounds each of its four drains at 30 s, and draining
-# live executions comes before them. /shutdown runs the same drains as /unload.
-_UNLOAD_TIMEOUT_S = 180.0
+# `orca shutdown` stops waiting for /shutdown after this, then signals the daemon.
+_SHUTDOWN_DEADLINE_S = 180.0
+# An acknowledged daemon still has to disconnect its devices and exit; `orca shutdown` waits this long for that.
+_EXIT_DEADLINE_S = 180.0
+_EXIT_POLL_INTERVAL_S = 0.1
 # How long a signalled daemon gets to remove its own PID file.
 _SIGNAL_GRACE_S = 5.0
 
 
 def _base_url(info: DaemonInfo) -> str:
     return f"http://127.0.0.1:{info.port}"
+
+
+def _daemon_client(info: DaemonInfo) -> OrcaClient:
+    return OrcaClient(_base_url(info), peer=f"the daemon at {_base_url(info)}")
 
 
 def _require_running_daemon() -> DaemonInfo:
@@ -144,21 +148,16 @@ def _read_startup_err(max_lines: int = 40) -> str:
 
 
 def _wait_for_health(port: int) -> bool:
-    """Poll GET http://127.0.0.1:port/health until 200 or `_HEALTH_POLL_TIMEOUT_S` runs out.
+    """Poll the daemon's `/health` until it answers or `_HEALTH_POLL_TIMEOUT_S` runs out.
 
     Read at call time, so the wait and the failure message that names it always agree.
     """
-    url = f"http://127.0.0.1:{port}/health"
+    client = OrcaClient(f"http://127.0.0.1:{port}", timeout=1.0)
     deadline = time.time() + _HEALTH_POLL_TIMEOUT_S
-    with httpx.Client(timeout=1.0) as client:
-        while time.time() < deadline:
-            try:
-                r = client.get(url)
-                if r.status_code == 200:
-                    return True
-            except httpx.HTTPError:
-                pass
-            time.sleep(_HEALTH_POLL_INTERVAL_S)
+    while time.time() < deadline:
+        if client.health():
+            return True
+        time.sleep(_HEALTH_POLL_INTERVAL_S)
     return False
 
 
@@ -178,8 +177,8 @@ def start(
 ) -> None:
     """Spawn the daemon process. No system loaded; run `orca topology mount` next.
 
-    Run it from your project root: the daemon imports the modules that
-    `orca topology mount` and `orca workflow load` name from this directory.
+    Run it from your package folder, or set `ORCA_PACKAGE_DIR`: the daemon
+    builds that folder's `topology.py` and `workflows/` on `orca topology mount`.
     """
     existing = detect_live_daemon(_pid_file_path())
     if existing is not None:
@@ -217,7 +216,7 @@ def start(
         )
     output.info(
         f"daemon started (pid={info.pid}, port={info.port}). "
-        "No system loaded -- run `orca topology mount <spec>` next.",
+        "No system loaded -- run `orca topology mount` next.",
     )
 
 
@@ -228,24 +227,15 @@ def shutdown() -> None:
         output.info("no daemon running")
         return
 
-    url = f"{_base_url(info)}/shutdown"
-    try:
-        with httpx.Client(timeout=_UNLOAD_TIMEOUT_S) as client:
-            r = client.post(url)
-            if r.status_code == 200:
-                ShutdownResponse.model_validate(r.json())
-                output.info(f"daemon stopped (pid={info.pid})")
-                # The daemon removes its own PID file on exit.
-                return
-            # Unexpected status from a live-looking daemon -- fall through
-            # to SIGTERM fallback.
-    except httpx.HTTPError:
-        pass
+    acknowledged = _shutdown_acknowledged(info)
+    # The answer comes before the process exits, and a live PID file makes the next `orca start` refuse.
+    if acknowledged and _exited(info.pid):
+        output.info(f"daemon stopped (pid={info.pid})")
+        # The daemon removes its own PID file on exit.
+        return
 
-    # Fallback: daemon didn't acknowledge shutdown; signal it directly.
-    output.warn(
-        f"daemon did not acknowledge /shutdown; sending signal (pid={info.pid})",
-    )
+    happened = "acknowledged /shutdown and is still running" if acknowledged else "did not acknowledge /shutdown"
+    output.warn(f"daemon {happened}; sending signal (pid={info.pid})")
     try:
         os.kill(info.pid, signal.SIGTERM)
     except (ProcessLookupError, PermissionError) as e:
@@ -258,30 +248,46 @@ def shutdown() -> None:
     output.info("daemon stopped (forced)")
 
 
+def _exited(pid: int) -> bool:
+    """Whether the daemon's process ended within `_EXIT_DEADLINE_S`."""
+    deadline = time.time() + _EXIT_DEADLINE_S
+    while is_pid_alive(pid):
+        if time.time() >= deadline:
+            return False
+        time.sleep(_EXIT_POLL_INTERVAL_S)
+    return True
+
+
+def _shutdown_acknowledged(info: DaemonInfo) -> bool:
+    """Whether the daemon acknowledged /shutdown within `_SHUTDOWN_DEADLINE_S`."""
+    finished = threading.Event()
+    acknowledged = threading.Event()
+
+    def ask() -> None:
+        try:
+            _daemon_client(info).shutdown()
+            acknowledged.set()
+        except ControlPlaneError:
+            pass
+        finally:
+            finished.set()
+
+    # A daemon thread: one left blocked on a hung daemon must not keep the CLI from exiting.
+    threading.Thread(target=ask, daemon=True).start()
+    finished.wait(_SHUTDOWN_DEADLINE_S)
+    return acknowledged.is_set()
+
+
 def unload() -> None:
     """Unload the current topology. Daemon keeps running."""
     info = _require_running_daemon()
-    url = f"{_base_url(info)}/unload"
     try:
-        with httpx.Client(timeout=_UNLOAD_TIMEOUT_S) as client:
-            r = client.post(url)
-    except httpx.HTTPError as e:
-        message, code = output.transport_failure(
-            e, f"the daemon at {_base_url(info)}", _UNLOAD_TIMEOUT_S,
-        )
-        output.fail(message, code=code)
-    if r.status_code != 200:
-        err = _parse_error(r)
+        _daemon_client(info).unload()
+    except ControlPlaneError as e:
+        if e.http_status is None:
+            output.fail(str(e), code=e.exit_code or output.EXIT_GENERIC)
         output.fail(
-            f"/unload failed ({r.status_code}): {err}",
-            code=output.exit_code_for_status(r.status_code),
+            f"{UNLOAD_ROUTE.binding.url} failed ({e.http_status}): {e.detail}",
+            code=output.exit_code_for_status(e.http_status),
         )
-    UnloadResponse.model_validate(r.json())
     output.info("topology unloaded; daemon still running")
-
-
-def _parse_error(resp: httpx.Response) -> str:
-    try:
-        return ErrorResponse.model_validate(resp.json()).detail
-    except Exception:
-        return resp.text or f"HTTP {resp.status_code}"

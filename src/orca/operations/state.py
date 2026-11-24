@@ -1,5 +1,6 @@
 """Operations over the state nobody has settled."""
 
+from orca.operations.binding import RestBinding
 from typing import ClassVar
 from pydantic import BaseModel
 from orca.runtime.runtime_interface import ISystemRuntime
@@ -8,11 +9,15 @@ from orca.operations.state_models import (
     UnsettledStateResponse,
     UnsettledSubjectDTO,
 )
+from orca.operations.state_models import (
+    UNSETTLED_STATE_ROUTE,
+)
 
 
 class UnsettledStateOperation:
-    Request: ClassVar[type[BaseModel]] = UnsettledStateRequest
-    Response: ClassVar[type[BaseModel]] = UnsettledStateResponse
+    Request: ClassVar[type[BaseModel]] = UNSETTLED_STATE_ROUTE.request
+    Response: ClassVar[type[BaseModel]] = UNSETTLED_STATE_ROUTE.response
+    binding: ClassVar[RestBinding] = UNSETTLED_STATE_ROUTE.binding
 
     def __init__(self, runtime: ISystemRuntime):
         self._runtime = runtime

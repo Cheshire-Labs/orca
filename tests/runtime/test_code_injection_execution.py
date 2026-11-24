@@ -17,6 +17,7 @@ the code-injection allow-list) -- so a fake `deployment_package` module
 exposes the live pool/plate objects.
 """
 
+from orca.events.event_bus import EventBus
 import asyncio
 import sys
 import textwrap
@@ -32,11 +33,11 @@ from orca.operations.thread_models import InsertActionRequest, InsertMethodReque
 from orca.resource_models.plate_pad import PlatePad
 from orca.resource_models.resource_pool import ResourcePool
 from orca.runtime.runtime_interface import ISystemRuntime
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from orca.runtime.sinks import CollectorSink
-from orca.runtime.store_factory import InMemoryRuntimeStoreFactory
 from orca.runtime.system_runtime import ExecutionState, SystemRuntime
-from orca.sdk.build import Topology, build_system, compile_workflow_code
+from orca.sdk.build import Topology, compile_workflow_code
+from orca.sdk.package import build_system
 from orca.workflow_models.method_template import _PENDING_METHOD_TEMPLATES
 from orca.workflow_models.status_enums import RecoveryDecision
 from orca.workflow_models.thread_template import _PENDING_THREAD_TEMPLATES
@@ -44,6 +45,8 @@ from tests.mutation_helpers import pause_and_wait, wait_for_paused, wait_for_thr
 from tests.test_error_recovery import _build_two_action_failing_system
 from tests.test_helpers import create_test_device, create_test_transporter
 from tests.test_thread_mutation import _build_system
+from tests.setup_package import package_stores
+from tests.memory_activity import memory_ops_store, memory_runtime
 
 
 @pytest.fixture(autouse=True)
@@ -109,7 +112,7 @@ async def test_compiled_method_inserts_and_executes() -> None:
     f.device.shake = tracking_shake  # type: ignore[method-assign]
 
     await f.runtime.start()
-    record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+    record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
     threads = await wait_for_threads(f.runtime, record.id)
     await pause_and_wait(f.runtime, record.id, threads[0].id)
 
@@ -119,7 +122,7 @@ async def test_compiled_method_inserts_and_executes() -> None:
 
         @orca.action(device=injected_pool, inputs=[injected_plate])
         async def injected_shake(ctx):
-            await ctx.device().shake(duration=1, speed=4242)
+            await ctx.device().shake(duration=1, speed=1242)
 
         @orca.method
         async def injected_method(ctx):
@@ -144,7 +147,7 @@ async def test_compiled_method_inserts_and_executes() -> None:
         and isinstance(e.context, MethodExecutionContext)
     ]
     assert "injected_method" in completed, f"injected method never executed: {completed}"
-    assert 4242 in speed_log, f"injected action's device call never fired: {speed_log}"
+    assert 1242 in speed_log, f"injected action's device call never fired: {speed_log}"
 
     await f.runtime.shutdown()
 
@@ -171,7 +174,7 @@ async def test_compiled_action_inserts_and_executes() -> None:
     f.device.seal = tracking_seal  # type: ignore[method-assign]
 
     await f.runtime.start()
-    record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+    record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
     thread_id = await wait_for_paused(f.runtime, record.id)
 
     pool = f.runtime.system.get_resource_pool("shaker1")
@@ -240,7 +243,7 @@ async def test_compiled_workflow_runs_to_completion() -> None:
 
             @orca.action(device=shaker_pool, inputs=[plate])
             async def shake_action(ctx):
-                await ctx.device().shake(duration=1, speed=7777)
+                await ctx.device().shake(duration=1, speed=1777)
 
             @orca.method
             async def shake_method(ctx):
@@ -258,14 +261,14 @@ async def test_compiled_workflow_runs_to_completion() -> None:
     """)
 
     template = compile_workflow_code(source, topology)
-    build = await build_system("src_test", topology, InMemoryRuntimeStoreFactory(), workflow=template)
-    runtime = SystemRuntime(build.system, event_bus=build.event_bus)
+    build = await build_system("src_test", topology, package_stores(), workflow=template, event_bus=EventBus(), ops_history_store=memory_ops_store())
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
 
     await runtime.start()
     try:
-        record = await runtime.submit_workflow(template.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await runtime.submit_workflow(template.name, mode=WorkflowRunMode.CHECK_RUN)
         status = await asyncio.wait_for(runtime.wait(record.id), timeout=10.0)
         assert status.status == ExecutionState.COMPLETED, f"got {status.status}: {status.error}"
-        assert 7777 in speed_log, f"compiled workflow's device call never fired: {speed_log}"
+        assert 1777 in speed_log, f"compiled workflow's device call never fired: {speed_log}"
     finally:
         await runtime.shutdown()

@@ -1,40 +1,33 @@
 """`orca device ...` noun sub-app.
 
-Read verbs: list, info (with --capabilities), capabilities,
-registry list/show.
-Mutation verbs: send and invoke, which both dispatch one command by name,
-and the lifecycle steps connect, initialize, disconnect.
+Read verbs: list, info (with --capabilities), capabilities, registry show.
+Mutation verbs: send, which dispatches one command by name, and the
+lifecycle steps connect, initialize, disconnect.
 
-All read verbs (`list`, `info`, `info --capabilities`, `capabilities`,
-the `registry ...` sub-verbs) and the mutation verbs (`send`, `invoke`,
-`connect`, `initialize`, `disconnect`) are classified `both`: they target the resolved
-control-plane client. The rich `device_info` / `list_device_snapshots`
-snapshots are on the control-plane contract on both backends, so device
-reads render identically against either.
+Every verb targets the resolved control-plane client, so it renders the
+same against either server.
 """
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from pathlib import Path
 
 import typer
-from pydantic import JsonValue
+from cheshire_drivers.device_setup import DeviceSetup
+from pydantic import JsonValue, ValidationError
 
 from orca.cli import output
 from orca.cli.backend import get_client
-from orca.cli.control_plane import (
-    DaemonDeviceDTO,
-    DeviceFaultDTO,
-    DeviceRegistryEntryDTO,
+from orca.cli.device_operator import register_device_verbs
+from orca.operations.operator_device_models import BATCH_EXECUTE, BatchExecuteRequest, BatchExecuteResponse
+from orca.operations.wire_models import (
+    DeviceFaultModel,
+    DeviceIntrospectionDTO,
+    DeviceRegistryEntryResponse,
 )
-from orca.daemon.schemas import DeviceInvocationResultDTO
 from orca.operations.device_models import DeckDisagreementDTO, MountedTipDTO
-from orca.runtime.run_modes import WorkflowRunMode
-
-MODE_HELP = (
-    "Which world the verb means: LIVE (default), DEVICE_SIM, or PURE_SIM. "
-    "The topology sim_override ratchet applies on top."
-)
-
+from orca.state.mounted import HEAD96_POSITIONS
+from orca.modes.device_modes import DeviceMode
 
 app = typer.Typer(help="Device inventory and direct invocation.", no_args_is_help=True)
 registry_app = typer.Typer(
@@ -44,32 +37,7 @@ registry_app = typer.Typer(
 app.add_typer(registry_app, name="registry")
 
 
-@app.command("list")
-def list_devices() -> None:
-    """List all devices in the system with their runtime snapshot.
-
-    Both backends render the rich snapshot (busy / initialized / mode);
-    `list_device_snapshots` is on the control-plane contract on both.
-    """
-    snaps = get_client().list_device_snapshots()
-    if output.get_mode().value == "json":
-        output.emit_json([d.model_dump(mode="json") for d in snaps])
-        return
-    output.emit_table(
-        "Devices",
-        ["name", "type", "busy", "initialized", "mode", "fault"],
-        [
-            [
-                d.name, d.type_name, str(d.is_busy),
-                str(d.is_initialized), d.effective_mode.value,
-                _fault_column(d.fault),
-            ]
-            for d in snaps
-        ],
-    )
-
-
-def _fault_column(fault: DeviceFaultDTO | None) -> str:
+def _fault_column(fault: DeviceFaultModel | None) -> str:
     """What stopped this device, short enough to scan a table for.
 
     The workflow will not drive a faulted device, so a row that showed only
@@ -80,56 +48,98 @@ def _fault_column(fault: DeviceFaultDTO | None) -> str:
     return f"{fault.command} ({fault.outcome})"
 
 
-def _param_names(params: JsonValue) -> list[str]:
-    """Parameter names off an introspection method record, or none.
+_SCHEMA_TYPE_NAMES = {
+    "integer": "int", "number": "float", "string": "str", "boolean": "bool", "array": "list", "object": "dict",
+}
 
-    `methods` is a JSON blob the driver's own introspection produced, so the
-    value is a mapping only by convention.
-    """
-    if not isinstance(params, dict):
+
+def _typed(name: str, declared: JsonValue, required: bool) -> str:
+    typed = f"{name}:{declared}" if isinstance(declared, str) else name
+    return typed if required else f"{typed}?"
+
+
+def _request_fields(schema: Mapping[str, JsonValue]) -> list[str]:
+    """The fields of a request model's JSON schema, which the operator sends flat."""
+    properties, required = schema.get("properties"), schema.get("required")
+    if not isinstance(properties, dict):
         return []
-    return sorted(params)
+    needed = required if isinstance(required, list) else []
+    rendered: list[str] = []
+    for name, field in sorted(properties.items()):
+        declared = field.get("type") if isinstance(field, dict) else None
+        type_name = _SCHEMA_TYPE_NAMES.get(declared) if isinstance(declared, str) else None
+        rendered.append(_typed(name, type_name, name in needed))
+    return rendered
 
 
-@app.command("capabilities")
-def capabilities(
-    device_id: str = typer.Argument(..., help="Device id / name."),
-) -> None:
-    """Show driver introspection: interfaces, capabilities, methods.
+def _params_with_types(params: Mapping[str, JsonValue]) -> str:
+    """Each parameter as `name:type`, with `?` after one that may be left out; one with no declared type is its name."""
+    rendered: list[str] = []
+    for name, spec in sorted(params.items()):
+        if not isinstance(spec, dict):
+            rendered.append(name)
+        elif "properties" in spec:
+            rendered.extend(_request_fields(spec))
+        else:
+            rendered.append(_typed(name, spec.get("type"), spec.get("required") is not False))
+    return ", ".join(rendered)
 
-    Same payload shape on both backends:
-    * Local daemon: GET /devices/{name}/introspection.
-    * Hosted deployment: GET /api/devices/{id}/capabilities.
 
-    Coexists with `orca device info --capabilities`, which prints the
-    daemon's per-command-descriptor list (different content).
-    """
-    info = get_client().device_introspection(device_id)
-    if output.get_mode().value == "json":
-        output.emit_json(info.model_dump(mode="json"))
-        return
+def _emit_introspection(info: DeviceIntrospectionDTO) -> None:
     output.emit_kv(f"device {info.name}", [
         ("type", info.type or ""),
         ("interfaces", ", ".join(info.interfaces) or "-"),
         ("capabilities", ", ".join(info.capabilities) or "-"),
         ("provides_state", str(info.provides_state)),
     ])
-    if not info.methods:
-        output.info("(no methods advertised)")
-        return
-    output.emit_table(
-        f"Methods ({info.name})",
-        ["name", "kind", "returns", "params"],
-        [
+    if info.methods:
+        output.emit_table(
+            f"Methods ({info.name})",
+            ["name", "kind", "returns", "params"],
             [
-                method_name,
-                str(meta.get("kind", "")),
-                str(meta.get("returns") or ""),
-                ", ".join(_param_names(meta.get("params"))),
-            ]
-            for method_name, meta in sorted(info.methods.items())
-        ],
-    )
+                [method_name, meta.kind, meta.returns or "", _params_with_types(meta.params)]
+                for method_name, meta in sorted(info.methods.items())
+            ],
+        )
+    else:
+        output.info("(no methods advertised)")
+    if info.danger_levels:
+        output.emit_table(
+            f"Danger ({info.name})",
+            ["command", "danger"],
+            [[name, level] for name, level in sorted(info.danger_levels.items())],
+        )
+
+
+@app.command("capabilities")
+def capabilities(
+    device_id: str = typer.Argument(..., help="Device id / name."),
+) -> None:
+    """Show what a device can run: interfaces, capabilities, methods and each command's danger level.
+
+    Both servers answer GET /api/devices/{device_id}/introspection.
+    """
+    info = get_client().device_introspection(device_id)
+    if output.get_mode().value == "json":
+        output.emit_json(info.model_dump(mode="json"))
+        return
+    _emit_introspection(info)
+
+
+def device_entry_rows(entry: DeviceRegistryEntryResponse) -> list[tuple[str, str | None]]:
+    """One device's state as `orca device info` and `orca describe device` print it."""
+    engine = entry.engine
+    if engine is None:
+        return [("initialized", str(entry.is_initialized)), ("engine", "(only its orca-client reports it)")]
+    return [
+        ("type", engine.type_name),
+        ("initialized", str(entry.is_initialized)),
+        ("busy", str(engine.is_busy)),
+        ("mode", engine.effective_mode.value),
+        ("locations", ", ".join(engine.position_ids) or "-"),
+        ("loaded", ", ".join(engine.loaded_labware_ids) or "-"),
+        ("under_external_control", str(engine.under_external_control)),
+    ]
 
 
 @app.command("info")
@@ -137,48 +147,22 @@ def info(
     name: str = typer.Argument(...),
     capabilities: bool = typer.Option(
         False, "--capabilities",
-        help="Also list the device's supported capabilities + parameters.",
+        help="Also show what the device can run, as `orca device capabilities` does.",
     ),
 ) -> None:
-    """Show one device's snapshot and (optionally) its capabilities."""
+    """Show one device's registry entry and (optionally) what it can run."""
     client = get_client()
-    snap = client.device_info(name)
+    entry = client.device_registry_show(name)
+    introspection = client.device_introspection(name) if capabilities else None
     if output.get_mode().value == "json":
-        payload: dict[str, JsonValue] = snap.model_dump(mode="json")
-        if capabilities:
-            caps = client.device_capabilities(name)
-            payload["capabilities"] = [c.model_dump(mode="json") for c in caps]
+        payload: dict[str, JsonValue] = entry.model_dump(mode="json")
+        if introspection is not None:
+            payload["capabilities"] = introspection.model_dump(mode="json")
         output.emit_json(payload)
         return
-    output.emit_kv(f"device {snap.name}", [
-        ("type", snap.type_name),
-        ("initialized", str(snap.is_initialized)),
-        ("busy", str(snap.is_busy)),
-        ("mode", snap.effective_mode.value),
-        ("locations", ", ".join(snap.position_ids) or "-"),
-        ("loaded", ", ".join(snap.loaded_labware_ids) or "-"),
-    ])
-    if capabilities:
-        caps = client.device_capabilities(name)
-        if not caps:
-            output.info(f"(no capabilities advertised on '{name}')")
-            return
-        output.emit_table(
-            f"Capabilities ({name})",
-            ["capability", "danger", "cli", "params"],
-            [
-                [
-                    c.capability, c.danger_level,
-                    "yes" if c.cli_accessible else "no",
-                    ", ".join(
-                        f"{p.name}:{p.type_name}"
-                        + ("?" if not p.required else "")
-                        for p in c.params
-                    ),
-                ]
-                for c in caps
-            ],
-        )
+    output.emit_kv(f"device {entry.name}", device_entry_rows(entry))
+    if introspection is not None:
+        _emit_introspection(introspection)
 
 
 def _parse_kv_pairs(pairs: list[str] | None) -> dict[str, JsonValue]:
@@ -235,33 +219,32 @@ def _parse_options(
     return _parse_kv_pairs(positional_pairs)
 
 
-def _emit_invocation_result(result: DeviceInvocationResultDTO) -> None:
-    """Render a DeviceInvocationResultDTO for both JSON and table modes."""
-    dumped = result.model_dump(mode="json")
+def _emit_command_result(answer: BatchExecuteResponse, device: str) -> None:
     if output.get_mode().value == "json":
-        output.emit_json(dumped)
+        output.emit_json(answer.model_dump(mode="json"))
         return
-    output.emit_kv("device invocation", [
-        ("device", dumped["device_name"]),
-        ("command", dumped["command_or_capability"]),
-        ("success", str(dumped["success"])),
-        ("duration_s", f"{dumped['duration_seconds']:.3f}"),
-        ("value_type", dumped["value_type"]),
-        ("value", dumped["value"] if dumped["value"] is not None else ""),
+    ran = answer.results[0]
+    output.emit_kv("device command", [
+        ("device", device),
+        ("command", ran.command),
+        ("success", str(ran.success)),
+        ("duration_s", f"{ran.duration_ms / 1000:.3f}"),
+        ("value", "" if ran.result is None else json.dumps(ran.result)),
     ])
 
 
 @app.command("send")
 def send(
     name: str = typer.Argument(...),
-    command: str = typer.Argument(...),
+    command: str = typer.Argument(
+        ..., help="Command name as `orca device capabilities` lists it.",
+    ),
     options: list[str] = typer.Argument(
         None, help="key=value pairs (alternative to --params).",
     ),
     params: str = typer.Option(
         "", "--params", help="JSON-encoded options dict, e.g. '{\"speed\": 1000}'.",
     ),
-    mode: WorkflowRunMode | None = typer.Option(None, "--mode", help=MODE_HELP),
     confirm: bool = typer.Option(
         False, "--confirm",
         help="Acknowledge a command the driver flags requires_confirm: the "
@@ -275,60 +258,27 @@ def send(
     """Send a command to a device by name.
 
     Reaches any command the device advertises, including the vendor commands
-    a driver forwards to its hardware. Bypasses workflow coordination; if the
-    device is busy with a workflow action this will contend on the device lock.
-    """
-    client = get_client()
-    opts = _parse_options(params, options)
-    result = client.device_execute(
-        name, command, options=opts, mode=mode, confirm=confirm, reason=reason,
-    )
-    _emit_invocation_result(result)
-
-
-@app.command("invoke")
-def invoke(
-    name: str = typer.Argument(...),
-    capability: str = typer.Argument(
-        ..., help="Method name as listed by `orca device capabilities`.",
-    ),
-    kwargs_pairs: list[str] = typer.Argument(
-        None, help="key=value pairs (alternative to --params).",
-    ),
-    params: str = typer.Option(
-        "", "--params", help="JSON-encoded kwargs dict.",
-    ),
-    mode: WorkflowRunMode | None = typer.Option(None, "--mode", help=MODE_HELP),
-    confirm: bool = typer.Option(
-        False, "--confirm",
-        help="Acknowledge a command the driver flags requires_confirm: the "
-             "raw vendor console, whose payload nothing between here and the "
-             "controller can read. No other command needs it.",
-    ),
-    reason: str | None = typer.Option(
-        None, "--reason", help="Why, for the audit trail.",
-    ),
-) -> None:
-    """Invoke a method on a device.
-
-    Pass the name as it appears in `orca device capabilities <name>` output.
-    An interface row carries an orca-side namespace (`shaker.shake`) which is
-    not part of the method name and is dropped; the bare form works too. A
+    a driver forwards to its hardware. An interface row carries an orca-side
+    namespace (`shaker.shake`) which is dropped; the bare form works too. A
     vendor command's prefix names the object it lives on (`gripper.ungrip`)
-    and is part of the name, so it is sent whole.
+    and is sent whole. Bypasses workflow coordination; if the device is busy
+    with a workflow action this will contend on the device lock.
     """
-    client = get_client()
-    kwargs = _parse_options(params, kwargs_pairs)
-    result = client.device_invoke(
-        name, capability, kwargs=kwargs, mode=mode, confirm=confirm, reason=reason,
+    request = BatchExecuteRequest(
+        device_id=name,
+        commands=[{"command": command, "params": _parse_options(params, options), "confirm": confirm}],
+        stop_on_error=True,
+        reason=reason,
     )
-    _emit_invocation_result(result)
+    answer = BatchExecuteResponse.model_validate(
+        get_client().device_operator_command(BATCH_EXECUTE, request).model_dump(),
+    )
+    _emit_command_result(answer, name)
 
 
 @app.command("initialize")
 def initialize(
     name: str = typer.Argument(...),
-    mode: WorkflowRunMode | None = typer.Option(None, "--mode", help=MODE_HELP),
     reason: str | None = typer.Option(
         None, "--reason", help="Why, for the audit trail.",
     ),
@@ -342,14 +292,13 @@ def initialize(
     A clean run clears any fault standing on the device.
     """
     client = get_client()
-    client.device_initialize(name, mode=mode, reason=reason)
+    client.device_initialize(name, reason=reason)
     output.info(f"device {name} initialized")
 
 
 @app.command("connect")
 def connect(
     name: str = typer.Argument(...),
-    mode: WorkflowRunMode | None = typer.Option(None, "--mode", help=MODE_HELP),
     reason: str | None = typer.Option(
         None, "--reason", help="Why, for the audit trail.",
     ),
@@ -360,14 +309,57 @@ def connect(
     step that makes it ready to command.
     """
     client = get_client()
-    client.device_connect(name, mode=mode, reason=reason)
+    client.device_connect(name, reason=reason)
     output.info(f"device {name} connected")
+
+
+@app.command("mode")
+def mode(
+    name: str = typer.Argument(...),
+    setting: DeviceMode = typer.Argument(..., help="SIM, or LIVE for a device with a real driver."),
+    confirm: bool = typer.Option(False, "--confirm", help="Switch without asking. The warning is still printed."),
+) -> None:
+    """Set a device to sim or live, and bring it up in that mode. Asks first. Refused during a run."""
+    client = get_client()
+    asked = client.device_set_mode(name, setting)
+    if asked.warning is None:
+        output.info(f"device {asked.device_name} is already {asked.mode.value}")
+        return
+    output.warn(asked.warning)
+    if not confirm and not typer.confirm("Switch?", default=False):
+        output.info("nothing switched")
+        return
+    switched = client.device_set_mode(name, setting, confirm=True)
+    output.info(f"device {switched.device_name} set to {switched.mode.value}")
+    if switched.bring_up_error is not None:
+        output.warn(switched.bring_up_error)
+
+
+@app.command("setup")
+def setup(name: str = typer.Argument(...)) -> None:
+    """Print devices/<name>.json: which orca-client runs the device, its driver, connection and sim settings."""
+    output.emit_document(get_client().device_setup_get(name).setup.model_dump(mode="json", exclude_defaults=True))
+
+
+@app.command("write-setup")
+def write_setup(
+    name: str = typer.Argument(...),
+    file: Path = typer.Argument(..., exists=True, dir_okay=False, help="A JSON file holding the whole setup."),
+    reason: str | None = typer.Option(None, "--reason", help="Why, for the audit trail."),
+) -> None:
+    """Replace devices/<name>.json with FILE. Takes effect on the next reload."""
+    try:
+        setup = DeviceSetup.model_validate_json(file.read_text(encoding="utf-8"))
+    except ValidationError as refused:
+        raise typer.BadParameter(str(refused), param_hint="FILE") from refused
+    written = get_client().device_setup_put(name, setup, reason=reason)
+    output.info(f"devices/{written.device_name}.json written")
+    output.warn(written.reload_note)
 
 
 @app.command("disconnect")
 def disconnect(
     name: str = typer.Argument(...),
-    mode: WorkflowRunMode | None = typer.Option(None, "--mode", help=MODE_HELP),
     reason: str | None = typer.Option(
         None, "--reason", help="Why, for the audit trail.",
     ),
@@ -375,10 +367,10 @@ def disconnect(
     """Hand a device back. Moves nothing, but ends the session.
 
     Anything mid-action on this device fails, and hardware that holds motor
-    power while connected (a PF400 arm) drops it here.
+    power while connected drops it here.
     """
     client = get_client()
-    client.device_disconnect(name, mode=mode, reason=reason)
+    client.device_disconnect(name, reason=reason)
     output.info(f"device {name} disconnected")
 
 
@@ -427,7 +419,6 @@ def release_hold(
 @app.command("reconcile-deck")
 def reconcile_deck(
     name: str = typer.Argument(..., help="Liquid handler name."),
-    mode: WorkflowRunMode | None = typer.Option(None, "--mode", help=MODE_HELP),
     reason: str | None = typer.Option(
         None, "--reason", help="Why, for the audit trail.",
     ),
@@ -441,7 +432,8 @@ def reconcile_deck(
     through orca re-seed automatically.
     """
     client = get_client()
-    result = client.device_reconcile_deck(name, mode=mode, reason=reason)
+    result = client.device_reconcile_deck(name, reason=reason)
+    output.emit_json(result.model_dump(mode="json"))
     _report_disagreements(name, result.disagreements)
     output.info(f"device {name} deck re-seeded from the world model")
 
@@ -458,13 +450,15 @@ def mounted_tips(
     """
     client = get_client()
     result = client.device_get_mounted_tips(name)
+    output.emit_json(result.model_dump(mode="json"))
     if not result.mounted:
         output.info(f"{name}: {result.provenance}, no tips recorded on any channel")
         return
     output.info(f"{name}: {result.provenance}")
     for tip in result.mounted:
         guessed = " (channel number inferred)" if tip.channel_is_inferred else ""
-        output.info(f"  channel {tip.channel}: {tip.tip_rack} {tip.position}{guessed}")
+        head = "96 head channel" if tip.head == "head96" else "channel"
+        output.info(f"  {head} {tip.channel}: {tip.tip_rack} {tip.position}{guessed}")
 
 
 @app.command("set-mounted-tips")
@@ -472,17 +466,26 @@ def set_mounted_tips(
     name: str = typer.Argument(..., help="Liquid handler name."),
     tip: list[str] = typer.Option(
         [], "--tip",
-        help="channel=rack:position, repeated. Pass none to say the head is empty.",
+        help="channel=rack:position, repeated, for the channel head. Pass none to say it is empty.",
+    ),
+    head96: str | None = typer.Option(
+        None, "--head96",
+        help="The tip rack the 96 head took its tips from. Leave out to say the 96 head is empty.",
     ),
     reason: str | None = typer.Option(None, "--reason", help="Why you are stating it."),
 ) -> None:
-    """State what the head is carrying.
+    """State what each head is carrying.
 
-    Absolute: any channel you do not name is recorded as carrying nothing.
-    This is what the head is seeded from after a restart, so a wrong answer
-    here makes the next pick wrong.
+    Absolute: any channel you do not name is recorded as carrying nothing, on
+    both heads. This writes Orca's record only; nothing sends it to the
+    driver. A vendor protocol runs only when the record says the head is empty.
     """
     mounted = [_parse_mounted_tip(entry) for entry in tip]
+    if head96 is not None:
+        mounted += [
+            MountedTipDTO(channel=channel, tip_rack=head96, position=position, head="head96")
+            for channel, position in enumerate(HEAD96_POSITIONS)
+        ]
     client = get_client()
     client.device_set_mounted_tips(name, mounted, reason=reason)
     output.info(f"{name}: recorded {len(mounted)} channel(s)")
@@ -496,7 +499,7 @@ def confirm_mounted_tips(
     """Agree with what the record already says the head is carrying.
 
     Nothing changes except that the answer stops being one nobody has looked
-    at. Refused when an unfinished or an aborted action has left the head
+    at. Refused when a stop cut a command off at the device and left the head
     possibly carrying more than the record says: state it with
     `device set-mounted-tips` instead.
     """
@@ -520,7 +523,6 @@ def _parse_mounted_tip(entry: str) -> MountedTipDTO:
 @app.command("compare-deck")
 def compare_deck(
     name: str = typer.Argument(..., help="Liquid handler name."),
-    mode: WorkflowRunMode | None = typer.Option(None, "--mode", help=MODE_HELP),
 ) -> None:
     """Ask whether the ledger and the liquid handler's own deck still agree.
 
@@ -532,11 +534,13 @@ def compare_deck(
     in a gripper's jaws always disagrees: the jaws are not a deck site.
     """
     client = get_client()
-    result = client.device_compare_deck(name, mode=mode)
-    if result.driver_deck_empty:
+    result = client.device_compare_deck(name)
+    output.emit_json(result.model_dump(mode="json"))
+    if result.driver_deck_empty and not result.agrees:
         output.info(
-            f"{name} reports an empty deck: its session was rebuilt and the "
-            f"deck is waiting to be re-declared. Run reconcile-deck."
+            f"{name} reports an empty deck and the ledger has labware on it: "
+            f"its session was rebuilt and the deck is waiting to be "
+            f"re-declared. Run reconcile-deck."
         )
         return
     if result.agrees:
@@ -590,7 +594,7 @@ def clear_fault(
     and put it right first: this clears the record, not the trouble.
 
     Usually not needed. If a thread is paused on this fault, recovering it with
-    RETRY, RETRY_OP or CONTINUE says the machine has been looked at and clears
+    RETRY, RETRY_ACTION or CONTINUE says the machine has been looked at and clears
     the fault on the way, and a clean `initialize` or `home` clears it too.
     Reach for this when the machine is fit but neither of those applies.
     """
@@ -610,9 +614,12 @@ def _report_disagreements(
 ) -> None:
     if not disagreements:
         return
-    output.info(f"{name}: {len(disagreements)} labware the deck and the ledger disagree about")
+    output.info(f"{name}: {len(disagreements)} thing(s) the deck and the ledger disagree about")
     for item in disagreements:
         driver = item.driver_site or "nowhere on the deck"
+        if item.labware_name is None:
+            output.info(f"  no labware on record, {item.ledger_site} to {driver} ({item.reason}): {item.detail}")
+            continue
         output.info(
             f"  {item.labware_name}: ledger says {item.ledger_site}, "
             f"driver says {driver} ({item.reason})"
@@ -621,27 +628,24 @@ def _report_disagreements(
 
 # -- Unified device registry ------------------------------------------------
 #
-# These sub-verbs surface the same two-card view a cloud deployment exposes via
-# `/api/devices/registry` (REST) and `device_registry_list` /
-# `device_registry_show` (MCP). Surface parity rule: every operator-facing
-# operation lives on REST + MCP + CLI.
+# These sub-verbs show the same two-card view as the device registry list.
 
 
-def _link_mode(entry: DeviceRegistryEntryDTO) -> str:
+def _link_mode(entry: DeviceRegistryEntryResponse) -> str:
     """Which of the device's drivers answered `device_connected`.
 
-    Read it with the flag: a link open under DEVICE_SIM or PURE_SIM is a
-    simulator's, and one open under LIVE on a bench running DEVICE_SIM belongs
+    Read it with the flag: a link open under SIM is a
+    simulator's, and one open under LIVE on a bench running SIM belongs
     to an instrument the commands are not reaching. "-" means nobody could
     answer, which is an agent-held device whose agent has gone quiet.
     """
     return entry.device_link_mode or "-"
 
 
-def _emit_registry_entry_kv(entry: DeviceRegistryEntryDTO) -> None:
-    """Render a DeviceRegistryEntryDTO via output.emit_kv. Shared by list + show."""
-    declared_kind = str((entry.topology_card or {}).get("declared_kind") or "")
-    advertised_kind = str((entry.connection_card or {}).get("advertised_kind") or "")
+def _emit_registry_entry_kv(entry: DeviceRegistryEntryResponse) -> None:
+    """Render a DeviceRegistryEntryResponse via output.emit_kv."""
+    declared_kind = entry.topology_card.declared_kind if entry.topology_card else ""
+    advertised_kind = entry.connection_card.advertised_kind if entry.connection_card else ""
     elig = entry.mode_eligibility
     output.emit_kv(f"device {entry.name}", [
         ("declared_kind", declared_kind or "-"),
@@ -650,52 +654,55 @@ def _emit_registry_entry_kv(entry: DeviceRegistryEntryDTO) -> None:
         ("device_connected", str(entry.is_device_connected)),
         ("device_link_mode", _link_mode(entry)),
         ("is_initialized", str(entry.is_initialized)),
-        ("mode_eligibility", f"pure_sim={elig.pure_sim} device_sim={elig.device_sim} live={elig.live}"),
+        ("mode_eligibility", f"check_run={elig.check_run} sim={elig.sim} live={elig.live}"),
         ("fault", entry.fault.message if entry.fault else "-"),
     ])
 
 
-@registry_app.command("list")
-def registry_list() -> None:
-    """List the unified device registry.
+def _kind_column(entry: DeviceRegistryEntryResponse) -> str:
+    """The declared kind, with the client's own word beside it when the two disagree."""
+    declared = entry.topology_card.declared_kind if entry.topology_card else ""
+    advertised = entry.connection_card.advertised_kind if entry.connection_card else ""
+    if declared and advertised and declared != advertised:
+        return f"{declared} (client: {advertised})"
+    return declared or advertised or "-"
 
-    Same payload on both backends: each entry carries a topology card,
-    connection card (each may be None), the two live connection flags and
-    `is_initialized`, and the per-mode eligibility matrix.
+
+def _holding_column(entry: DeviceRegistryEntryResponse) -> str:
+    if entry.engine is None or entry.engine.held_labware_id is None:
+        return "-"
+    return entry.engine.held_labware_id
+
+
+@app.command("list")
+def list_devices() -> None:
+    """List every device and transporter: what the topology declares, what the
+    on-prem client reports, and what the engine holds.
 
     The `client` column is whether the on-prem client is reachable; `device` is
     whether the link is open on whichever driver is being driven. They differ: a
-    released device sits under a client that is still heartbeating. Read `link`
-    with `device`: it names the driver that answered, and on a deployment with
-    no device bridge that is the dispatch driver the lifecycle verbs act on,
-    which is the simulator (PURE_SIM) unless something seeded a run mode. `-`
-    there means nobody could answer, so `device` is false for want of anywhere
-    to put "unknown", not because a link is known closed.
+    released device sits under a client that is still heartbeating. `link` names
+    the driver that answered; `-` means nobody could, so `device` is false for
+    want of anywhere to put "unknown".
     """
     entries = get_client().device_registry_list()
     if output.get_mode().value == "json":
         output.emit_json([e.model_dump(mode="json") for e in entries])
         return
     output.emit_table(
-        "Device registry",
-        ["name", "declared", "advertised", "client", "device", "link",
-         "initialized", "modes", "fault"],
+        "Devices",
+        ["name", "kind", "client", "device", "link", "initialized",
+         "busy", "holding", "fault"],
         [
             [
                 e.name,
-                str((e.topology_card or {}).get("declared_kind") or "-"),
-                str((e.connection_card or {}).get("advertised_kind") or "-"),
+                _kind_column(e),
                 str(e.is_client_connected),
                 str(e.is_device_connected),
                 _link_mode(e),
                 str(e.is_initialized),
-                ",".join(
-                    label for label, ok in (
-                        ("pure_sim", e.mode_eligibility.pure_sim),
-                        ("device_sim", e.mode_eligibility.device_sim),
-                        ("live", e.mode_eligibility.live),
-                    ) if ok
-                ) or "-",
+                str(e.engine.is_busy) if e.engine else "-",
+                _holding_column(e),
                 _fault_column(e.fault),
             ]
             for e in entries
@@ -713,3 +720,6 @@ def registry_show(
         output.emit_json(entry.model_dump(mode="json"))
         return
     _emit_registry_entry_kv(entry)
+
+
+register_device_verbs(app)

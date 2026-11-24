@@ -16,7 +16,7 @@ from orca.system.reservation_manager.reservation_manager import (
 )
 from orca.system.reservation_manager.deadlock_manager import ThreadDeadlockDetector, DeadlockStarvationRegistry
 from orca.system.reservation_manager.location_reservation import LocationReservation
-from orca.system.reservation_manager.move_handler import MoveHandler, MoveActionCollectionReservationRequest
+from orca.workflow_models.actions.move_handler import MoveHandler, MoveActionCollectionReservationRequest
 from orca.workflow_models.actions.move_action import MoveAction
 
 
@@ -161,7 +161,7 @@ class TestBug2UnboundedRecursion:
         """
         import inspect
 
-        from orca.system.reservation_manager.path_scoring import PathScore
+        from orca.workflow_models.actions.path_scoring import PathScore
 
         mock_coordinator = Mock()
         mock_coordinator.get_reserved_position_ids = Mock(return_value=set())
@@ -281,7 +281,7 @@ class TestBug3NullChecksInDeadlockDetection:
 
         # Call the method that had the bug
         # This should NOT raise AttributeError
-        result = detector._get_labware_to_thread_map([mock_collection])
+        result = detector._labware_to_thread([mock_collection.thread_id])
 
         # Should return empty dict (thread was skipped)
         assert result == {}
@@ -310,7 +310,7 @@ class TestBug3NullChecksInDeadlockDetection:
 
         # Call the method
         # This should NOT raise AttributeError
-        result = detector._get_labware_to_thread_map([mock_collection])
+        result = detector._labware_to_thread([mock_collection.thread_id])
 
         # Should return empty dict (thread was skipped)
         assert result == {}

@@ -11,10 +11,10 @@ from cheshire_drivers.move_parameters import SEED_MOVE_PARAMETERS
 from httpx import ASGITransport, AsyncClient
 
 from orca.daemon.app import create_app
-from orca.runtime.danger import clear_audit_trail, list_audit_entries
-from orca.runtime.system_runtime import SystemRuntime
 
+from tests.audit_capture import AuditCapture
 from tests.test_system_runtime import _build_simple_system
+from tests.memory_activity import memory_daemon_system
 
 
 @pytest_asyncio.fixture
@@ -31,9 +31,10 @@ async def empty_daemon_client() -> AsyncIterator[AsyncClient]:
 async def mounted_daemon_client() -> AsyncIterator[AsyncClient]:
     """A daemon with a mounted system carrying one transporter."""
     system, _ = await _build_simple_system()
-    rt = SystemRuntime(system)
+    injected = await memory_daemon_system(system)
+    rt = injected.runtime
     await rt.start()
-    app = create_app(initial_system_runtime=rt)
+    app = create_app(injected=injected)
     try:
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://daemon.test",
@@ -45,7 +46,7 @@ async def mounted_daemon_client() -> AsyncIterator[AsyncClient]:
 
 
 async def test_an_untuned_arm_reads_as_the_seed(empty_daemon_client) -> None:
-    resp = await empty_daemon_client.get("/move-defaults/pf400")
+    resp = await empty_daemon_client.get("/api/move-defaults/pf400")
 
     assert resp.status_code == 200
     body = resp.json()
@@ -55,7 +56,7 @@ async def test_an_untuned_arm_reads_as_the_seed(empty_daemon_client) -> None:
 
 async def test_a_patch_changes_the_field_it_names(empty_daemon_client) -> None:
     resp = await empty_daemon_client.patch(
-        "/move-defaults/pf400", json={"set": {"travel_margin": 25.0}},
+        "/api/move-defaults/pf400", json={"set": {"travel_margin": 25.0}},
     )
 
     assert resp.status_code == 200
@@ -67,11 +68,11 @@ async def test_a_patch_changes_the_field_it_names(empty_daemon_client) -> None:
 
 async def test_a_second_patch_does_not_restate_the_first(empty_daemon_client) -> None:
     await empty_daemon_client.patch(
-        "/move-defaults/pf400", json={"set": {"travel_margin": 25.0}},
+        "/api/move-defaults/pf400", json={"set": {"travel_margin": 25.0}},
     )
 
     resp = await empty_daemon_client.patch(
-        "/move-defaults/pf400", json={"set": {"jaw_opening": 18.0}},
+        "/api/move-defaults/pf400", json={"set": {"jaw_opening": 18.0}},
     )
 
     assert resp.json()["parameters"] == {
@@ -83,11 +84,11 @@ async def test_a_second_patch_does_not_restate_the_first(empty_daemon_client) ->
 
 async def test_clearing_a_field_hands_it_back_to_the_seed(empty_daemon_client) -> None:
     await empty_daemon_client.patch(
-        "/move-defaults/pf400", json={"set": {"travel_margin": 25.0}},
+        "/api/move-defaults/pf400", json={"set": {"travel_margin": 25.0}},
     )
 
     resp = await empty_daemon_client.patch(
-        "/move-defaults/pf400", json={"clear": ["travel_margin"]},
+        "/api/move-defaults/pf400", json={"clear": ["travel_margin"]},
     )
 
     assert resp.json()["sources"]["travel_margin"] == "seed"
@@ -96,7 +97,7 @@ async def test_clearing_a_field_hands_it_back_to_the_seed(empty_daemon_client) -
 async def test_a_field_the_model_does_not_have_is_refused(empty_daemon_client) -> None:
     """A misspelt field silently ignored is a number the operator believes they set."""
     resp = await empty_daemon_client.patch(
-        "/move-defaults/pf400", json={"set": {"grip_height": 4.0}},
+        "/api/move-defaults/pf400", json={"set": {"grip_height": 4.0}},
     )
 
     assert resp.status_code == 422
@@ -106,7 +107,7 @@ async def test_a_field_name_the_model_does_not_have_cannot_be_cleared(
     empty_daemon_client,
 ) -> None:
     resp = await empty_daemon_client.patch(
-        "/move-defaults/pf400", json={"clear": ["grip_height"]},
+        "/api/move-defaults/pf400", json={"clear": ["grip_height"]},
     )
 
     assert resp.status_code == 422
@@ -116,25 +117,25 @@ async def test_a_number_the_position_decides_is_refused(empty_daemon_client) -> 
     """Storing it would report back a value this deployment chose that no move
     ever reads, because the teachpoint supplies that number every time."""
     resp = await empty_daemon_client.patch(
-        "/move-defaults/pf400", json={"set": {"clearance": 45.0}},
+        "/api/move-defaults/pf400", json={"set": {"clearance": 45.0}},
     )
 
-    assert resp.status_code == 400
-    assert "access config" in resp.json()["detail"]
+    assert resp.status_code == 422
+    assert "access config" in resp.json()["detail"]["message"]
 
 
 async def test_a_body_with_the_wrong_outer_key_is_refused(empty_daemon_client) -> None:
     """Otherwise it answers 200 with an unchanged record, which reads exactly like
     the edit having landed."""
     resp = await empty_daemon_client.patch(
-        "/move-defaults/pf400", json={"parameters": {"travel_margin": 25.0}},
+        "/api/move-defaults/pf400", json={"parameters": {"travel_margin": 25.0}},
     )
 
     assert resp.status_code == 422
 
 
 async def test_an_edit_naming_nothing_is_refused(empty_daemon_client) -> None:
-    resp = await empty_daemon_client.patch("/move-defaults/pf400", json={})
+    resp = await empty_daemon_client.patch("/api/move-defaults/pf400", json={})
 
     assert resp.status_code == 422
 
@@ -142,19 +143,19 @@ async def test_an_edit_naming_nothing_is_refused(empty_daemon_client) -> None:
 async def test_resetting_an_untuned_arm_is_a_404(empty_daemon_client) -> None:
     """Reporting success would tell an operator their tuning was discarded when
     there was none, which reads as "the arm is back on the seed" either way."""
-    resp = await empty_daemon_client.delete("/move-defaults/pf400")
+    resp = await empty_daemon_client.delete("/api/move-defaults/pf400")
 
     assert resp.status_code == 404
 
 
 async def test_resetting_drops_what_was_tuned(empty_daemon_client) -> None:
     await empty_daemon_client.patch(
-        "/move-defaults/pf400", json={"set": {"travel_margin": 25.0}},
+        "/api/move-defaults/pf400", json={"set": {"travel_margin": 25.0}},
     )
 
-    assert (await empty_daemon_client.delete("/move-defaults/pf400")).status_code == 204
+    assert (await empty_daemon_client.delete("/api/move-defaults/pf400")).status_code == 204
 
-    body = (await empty_daemon_client.get("/move-defaults/pf400")).json()
+    body = (await empty_daemon_client.get("/api/move-defaults/pf400")).json()
     assert set(body["sources"].values()) == {"seed"}
 
 
@@ -162,10 +163,10 @@ async def test_the_list_is_only_the_tuned_arms_before_a_system_is_mounted(
     empty_daemon_client,
 ) -> None:
     await empty_daemon_client.patch(
-        "/move-defaults/pf400", json={"set": {"travel_margin": 25.0}},
+        "/api/move-defaults/pf400", json={"set": {"travel_margin": 25.0}},
     )
 
-    resp = await empty_daemon_client.get("/move-defaults")
+    resp = await empty_daemon_client.get("/api/move-defaults")
 
     assert [r["transporter_name"] for r in resp.json()] == ["pf400"]
 
@@ -173,23 +174,22 @@ async def test_the_list_is_only_the_tuned_arms_before_a_system_is_mounted(
 async def test_a_mounted_system_lists_its_arms_even_untuned(
     mounted_daemon_client,
 ) -> None:
-    resp = await mounted_daemon_client.get("/move-defaults")
+    resp = await mounted_daemon_client.get("/api/move-defaults")
 
     assert [r["transporter_name"] for r in resp.json()] == ["robot1"]
 
 
 async def test_a_patch_and_a_reset_carry_the_reason_onto_the_audit_row(
+    audit: AuditCapture,
     empty_daemon_client,
 ) -> None:
-    clear_audit_trail()
-
     await empty_daemon_client.patch(
-        "/move-defaults/pf400",
+        "/api/move-defaults/pf400",
         json={"set": {"travel_margin": 25.0}, "reason": "new gripper"},
     )
-    await empty_daemon_client.delete("/move-defaults/pf400", params={"reason": "start over"})
+    await empty_daemon_client.delete("/api/move-defaults/pf400", params={"reason": "start over"})
 
-    reasons = {r.action_name: r.reason for r in list_audit_entries()}
+    reasons = {r.action_name: r.reason for r in audit.rows()}
     assert reasons["move_defaults.apply"] == "new gripper"
     assert reasons["move_defaults.reset"] == "start over"
 

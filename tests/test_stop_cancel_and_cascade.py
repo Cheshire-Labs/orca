@@ -19,14 +19,18 @@ Three behaviors are pinned:
    (acquires its start reservation) instead of wedging on a leaked reservation.
 """
 
+from orca.runtime.incident_store import IncidentCategory
+from orca.config import OrcaConfig
 import asyncio
 from collections.abc import AsyncGenerator
+
+import pytest
 
 import orca.orca as orca
 from orca.devices.device_interfaces import ICentrifuge
 from orca.events.event_bus import EventBus
 from orca.resource_models.resource_pool import ResourcePool
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from orca.runtime.status_models import ThreadSnapshot
 from orca.runtime.system_runtime import ExecutionState, SystemRuntime
 from orca.sdk.system import ResourceRegistry, SystemMap
@@ -41,7 +45,7 @@ from orca.workflow_models.actions.executable_location_action import (
 )
 from orca.workflow_models.action_context import ActionContext
 from orca.workflow_models.action_template import ActionTemplate
-from orca.workflow_models.error_policy_overrides import OverrideWithPauseError
+from orca.resource_models.error_policy_overrides import OverrideWithPauseError
 from orca.workflow_models.method_context import MethodContext
 from orca.workflow_models.method_template import IMethodTemplate
 from orca.workflow_models.status_enums import (
@@ -49,6 +53,7 @@ from orca.workflow_models.status_enums import (
     FailurePolicy,
     RecoveryDecision,
 )
+from orca.workflow_models.shared_action_coordination import ActionResolution, SharedActionCoordination
 from orca.workflow_models.thread_context import ThreadContext
 from orca.workflow_models.workflow_context import WorkflowContext
 from tests.mock import UniversalMockDevice
@@ -58,6 +63,10 @@ from tests.test_helpers import (
     create_test_transporter,
     wait_until,
 )
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 
 _TERMINAL_ACTION_STATUSES = frozenset(
@@ -228,11 +237,14 @@ async def _build_join_system(
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=event_bus,
+        event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     system = builder.get_system()
-    runtime = SystemRuntime(system, event_bus=event_bus)
+    runtime = await memory_runtime(system, event_bus=event_bus)
     return runtime, workflow, device
 
 
@@ -316,11 +328,14 @@ async def _build_spin_group_system(
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=event_bus,
+        event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     system = builder.get_system()
-    runtime = SystemRuntime(system, event_bus=event_bus)
+    runtime = await memory_runtime(system, event_bus=event_bus)
     return runtime, workflow, device
 
 
@@ -335,7 +350,7 @@ async def test_group_abort_terminates_every_participant_without_strand() -> None
         failure_policy=FailurePolicy.ABORT
     )
     await runtime.start()
-    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
     def _contributor_statuses() -> list[str]:
         return [
             t.status
@@ -361,6 +376,40 @@ async def test_group_abort_terminates_every_participant_without_strand() -> None
         await runtime.shutdown()
 
 
+async def test_a_stop_after_the_owners_abort_leaves_the_contributors_aborted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The owner's spin starts when the last plate lands, so its abort and the run's
+    end can both reach a contributor before it starts waiting on the owner. The abort
+    came first, so the contributor lands ABORTED."""
+    runtime, workflow, _ = await _build_spin_group_system(
+        failure_policy=FailurePolicy.ABORT
+    )
+    publish = SharedActionCoordination.publish_outcome
+    stopped: list[bool] = []
+
+    def publish_then_stop(self: SharedActionCoordination, outcome: ActionResolution) -> None:
+        publish(self, outcome)
+        if not stopped:
+            stopped.append(True)
+            runtime.system.stop_all_threads()
+
+    monkeypatch.setattr(SharedActionCoordination, "publish_outcome", publish_then_stop)
+    await runtime.start()
+    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
+    try:
+        await asyncio.wait_for(runtime.wait(record.id), timeout=15.0)
+
+        def contributors() -> list[str]:
+            return [t.status for t in runtime.list_threads(record.id) if t.name.startswith("plate_c")]
+
+        # The run ends while a stopping contributor is still writing its records; read it once it has finished.
+        await wait_until(lambda: "STOPPING" not in contributors(), timeout=10.0)
+        assert contributors() == ["ABORTED", "ABORTED"]
+    finally:
+        await runtime.shutdown()
+
+
 class TestCoThreadSharedActionFailurePausesEveryParticipant:
     """A bound shared-action device failure pauses the whole action group -- owner AND
     every joined contributor -- but records ONE incident (the owner's root cause);
@@ -372,7 +421,7 @@ class TestCoThreadSharedActionFailurePausesEveryParticipant:
         runtime, workflow, device = await _build_join_system()
         await runtime.start()
         record = await runtime.submit_workflow(
-            workflow.name, mode=WorkflowRunMode.PURE_SIM
+            workflow.name, mode=WorkflowRunMode.CHECK_RUN
         )
         try:
             await _wait_for_shared_rendezvous(runtime, record.id)
@@ -417,7 +466,7 @@ class TestCoThreadSharedActionFailurePausesEveryParticipant:
         runtime, workflow, device = await _build_join_system()
         await runtime.start()
         record = await runtime.submit_workflow(
-            workflow.name, mode=WorkflowRunMode.PURE_SIM
+            workflow.name, mode=WorkflowRunMode.CHECK_RUN
         )
         try:
             await _wait_for_shared_rendezvous(runtime, record.id)
@@ -448,7 +497,7 @@ class TestCoThreadSharedActionFailurePausesEveryParticipant:
         )
         await runtime.start()
         record = await runtime.submit_workflow(
-            workflow.name, mode=WorkflowRunMode.PURE_SIM
+            workflow.name, mode=WorkflowRunMode.CHECK_RUN
         )
         try:
             final = await asyncio.wait_for(runtime.wait(record.id), timeout=15.0)
@@ -485,7 +534,7 @@ class TestCoThreadSharedActionFailurePausesEveryParticipant:
         runtime, workflow, device = await _build_join_system()
         await runtime.start()
         record = await runtime.submit_workflow(
-            workflow.name, mode=WorkflowRunMode.PURE_SIM
+            workflow.name, mode=WorkflowRunMode.CHECK_RUN
         )
 
         async def _wait_for_shake(n: int) -> None:
@@ -527,7 +576,7 @@ class TestCoThreadSharedActionFailurePausesEveryParticipant:
         )
         await runtime.start()
         record = await runtime.submit_workflow(
-            workflow.name, mode=WorkflowRunMode.PURE_SIM
+            workflow.name, mode=WorkflowRunMode.CHECK_RUN
         )
         try:
             await _wait_for_shared_rendezvous(runtime, record.id)
@@ -601,12 +650,15 @@ async def _build_hanging_system() -> tuple[
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=event_bus,
+        event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     system = builder.get_system()
     res_mgr = builder._thread_reservation_coordinator._reservation_manager
-    runtime = SystemRuntime(system, event_bus=event_bus)
+    runtime = await memory_runtime(system, event_bus=event_bus)
     return runtime, workflow, device, res_mgr, system
 
 
@@ -631,7 +683,7 @@ class TestStopMidActionIsCleanAndTerminal:
         await runtime.start()
         try:
             record = await runtime.submit_workflow(
-                workflow.name, mode=WorkflowRunMode.PURE_SIM
+                workflow.name, mode=WorkflowRunMode.CHECK_RUN
             )
             # Block until the action is firmly executing on the device.
             await asyncio.wait_for(device.in_shake.wait(), timeout=10.0)
@@ -656,13 +708,13 @@ class TestStopMidActionIsCleanAndTerminal:
             # is free for the next run.
             assert "shaker1" not in res_mgr.reservations
 
-            # No InvalidActionTransition (or any) incident was recorded -- an
-            # operator stop is not a failure.
+            await runtime.system.command_pipeline.stop_reports_written()
+            # A stop that cuts a command off files one incident asking someone to confirm the plate,
+            # and nothing else: an operator stop is not a failure.
             incidents = await runtime.incidents.list()
-            assert incidents == [], (
-                f"Stop must not record an incident; got "
-                f"{[(i.category, i.message) for i in incidents]}"
-            )
+            assert [(i.category, "stopped" in i.message) for i in incidents] == [
+                (IncidentCategory.RECOVERABLE_TIMEOUT, True),
+            ], f"a stop files only the stopped command's incident; got {[(i.category, i.message) for i in incidents]}"
         finally:
             device.release.set()
             await runtime.shutdown()
@@ -678,7 +730,7 @@ class TestStopPreservesLabware:
         await runtime.start()
         try:
             record = await runtime.submit_workflow(
-                workflow.name, mode=WorkflowRunMode.PURE_SIM
+                workflow.name, mode=WorkflowRunMode.CHECK_RUN
             )
             await asyncio.wait_for(device.in_shake.wait(), timeout=10.0)
 
@@ -718,7 +770,7 @@ class TestStopDoesNotWedgeNextRun:
         await runtime.start()
         try:
             record1 = await runtime.submit_workflow(
-                workflow.name, mode=WorkflowRunMode.PURE_SIM
+                workflow.name, mode=WorkflowRunMode.CHECK_RUN
             )
             await asyncio.wait_for(device.in_shake.wait(), timeout=10.0)
             await runtime.abort_execution(record1.id)
@@ -740,7 +792,7 @@ class TestStopDoesNotWedgeNextRun:
             # than hang.
             device.release.set()
             record2 = await runtime.submit_workflow(
-                workflow.name, mode=WorkflowRunMode.PURE_SIM
+                workflow.name, mode=WorkflowRunMode.CHECK_RUN
             )
             final2 = await asyncio.wait_for(runtime.wait(record2.id), timeout=15.0)
             assert final2.status == ExecutionState.COMPLETED, (

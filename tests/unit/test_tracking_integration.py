@@ -26,6 +26,7 @@ from orca.state.records import (
 )
 from orca.resource_models.tracking_context import TrackingContext
 from orca.resource_models.tracking_observer import NullTrackingObserver
+from tests.memory_activity import memory_ops_store
 
 
 def _make_context(method_id: str = "m1", execution_id: str = "wf-1") -> MethodExecutionContext:
@@ -65,14 +66,14 @@ def _record(
 class TestTrackingContextRecordStore:
     @pytest.mark.asyncio
     async def test_store_record_writes_to_ops_history(self) -> None:
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         ctx = TrackingContext(observer=NullTrackingObserver(), ops_history=history)
         await ctx.store_record(_record([]))
         assert len(await history.records()) == 1
 
     @pytest.mark.asyncio
     async def test_multiple_stored_records_accumulate_in_history(self) -> None:
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         ctx = TrackingContext(observer=NullTrackingObserver(), ops_history=history)
         await ctx.store_record(_record([], action_id="a1"))
         await ctx.store_record(_record([], action_id="a2"))
@@ -84,7 +85,7 @@ class TestObserverToOpsHistoryToProjection:
 
     @pytest.mark.asyncio
     async def test_declared_tips_used_become_queryable_via_projections(self) -> None:
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         await history.append_initial_state(
             "tips_96", InitialStateDetails(labware="tips_96", tip_positions_present=["A1", "A2", "A3"]),
         )
@@ -103,7 +104,7 @@ class TestObserverToOpsHistoryToProjection:
     async def test_declared_volume_transfer_becomes_queryable_per_side(self) -> None:
         """Paired aspirate+dispense ops are queryable on both source and target
         via ops_for; well_volume reflects both sides of the transfer."""
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         await history.append_initial_state(
             "src", InitialStateDetails(labware="src", well_volumes={"A1": 100.0}),
         )
@@ -129,7 +130,7 @@ class TestObserverToOpsHistoryToProjection:
 class TestObserverPassthroughWithoutDeclares:
     """Closes the observed-records data-loss path end-to-end.
 
-    The interpreter-populated _operation_log on an action with no DeclaredTracking
+    The interpreter's operations on an action with no DeclaredTracking
     must still reach ops_history. Tests the chain observer.process_operations ->
     ops_history.append_record -> ops_for(labware), with the observer's new
     OBSERVED-passthrough emitting a TrackingRecord even when declares is None.
@@ -137,7 +138,7 @@ class TestObserverPassthroughWithoutDeclares:
 
     @pytest.mark.asyncio
     async def test_observed_aspirate_records_reach_ops_history_without_declares(self) -> None:
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         observer = DeclaredTrackingObserver()
         observed_ops = [
             _op(DeviceOperation.ASPIRATE, ["plate_a"],
@@ -165,7 +166,7 @@ class TestObserverPassthroughWithoutDeclares:
         operation log with DRIVER_OBSERVED records alongside the OBSERVED action-
         derived record produced by ActionBodyLocationAction.execute. Both must
         survive the observer when declares is None."""
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         observer = DeclaredTrackingObserver()
         observed = _op(DeviceOperation.ASPIRATE, ["plate_a"],
                        AspirateDetails(labware="plate_a", positions=["A1"], volumes=[50.0]),
@@ -205,7 +206,7 @@ class TestOpsHistoryEndToEnd:
     async def test_shake_op_is_recorded_and_queryable(self) -> None:
         """Non-pipetting ops on a labware are tracked and retrievable via
         ops_for(labware_name)."""
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         await history.append_record(_record([
             _op(DeviceOperation.SHAKE, ["plate_1"],
                 ShakeDetails(speed_rpm=300.0, duration_s=120.0)),
@@ -221,7 +222,7 @@ class TestOpsHistoryEndToEnd:
         """Walking backwards across two transfer steps (src -> intermediate ->
         final) recovers every touched well on every labware via
         sample_events_at."""
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         # Step 1: src A1 -> intermediate B1
         await history.append_record(_record([
             _op(DeviceOperation.ASPIRATE, ["src"],
@@ -250,7 +251,7 @@ class TestOpsHistoryEndToEnd:
     @pytest.mark.asyncio
     async def test_cumulative_volume_across_multiple_dispenses(self) -> None:
         """Sequential dispenses into one well accumulate through well_volume."""
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         await history.append_initial_state(
             "dst", InitialStateDetails(labware="dst", well_volumes={"B1": 0.0}),
         )
@@ -361,7 +362,7 @@ class TestPerChannelFaultPipelineEndToEnd:
         assert tracking_record.source == TrackingSource.OBSERVED
 
         # OpsHistory captures the record; querying surfaces the per-well shape.
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         await history.append_record(tracking_record)
         ops = await history.ops_for("plate_X")
         assert len(ops) == 8

@@ -18,17 +18,16 @@ import pytest
 
 from orca.events.event_bus import EventBus
 from orca.events.execution_context import ExecutionContext
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.submission import ResolvedAcquisition
+from orca.modes.run_modes import WorkflowRunMode
+from orca.workflow_models.submission import ResolvedAcquisition
 from orca.resource_models.capacity import (
     CapacityExceededError,
-    RecoverableCapacityExceededError,
     CapacityPolicy,
     OverflowAction,
 )
 from orca.resource_models.labware import LabwareInstance, LabwareTemplate
 from orca.state.records import DeclaredTracking
-from orca.resource_models.labware_state import (
+from orca.workflow_models.labware_state import (
     SLOT_CLOSED_SENTINEL,
     InMemoryLabwareRegistry,
     IRegisteredThread,
@@ -205,6 +204,7 @@ def _build_harness(
 
 def _make_method(name: str) -> ExecutingMethod:
     method = MagicMock(spec=ExecutingMethod)
+    method.partner_barcodes = {}
     method.name = name
     return method
 
@@ -235,7 +235,7 @@ class TestSpawnCallbackOverflow:
         for i in range(3):
             await harness.callback(harness.receiver_template.labware_template.name,
                                    _make_method(f"m{i}"),
-                                   WorkflowRunMode.PURE_SIM)
+                                   WorkflowRunMode.CHECK_RUN)
 
         assert harness.slot.queue.qsize() == 2
         assert len(harness.slot.pending) == 1
@@ -256,12 +256,12 @@ class TestSpawnCallbackOverflow:
         captured = _capture_events(harness.event_bus)
 
         # First 2 fill the slot
-        await harness.callback("plate_recv", _make_method("m0"), WorkflowRunMode.PURE_SIM)
-        await harness.callback("plate_recv", _make_method("m1"), WorkflowRunMode.PURE_SIM)
+        await harness.callback("plate_recv", _make_method("m0"), WorkflowRunMode.CHECK_RUN)
+        await harness.callback("plate_recv", _make_method("m1"), WorkflowRunMode.CHECK_RUN)
 
         # 3rd raises
         with pytest.raises(CapacityExceededError, match="plate_recv"):
-            await harness.callback("plate_recv", _make_method("m2"), WorkflowRunMode.PURE_SIM)
+            await harness.callback("plate_recv", _make_method("m2"), WorkflowRunMode.CHECK_RUN)
 
         # State after rejection: 2 in queue, 0 pending
         assert harness.slot.queue.qsize() == 2
@@ -280,7 +280,7 @@ class TestSpawnCallbackOverflow:
             capacity=None,  # slot is unbounded -- only labware capacity can trigger overflow
         )
 
-        await harness.callback("plate_recv", _make_method("m0"), WorkflowRunMode.PURE_SIM)
+        await harness.callback("plate_recv", _make_method("m0"), WorkflowRunMode.CHECK_RUN)
 
         # No WORK enqueued. The queue holds only the wake sentinel that
         # mark_receiver_spent puts there to lift a receiver already parked in
@@ -297,10 +297,10 @@ class TestSpawnCallbackOverflow:
         assert harness.slot.contributions_to_active == 0
 
     @pytest.mark.asyncio
-    async def test_recoverable_reject_still_records_the_depletion(self) -> None:
+    async def test_a_reject_still_records_the_depletion(self) -> None:
         """The pre-check raises before the commit callback ever runs.
 
-        Under RECOVERABLE_REJECT that makes the pre-check the only place a
+        Under REJECT that makes the pre-check the only place a
         depleted receiver could hear it is spent, so it has to say so. Without
         that the contributor pauses, the operator retries, the pre-check finds
         the same depleted labware and raises again, forever.
@@ -310,17 +310,17 @@ class TestSpawnCallbackOverflow:
             receiver_labware=labware,
             capacity=CapacityPolicy(
                 max_contributions=4,
-                overflow_action=OverflowAction.RECOVERABLE_REJECT,
+                overflow_action=OverflowAction.REJECT,
             ),
         )
         precheck = harness.workflow._capacity_precheck_callback
         assert precheck is not None
 
-        with pytest.raises(RecoverableCapacityExceededError):
+        with pytest.raises(CapacityExceededError):
             await precheck("plate_recv", None, _make_method("m0"))
 
         assert harness.slot.receiver_spent is True, (
-            "a depleted receiver under RECOVERABLE_REJECT never learns it is "
+            "a depleted receiver under REJECT never learns it is "
             "spent, so the operator's retry hits the same wall"
         )
 
@@ -335,7 +335,7 @@ class TestSpawnCallbackOverflow:
         labware = _ControlledLabware("plate_recv", can_continue_value=False)
         harness = _build_harness(receiver_labware=labware, capacity=None)
 
-        await harness.callback("plate_recv", _make_method("m0"), WorkflowRunMode.PURE_SIM)
+        await harness.callback("plate_recv", _make_method("m0"), WorkflowRunMode.CHECK_RUN)
 
         assert labware.can_continue_call_count >= 1
         # And the override's False return triggered overflow:
@@ -367,8 +367,8 @@ class TestSpawnCallbackCustomStrategy:
         # First fills the slot, second triggers overflow
         first = _make_method("m0")
         second = _make_method("m1")
-        await harness.callback("plate_recv", first, WorkflowRunMode.PURE_SIM)
-        await harness.callback("plate_recv", second, WorkflowRunMode.PURE_SIM)
+        await harness.callback("plate_recv", first, WorkflowRunMode.CHECK_RUN)
+        await harness.callback("plate_recv", second, WorkflowRunMode.CHECK_RUN)
 
         assert len(recorded) == 1
         recorded_slot, recorded_method, recorded_workflow = recorded[0]
@@ -471,6 +471,7 @@ def _contributor_method(name: str) -> ExecutingMethod:
     """ExecutingMethod double with contributor_context=None (base registry keys
     by bare labware name, so both contributors resolve to the same slot)."""
     method = MagicMock(spec=ExecutingMethod)
+    method.partner_barcodes = {}
     method.name = name
     method.contributor_context = None
     return cast(ExecutingMethod, method)
@@ -493,13 +494,13 @@ class TestSpawnCallbackConcurrentCreate:
         method_b = _contributor_method("m_b")
 
         task_a = asyncio.ensure_future(
-            callback(name, method_a, WorkflowRunMode.PURE_SIM)
+            callback(name, method_a, WorkflowRunMode.CHECK_RUN)
         )
         # A is now parked inside create_thread_fn, holding the slot lock.
         assert await _poll(lambda: len(create_calls) >= 1), "A never reached create"
 
         task_b = asyncio.ensure_future(
-            callback(name, method_b, WorkflowRunMode.PURE_SIM)
+            callback(name, method_b, WorkflowRunMode.CHECK_RUN)
         )
         # Give B a window to either re-create (unlocked: 2nd create) or block on
         # the slot lock (locked: no 2nd create). Timing out here IS the pass path.
@@ -527,7 +528,7 @@ class TestSpawnCallbackContributionIndex:
 
         methods = [_make_method(f"m{i}") for i in range(3)]
         for method in methods:
-            await harness.callback("plate_recv", method, WorkflowRunMode.PURE_SIM)
+            await harness.callback("plate_recv", method, WorkflowRunMode.CHECK_RUN)
 
         methods[0].set_pool_index.assert_called_once_with("plate_recv", 0)
         methods[1].set_pool_index.assert_called_once_with("plate_recv", 1)
@@ -541,7 +542,7 @@ class TestSpawnCallbackContributionIndex:
 
         method = _contributor_method("m0")
         release.set()  # single contributor: mint immediately, don't park in create_fn
-        await callback(name, method, WorkflowRunMode.PURE_SIM)
+        await callback(name, method, WorkflowRunMode.CHECK_RUN)
 
         assert len(create_calls) == 1
         method.set_pool_index.assert_called_once_with(name, 0)

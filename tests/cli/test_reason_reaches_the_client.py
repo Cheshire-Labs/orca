@@ -20,8 +20,6 @@ IID = "99999999-8888-7777-6666-555555555555"
 LID = "lw-0000000000"
 
 CASES: list[tuple[str, list[str], str]] = [
-    ("device", ["device", "send", "d", "noop"], "device_execute"),
-    ("device", ["device", "invoke", "d", "shake"], "device_invoke"),
     ("device", ["device", "initialize", "d"], "device_initialize"),
     ("device", ["device", "disconnect", "d"], "device_disconnect"),
     ("device", ["device", "reconcile-deck", "d"], "device_reconcile_deck"),
@@ -45,11 +43,18 @@ CASES: list[tuple[str, list[str], str]] = [
     ("access_config", ["access-configs", "create", "a", "--access-type", "vertical"], "access_configs_add"),
     ("access_config", ["access-configs", "update", "a", "--access-type", "vertical"], "access_configs_update"),
     ("access_config", ["access-configs", "delete", "a"], "access_configs_delete"),
+    ("profile", ["profiles", "create", "a"], "profiles_add"),
+    ("profile", ["profiles", "update", "a"], "profiles_update"),
+    ("profile", ["profiles", "delete", "a"], "profiles_delete"),
     ("teachpoint", ["teachpoints", "delete", "r", "p"], "teachpoints_delete"),
     ("teachpoint", ["teachpoints", "labware", "clear", "r", "p", "t"], "teachpoints_clear_labware_override"),
     ("deck_layout", ["deck-layouts", "delete", "lh", "n"], "deck_layouts_delete"),
     ("grip_profiles", ["grip-profiles", "reset", "t"], "grip_profiles_reset"),
     ("move_defaults", ["move-defaults", "reset", "arm"], "move_defaults_reset"),
+    ("execution", ["execution", "close", EID], "execution_close"),
+    ("incident", ["incident", "ack", IID], "incidents_ack"),
+    ("incident", ["incident", "ack-all"], "incidents_ack_all"),
+    ("manual_step", ["manual-step", "confirm", "s1", "--execution", EID], "manual_step_confirm"),
 ]
 
 
@@ -73,70 +78,6 @@ def test_the_reason_reaches_the_client(module: str, argv: list[str], method: str
     assert call.call_args.kwargs["reason"] == "why"
 
 
-@pytest.mark.parametrize("module,argv,method", [
-    ("execution", ["execution", "close", EID], "execution_close"),
-    ("incident", ["incident", "ack", IID], "incidents_ack"),
-    ("incident", ["incident", "ack-all"], "incidents_ack_all"),
-], ids=["execution_close", "incidents_ack", "incidents_ack_all"])
-def test_the_reason_reaches_the_local_client(module: str, argv: list[str], method: str) -> None:
-    client = _client()
-    with (
-        patch(f"orca.cli.{module}.get_client", return_value=client),
-        patch(f"orca.cli.{module}.local_client", return_value=client),
-        patch(f"orca.cli.{module}.active_backend", return_value="local"),
-    ):
-        runner.invoke(app, ["--force", *argv, "--reason", "why"])
-
-    call = getattr(client, method)
-    assert call.called, f"{' '.join(argv)} never reached {method}"
-    assert call.call_args.kwargs["reason"] == "why"
-
-
-def test_the_reason_reaches_the_client_on_submit() -> None:
-    client = _client()
-    with (
-        patch("orca.cli.backend.get_client", return_value=client),
-        patch("orca.cli.resolve.record_last_execution"),
-    ):
-        runner.invoke(app, ["--force", "run", "wf", "--run-mode", "PURE_SIM", "--reason", "why"])
-
-    assert client.submit_workflow.call_args.kwargs["reason"] == "why"
-
-
-def test_the_reason_reaches_the_client_on_submission_submit() -> None:
-    client = _client()
-    with (
-        patch("orca.cli.submission.get_client", return_value=client),
-        patch("orca.cli.resolve.record_last_execution"),
-    ):
-        runner.invoke(app, ["--force", "submission", "submit", "wf", "--run-mode", "PURE_SIM",
-                            "--reason", "why"])
-
-    assert client.submission_submit.call_args.args[0].reason == "why"
-
-
-def test_the_reason_reaches_the_local_client_on_manual_step_confirm() -> None:
-    client = _client()
-    with (
-        patch("orca.cli.manual_step.local_client", return_value=client),
-        patch("orca.cli.manual_step.active_backend", return_value="local"),
-    ):
-        runner.invoke(app, ["--force", "manual-step", "confirm", "s1", "--execution", EID, "--reason", "why"])
-
-    assert client.manual_step_confirm.call_args.kwargs["reason"] == "why"
-
-
-def test_the_reason_reaches_the_daemon_on_workflow_load() -> None:
-    client = MagicMock()
-    with (
-        patch("orca.cli.client.LocalDaemonClient", return_value=client),
-        patch("orca.cli.backend.active_backend", return_value="local"),
-    ):
-        runner.invoke(app, ["workflow", "load", "m:build_workflow", "--reason", "why"])
-
-    assert client.load_workflow.call_args.kwargs["reason"] == "why"
-
-
 def test_the_reason_reaches_the_cloud_on_workflow_load(tmp_path: Path) -> None:
     source = tmp_path / "wf.py"
     source.write_text("# wf\n")
@@ -148,3 +89,13 @@ def test_the_reason_reaches_the_cloud_on_workflow_load(tmp_path: Path) -> None:
         runner.invoke(app, ["workflow", "load", str(source), "--name", "wf", "-m", "m", "--reason", "why"])
 
     assert client.workflow_load.call_args.kwargs["reason"] == "why"
+
+
+def test_the_reason_reaches_the_command_sent_by_name() -> None:
+    """`orca device send` puts the reason on the batch it sends."""
+    client = _client()
+    with patch("orca.cli.device.get_client", return_value=client):
+        runner.invoke(app, ["--force", "device", "send", "d", "noop", "--reason", "why"])
+
+    _, request = client.device_operator_command.call_args.args
+    assert request.reason == "why"

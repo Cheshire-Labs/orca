@@ -8,7 +8,7 @@ pad cannot be granted: it never asks for its destination again, and no later
 release can wake it. That is how six concurrent SMC submissions wedged with
 every resolution pad occupied and zero executions terminal.
 """
-from typing import Dict, Iterable, List
+from typing import Callable, Dict, Iterable, List
 
 import pytest
 
@@ -20,7 +20,7 @@ from orca.system.reservation_manager.interfaces import (
     IThreadReservationCoordinator,
 )
 from orca.system.reservation_manager.location_reservation import LocationReservation
-from orca.system.reservation_manager.move_handler import MoveHandler
+from orca.workflow_models.actions.move_handler import MoveHandler
 from orca.system.system_map import SystemMap
 from tests.test_helpers import (
     create_simple_system_map,
@@ -92,6 +92,21 @@ class _PadBlockedCoordinator(IThreadReservationCoordinator):
         raise NotImplementedError
 
     def forget_threads(self, thread_ids: set[str]) -> None:
+        raise NotImplementedError
+
+    def note_location_wait(self, thread_id: str, request: LocationReservation) -> None:
+        raise NotImplementedError
+
+    def end_location_wait(self, thread_id: str) -> None:
+        raise NotImplementedError
+
+    def note_co_labware_wait(self, thread_id: str, missing_labware_ids: Callable[[], set[str]]) -> None:
+        raise NotImplementedError
+
+    def end_co_labware_wait(self, thread_id: str) -> None:
+        raise NotImplementedError
+
+    def note_cannot_yield(self, thread_id: str) -> None:
         raise NotImplementedError
 
     def release_reservations_for_threads(self, thread_ids: set[str]) -> list[str]:

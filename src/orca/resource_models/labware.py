@@ -12,8 +12,10 @@ from orca.state.projections import (
     has_tip_baseline,
     tips_present,
     went_unobserved as fold_went_unobserved,
+    well_volumes,
 )
 from orca.resource_models.sharing import GroupSharing, SubmissionBatching
+from orca.modes.run_modes import WorkflowRunMode
 from orca.state.identity import LabwareRef
 from orca.state.provenance import Provenance
 from orca.state.interfaces import IContentsReader, IContentsSeeder
@@ -22,14 +24,15 @@ from orca.state.records import (
     DeclaredTracking,
     InitialStateDetails,
     LabwareInitialState,
+    DeviceOperation,
     OperationRecord,
 )
-from orca.runtime.labware_catalog_protocol import (
+from orca.resource_models.labware_catalog_protocol import (
     ILabwareCatalog,
     LabwareDefinition,
     LabwareNotFound,
 )
-from orca.runtime.labware_factory_resolver import resolve_plr_factory
+from orca.resource_models.labware_factory_resolver import resolve_plr_factory
 
 
 orca_logger = logging.getLogger("orca")
@@ -80,6 +83,11 @@ class LabwareTemplate(ABC):
         self._submission_batching = submission_batching
         self._can_continue_fn = can_continue_fn
         self._catalog: ILabwareCatalog | None = None
+        self._initial_state: LabwareInitialState | None = None
+
+    @property
+    def initial_state(self) -> LabwareInitialState | None:
+        return self._initial_state
 
     async def bind_catalog(self, catalog: ILabwareCatalog) -> None:
         """Inject the runtime labware catalog used by `create_instance()`.
@@ -256,6 +264,10 @@ class LabwareTemplate(ABC):
         trough pool, tip rack occupancy).
         """
         return None
+
+    @property
+    def declares_starting_volume(self) -> bool:
+        return False
 
     @property
     def declared_replenished(self) -> bool:
@@ -457,6 +469,9 @@ class LabwareInstance:
         capacity bound is known so the operation does not clamp."""
         return None
 
+    def has_well(self, well_id: str) -> bool:
+        return True
+
     async def ops(self) -> list[OperationRecord]:
         """Every op the record holds for this instance, chronologically.
 
@@ -517,23 +532,13 @@ class LabwareInstance:
     async def contents_provenance(self) -> Provenance:
         """How well the record knows what this labware holds right now.
 
-        STALE means one of four things: a restart, a reconnect or an error pause
+        STALE means one of three things: a restart, a reconnect or an error pause
         opened a stretch nobody watched; an operator command only made sense if
-        the record was wrong; an aborted action threw away work it had really
-        done; or an unfinished action is holding operations the record has not
-        been told about yet. Either way the fold describes then rather than
-        now. A caller about to refuse on the fold needs that: refusing on a
-        reading nobody has questioned is a different act from refusing on one
-        nobody has looked at. Which of the four it is matters to a gate that
-        lets work through -- see ``went_unobserved``.
-
-        Graded by the ledger so this and every operator surface answer the
-        same. Unbound labware has no ledger to ask and folds on its own.
+        the record was wrong; or a stop cut a command off at the device. Either
+        way the fold describes then rather than now. Which of the three it is
+        matters to a gate that lets work through -- see ``went_unobserved``.
         """
-        ops = await self.ops()
-        if self._contents_reader is None:
-            return fold_contents_provenance(ops, self.name)
-        return self._contents_reader.provenance_of(ops, self.name)
+        return fold_contents_provenance(await self.ops(), self.name)
 
     async def went_unobserved(self) -> bool:
         """True when a stretch went by with nobody watching this labware.
@@ -542,18 +547,15 @@ class LabwareInstance:
         interchangeable for a gate that lets work through. A read is stale for
         several reasons; only an unwatched stretch means a hand could have
         refilled the rack, which is the one reason to let a pick proceed at a
-        position the record calls empty. An unfinished action holding
-        operations, or an abandoned one that dropped them, is not that: nobody
-        was at the deck, so the gate must still refuse.
-
-        Graded by the ledger, like ``contents_provenance``, because an action
-        holding its operations is something only the ledger can see. Unbound
-        labware has no ledger and folds on its own.
+        position the record calls empty. A command a stop cut off is not that:
+        nobody was at the deck, so the gate must still refuse.
         """
-        ops = await self.ops()
-        if self._contents_reader is None:
-            return fold_went_unobserved(ops, self.name)
-        return self._contents_reader.went_unobserved(ops, self.name)
+        return fold_went_unobserved(await self.ops(), self.name)
+
+    async def reagent_short_by(self, volume: float, run_mode: WorkflowRunMode | None) -> float:
+        """How far the record says this labware is short of ``volume``. Overridden by ``TroughInstance``."""
+        del volume, run_mode
+        return 0.0
 
     async def missing_tip_positions(self, positions: Sequence[str]) -> list[str]:
         """Requested tip positions the ledger does not back, or none: not a
@@ -636,10 +638,16 @@ class PlateInstance(LabwareInstance):
         )
 
     def well_capacity(self, well_id: str) -> float | None:
-        try:
-            return self._plate.well(well_id).max_volume
-        except (KeyError, ValueError):
+        if not self.has_well(well_id):
             return None
+        return self._plate.well(well_id).max_volume
+
+    def has_well(self, well_id: str) -> bool:
+        try:
+            self._plate.well(well_id)
+        except (KeyError, ValueError, IndexError):
+            return False
+        return True
 
     @property
     def has_lid(self) -> bool:
@@ -723,7 +731,7 @@ class TipRackInstance(LabwareInstance):
                 f"route into the system seeds at birth, which binds; reaching "
                 f"this means one route does not."
             )
-        return await self._contents_reader.next_available_tips(self, count)
+        return await self._contents_reader.next_available_tips(self.ref, count)
 
     def every_tip_position(self) -> list[str]:
         """Which positions exist on this rack. Geometry, not a claim about
@@ -764,6 +772,10 @@ class TipRackInstance(LabwareInstance):
         return len(present) > 0
 
 
+_VOLUME_TOLERANCE_UL = 1e-6
+"""Taking exactly what remains must not read as short because of float subtraction."""
+
+
 class TroughInstance(LabwareInstance):
     """A class that represents a trough instance"""
 
@@ -786,6 +798,27 @@ class TroughInstance(LabwareInstance):
     def trough(self) -> ITrough:
         """Returns the underlying trough object."""
         return self._trough
+
+    async def reagent_short_by(self, volume: float, run_mode: WorkflowRunMode | None) -> float:
+        """Zero when nothing stated the volume: an undeclared trough opens at 0.0 and fills unseen.
+
+        ``replenished`` only means the volume never depletes in a simulation.
+        """
+        if self._declared_replenished() and run_mode is not WorkflowRunMode.LIVE:
+            return 0.0
+        ops = await self.ops()
+        if not self._volume_was_stated(ops) or await self.went_unobserved():
+            return 0.0
+        short = volume - well_volumes(ops, self.name).get(TROUGH_WELL_ID, 0.0)
+        return short if short > _VOLUME_TOLERANCE_UL else 0.0
+
+    def _volume_was_stated(self, ops: list[OperationRecord]) -> bool:
+        if self._template is not None and self._template.declares_starting_volume:
+            return True
+        return any(
+            op.operation is DeviceOperation.SET_VOLUME and self.name in op.affected_labware
+            for op in ops
+        )
 
     def contents_wire_state(
         self, tips: dict[str, bool] | None, volumes: dict[str, float] | None,
@@ -876,20 +909,17 @@ class PlateTemplate(LabwareTemplate):
             submission_batching=submission_batching,
             can_continue_fn=can_continue_fn,
         )
-        self._with_lid = with_lid
+        if with_lid:
+            raise NotImplementedError(
+                f"Plate template {name!r}: plates with lids are not supported yet. Nothing tracks the lid, "
+                "so a liquid step could run on a covered plate. Declare the plate without with_lid."
+            )
         self._labware_type = labware_type
         self._initial_state = initial_state
 
     async def _build_instance(self, instance_id: str, instance_name: str) -> PlateInstance:
         factory: Callable[..., IPlate] = resolve_plr_factory(await self._plr_definition())
-        try:
-            plate = factory(instance_name, self._with_lid if self._with_lid else None)
-        except TypeError:
-            if self._with_lid:
-                raise ValueError(
-                    f"Plate type {self._labware_type!r} does not support 'with_lid'"
-                )
-            plate = factory(instance_name)
+        plate = factory(instance_name)
         instance = PlateInstance(
             plate,
             template_name=self.name,
@@ -991,6 +1021,13 @@ class TipRackTemplate(LabwareTemplate):
         self._with_tips = with_tips
         self._labware_type = labware_type
         self._initial_state = initial_state
+
+    @property
+    def initial_state(self) -> LabwareInitialState:
+        """What a new rack starts with: the declared state, else full with `with_tips` and empty without."""
+        if self._initial_state is not None:
+            return self._initial_state
+        return LabwareInitialState(max_fill=True) if self._with_tips else LabwareInitialState(tip_positions=[])
 
     async def _build_instance(self, instance_id: str, instance_name: str) -> TipRackInstance:
         factory: Callable[..., ITipRack] = resolve_plr_factory(await self._plr_definition())
@@ -1094,6 +1131,10 @@ class TroughTemplate(LabwareTemplate):
         return InitialStateDetails(
             labware=instance.name, well_volumes=volumes, single_pool=True,
         )
+
+    @property
+    def declares_starting_volume(self) -> bool:
+        return self._initial_state is not None
 
     @property
     def declared_replenished(self) -> bool:

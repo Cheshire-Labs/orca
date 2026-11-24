@@ -1,19 +1,12 @@
-"""Tests for IDeploymentProfileStore impls (Null + FileDeploymentProfileStore).
-
-Mirrors test_access_config_store / test_teachpoint_store. The source-available store is
-file-backed (directory-of-JSONs) because deployment profiles are operator
-artefacts that should survive process restarts even without the hosted deployment DB.
-"""
+"""Deployment profiles are `profiles/<name>.json` files, read on every call."""
 
 import json
 from pathlib import Path
 
 import pytest
 
-from orca.runtime.profile_store import (
-    FileDeploymentProfileStore,
-    NullDeploymentProfileStore,
-)
+from orca.runtime.profile_store import FileDeploymentProfileStore
+from orca.runtime.setup_files import SetupFileError
 from orca.variables.deployment_profile import DeploymentProfile
 
 
@@ -26,31 +19,6 @@ def _profile(name: str = "p", **overrides: object) -> DeploymentProfile:
     }
     base.update(overrides)
     return DeploymentProfile.model_validate(base)
-
-
-class TestNullDeploymentProfileStore:
-    """The no-op default. Methods complete without doing anything observable."""
-
-    async def test_get_returns_none(self) -> None:
-        assert await NullDeploymentProfileStore().get("anything") is None
-
-    async def test_list_returns_empty(self) -> None:
-        assert await NullDeploymentProfileStore().list() == []
-
-    async def test_add_is_noop(self) -> None:
-        store = NullDeploymentProfileStore()
-        await store.add(_profile("p1"))
-        assert await store.get("p1") is None
-        assert await store.list() == []
-
-    async def test_update_is_noop(self) -> None:
-        store = NullDeploymentProfileStore()
-        await store.update(_profile("p1"))
-        assert await store.get("p1") is None
-        assert await store.list() == []
-
-    async def test_delete_returns_false(self) -> None:
-        assert await NullDeploymentProfileStore().delete("anything") is False
 
 
 class TestFileDeploymentProfileStore:
@@ -86,17 +54,19 @@ class TestFileDeploymentProfileStore:
         names = sorted(p.name for p in await store.list())
         assert names == ["a", "b", "c"]
 
-    async def test_loads_existing_dir_on_construction(
-        self, tmp_path: Path,
-    ) -> None:
-        # Pre-populate the dir, then construct: should pick up existing files.
-        (tmp_path / "preexisting.json").write_text(
-            _profile("preexisting").model_dump_json(),
-        )
+    async def test_a_hand_edit_is_read_on_the_next_call(self, tmp_path: Path) -> None:
         store = FileDeploymentProfileStore(tmp_path)
-        loaded = await store.get("preexisting")
+        await store.add(_profile("p"))
+        (tmp_path / "p.json").write_text(
+            _profile("p", variables={"speed": 42}).model_dump_json(),
+        )
+        loaded = await store.get("p")
         assert loaded is not None
-        assert loaded.name == "preexisting"
+        assert loaded.variables == {"speed": 42}
+        (tmp_path / "added_by_hand.json").write_text(
+            _profile("added_by_hand").model_dump_json(),
+        )
+        assert sorted(p.name for p in await store.list()) == ["added_by_hand", "p"]
 
     async def test_add_duplicate_name_raises(self, tmp_path: Path) -> None:
         store = FileDeploymentProfileStore(tmp_path)
@@ -140,20 +110,16 @@ class TestFileDeploymentProfileStore:
         store = FileDeploymentProfileStore(tmp_path)
         assert await store.delete("ghost") is False
 
-    async def test_construction_creates_dir_if_missing(
-        self, tmp_path: Path,
-    ) -> None:
-        target = tmp_path / "fresh"
-        assert not target.exists()
-        FileDeploymentProfileStore(target)
-        assert target.is_dir()
+    async def test_a_missing_folder_reads_as_no_profiles(self, tmp_path: Path) -> None:
+        store = FileDeploymentProfileStore(tmp_path / "fresh")
+        assert await store.list() == []
+        await store.add(_profile("p"))
+        assert (tmp_path / "fresh" / "p.json").exists()
 
-    async def test_invalid_json_in_dir_raises_at_construction(
-        self, tmp_path: Path,
-    ) -> None:
+    async def test_invalid_json_is_refused_naming_the_file(self, tmp_path: Path) -> None:
         (tmp_path / "bad.json").write_text("{not valid json")
-        with pytest.raises((ValueError, json.JSONDecodeError)):
-            FileDeploymentProfileStore(tmp_path)
+        with pytest.raises(SetupFileError, match="bad.json"):
+            await FileDeploymentProfileStore(tmp_path).list()
 
     async def test_extra_field_in_json_rejected(
         self, tmp_path: Path,
@@ -162,8 +128,8 @@ class TestFileDeploymentProfileStore:
         (tmp_path / "extra.json").write_text(
             json.dumps({"name": "extra", "variables": {}, "bogus": 1}),
         )
-        with pytest.raises(ValueError):
-            FileDeploymentProfileStore(tmp_path)
+        with pytest.raises(SetupFileError, match="extra.json"):
+            await FileDeploymentProfileStore(tmp_path).get("extra")
 
     async def test_add_with_mismatched_filename_uses_profile_name(
         self, tmp_path: Path,
@@ -185,3 +151,14 @@ class TestFileDeploymentProfileStore:
         store = FileDeploymentProfileStore(tmp_path)
         names = [p.name for p in await store.list()]
         assert names == ["p"]
+
+
+async def test_a_profile_name_that_is_not_a_plain_file_name_is_refused(tmp_path: Path) -> None:
+    store = FileDeploymentProfileStore(tmp_path / "profiles")
+    (tmp_path / "access_configs.json").write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="file name"):
+        await store.add(_profile("../access_configs"))
+    with pytest.raises(ValueError, match="file name"):
+        await store.delete("../access_configs")
+    assert (tmp_path / "access_configs.json").exists()

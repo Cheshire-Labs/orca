@@ -5,9 +5,9 @@ suitable for passing to ``DeclaredTracking(tips_used=..., wells_used=...)``
 on closed-protocol actions, where orca cannot introspect the real behavior.
 
 For RUNTIME well selection (passed to ``@orca.action(well_selectors=...)``),
-use the ``WellSelector`` factory functions in
-``orca.resource_models.well_selector`` instead. Those resolve against the
-actual labware geometry at dispatch time; the helpers here just compute the
+use the ``WellSelector`` factories also exported here (``well_list``,
+``well_range``, ``quadrant``, ``all_wells``). Those resolve against the
+actual labware geometry at dispatch time; the other helpers just compute the
 address strings up front.
 
 Addresses follow PyLabRobot's column-major enumeration convention:
@@ -15,6 +15,13 @@ Addresses follow PyLabRobot's column-major enumeration convention:
 """
 
 from typing import Tuple
+
+from orca.resource_models.well_selector import WellSelector, all_wells, quadrant, well_list, well_range
+
+__all__ = [
+    "columns_96", "columns_384", "column_stripes_96", "all_wells_96", "all_wells_384",
+    "WellSelector", "well_list", "well_range", "quadrant", "all_wells",
+]
 
 
 _SBS_ROWS_96 = "ABCDEFGH"

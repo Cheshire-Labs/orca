@@ -10,6 +10,7 @@ materializes one or more ``ExecutingMethod`` instances for the thread loop.
 
 from collections.abc import AsyncIterator
 
+from orca.events.event_name import checked_event_name
 from orca.events.event_channel import EventChannelRegistry
 from orca.workflow_models.labware_threads.i_thread_context import IThreadContext
 from orca.workflow_models.method import ExecutingMethod, MethodInstance
@@ -23,7 +24,7 @@ class WaitStepTemplate(IMethodTemplate):
     """
 
     def __init__(self, event_name: str, timeout: float | None = None) -> None:
-        self._event_name = event_name
+        self._event_name = checked_event_name(event_name)
         self._timeout = timeout
 
     @property
@@ -63,7 +64,7 @@ class BranchStepTemplate(IMethodTemplate):
         branches: dict[str, list[IMethodTemplate]],
         timeout: float | None = None,
     ) -> None:
-        self._event_name = event_name
+        self._event_name = checked_event_name(event_name)
         self._branches = branches
         self._timeout = timeout
 
@@ -88,8 +89,7 @@ class BranchStepTemplate(IMethodTemplate):
         ctx: IThreadContext,
         registry: EventChannelRegistry,
     ) -> AsyncIterator[ExecutingMethod]:
-        channel = registry.get_or_create(self.event_name)
-        _, value, _ = await channel.wait(seen_counter=0, timeout=self.timeout)
+        value = await ctx.wait_for_event(registry.get_or_create(self.event_name), self.timeout)
         str_value = str(value)
         if str_value in self._branches:
             branch_methods = self._branches[str_value]

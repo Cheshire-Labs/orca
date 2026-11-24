@@ -1,41 +1,14 @@
-import time
 from typing import Protocol, TypeVar
 
 from cheshire_drivers.liquid_handler_models import LabwareStateResponse
+from pydantic import BaseModel
 
-from orca.state.records import (
-    DeviceOperation,
-    GenericOperationDetails,
-    OperationRecord,
-)
+from orca.state.command_operations import action_context, operations_for_command
+from orca.state.records import OperationRecord
 
 # The interpreter surface is generic over the device call's argument values;
 # the dispatcher narrows the call's return to LabwareStateResponse | None.
 V = TypeVar("V")
-
-
-def resolve_operation_interpreter(device: object) -> "IOperationInterpreter":
-    """Pick the IOperationInterpreter for ``device`` by walking its MRO.
-
-    Returns the first ``ITrackedDevice`` subclass in ``type(device).__mro__``
-    (excluding ``ITrackedDevice`` itself) that explicitly defines its own
-    ``operation_interpreter`` classmethod. Falls through to ``DefaultInterpreter``
-    when no tracked interface is found, which is correct for untracked devices
-    (DefaultInterpreter emits a generic record per call) but would silently
-    drop typed records for tracked ones; the build-time guard in
-    ``orca.sdk.build`` rejects that case loud.
-    """
-    from orca.devices.device_interfaces import ITrackedDevice
-    for cls in type(device).__mro__:
-        if not isinstance(cls, type) or cls is ITrackedDevice:
-            continue
-        if not issubclass(cls, ITrackedDevice):
-            continue
-        own = cls.__dict__.get("operation_interpreter")
-        if own is None:
-            continue
-        return cls.operation_interpreter()
-    return DefaultInterpreter()
 
 
 class IOperationInterpreter(Protocol):
@@ -99,22 +72,26 @@ class IOperationInterpreter(Protocol):
         non-empty, every well in the request has its own record carrying the
         per-well certainty: ``confirmed_transferred`` for successful channels,
         ``definitely_not_transferred`` (volumes=[0] + error_code) for failed
-        channels. Returning a non-empty list signals the action body to ERROR
-        the action after persisting the records.
+        channels. A tip pick-up, drop or discard is read the same way: one
+        record per channel, and a failed channel's record moves no tip.
+        Returning a non-empty list signals the action body to ERROR the action
+        after persisting the records.
         """
         ...
 
-    def claimed_tip_positions(
+    def request_of(
         self, command: str, args: tuple[V, ...], kwargs: dict[str, V],
-    ) -> dict[str, list[str]]:
-        """Rack name -> requested tip positions, for a call about to pick tips.
+    ) -> BaseModel | None:
+        """The typed request a raw action call stands for, or None when the interpreter has none for it.
 
-        Read before dispatch, against the raw call the action body made, so
-        the requested positions can be checked against the ledger before the
-        device call runs rather than after the instrument discovers them
-        empty. Empty for every verb that is not a tip pick; the default
-        interpreter has no tip concept at all.
+        Read before dispatch, so a run's tip pick passes the same tip check as an operator's.
         """
+        ...
+
+    def claimed_reagent_volumes(
+        self, command: str, args: tuple[V, ...], kwargs: dict[str, V],
+    ) -> dict[str, float]:
+        """Trough name -> total volume, for a call about to aspirate from a trough."""
         ...
 
 
@@ -131,20 +108,9 @@ class DefaultInterpreter:
         action_id: str,
         thread_id: str,
     ) -> list[OperationRecord]:
-        try:
-            op = DeviceOperation(command)
-        except ValueError:
-            return []
-        return [OperationRecord(
-            operation=op,
-            device_name=device_name,
-            affected_labware=affected_labware,
-            affected_labware_ids=affected_labware_ids,
-            action_id=action_id,
-            thread_id=thread_id,
-            details=GenericOperationDetails(command=command, args_repr=repr(args)),
-            timestamp=time.time(),
-        )]
+        return operations_for_command(command, repr(args), action_context(
+            device_name, affected_labware, affected_labware_ids, action_id, thread_id,
+        ))
 
     def interpret_driver_state(
         self,
@@ -174,8 +140,12 @@ class DefaultInterpreter:
         """Default interpreter has no per-channel concept; returns empty."""
         return []
 
-    def claimed_tip_positions(
+    def request_of(
         self, command: str, args: tuple[V, ...], kwargs: dict[str, V],
-    ) -> dict[str, list[str]]:
-        """Default interpreter has no tip concept; returns empty."""
+    ) -> BaseModel | None:
+        return None
+
+    def claimed_reagent_volumes(
+        self, command: str, args: tuple[V, ...], kwargs: dict[str, V],
+    ) -> dict[str, float]:
         return {}

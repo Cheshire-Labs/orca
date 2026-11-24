@@ -20,6 +20,7 @@ from orca.workflow_models.method import ExecutingMethod
 from orca.workflow_models.method_context import MethodContext
 
 from collections.abc import AsyncGenerator
+from tests.memory_activity import memory_ops_store
 
 
 async def _dummy_method(ctx: MethodContext) -> AsyncGenerator[ActionTemplate, None]:
@@ -97,6 +98,7 @@ class TestJoinTemplateResolvesToSharedMethod:
     async def test_shared_method_stored_on_instance(self) -> None:
         from orca.resource_models.labware import PlateTemplate
         from orca.resource_models.location import Location
+        from orca.state.contents import LabwareContentsLedger
         from orca.state.ops_history import OpsHistory
         from orca.resource_models.plate_pad import PlatePad
         from orca.workflow_models.thread_template import ThreadTemplate
@@ -111,7 +113,7 @@ class TestJoinTemplateResolvesToSharedMethod:
         mock_method.id = "test-id"
         mock_method.actions = []
 
-        from orca.runtime.sim_labware import SimPlateTemplate
+        from orca.resource_models.sim_labware import SimPlateTemplate
         plate = SimPlateTemplate("test_plate")
         loc = Location("loc", PlatePad("pad"))
         jt = JoinTemplate()
@@ -120,10 +122,10 @@ class TestJoinTemplateResolvesToSharedMethod:
             yield jt
 
         tt = ThreadTemplate(plate, loc, loc, func=_gen)
-        factory = ThreadFactory(MethodFactory(), OpsHistory())
-        from orca.runtime.run_modes import WorkflowRunMode
+        factory = ThreadFactory(MethodFactory(), LabwareContentsLedger(OpsHistory(store=memory_ops_store())))
+        from orca.modes.run_modes import WorkflowRunMode
         instance = await factory.create_instance(
-            tt, run_mode=WorkflowRunMode.PURE_SIM, shared_method=mock_method,
+            tt, run_mode=WorkflowRunMode.CHECK_RUN, shared_method=mock_method,
         )
 
         assert instance.shared_executing_method is mock_method
@@ -137,6 +139,7 @@ class TestThreadFactoryWithJoinTemplate:
         from collections.abc import AsyncGenerator
         from orca.resource_models.labware import PlateTemplate
         from orca.resource_models.location import Location
+        from orca.state.contents import LabwareContentsLedger
         from orca.state.ops_history import OpsHistory
         from orca.resource_models.plate_pad import PlatePad
         from orca.workflow_models.thread_template import ThreadTemplate
@@ -146,7 +149,7 @@ class TestThreadFactoryWithJoinTemplate:
             ThreadFactory,
         )
 
-        from orca.runtime.sim_labware import SimPlateTemplate
+        from orca.resource_models.sim_labware import SimPlateTemplate
         plate = SimPlateTemplate("test_plate")
         loc_start = Location("start", PlatePad("start_pad"))
         loc_end = Location("end", PlatePad("end_pad"))
@@ -164,10 +167,10 @@ class TestThreadFactoryWithJoinTemplate:
         mock_method.actions = []
         mock_method.is_code_method = False
 
-        factory = ThreadFactory(MethodFactory(), OpsHistory())
-        from orca.runtime.run_modes import WorkflowRunMode
+        factory = ThreadFactory(MethodFactory(), LabwareContentsLedger(OpsHistory(store=memory_ops_store())))
+        from orca.modes.run_modes import WorkflowRunMode
         thread_instance = await factory.create_instance(
-            thread_template, run_mode=WorkflowRunMode.PURE_SIM,
+            thread_template, run_mode=WorkflowRunMode.CHECK_RUN,
             shared_method=mock_method,
         )
         assert thread_instance.shared_executing_method is mock_method
@@ -184,6 +187,7 @@ class TestYieldAdapterRejectsOrphanJoin:
         from collections.abc import AsyncGenerator
         from orca.resource_models.labware import PlateTemplate
         from orca.resource_models.location import Location
+        from orca.state.contents import LabwareContentsLedger
         from orca.state.ops_history import OpsHistory
         from orca.resource_models.plate_pad import PlatePad
         from orca.workflow_models.thread_template import ThreadTemplate
@@ -193,7 +197,7 @@ class TestYieldAdapterRejectsOrphanJoin:
             ThreadFactory,
         )
 
-        from orca.runtime.sim_labware import SimPlateTemplate
+        from orca.resource_models.sim_labware import SimPlateTemplate
         plate = SimPlateTemplate("test_plate")
         loc_start = Location("start", PlatePad("start_pad"))
         loc_end = Location("end", PlatePad("end_pad"))
@@ -205,10 +209,10 @@ class TestYieldAdapterRejectsOrphanJoin:
 
         thread_template = ThreadTemplate(plate, loc_start, loc_end, func=_gen)
 
-        factory = ThreadFactory(MethodFactory(), OpsHistory())
-        from orca.runtime.run_modes import WorkflowRunMode
+        factory = ThreadFactory(MethodFactory(), LabwareContentsLedger(OpsHistory(store=memory_ops_store())))
+        from orca.modes.run_modes import WorkflowRunMode
         instance = await factory.create_instance(
-            thread_template, run_mode=WorkflowRunMode.PURE_SIM,
+            thread_template, run_mode=WorkflowRunMode.CHECK_RUN,
         )
         assert instance.shared_executing_method is None
 

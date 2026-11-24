@@ -10,13 +10,17 @@ workflow would hang at reservation collection, so reaching COMPLETED with
 commands issued against the distinct reagents is the proof of real co-location.
 """
 
+from orca.events.event_bus import EventBus
 import asyncio
 
 import pytest
 
 import orca.orca as orca
 from orca.runtime.execution import ExecutionPhase
-from orca.runtime.submission import SubmissionStatus
+from orca.runtime.status_models import ThreadSnapshot
+from orca.runtime.system_runtime import SystemRuntime
+from orca.workflow_models.status_enums import RecoveryDecision
+from orca.workflow_models.submission import SubmissionStatus
 from orca.spawn import DISPENSE, LEAVE_IN_PLACE, REUSE_EXISTING
 from cheshire_drivers import (
     CartesianCoordinates as C,
@@ -25,23 +29,27 @@ from cheshire_drivers import (
     RecordingLiquidHandlerDriver,
     Teachpoint,
 )
-from cheshire_drivers.plr import ChatterboxLiquidHandlerDriver
 from cheshire_drivers.liquid_handler_models import GetDeckStateRequest
 from orca.devices.device_interfaces import ILiquidHandler
 from orca.devices.devices import LiquidHandler, Storage
 from orca.resource_models.plate_pad import PlatePad
 from orca.resource_models.transporter import Transporter
-from orca.runtime.device_factory_context import use_device_factory
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.store_factory import InMemoryRuntimeStoreFactory
-from orca.runtime.system_runtime import SystemRuntime
+from orca.modes.run_modes import WorkflowRunMode
 from orca.sdk.build import Topology
 from orca.sdk.labware import PlateTemplate, TipRackTemplate
 from orca.workflow_models.action_context import ActionContext
 from orca.workflow_models.method_context import MethodContext
 from orca.workflow_models.thread_context import ThreadContext
-from tests.test_helpers import RecordingLhDeckFactory, run_to_quiescence, wait_for_runtime_condition, named_for_template, template_of
+from tests.test_helpers import run_to_quiescence, wait_for_runtime_condition, named_for_template, template_of
+from tests.setup_package import package_stores, write_deck_layouts, write_teachpoints
+from tests.setup_package import with_teachpoints, with_deck_layouts
+from tests.memory_activity import memory_ops_store, memory_runtime
+from tests.real_device_path import the_real_device_path
+from tests.recording_handler import RecordingHandler
 
+
+# The system build must reach every position these runs touch.
+pytestmark = pytest.mark.positions_bound_by_the_build
 
 DECK_CONFIG = DeckLayoutConfig(
     deck_type="STARlet",
@@ -60,7 +68,7 @@ ARM_DECK_ENTRY = "lh/carrier-7-2"
 
 
 async def _build_colocation(recorder: RecordingLiquidHandlerDriver):
-    stores = InMemoryRuntimeStoreFactory()
+    stores = package_stores()
 
     working_plate = PlateTemplate(
         "working_plate", labware_type="Cor_Falcon_96_wellplate_340ul_Fb_Black")
@@ -71,24 +79,22 @@ async def _build_colocation(recorder: RecordingLiquidHandlerDriver):
     tips = TipRackTemplate(
         "tips", labware_type="hamilton_96_tiprack_10uL_filter", with_tips=True)
 
-    with use_device_factory(RecordingLhDeckFactory(recorder)):
-        lh = LiquidHandler(
-            "lh",
-            deck_layout_store=stores.deck_layouts("lh", seed={"default": DECK_CONFIG}),
-            deck_layout="default",
-        )
-        stacker = Storage("stacker")
-        waste = Storage("waste")
-        pad = PlatePad("pad")
-        arm = Transporter(
-            "arm",
-            teachpoint_store=stores.teachpoints("arm", seed=[
-                Teachpoint("stacker", C(0, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("pad", C(200, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint(ARM_DECK_ENTRY, C(400, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("waste", C(600, 200, 300, 0, 90, 180), orientation="right"),
-            ]),
-        )
+    the_real_device_path().simulate_with("lh", recorder)
+    lh = with_deck_layouts(LiquidHandler(
+        "lh",
+        deck_layout="default",
+    ), write_deck_layouts(stores, "lh", {"default": DECK_CONFIG}))
+    stacker = Storage("stacker")
+    waste = Storage("waste")
+    pad = PlatePad("pad")
+    arm = with_teachpoints(Transporter(
+        "arm",
+    ), write_teachpoints(stores, "arm", [
+            Teachpoint("stacker", C(0, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("pad", C(200, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint(ARM_DECK_ENTRY, C(400, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("waste", C(600, 200, 300, 0, 90, 180), orientation="right"),
+        ]))
 
     @orca.action(
         device=lh,
@@ -153,7 +159,7 @@ async def _build_colocation(recorder: RecordingLiquidHandlerDriver):
         transporters=[arm],
     )
     build = await orca.build_system(
-        name="Co-location", workflow=workflow, topology=topology, stores=stores)
+        name="Co-location", workflow=workflow, topology=topology, stores=stores, event_bus=EventBus(), ops_history_store=memory_ops_store())
     return build, lh
 
 
@@ -171,11 +177,11 @@ def _aspirated_labware(recorder: RecordingLiquidHandlerDriver) -> set[str]:
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
 async def test_multiple_reagents_colocate_in_one_action() -> None:
-    recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    recorder = RecordingHandler()
     build, lh = await _build_colocation(recorder)
-    runtime = SystemRuntime(build.system, event_bus=build.event_bus)
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
     await runtime.start()
-    record = await runtime.submit_workflow("colocation_wf", mode=WorkflowRunMode.PURE_SIM)
+    record = await runtime.submit_workflow("colocation_wf", mode=WorkflowRunMode.CHECK_RUN)
     statuses = await run_to_quiescence(runtime, record.id)
     try:
         assert statuses, "no threads were created"
@@ -206,30 +212,28 @@ async def _build_two_transit_no_sites(
     Neither declares a deck site, so neither has a working site to rest on.
     `ran` records whether the action body executed.
     """
-    stores = InMemoryRuntimeStoreFactory()
+    stores = package_stores()
     plate_a = PlateTemplate(
         "plate_a", labware_type="Cor_Falcon_96_wellplate_340ul_Fb_Black")
     plate_b = PlateTemplate(
         "plate_b", labware_type="Cor_Falcon_96_wellplate_340ul_Fb_Black")
 
-    with use_device_factory(RecordingLhDeckFactory(recorder)):
-        lh = LiquidHandler(
-            "lh",
-            deck_layout_store=stores.deck_layouts("lh", seed={"default": DECK_CONFIG}),
-            deck_layout="default",
-        )
-        stacker_a = Storage("stacker_a")
-        stacker_b = Storage("stacker_b")
-        waste = Storage("waste")
-        arm = Transporter(
-            "arm",
-            teachpoint_store=stores.teachpoints("arm", seed=[
-                Teachpoint("stacker_a", C(0, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("stacker_b", C(100, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint(ARM_DECK_ENTRY, C(400, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("waste", C(600, 200, 300, 0, 90, 180), orientation="right"),
-            ]),
-        )
+    the_real_device_path().simulate_with("lh", recorder)
+    lh = with_deck_layouts(LiquidHandler(
+        "lh",
+        deck_layout="default",
+    ), write_deck_layouts(stores, "lh", {"default": DECK_CONFIG}))
+    stacker_a = Storage("stacker_a")
+    stacker_b = Storage("stacker_b")
+    waste = Storage("waste")
+    arm = with_teachpoints(Transporter(
+        "arm",
+    ), write_teachpoints(stores, "arm", [
+            Teachpoint("stacker_a", C(0, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("stacker_b", C(100, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint(ARM_DECK_ENTRY, C(400, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("waste", C(600, 200, 300, 0, 90, 180), orientation="right"),
+        ]))
 
     @orca.action(device=lh, inputs=[plate_a, plate_b])
     async def combine(ctx: ActionContext) -> None:
@@ -259,45 +263,41 @@ async def _build_two_transit_no_sites(
         transporters=[arm],
     )
     build = await orca.build_system(
-        name="TransitNoSite", workflow=workflow, topology=topology, stores=stores)
+        name="TransitNoSite", workflow=workflow, topology=topology, stores=stores, event_bus=EventBus(), ops_history_store=memory_ops_store())
     return build
+
+
+def _error_paused(runtime: SystemRuntime, execution_id: str) -> list[ThreadSnapshot]:
+    return [t for t in runtime.get_execution_detail(execution_id).threads if t.pause_reason == "error"]
+
+
+async def _until_a_thread_pauses_on_the_deck_site(runtime: SystemRuntime, execution_id: str) -> ThreadSnapshot:
+    """A missing deck site pauses the thread at once for an operator decision, and the error names the deck."""
+    await wait_for_runtime_condition(
+        runtime, lambda: bool(_error_paused(runtime, execution_id)), timeout=20.0,
+        message="a thread to pause on the missing deck site, well inside any co-labware wait",
+    )
+    [paused] = _error_paused(runtime, execution_id)
+    assert paused.pause_site == "UNHANDLED_ERROR" and paused.honoured_decisions == ("ABORT_THREAD",), paused
+    assert "deck" in (paused.last_error or "").lower(), f"the error must name the missing deck site; got {paused.last_error!r}"
+    return paused
 
 
 @pytest.mark.slow
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
 async def test_transit_input_without_deck_site_fails_fast() -> None:
-    """A transit input to a multi-site LH with no deck_positions must fail the
-    execution with a clear error, not silently complete (sim) or hang (live)."""
-    recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    """A transit input to a multi-site LH with no deck_positions is refused at once with a clear error, not
+    silently completed (sim) or left hanging (live): the thread pauses for the operator and the action never runs."""
+    recorder = RecordingHandler()
     ran: list[bool] = []
     build = await _build_two_transit_no_sites(recorder, ran)
-    runtime = SystemRuntime(build.system, event_bus=build.event_bus)
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
     await runtime.start()
     try:
         record = await runtime.submit_workflow(
-            "transit_no_site_wf", mode=WorkflowRunMode.PURE_SIM)
-        execution = runtime._executions[record.id]
-        try:
-            await asyncio.wait_for(asyncio.shield(execution.task), timeout=60)
-        except BaseException:
-            pass
-        try:
-            await wait_for_runtime_condition(
-                runtime,
-                lambda: execution.phase in (
-                    ExecutionPhase.FAILED, ExecutionPhase.ABORTED, ExecutionPhase.COMPLETED,
-                ),
-                timeout=4.0,
-            )
-        except TimeoutError:
-            pass
-
-        assert execution.phase is ExecutionPhase.FAILED, (
-            f"a transit input with no deck_positions must fail the execution; "
-            f"got phase={execution.phase} error={execution.error!r}")
-        assert "deck" in (execution.error or "").lower(), (
-            f"the failure must name the missing deck site; got {execution.error!r}")
+            "transit_no_site_wf", mode=WorkflowRunMode.CHECK_RUN)
+        await _until_a_thread_pauses_on_the_deck_site(runtime, record.id)
         assert not ran, (
             "the action body must not run when a transit input lacks a deck site")
     finally:
@@ -325,32 +325,30 @@ async def test_spawned_contributor_missing_deck_site_fails_execution(monkeypatch
         ExecutingLabwareThread, "co_labware_timeout",
         property(lambda self: 5.0),
     )
-    recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    recorder = RecordingHandler()
     ran: list[bool] = []
-    stores = InMemoryRuntimeStoreFactory()
+    stores = package_stores()
     plate_a = PlateTemplate(
         "plate_a", labware_type="Cor_Falcon_96_wellplate_340ul_Fb_Black")
     plate_b = PlateTemplate(
         "plate_b", labware_type="Cor_Falcon_96_wellplate_340ul_Fb_Black")
 
-    with use_device_factory(RecordingLhDeckFactory(recorder)):
-        lh = LiquidHandler(
-            "lh",
-            deck_layout_store=stores.deck_layouts("lh", seed={"default": DECK_CONFIG}),
-            deck_layout="default",
-        )
-        stacker_a = Storage("stacker_a")
-        stacker_b = Storage("stacker_b")
-        waste = Storage("waste")
-        arm = Transporter(
-            "arm",
-            teachpoint_store=stores.teachpoints("arm", seed=[
-                Teachpoint("stacker_a", C(0, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("stacker_b", C(100, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint(ARM_DECK_ENTRY, C(400, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("waste", C(600, 200, 300, 0, 90, 180), orientation="right"),
-            ]),
-        )
+    the_real_device_path().simulate_with("lh", recorder)
+    lh = with_deck_layouts(LiquidHandler(
+        "lh",
+        deck_layout="default",
+    ), write_deck_layouts(stores, "lh", {"default": DECK_CONFIG}))
+    stacker_a = Storage("stacker_a")
+    stacker_b = Storage("stacker_b")
+    waste = Storage("waste")
+    arm = with_teachpoints(Transporter(
+        "arm",
+    ), write_teachpoints(stores, "arm", [
+            Teachpoint("stacker_a", C(0, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("stacker_b", C(100, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint(ARM_DECK_ENTRY, C(400, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("waste", C(600, 200, 300, 0, 90, 180), orientation="right"),
+        ]))
 
     # Owner (plate_a) IS sited; the auto-spawned contributor (plate_b) is not.
     @orca.action(
@@ -384,12 +382,12 @@ async def test_spawned_contributor_missing_deck_site_fails_execution(monkeypatch
         transporters=[arm],
     )
     build = await orca.build_system(
-        name="SpawnedNoSite", workflow=workflow, topology=topology, stores=stores)
-    runtime = SystemRuntime(build.system, event_bus=build.event_bus)
+        name="SpawnedNoSite", workflow=workflow, topology=topology, stores=stores, event_bus=EventBus(), ops_history_store=memory_ops_store())
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
     await runtime.start()
     try:
         record = await runtime.submit_workflow(
-            "spawned_contributor_no_site_wf", mode=WorkflowRunMode.PURE_SIM)
+            "spawned_contributor_no_site_wf", mode=WorkflowRunMode.CHECK_RUN)
         execution = runtime._executions[record.id]
         try:
             await asyncio.wait_for(asyncio.shield(execution.task), timeout=30)
@@ -433,28 +431,26 @@ async def _build_owner_unsited_with_resident(
     does. This isolates the entry-thread teardown: the orphaned resident must be
     cancelled, not left waiting out CO_LABWARE_TIMEOUT.
     """
-    stores = InMemoryRuntimeStoreFactory()
+    stores = package_stores()
     plate_a = PlateTemplate(
         "plate_a", labware_type="Cor_Falcon_96_wellplate_340ul_Fb_Black")
     reservoir = PlateTemplate(
         "reservoir", labware_type="AGenBio_1_troughplate_190000uL_Fl")
 
-    with use_device_factory(RecordingLhDeckFactory(recorder)):
-        lh = LiquidHandler(
-            "lh",
-            deck_layout_store=stores.deck_layouts("lh", seed={"default": DECK_CONFIG}),
-            deck_layout="default",
-        )
-        stacker_a = Storage("stacker_a")
-        waste = Storage("waste")
-        arm = Transporter(
-            "arm",
-            teachpoint_store=stores.teachpoints("arm", seed=[
-                Teachpoint("stacker_a", C(0, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint(ARM_DECK_ENTRY, C(400, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("waste", C(600, 200, 300, 0, 90, 180), orientation="right"),
-            ]),
-        )
+    the_real_device_path().simulate_with("lh", recorder)
+    lh = with_deck_layouts(LiquidHandler(
+        "lh",
+        deck_layout="default",
+    ), write_deck_layouts(stores, "lh", {"default": DECK_CONFIG}))
+    stacker_a = Storage("stacker_a")
+    waste = Storage("waste")
+    arm = with_teachpoints(Transporter(
+        "arm",
+    ), write_teachpoints(stores, "arm", [
+            Teachpoint("stacker_a", C(0, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint(ARM_DECK_ENTRY, C(400, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("waste", C(600, 200, 300, 0, 90, 180), orientation="right"),
+        ]))
 
     # No deck_positions: plate_a (transit) is unsited; reservoir is a resident.
     @orca.action(device=lh, inputs=[plate_a, reservoir])
@@ -488,7 +484,7 @@ async def _build_owner_unsited_with_resident(
         transporters=[arm],
     )
     build = await orca.build_system(
-        name="OwnerUnsitedResident", workflow=workflow, topology=topology, stores=stores)
+        name="OwnerUnsitedResident", workflow=workflow, topology=topology, stores=stores, event_bus=EventBus(), ops_history_store=memory_ops_store())
     return build
 
 
@@ -496,49 +492,25 @@ async def _build_owner_unsited_with_resident(
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
 async def test_entry_owner_unsited_fails_execution_loudly() -> None:
-    """An unsited entry owner that fails the guard must fail the EXECUTION loudly
-    and fast, not hang in ACCEPTING waiting out the co-labware timeout.
+    """An unsited entry owner that fails the guard pauses at once, not after waiting out the co-labware timeout.
 
-    The co-input is a deck RESIDENT (guard-exempt), so only the entry owner fails.
-    This isolates the entry-thread failure path: the execution reports FAILED
-    synchronously (via the same escalation the spawned-contributor path uses),
-    within seconds of the guard raising -- far under the 300s default co-labware
-    timeout. The regression it guards against hung in ACCEPTING until that timeout
-    because the failure path inline-awaited a teardown that a co-labware-parked
-    resident blocked. Cooperatively stopping the resident so it does not linger to
-    the timeout is tracked separately; the finally here bounds test cleanup."""
-    recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    The co-input is a deck RESIDENT (guard-exempt), so only the entry owner fails. The regression this guards
+    against hung in ACCEPTING until that timeout, because the failure path awaited a teardown that a
+    co-labware-parked resident blocked."""
+    recorder = RecordingHandler()
     ran: list[bool] = []
     build = await _build_owner_unsited_with_resident(recorder, ran)
-    runtime = SystemRuntime(build.system, event_bus=build.event_bus)
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
     await runtime.start()
-    execution = None
+    record = await runtime.submit_workflow("owner_unsited_resident_wf", mode=WorkflowRunMode.CHECK_RUN)
+    execution = runtime._executions[record.id]
     try:
-        record = await runtime.submit_workflow(
-            "owner_unsited_resident_wf", mode=WorkflowRunMode.PURE_SIM)
-        execution = runtime._executions[record.id]
-
-        # FAILED must land fast via synchronous escalation, not by waiting on any
-        # co-labware timeout (now unbounded); 20s is ~10x the ~2s escalation needs.
-        try:
-            await wait_for_runtime_condition(
-                runtime,
-                lambda: execution.phase is ExecutionPhase.FAILED,
-                timeout=20.0,
-            )
-        except TimeoutError:
-            pass
-
-        assert execution.phase is ExecutionPhase.FAILED, (
-            f"the unsited entry owner must fail the execution fast, not hang in "
-            f"ACCEPTING; got phase={execution.phase} error={execution.error!r}")
-        assert "deck" in (execution.error or "").lower(), (
-            f"the failure must name the missing deck site; got {execution.error!r}")
+        paused = await _until_a_thread_pauses_on_the_deck_site(runtime, record.id)
         assert not ran, "the action body must not run"
     finally:
         # Cooperatively stop the resident left parked at the co-labware wait (raw
         # cancel is not honored there) so cleanup is fast, not a 300s linger.
-        if execution is not None and execution.executing_workflow is not None:
+        if execution.executing_workflow is not None:
             for thread in execution.executing_workflow.threads:
                 thread.stop()
             await run_to_quiescence(runtime, record.id)
@@ -549,47 +521,39 @@ async def test_entry_owner_unsited_fails_execution_loudly() -> None:
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
 async def test_escalation_failure_surfaces_on_every_terminal_channel() -> None:
-    """A guard failure via the escalation path must surface on EVERY terminal
-    channel, not just execution.phase. Otherwise the execution record stays
-    RUNNING, submissions stay IN_PROGRESS, and no WS/record consumer learns the
-    run failed. Assert the submissions go FAILED and both SUBMISSION.*.FAILED and
-    EXECUTION.*.FAILED fire on a real failing run (the escalation path pre-sets
-    FAILED, so _on_task_done skips its own emission -- the failure path must emit)."""
-    recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    """When the operator aborts the threads a deck-site refusal paused, the run's end reaches EVERY terminal
+    channel, not just execution.phase: the submissions are marked, and SUBMISSION.*.ABORTED and
+    EXECUTION.*.ABORTED fire, so no record or WS consumer is left thinking the run is still going."""
+    recorder = RecordingHandler()
     ran: list[bool] = []
     build = await _build_two_transit_no_sites(recorder, ran)
     captured: list[str] = []
     build.event_bus.subscribe_all(lambda name, ctx: captured.append(name))
-    runtime = SystemRuntime(build.system, event_bus=build.event_bus)
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
     await runtime.start()
     try:
         record = await runtime.submit_workflow(
-            "transit_no_site_wf", mode=WorkflowRunMode.PURE_SIM)
+            "transit_no_site_wf", mode=WorkflowRunMode.CHECK_RUN)
         execution = runtime._executions[record.id]
-        try:
-            await wait_for_runtime_condition(
-                runtime,
-                lambda: execution.phase is ExecutionPhase.FAILED,
-                timeout=20.0,
-            )
-        except TimeoutError:
-            pass
+        await _until_a_thread_pauses_on_the_deck_site(runtime, record.id)
 
-        assert execution.phase is ExecutionPhase.FAILED, (
-            f"escalation must fail the execution; got phase={execution.phase}")
+        def aborts_every_paused_thread() -> bool:
+            for thread in _error_paused(runtime, record.id):
+                runtime.recover_thread(record.id, thread.id, RecoveryDecision.ABORT_THREAD)
+            return execution.phase is ExecutionPhase.ABORTED
+
+        await wait_for_runtime_condition(runtime, aborts_every_paused_thread, timeout=20.0, message="the run to end")
+
         assert execution.submissions, "the execution has no submissions to mark"
-        assert all(s.status is SubmissionStatus.FAILED for s in execution.submissions), (
-            f"submissions must be marked FAILED, not left IN_PROGRESS; got "
+        assert all(s.status is SubmissionStatus.ABORTED for s in execution.submissions), (
+            f"submissions must be marked ABORTED, not left IN_PROGRESS; got "
             f"{[s.status for s in execution.submissions]}")
-        assert any(
-            n.startswith("EXECUTION.") and n.endswith(".FAILED") for n in captured), (
-            f"EXECUTION.*.FAILED must fire so the record/consumers learn of the "
-            f"failure; captured terminal events: "
+        assert any(n.startswith("EXECUTION.") and n.endswith(".ABORTED") for n in captured), (
+            f"EXECUTION.*.ABORTED must fire; captured terminal events: "
             f"{[n for n in captured if n.endswith(('.FAILED', '.COMPLETED', '.ABORTED'))]}")
-        assert any(
-            n.startswith("SUBMISSION.") and n.endswith(".FAILED") for n in captured), (
-            f"SUBMISSION.*.FAILED must fire; captured: "
-            f"{[n for n in captured if n.startswith('SUBMISSION.')]}")
+        assert any(n.startswith("SUBMISSION.") and n.endswith(".ABORTED") for n in captured), (
+            f"SUBMISSION.*.ABORTED must fire; captured: {[n for n in captured if n.startswith('SUBMISSION.')]}")
+        assert not ran, "the action body must not run"
     finally:
         await runtime.shutdown()
 
@@ -606,20 +570,20 @@ async def test_tip_ops_fold_into_the_rack_instance_ledger() -> None:
     from orca.state.projections import tips_present
     from orca.state.records import TipPickUpDetails
 
-    recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    recorder = RecordingHandler()
     build, _ = await _build_colocation(recorder)
-    runtime = SystemRuntime(build.system, event_bus=build.event_bus)
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
     await runtime.start()
     try:
-        record = await runtime.submit_workflow("colocation_wf", mode=WorkflowRunMode.PURE_SIM)
+        record = await runtime.submit_workflow("colocation_wf", mode=WorkflowRunMode.CHECK_RUN)
         statuses = await run_to_quiescence(runtime, record.id)
         assert statuses and all(s == "COMPLETED" for s in statuses.values()), statuses
         tips_inst = next(lw for lw in build.system.labwares if lw.template_name == "tips")
         ops = await tips_inst.ops()
-        picks = [op for op in ops if isinstance(op.details, TipPickUpDetails)]
+        picks = [op.details for op in ops if isinstance(op.details, TipPickUpDetails)]
         assert picks, "no TIP_PICK_UP op reached the rack instance's ledger"
-        assert all(op.details.tip_rack == tips_inst.name for op in picks), (
-            f"tip ops recorded under {[getattr(op.details, 'tip_rack', None) for op in picks]}, "
+        assert all(details.tip_rack == tips_inst.name for details in picks), (
+            f"tip ops recorded under {[details.tip_rack for details in picks]}, "
             f"not the instance name {tips_inst.name!r}; ledger projections "
             f"require the instance name, so these ops never fold"
         )

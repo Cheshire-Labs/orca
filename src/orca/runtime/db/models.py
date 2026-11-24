@@ -1,6 +1,6 @@
 """ORM models for orca-core's persistence layer.
 
-``JSON`` maps to JSONB on Postgres and TEXT on SQLite via SQLAlchemy's
+``JSON`` maps to each engine's JSON column type via SQLAlchemy's
 dialect handling, so the same model serves both engines.
 """
 
@@ -8,76 +8,10 @@ from datetime import datetime
 from typing import Optional
 
 from pydantic import JsonValue
-from sqlalchemy import Boolean, Float, JSON, String, Text
+from sqlalchemy import BigInteger, Boolean, Float, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from orca.runtime.db.base import Base, utc_now
-
-
-class TeachpointRow(Base):
-    """Durable copy of a cheshire-drivers Teachpoint for one transporter.
-
-    The store is per-transporter, so ``position_id`` alone is the primary
-    key (no device_id column; the store instance is the device scope).
-    ``coords`` holds the coordinate dict whose shape ``coord_type`` selects;
-    both are nullable for coordinate-less waypoints. Flattened access fields
-    are stored inline so the store round-trips a teachpoint without an
-    AccessConfig lookup; ``access_config_name`` preserves the FK name so a
-    re-read reconstructs the named ``AccessConfig`` the topology declared.
-    """
-
-    __tablename__ = "teachpoints"
-
-    position_id: Mapped[str] = mapped_column(String(255), primary_key=True)
-    coord_type: Mapped[Optional[str]] = mapped_column(String(16), default=None)
-    coords: Mapped[Optional[dict[str, JsonValue]]] = mapped_column(JSON, default=None)
-    orientation: Mapped[Optional[str]] = mapped_column(String(16), default=None)
-    gateway: Mapped[Optional[str]] = mapped_column(String(255), default=None)
-    access_config_name: Mapped[Optional[str]] = mapped_column(String(255), default=None)
-    access_type: Mapped[Optional[str]] = mapped_column(String(16), default=None)
-    gripper_offset: Mapped[Optional[float]] = mapped_column(Float, default=None)
-    vertical_clearance: Mapped[Optional[float]] = mapped_column(Float, default=None)
-    horizontal_clearance: Mapped[Optional[float]] = mapped_column(Float, default=None)
-    taught_with: Mapped[Optional[str]] = mapped_column(String(255), default=None)
-    by_labware: Mapped[Optional[dict[str, JsonValue]]] = mapped_column(JSON, default=None)
-    created_at: Mapped[datetime] = mapped_column(default=utc_now)
-
-
-class DeckLayoutRow(Base):
-    """Durable copy of a DeckLayoutConfig for one liquid handler.
-
-    The store is per-liquid-handler, so ``name`` alone is the primary key
-    (no device_id column; the store instance is the device scope). The whole
-    config is persisted as one JSON blob in ``deck_data``.
-    """
-
-    __tablename__ = "deck_layouts"
-
-    name: Mapped[str] = mapped_column(String(255), primary_key=True)
-    deck_data: Mapped[dict[str, JsonValue]] = mapped_column(JSON)
-    created_at: Mapped[datetime] = mapped_column(default=utc_now)
-
-
-class LabwareCatalogRow(Base):
-    """Durable copy of a LabwareCatalogEntry (one labware definition).
-
-    ``labware_type`` is the primary key: the catalog is a deployment-wide
-    registry keyed by labware_type. ``geometry`` holds the full
-    ``LabwareSeedEntry`` dump as one JSON blob; the denormalized
-    ``display_name``/``category``/``vendor``/``plr_class_name`` columns are the
-    list-surface facets. ``source`` is ``plr_seed`` or ``operator_custom``.
-    """
-
-    __tablename__ = "labware_definitions"
-
-    labware_type: Mapped[str] = mapped_column(String(255), primary_key=True)
-    display_name: Mapped[str] = mapped_column(String(255))
-    category: Mapped[str] = mapped_column(String(64))
-    vendor: Mapped[Optional[str]] = mapped_column(String(255), default=None)
-    source: Mapped[str] = mapped_column(String(32))
-    geometry: Mapped[dict[str, JsonValue]] = mapped_column(JSON)
-    plr_class_name: Mapped[Optional[str]] = mapped_column(String(255), default=None)
-    created_at: Mapped[datetime] = mapped_column(default=utc_now)
 
 
 class ExecutionRecordRow(Base):
@@ -86,15 +20,15 @@ class ExecutionRecordRow(Base):
     __tablename__ = "executions"
 
     execution_id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    workflow_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    submitted_at: Mapped[datetime] = mapped_column(nullable=False)
-    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    workflow_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    submitted_at: Mapped[datetime] = mapped_column(nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     terminal_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
     terminal_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
 class ExecutionThreadRow(Base):
-    """Last-known summary of one thread, upserted from THREAD lifecycle events."""
+    """Last-known summary of one thread, upserted on each of its status changes."""
 
     __tablename__ = "execution_threads"
 
@@ -105,65 +39,7 @@ class ExecutionThreadRow(Base):
     status: Mapped[str] = mapped_column(String(64), nullable=False)
     last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     pause_reason: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-
-
-class AccessConfigRow(Base):
-    """Durable copy of a cheshire-drivers AccessConfig.
-
-    ``name`` is the primary key: access configs are a deployment-wide registry
-    keyed by name, and CRUD operates on the name (add raises on duplicate,
-    get/update/delete take the name).
-    """
-
-    __tablename__ = "access_configs"
-
-    name: Mapped[str] = mapped_column(String(255), primary_key=True)
-    access_type: Mapped[str] = mapped_column(String(16))
-    gripper_offset: Mapped[float] = mapped_column(Float)
-    vertical_clearance: Mapped[float] = mapped_column(Float)
-    horizontal_clearance: Mapped[float] = mapped_column(Float)
-    created_at: Mapped[datetime] = mapped_column(default=utc_now)
-
-
-class MoveDefaultsRow(Base):
-    """What this deployment has tuned about one transporter's moves.
-
-    One row per transporter, because a safe retreat margin or a jaw opening is
-    a property of the arm rather than of the deployment.
-
-    The blob is a sparse ``MoveParameterPatch``, holding only the fields somebody
-    set. Storing a total record instead would freeze the untouched fields at
-    whatever the seed said the day the row was written, and would make an
-    operator's number indistinguishable from one nobody ever chose.
-    """
-
-    __tablename__ = "move_defaults"
-
-    transporter_name: Mapped[str] = mapped_column(String(255), primary_key=True)
-    patch: Mapped[dict[str, JsonValue]] = mapped_column(JSON)
-    created_at: Mapped[datetime] = mapped_column(default=utc_now)
-
-
-class GripProfileRow(Base):
-    """How one labware type is held, as a sparse patch over the arm's defaults.
-
-    Keyed by labware type rather than by labware instance: a tip box and a deep
-    well plate grip at different heights and want different jaw widths wherever
-    they are, and that is a property of the type. Sparse because a type usually
-    corrects one or two numbers and inherits the rest; a total record here would
-    freeze every other field at whatever it happened to resolve to on the day the
-    row was written.
-
-    A sibling of the labware catalog rather than a column on it, because seeded
-    catalog rows are read-only and a grip width is exactly what an operator needs
-    to correct for the types their deck actually carries.
-    """
-
-    __tablename__ = "grip_profiles"
-
-    labware_type: Mapped[str] = mapped_column(String(255), primary_key=True)
-    patch: Mapped[dict[str, JsonValue]] = mapped_column(JSON)
-    created_at: Mapped[datetime] = mapped_column(default=utc_now)
+    group_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
 
 class IncidentRow(Base):
@@ -188,3 +64,116 @@ class IncidentRow(Base):
     timestamp: Mapped[float] = mapped_column(Float)
     created_at: Mapped[datetime] = mapped_column(default=utc_now)
     acknowledged_at: Mapped[Optional[datetime]] = mapped_column(default=None)
+
+
+_BigIntAutoPk = BigInteger().with_variant(Integer(), "sqlite")
+
+
+class LabwareInstanceRow(Base):
+    """A labware's identity and where it is now. Its moves are in LabwareEventRow."""
+
+    __tablename__ = "labware_instances"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    template_name: Mapped[str] = mapped_column(String(255), index=True)
+    labware_type: Mapped[str] = mapped_column(String(255), default="unknown")
+    barcode: Mapped[Optional[str]] = mapped_column(String(255), default=None, index=True)
+    position_id: Mapped[Optional[str]] = mapped_column(String(255), default=None)
+    execution_id: Mapped[Optional[str]] = mapped_column(String(36), default=None, index=True)
+    # How this labware is carried, over every other move-parameter layer. A
+    # restart that dropped it would carry a lidded plate as a bare one.
+    carry_override: Mapped[Optional[dict[str, JsonValue]]] = mapped_column(JSON, default=None)
+    created_at: Mapped[datetime] = mapped_column(default=utc_now)
+
+    __table_args__ = (UniqueConstraint("barcode", name="uix_labware_barcode"),)
+
+
+class LabwareEventRow(Base):
+    """Append-only log of what happened to a labware: registered, relocated, departed."""
+
+    __tablename__ = "labware_events"
+
+    id: Mapped[int] = mapped_column(_BigIntAutoPk, primary_key=True, autoincrement=True)
+    labware_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("labware_instances.id", ondelete="CASCADE"), index=True,
+    )
+    event_type: Mapped[str] = mapped_column(String(64), index=True)
+    detail: Mapped[dict[str, JsonValue]] = mapped_column(JSON, default=dict)
+    ts: Mapped[datetime] = mapped_column(default=utc_now, index=True)
+
+
+class AuditEntryRow(Base):
+    """One confirmed audited action. ``id`` orders rows in the order they were written."""
+
+    __tablename__ = "audit_entries"
+
+    id: Mapped[int] = mapped_column(_BigIntAutoPk, primary_key=True, autoincrement=True)
+    timestamp: Mapped[float] = mapped_column(Float, index=True)
+    action_name: Mapped[str] = mapped_column(String(128), index=True)
+    danger_level: Mapped[str] = mapped_column(String(32), index=True)
+    reason: Mapped[Optional[str]] = mapped_column(Text, default=None)
+    call_args: Mapped[dict[str, JsonValue]] = mapped_column(JSON, default=dict)
+
+
+class OpsHistoryRow(Base):
+    """One TrackingRecord. ``payload`` is the whole record; the other columns are filters."""
+
+    __tablename__ = "ops_history"
+
+    id: Mapped[int] = mapped_column(_BigIntAutoPk, primary_key=True, autoincrement=True)
+    execution_id: Mapped[str] = mapped_column(String(64), index=True)
+    action_id: Mapped[str] = mapped_column(String(64), index=True)
+    thread_id: Mapped[Optional[str]] = mapped_column(String(64), default=None)
+    method_id: Mapped[Optional[str]] = mapped_column(String(64), default=None)
+    source: Mapped[str] = mapped_column(String(32))
+    timestamp: Mapped[float] = mapped_column(Float, index=True)
+    payload: Mapped[dict[str, JsonValue]] = mapped_column(JSON)
+
+
+class OpsHistoryLabwareRow(Base):
+    """Which labware one ops_history record touches, so a search by labware narrows in SQL."""
+
+    __tablename__ = "ops_history_labware"
+
+    id: Mapped[int] = mapped_column(_BigIntAutoPk, primary_key=True, autoincrement=True)
+    record_id: Mapped[int] = mapped_column(
+        _BigIntAutoPk, ForeignKey("ops_history.id", ondelete="CASCADE"), index=True,
+    )
+    labware_name: Mapped[str] = mapped_column(String(255), index=True)
+
+
+class OpsHistoryDeviceRow(Base):
+    """Which devices one ops_history record ran on, so a search by device narrows in SQL."""
+
+    __tablename__ = "ops_history_device"
+
+    id: Mapped[int] = mapped_column(_BigIntAutoPk, primary_key=True, autoincrement=True)
+    record_id: Mapped[int] = mapped_column(
+        _BigIntAutoPk, ForeignKey("ops_history.id", ondelete="CASCADE"), index=True,
+    )
+    device_name: Mapped[str] = mapped_column(String(255), index=True)
+
+
+class RuntimeEventRow(Base):
+    """One RuntimeEvent. ``id`` is the cursor; ``details`` is the whole event."""
+
+    __tablename__ = "runtime_events"
+
+    id: Mapped[int] = mapped_column(_BigIntAutoPk, primary_key=True, autoincrement=True)
+    event_name: Mapped[str] = mapped_column(String(128), index=True)
+    execution_id: Mapped[Optional[str]] = mapped_column(String(64), default=None, index=True)
+    entity_type: Mapped[Optional[str]] = mapped_column(String(64), default=None)
+    entity_id: Mapped[Optional[str]] = mapped_column(String(255), default=None)
+    status: Mapped[Optional[str]] = mapped_column(String(64), default=None)
+    timestamp: Mapped[float] = mapped_column(Float)
+    details: Mapped[dict[str, JsonValue]] = mapped_column(JSON)
+
+
+class DeviceModeRow(Base):
+    """Whether one device runs as sim or live; a device with no row is sim."""
+
+    __tablename__ = "device_modes"
+
+    device_name: Mapped[str] = mapped_column(String(255), primary_key=True)
+    mode: Mapped[str] = mapped_column(String(8))
+    changed_at: Mapped[datetime] = mapped_column(default=utc_now)

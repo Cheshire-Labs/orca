@@ -1,27 +1,13 @@
-"""Remote drivers that conform to cheshire-drivers driver interfaces.
+"""Drivers that implement the cheshire-drivers interfaces by forwarding every call to the device's orca-client.
 
-Each `Remote*Driver` is a thin adapter that:
-  1. Implements a cheshire-drivers `I*Driver` interface (taking Pydantic
-     Request models on every method).
-  2. Forwards each call through `DeviceController.execute_command` over
-     the device-integration WebSocket.
-  3. Carries an `effective_mode` per dispatch so the device bridge can pick
-     between the configured live backend (LIVE) and a Sim* class
-     (DEVICE_SIM).
-
-These drivers are supplied by `RemoteDeviceFactory.build_drivers` and
-wrapped inside an orca-core `Shaker` / `Centrifuge` / etc. with a paired
-in-process `Sim*Driver`. The orca-core `SimulationManager` decides which
-of the two to actually call per dispatch (sim vs live); when the live path
-is taken, this module forwards over the wire. This is the production wire-
-forwarding path: customer topology code authors plain orca-core devices,
-and the bound `RemoteDeviceFactory` supplies the paired (Remote*Driver,
-Sim*Driver) so the SimulationManager-aware `Device` machinery sees a
-uniform contract on both the live and sim sides.
+Each `Remote*Driver` sends its command through `IDeviceController.execute_command`,
+stamped with the `effective_mode` the device dispatches under, and orca-client runs it
+on the real driver (LIVE) or the device's simulator (SIM). A check run sends the same
+commands to an orca-client inside Orca. `RemoteDeviceFactory` builds them, one per device.
 """
 
 import logging
-from typing import Callable, ClassVar, Dict
+from typing import Awaitable, Callable, ClassVar, Dict
 
 from pydantic import JsonValue
 
@@ -34,12 +20,15 @@ from cheshire_drivers.interfaces import (
     ICentrifugeDriver,
     IDelidderDriver,
     ILiquidHandlerDriver,
+    ILiquidHandlerWithProtocolDriver,
     IPlateWasherDriver,
     IProtocolRunnerDriver,
     IReaderDriver,
     ISealerDriver,
     IShakerDriver,
+    IStorageDriver,
     IThermocyclerDriver,
+    IWasteDriver,
 )
 from cheshire_drivers.liquid_handler_models import (
     AspirateRequest,
@@ -107,50 +96,33 @@ from cheshire_drivers.thermocycler_models import (
     ThermocyclerStatusResponse,
 )
 
-from orca.runtime.run_modes import WorkflowRunMode, current_execution_id
+from orca.modes.run_modes import WorkflowRunMode, current_execution_id
 
-from orca.gateway.controller.controller import DeviceController
+from orca.gateway.controller.controller import IDeviceController
 from orca.gateway.gateway_backed_driver import GatewayBackedDriver
 
 logger = logging.getLogger(__name__)
 
 
-# Resolver shape: the factory hands one callable to every driver it builds.
-# At dispatch time the driver calls resolver(device_name) to learn the
-# effective_mode for THIS command. The resolver is a closure over the
-# per-task ``current_run_mode`` ContextVar + per-device topology
-# sim_override; updates to those inputs surface immediately through the
-# resolver without rebinding the driver.
-ModeResolver = Callable[[str], WorkflowRunMode]
+# The driver awaits resolver(device_name) for each command's effective_mode. It reads the run mode in force and
+# the device's setting from the database, so a change to either reaches the next command.
+ModeResolver = Callable[[str], Awaitable[WorkflowRunMode]]
 
 
 class _RemoteDriverBase(GatewayBackedDriver):
     """Common state + send path shared by every Remote*Driver.
 
-    Holds the device name, the controller, the per-device timeout, and the
+    Holds the device name, the controller, and the
     factory-supplied mode resolver. `_send` builds the wire payload (flat
     `params` dict, plus the resolved `effective_mode`) and awaits the
     controller; subclasses provide the typed methods that call `_send`.
-
-    ``resend_on_reconnect`` is the class-level disconnect-recovery policy.
-    Default ``True`` keeps the gateway's legacy transparent-resend
-    behavior, which is safe for shakers / centrifuges / sealers / readers
-    / etc. -- a transient WS drop on those drivers almost always means
-    the device wasn't reached, so resending after reconnect is the
-    correct recovery. Subclasses whose commands are non-idempotent
-    override to ``False`` (see :class:`RemoteLiquidHandlerDriver`); the
-    controller then fails the pending future with ``DeviceOfflineError``
-    on reconnect instead of resending.
     """
-
-    resend_on_reconnect: ClassVar[bool] = True
 
     def __init__(
         self,
         name: str,
-        controller: DeviceController,
+        controller: IDeviceController,
         mode_resolver: ModeResolver,
-        timeout: float = 30.0,
         *,
         declared_interfaces: frozenset[str] | None = None,
     ) -> None:
@@ -158,7 +130,6 @@ class _RemoteDriverBase(GatewayBackedDriver):
         self._name = name
         self._controller = controller
         self._mode_resolver = mode_resolver
-        self._timeout = timeout
         # Cached so `Device.is_initialized` answers without a wire round trip on
         # the hot path of a move; good only for the session that earned it.
         self._initialized = False
@@ -200,14 +171,14 @@ class _RemoteDriverBase(GatewayBackedDriver):
         command: str,
         params: Dict[str, JsonValue] | None = None,
     ) -> JsonValue:
-        effective_mode = self._mode_resolver(self._name)
+        effective_mode = await self._mode_resolver(self._name)
         return await self._controller.execute_command(
             device_id=self._name,
             command=command,
             params=dict(params) if params is not None else {},
-            timeout_seconds=self._timeout,
+            # The controller uses the command's declared limit (initialize, a pick): a fixed one cut motion off.
+            timeout_seconds=None,
             effective_mode=effective_mode,
-            resend_on_reconnect=type(self).resend_on_reconnect,
             execution_id=current_execution_id.get(),
         )
 
@@ -245,7 +216,7 @@ class RemoteShakerDriver(_RemoteDriverBase, IShakerDriver):
         # concrete subclass must answer it. Hard-coding ``True`` here is a
         # safe-default for the wire forwarder because no orca-core code
         # path consumes this property today (verified by grep across
-        # orca-core/src — no consumers). The truth lives on the
+        # orca-core/src -- no consumers). The truth lives on the
         # device bridge's backend; once a wire query (or
         # ``DeviceConnectInfo`` carry-through) is wired up, replace this
         # constant. Until then, ``True`` is the conservative answer:
@@ -431,6 +402,21 @@ class RemoteDelidderDriver(_RemoteDriverBase, IDelidderDriver):
         await self._send("delid", request.model_dump(exclude_none=True))
 
 
+class RemoteStorageDriver(_RemoteDriverBase, IStorageDriver):
+    """`IStorageDriver` whose every method forwards over the wire."""
+
+    interfaces: ClassVar[frozenset[str]] = frozenset({"IStorage"})
+
+    async def dispense(self) -> None:
+        await self._send("dispense", {})
+
+
+class RemoteWasteDriver(RemoteStorageDriver, IWasteDriver):
+    """`IWasteDriver` whose every method forwards over the wire."""
+
+    interfaces: ClassVar[frozenset[str]] = frozenset({"IWaste", "IStorage"})
+
+
 class _ForwardsLabwareHandoff(_RemoteDriverBase, IProtocolRunnerDriver):
     """Forwards the four labware handoff hooks over the wire."""
 
@@ -505,17 +491,6 @@ class _RemoteLiquidHandlerWireMixin(_RemoteDriverBase, ILiquidHandlerDriver):
     tracking; passing it through here keeps the wire-driver path consistent
     with the in-process driver path.
 
-    `resend_on_reconnect=False`: liquid-handler commands are not
-    idempotent. A transient WebSocket drop during a mid-channel
-    aspirate / dispense / tip operation cannot be safely resent on
-    reconnect -- the on-prem driver may have already executed the
-    operation, and a resend would double-execute on the physical
-    device. The controller fails the pending future with
-    ``DeviceOfflineError`` instead, forcing the operator to recover
-    manually. Deduplicating command_id on the device bridge is the universal
-    architectural fix; until that lands, this opt-out is the
-    safest behavior for LH dispatches.
-
     The three concrete profile classes below differ only in their
     `interfaces` ClassVar (which the orca facade + connect-time superset
     check read off `type(driver)`) and in whether `run_protocol` forwards or
@@ -524,7 +499,6 @@ class _RemoteLiquidHandlerWireMixin(_RemoteDriverBase, ILiquidHandlerDriver):
     """
 
     provides_state: ClassVar[bool] = True
-    resend_on_reconnect: ClassVar[bool] = False
 
     async def configure_deck(self, config: DeckLayoutConfig) -> LabwareStateResponse:
         result = await self._send("configure_deck", config.model_dump(exclude_none=True))
@@ -641,11 +615,11 @@ class _RemoteLiquidHandlerWireMixin(_RemoteDriverBase, ILiquidHandlerDriver):
         await self._send("run_protocol", request.model_dump(exclude_none=True))
 
 
-class RemoteLiquidHandlerDriver(_RemoteLiquidHandlerWireMixin):
+class RemoteLiquidHandlerDriver(_RemoteLiquidHandlerWireMixin, ILiquidHandlerWithProtocolDriver):
     """plr-only liquid handler (advertises `{ILiquidHandler}`).
 
-    A pure-PLR backend (Opentrons, generic PLR LH) and the cold-start default
-    before any device bridge has advertised a richer profile. Has no protocol
+    A driver with atomic liquid-handling commands only, and the cold-start
+    default before any device bridge has advertised a richer profile. Has no protocol
     capability, so `run_protocol` fails fast at the boundary.
     """
 
@@ -673,11 +647,12 @@ class RemoteLiquidHandlerDriver(_RemoteLiquidHandlerWireMixin):
         )
 
 
-class RemoteLiquidHandlerWithProtocolDriver(_ForwardsLabwareHandoff, _RemoteLiquidHandlerWireMixin):
+class RemoteLiquidHandlerWithProtocolDriver(
+    _ForwardsLabwareHandoff, _RemoteLiquidHandlerWireMixin, ILiquidHandlerWithProtocolDriver,
+):
     """plr + protocol liquid handler (advertises `{ILiquidHandler, IProtocolRunner}`).
 
-    A Hamilton ML STAR + Venus, an Agilent Bravo + VWorks with PLR atomic ops,
-    etc. Supports both atomic ops and vendor protocol files.
+    Supports both atomic ops and vendor protocol files.
     """
 
     interfaces: ClassVar[frozenset[str]] = frozenset(
@@ -688,11 +663,12 @@ class RemoteLiquidHandlerWithProtocolDriver(_ForwardsLabwareHandoff, _RemoteLiqu
         await self._forward_run_protocol(request)
 
 
-class RemoteProtocolOnlyLiquidHandlerDriver(_ForwardsLabwareHandoff, _RemoteLiquidHandlerWireMixin):
+class RemoteProtocolOnlyLiquidHandlerDriver(
+    _ForwardsLabwareHandoff, _RemoteLiquidHandlerWireMixin, ILiquidHandlerWithProtocolDriver,
+):
     """protocol-only liquid handler (advertises `{IProtocolRunner}`).
 
-    An Agilent Bravo + VWorks driven exclusively by vendor protocol files (no
-    orca-level atomic ops; the orca-core `examples/smc_assay` bravo). The orca
+    Driven only by vendor protocol files, with no orca-level atomic ops. The orca
     device is still a `LiquidHandler` (so the live driver implements the atomic
     abstracts), but the advertised set is `{IProtocolRunner}` only: the
     connect-time superset check and the operator surface see protocol

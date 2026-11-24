@@ -1,6 +1,6 @@
 """CLI tests for ``orca labware get/add/update/delete``.
 
-Validates dispatch + rendering. Wire-shape parity with a hosted deployment is pinned
+Validates dispatch + rendering. The wire shape of a hosted deployment is pinned
 by the cloud backend's typed-response tests.
 """
 
@@ -8,13 +8,14 @@ import json
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
 
 import pytest
 from typer.testing import CliRunner
 
 from orca.cli.app import app
-from orca.cli.control_plane import LabwareCatalogEntryDTO
+from orca.operations.labware_catalog_models import (
+    LabwareCatalogEntry,
+)
 
 
 runner = CliRunner()
@@ -33,7 +34,7 @@ _SAMPLE_GEOMETRY: dict[str, Any] = {
 }
 
 
-def _entry(**overrides: Any) -> LabwareCatalogEntryDTO:
+def _entry(**overrides: Any) -> LabwareCatalogEntry:
     base: dict[str, Any] = {
         "labware_type": "Cust_demo",
         "display_name": "Custom demo plate",
@@ -44,20 +45,20 @@ def _entry(**overrides: Any) -> LabwareCatalogEntryDTO:
         "plr_class_name": None,
     }
     base.update(overrides)
-    return LabwareCatalogEntryDTO(**base)
+    return LabwareCatalogEntry(**base)
 
 
 class _FakeCloudClient:
     """Records arguments for each CRUD method and returns a canned entry."""
 
-    def __init__(self, get_entry: LabwareCatalogEntryDTO | None = None) -> None:
+    def __init__(self, get_entry: LabwareCatalogEntry | None = None) -> None:
         self.get_called_with: str | None = None
         self.get_entry = get_entry or _entry()
         self.add_called_with: dict[str, Any] | None = None
         self.update_called_with: tuple[str, dict[str, Any]] | None = None
         self.delete_called_with: str | None = None
 
-    def get_labware(self, labware_type: str) -> LabwareCatalogEntryDTO:
+    def get_labware(self, labware_type: str) -> LabwareCatalogEntry:
         self.get_called_with = labware_type
         return self.get_entry
 
@@ -70,7 +71,7 @@ class _FakeCloudClient:
         geometry: dict[str, Any],
         vendor: str | None = None,
         plr_class_name: str | None = None,
-    ) -> LabwareCatalogEntryDTO:
+    ) -> LabwareCatalogEntry:
         self.add_called_with = {
             "labware_type": labware_type,
             "display_name": display_name,
@@ -97,7 +98,7 @@ class _FakeCloudClient:
         geometry: dict[str, Any],
         vendor: str | None = None,
         plr_class_name: str | None = None,
-    ) -> LabwareCatalogEntryDTO:
+    ) -> LabwareCatalogEntry:
         self.update_called_with = (
             labware_type,
             {

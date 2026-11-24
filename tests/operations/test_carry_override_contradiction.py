@@ -10,10 +10,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from cheshire_drivers.move_parameters import MoveParameterField, MoveParameterPatch
 
-from orca.operations._protocol import OperationError, OperationErrorCode
+from orca.operations.protocol import OperationError
 from orca.operations.labware import SetLabwareCarryOverrideOperation
 from orca.operations.labware_models import SetLabwareCarryOverrideRequest
-from orca.runtime.move_parameters import reject_contradiction
+from orca.resource_models.move_parameters import reject_contradiction
 
 
 class _LabwareApplyingTheRule:
@@ -63,7 +63,7 @@ async def test_a_field_cannot_be_given_a_value_and_handed_back_at_once() -> None
         clear=["z_offset"],
     ))
 
-    assert raised.code is OperationErrorCode.INVALID_INPUT
+    assert raised.http_status == 422
     assert "z_offset" in raised.message
 
 
@@ -108,4 +108,4 @@ async def test_an_unknown_plate_is_still_a_not_found_rather_than_bad_input() -> 
             labware_id="nope", set=MoveParameterPatch(z_offset=1.0), clear=[],
         ))
 
-    assert exc_info.value.code is OperationErrorCode.NOT_FOUND
+    assert exc_info.value.http_status == 404

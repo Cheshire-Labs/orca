@@ -10,34 +10,39 @@ notifier needs, while the full typed detail stays on the incidents surface.
 from unittest.mock import MagicMock
 
 from orca.events.execution_context import IncidentContext
-from orca.events.intervention import InterventionKind, classify_intervention
+from orca.runtime.intervention import InterventionKind, classify_intervention
 from orca.runtime.incident_store import RecoverableTimeoutContext
+from orca.events.runtime_event import RuntimeEvent
+from orca.runtime.sinks import CollectorSink
 from orca.runtime.system_runtime import SystemRuntime
+from tests.memory_activity import memory_runtime
 
 
-def _runtime() -> SystemRuntime:
+async def _runtime() -> tuple[SystemRuntime, CollectorSink]:
     system = MagicMock()
-    runtime = SystemRuntime(system)
+    runtime = await memory_runtime(system)
     runtime.pause_all_threads = MagicMock(  # type: ignore[method-assign]
         return_value={"pausing": 0, "already_paused": 0, "terminal_skipped": 0},
     )
-    return runtime
+    sink = CollectorSink()
+    runtime.register_sink(sink)
+    return runtime, sink
 
 
-def _incident_events(runtime: SystemRuntime) -> list:
-    return [e for e in runtime.get_events_since(None) if e.entity_type == "INCIDENT"]
+def _incident_events(sink: CollectorSink) -> list[RuntimeEvent]:
+    return [e for e in sink.events if e.entity_type == "INCIDENT"]
 
 
-def test_recording_incident_emits_runtime_event_on_bus() -> None:
-    runtime = _runtime()
+async def test_recording_incident_emits_runtime_event_on_bus() -> None:
+    runtime, sink = await _runtime()
     ctx = RecoverableTimeoutContext(
         device_id="shaker_1", command="shake", command_id="c1",
-        elapsed_seconds=10.0, max_seconds=5.0,
+        elapsed_seconds=10.0, max_seconds=5.0, unheld=None,
     )
 
     incident = runtime.declare_recoverable_timeout(execution_id="exec-1", context=ctx)
 
-    events = _incident_events(runtime)
+    events = _incident_events(sink)
     assert len(events) == 1
     event = events[0]
     assert event.entity_id == incident.id
@@ -45,16 +50,16 @@ def test_recording_incident_emits_runtime_event_on_bus() -> None:
     assert classify_intervention(event) is InterventionKind.INCIDENT
 
 
-def test_incident_event_context_carries_summary_fields() -> None:
-    runtime = _runtime()
+async def test_incident_event_context_carries_summary_fields() -> None:
+    runtime, sink = await _runtime()
     ctx = RecoverableTimeoutContext(
         device_id="shaker_1", command="shake", command_id="c1",
-        elapsed_seconds=10.0, max_seconds=5.0,
+        elapsed_seconds=10.0, max_seconds=5.0, unheld=None,
     )
 
     incident = runtime.declare_recoverable_timeout(execution_id="exec-1", context=ctx)
 
-    event = _incident_events(runtime)[0]
+    event = _incident_events(sink)[0]
     assert isinstance(event.context, IncidentContext)
     assert event.context.incident_id == incident.id
     assert event.context.category == "RECOVERABLE_TIMEOUT"
@@ -64,15 +69,15 @@ def test_incident_event_context_carries_summary_fields() -> None:
     assert event.context.execution_id == "exec-1"
 
 
-def test_distinct_incidents_emit_distinct_events() -> None:
-    runtime = _runtime()
+async def test_distinct_incidents_emit_distinct_events() -> None:
+    runtime, sink = await _runtime()
     ctx = RecoverableTimeoutContext(
         device_id="shaker_1", command="shake", command_id="c1",
-        elapsed_seconds=10.0, max_seconds=5.0,
+        elapsed_seconds=10.0, max_seconds=5.0, unheld=None,
     )
 
     a = runtime.declare_recoverable_timeout(execution_id="exec-1", context=ctx)
     b = runtime.declare_recoverable_timeout(execution_id="exec-1", context=ctx)
 
-    ids = {e.entity_id for e in _incident_events(runtime)}
+    ids = {e.entity_id for e in _incident_events(sink)}
     assert ids == {a.id, b.id}

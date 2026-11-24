@@ -226,7 +226,7 @@ async def test_bridge_filter_state_passes_through_when_trust_and_driver_provides
         success=True,
         labware_state={"plate": LabwareWellState(volumes={"A1": 50.0})},
     )
-    filtered = bridge._filter_state(response)
+    filtered = bridge.filter_driver_state(response)
     assert filtered is response  # passed through unchanged
     assert filtered.labware_state != {}
 
@@ -241,7 +241,7 @@ async def test_bridge_filter_state_strips_when_user_does_not_trust() -> None:
         success=True,
         labware_state={"plate": LabwareWellState(volumes={"A1": 50.0})},
     )
-    filtered = bridge._filter_state(response)
+    filtered = bridge.filter_driver_state(response)
     assert filtered is not response
     assert filtered.labware_state == {}
     assert filtered.success is True
@@ -259,5 +259,5 @@ async def test_bridge_filter_state_strips_when_driver_does_not_provide() -> None
         success=True,
         labware_state={"plate": LabwareWellState(volumes={"A1": 50.0})},
     )
-    filtered = bridge._filter_state(response)
+    filtered = bridge.filter_driver_state(response)
     assert filtered.labware_state == {}

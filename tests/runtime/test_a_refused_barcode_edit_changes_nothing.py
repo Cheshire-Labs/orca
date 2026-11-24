@@ -3,11 +3,12 @@
 import pytest
 
 from orca.resource_models.labware import LabwareInstance
+from orca.runtime.labware_service import LabwareService
 from orca.runtime.labware_store import InMemoryLabwareStore
-from orca.runtime.runtime_interface import BarcodeInUseError
-from orca.runtime.system_runtime import SystemRuntime
+from orca.runtime.errors import BarcodeInUseError
 
 from tests.test_system_runtime import _build_simple_system
+from tests.memory_activity import memory_runtime
 
 TAKEN = "BC-TAKEN"
 
@@ -23,8 +24,8 @@ class _StoreWhereOneBarcodeIsTaken(InMemoryLabwareStore):
 
 @pytest.mark.asyncio
 async def test_a_refused_edit_leaves_the_old_barcode_in_place() -> None:
-    system, _ = await _build_simple_system()
-    runtime = SystemRuntime(system, labware_store=_StoreWhereOneBarcodeIsTaken())
+    system, _ = await _build_simple_system(labware_service=LabwareService(_StoreWhereOneBarcodeIsTaken()))
+    runtime = await memory_runtime(system)
     await runtime.start()
     try:
         snap = await runtime.labware.register(

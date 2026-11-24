@@ -1,8 +1,8 @@
 """Wire-shape contract tests for topology-related daemon DTOs.
 
-Pins the exact JSON shape of the five topology-projection DTOs
-(``DeviceDTO``, ``TransporterDTO``, ``ResourcePoolDTO``, ``LocationDTO``,
-``LabwareTemplateDTO``) so a hosted deployment (and any other client that imports the
+Pins the exact JSON shape of the topology projections (the declared
+``TopologyCard`` per device, ``TransporterDTO``, ``ResourcePoolDTO``,
+``LocationDTO``, ``LabwareTemplateDTO``) so a hosted deployment (and any other client that imports the
 canonical DTOs) sees a stable contract.
 
 Pairs with ``test_schemas.py``'s parametrized field-set guard: that test
@@ -13,57 +13,36 @@ changed without anyone noticing".
 import dataclasses
 import json
 
-from orca.daemon.schemas import (
-    DeviceDTO,
+from orca.operations.wire_models import (
     LabwareTemplateDTO,
     LocationDTO,
     ResourcePoolDTO,
+    TopologyViewResponse,
     TransporterDTO,
 )
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.runtime.registries.device_registry import declared_card
 from orca.runtime.status_models import (
-    DeviceSnapshot,
     LabwareTemplateSnapshot,
     LocationSnapshot,
     ResourcePoolSnapshot,
+    TopologyDeviceEntry,
     TransporterSnapshot,
 )
 
 
-def test_device_dto_wire_shape_pins_all_projection_fields() -> None:
-    """DeviceDTO must surface every field a hosted deployment previously projected.
-
-    ``loaded_labware_ids`` and ``position_ids`` are the projection fields
-    a hosted deployment's TopologyDeviceDTO added on top of the underlying DeviceSnapshot;
-    both must round-trip through the canonical DTO.
-    """
-    snap = DeviceSnapshot(
-        name="shaker1",
-        type_name="Shaker",
-        is_initialized=True,
-        is_busy=False,
-        effective_mode=WorkflowRunMode.PURE_SIM,
-        position_ids=("loc-A", "loc-B"),
-        loaded_labware_ids=("lw-1", "lw-2"),
-    )
-    dto = DeviceDTO.from_dc(snap)
-    payload = json.loads(dto.model_dump_json())
+def test_a_topology_device_is_its_declaration() -> None:
+    """The topology lists what topology.py declares; a device's live state is the registry's to answer."""
+    card = declared_card(TopologyDeviceEntry(
+        name="shaker1", kind="Shaker", interfaces=("IShaker",), position_ids=("loc-A", "loc-B"),
+        interfaces_are_class_defaults=False,
+    ))
+    payload = json.loads(TopologyViewResponse(devices=[card]).model_dump_json())["devices"][0]
     assert payload == {
         "name": "shaker1",
-        "type_name": "Shaker",
-        "is_initialized": True,
-        "is_busy": False,
-        "effective_mode": "PURE_SIM",
-        "position_ids": ["loc-A", "loc-B"],
-        "loaded_labware_ids": ["lw-1", "lw-2"],
-        # S5b external-control flag: default False when no gateway holds
-        # the device. Always emitted on the wire so MCP/REST clients have
-        # a stable field shape to render against.
-        "under_external_control": False,
-        "external_control_hold": None,
-        # Null until a command leaves the device part-way through something.
-        # Always emitted so a client has a stable shape to render against.
-        "fault": None,
+        "declared_kind": "Shaker",
+        "declared_interfaces": ["IShaker"],
+        "mounting_locations": ["loc-A", "loc-B"],
+        "declared_interfaces_are_class_defaults": False,
     }
 
 
@@ -197,11 +176,10 @@ def test_topology_dtos_match_their_dataclass_field_sets() -> None:
 
     Catches drift the moment a snapshot dataclass gains a field but the DTO
     is not updated (or the reverse). Mirrors the parametrized guard in
-    ``test_schemas.py`` but with all five topology DTOs in one fixture so a
+    ``test_schemas.py`` but with the topology DTOs in one fixture so a
     breakage shows up as a single assertion failure.
     """
     pairs = [
-        (DeviceSnapshot, DeviceDTO),
         (TransporterSnapshot, TransporterDTO),
         (ResourcePoolSnapshot, ResourcePoolDTO),
         (LocationSnapshot, LocationDTO),

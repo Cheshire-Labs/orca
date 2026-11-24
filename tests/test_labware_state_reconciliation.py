@@ -16,6 +16,8 @@ holders converge, so a future change that desyncs one of them fails loudly.
 """
 
 
+from orca.sdk.build import build_system_over
+from orca.events.event_bus import EventBus
 import pytest
 
 import orca.orca as orca
@@ -23,26 +25,31 @@ from orca.spawn import DISPENSE, LEAVE_IN_PLACE, REUSE_EXISTING
 from cheshire_drivers import DeckLayoutConfig, DeckResourceConfig, Teachpoint
 from cheshire_drivers import CartesianCoordinates as C
 from cheshire_drivers import RecordingLiquidHandlerDriver
-from cheshire_drivers.plr import ChatterboxLiquidHandlerDriver
 from cheshire_drivers.liquid_handler_models import GetDeckStateRequest
 from orca.devices.devices import DeckLabwareIdentityError, LiquidHandler, Storage
 from orca.resource_models.device_error import SlotOccupiedError
 from orca.resource_models.plate_pad import PlatePad
 from orca.resource_models.transporter import Transporter
-from orca.runtime.device_factory_context import use_device_factory
 from orca.resource_models.labware import LabwareInstance, PlateInstance
-from orca.runtime.sim_labware import SimPlate
+from orca.resource_models.sim_labware import SimPlate
+from orca.runtime.labware_service import LabwareService
 from orca.runtime.labware_store import InMemoryLabwareStore
-from orca.runtime.interfaces import ILabwareStore
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.store_factory import InMemoryRuntimeStoreFactory
-from orca.runtime.system_runtime import SystemRuntime
+from orca.resource_models.store_interfaces import ILabwareStore
+from orca.modes.run_modes import WorkflowRunMode
 from orca.sdk.build import Topology
 from orca.sdk.labware import PlateTemplate
 from orca.workflow_models.action_context import ActionContext
 from orca.workflow_models.method_context import MethodContext
 from orca.workflow_models.thread_context import ThreadContext
-from tests.test_helpers import named_for_template, run_to_quiescence
+from tests.test_helpers import named_for_template, run_to_quiescence, wait_for_runtime_condition
+from tests.setup_package import package_stores, write_deck_layouts, write_teachpoints
+from tests.setup_package import with_teachpoints, with_deck_layouts
+from tests.memory_activity import memory_ops_store, memory_runtime
+from tests.memory_activity import memory_unsaved_positions
+from tests.real_device_path import the_real_device_path
+from tests.recording_handler import RecordingHandler
+from orca.resource_models.labware_service_interface import ILabwareService
+from tests.memory_activity import memory_labware_service
 
 
 RESERVOIR_SITE = "lh/carrier-25-0"
@@ -60,7 +67,7 @@ async def _build(
     recorder: RecordingLiquidHandlerDriver,
     *,
     wf_name: str,
-    sim_recorder: RecordingLiquidHandlerDriver | None = None,
+    sim_recorder: RecordingLiquidHandlerDriver | None = None, labware_service: ILabwareService | None = None
 ):
     """A sample plate that joins a resident reservoir pinned to a deck site.
 
@@ -71,47 +78,29 @@ async def _build(
     can tell which world a call landed in. Left out, one recorder answers for
     both and world is invisible.
     """
-    stores = InMemoryRuntimeStoreFactory()
+    stores = package_stores()
 
     sample_plate = PlateTemplate(
         "sample_plate", labware_type="Cor_Falcon_96_wellplate_340ul_Fb_Black")
     reservoir = PlateTemplate(
         "reservoir", labware_type="AGenBio_1_troughplate_190000uL_Fl")
 
-    class _LhDeckFactory:
-        def __init__(
-            self,
-            lh: RecordingLiquidHandlerDriver,
-            sim: RecordingLiquidHandlerDriver,
-        ) -> None:
-            self._lh = lh
-            self._sim = sim
-            from orca.runtime.device_factory import SimDeviceFactory
-            self._fallback = SimDeviceFactory()
-
-        def build_drivers(self, device_type: str, name: str, *, deck_modeling: bool = False):
-            if device_type == "liquid_handler":
-                return self._lh, self._sim
-            return self._fallback.build_drivers(device_type, name, deck_modeling=deck_modeling)
-
-    with use_device_factory(_LhDeckFactory(recorder, sim_recorder or recorder)):
-        lh = LiquidHandler(
-            "lh",
-            deck_layout_store=stores.deck_layouts("lh", seed={"default": DECK_CONFIG}),
-            deck_layout="default",
-        )
-        stacker = Storage("stacker")
-        waste = Storage("waste")
-        pad = PlatePad("pad")
-        arm = Transporter(
-            "arm",
-            teachpoint_store=stores.teachpoints("arm", seed=[
-                Teachpoint("stacker", C(0, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("pad", C(200, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("lh/carrier-7-2", C(400, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("waste", C(600, 200, 300, 0, 90, 180), orientation="right"),
-            ]),
-        )
+    the_real_device_path().simulate_with("lh", recorder)
+    lh = with_deck_layouts(LiquidHandler(
+        "lh",
+        deck_layout="default",
+    ), write_deck_layouts(stores, "lh", {"default": DECK_CONFIG}))
+    stacker = Storage("stacker")
+    waste = Storage("waste")
+    pad = PlatePad("pad")
+    arm = with_teachpoints(Transporter(
+        "arm",
+    ), write_teachpoints(stores, "arm", [
+            Teachpoint("stacker", C(0, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("pad", C(200, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("lh/carrier-7-2", C(400, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("waste", C(600, 200, 300, 0, 90, 180), orientation="right"),
+        ]))
 
     @orca.action(
         device=lh,
@@ -147,8 +136,8 @@ async def _build(
         locations={"stacker": stacker, "pad": pad, "lh": lh, "waste": waste},
         transporters=[arm],
     )
-    build = await orca.build_system(
-        name="Reconciliation", workflow=workflow, topology=topology, stores=stores)
+    build = await build_system_over(
+        name="Reconciliation", workflow=workflow, topology=topology, stores=stores, event_bus=EventBus(), ops_history_store=memory_ops_store(), labware_service=labware_service or memory_labware_service(), unsaved_positions=memory_unsaved_positions())
     return build, lh
 
 
@@ -176,12 +165,15 @@ async def _deck_labware_names(lh) -> set[str]:
 
 async def _bind_resident(recorder, store: ILabwareStore, *, wf_name: str):
     """Build a runtime over ``store``, run once, return (build, lh, runtime)."""
-    build, lh = await _build(recorder, wf_name=wf_name)
-    runtime = SystemRuntime(build.system, event_bus=build.event_bus, labware_store=store)
+    build, lh = await _build(recorder, wf_name=wf_name, labware_service=LabwareService(store))
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
     await runtime.start()
-    record = await runtime.submit_workflow(wf_name, mode=WorkflowRunMode.PURE_SIM)
+    record = await runtime.submit_workflow(wf_name, mode=WorkflowRunMode.CHECK_RUN)
     statuses = await run_to_quiescence(runtime, record.id)
     assert statuses and all(s == "COMPLETED" for s in statuses.values()), statuses
+    # An open run sets what an operator's command uses; close it so later writes go to the device's own world.
+    runtime.close_execution(record.id)
+    await wait_for_runtime_condition(runtime, lambda: runtime.active_run_mode() is None)
     return build, lh, runtime
 
 
@@ -190,7 +182,7 @@ async def _bind_resident(recorder, store: ILabwareStore, *, wf_name: str):
 async def test_bind_reconciles_every_holder() -> None:
     """After a resident binds, store / ledger slot / registry / driver deck all
     name the same one instance at the same site."""
-    recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    recorder = RecordingHandler()
     store = InMemoryLabwareStore()
     build, lh, _ = await _bind_resident(recorder, store, wf_name="recon_bind")
 
@@ -221,7 +213,7 @@ async def test_clear_all_wipes_every_holder() -> None:
     sixth holder (the transporter world projection) is reset via the same
     clear_all path and is guarded directly by
     test_labware_clear_tools.test_resets_transporter_world_projection."""
-    recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    recorder = RecordingHandler()
     store = InMemoryLabwareStore()
     build, lh, runtime = await _bind_resident(recorder, store, wf_name="recon_clear")
     # Preconditions: prove each holder is non-empty BEFORE the clear, so the
@@ -249,15 +241,15 @@ async def test_reboot_without_clear_rehydrates_same_resident() -> None:
     """Persist-until-explicit-clear: a fresh runtime over the same store
     rehydrates the resident to the same id, registers it, and reuses (not
     respawns) it on the next run."""
-    recorder1 = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    recorder1 = RecordingHandler()
     store = InMemoryLabwareStore()
     build1, _, _ = await _bind_resident(recorder1, store, wf_name="recon_reboot_keep")
     id1 = _require_resident(build1).id
 
-    recorder2 = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
-    build2, lh2 = await _build(recorder2, wf_name="recon_reboot_keep_2")
-    runtime2 = SystemRuntime(
-        build2.system, event_bus=build2.event_bus, labware_store=store)
+    recorder2 = RecordingHandler()
+    build2, lh2 = await _build(recorder2, wf_name="recon_reboot_keep_2", labware_service=LabwareService(store))
+    runtime2 = await memory_runtime(
+        build2.system, event_bus=build2.event_bus)
     await runtime2.start()
 
     rehydrated = _resident_at(build2)
@@ -268,7 +260,7 @@ async def test_reboot_without_clear_rehydrates_same_resident() -> None:
         "rehydrated resident missing from the engine registry"
     )
 
-    record = await runtime2.submit_workflow("recon_reboot_keep_2", mode=WorkflowRunMode.PURE_SIM)
+    record = await runtime2.submit_workflow("recon_reboot_keep_2", mode=WorkflowRunMode.CHECK_RUN)
     statuses = await run_to_quiescence(runtime2, record.id)
     assert all(s == "COMPLETED" for s in statuses.values()), statuses
     assert _require_resident(build2).id == id1, "resident was respawned across reboot, not reused"
@@ -305,15 +297,15 @@ async def test_reboot_through_an_identity_only_store_restores_the_resident() -> 
     PLR object off every resident. The runtime rebuilds it from its template
     first, so the reboot resumes instead of taking the deployment to 503.
     """
-    recorder1 = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    recorder1 = RecordingHandler()
     store = _IdentityOnlyStore()
     build1, _, _ = await _bind_resident(recorder1, store, wf_name="recon_identity_reboot")
     id1 = _require_resident(build1).id
 
-    recorder2 = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
-    build2, lh2 = await _build(recorder2, wf_name="recon_identity_reboot_2")
-    runtime2 = SystemRuntime(
-        build2.system, event_bus=build2.event_bus, labware_store=store)
+    recorder2 = RecordingHandler()
+    build2, lh2 = await _build(recorder2, wf_name="recon_identity_reboot_2", labware_service=LabwareService(store))
+    runtime2 = await memory_runtime(
+        build2.system, event_bus=build2.event_bus)
     await runtime2.start()
 
     rehydrated = _require_resident(build2)
@@ -324,7 +316,7 @@ async def test_reboot_through_an_identity_only_store_restores_the_resident() -> 
     )
 
     record = await runtime2.submit_workflow(
-        "recon_identity_reboot_2", mode=WorkflowRunMode.PURE_SIM)
+        "recon_identity_reboot_2", mode=WorkflowRunMode.CHECK_RUN)
     statuses = await run_to_quiescence(runtime2, record.id)
     assert all(s == "COMPLETED" for s in statuses.values()), statuses
     assert any(named_for_template(n, "reservoir") for n in await _deck_labware_names(lh2)), (
@@ -338,23 +330,23 @@ async def test_reboot_after_clear_does_not_resurrect() -> None:
     """A cleared resident stays gone across a reboot: the fresh runtime
     rehydrates nothing, and a later run creates a NEW instance (the cleared
     id is gone for good)."""
-    recorder1 = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    recorder1 = RecordingHandler()
     store = InMemoryLabwareStore()
     build1, _, runtime1 = await _bind_resident(recorder1, store, wf_name="recon_reboot_clear")
     id1 = _require_resident(build1).id
     await runtime1.labware.clear_all_labware(force=True, confirm=True)
 
-    recorder2 = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
-    build2, _ = await _build(recorder2, wf_name="recon_reboot_clear_2")
-    runtime2 = SystemRuntime(
-        build2.system, event_bus=build2.event_bus, labware_store=store)
+    recorder2 = RecordingHandler()
+    build2, _ = await _build(recorder2, wf_name="recon_reboot_clear_2", labware_service=LabwareService(store))
+    runtime2 = await memory_runtime(
+        build2.system, event_bus=build2.event_bus)
     await runtime2.start()
 
     assert _resident_at(build2) is None, "cleared resident resurrected on reboot"
     assert list(build2.system.labwares) == [], "cleared resident reappeared in the registry"
     assert await store.list_active_locations() == [], "clear did not delete the store record"
 
-    record = await runtime2.submit_workflow("recon_reboot_clear_2", mode=WorkflowRunMode.PURE_SIM)
+    record = await runtime2.submit_workflow("recon_reboot_clear_2", mode=WorkflowRunMode.CHECK_RUN)
     statuses = await run_to_quiescence(runtime2, record.id)
     assert all(s == "COMPLETED" for s in statuses.values()), statuses
     new_id = _require_resident(build2).id
@@ -373,7 +365,7 @@ async def test_discharge_clears_deck_site_resident_slot() -> None:
     clear-all, so it too must reach a resident's deck-site CHILD slot, not just
     registry + store. Guards the fix for the single-instance clear surface (a
     revert of _all_locations would ship green through clear-all alone)."""
-    recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    recorder = RecordingHandler()
     store = InMemoryLabwareStore()
     build, _, runtime = await _bind_resident(recorder, store, wf_name="recon_discharge")
     resident_id = _require_resident(build).id
@@ -392,7 +384,7 @@ async def test_two_same_template_residents_both_place() -> None:
     on one device are both representable: same-template coexistence is
     operator-managed layout, not an engine refusal. Reconcile
     places both, each under its own unique name."""
-    recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    recorder = RecordingHandler()
     store = InMemoryLabwareStore()
     build, lh, _ = await _bind_resident(recorder, store, wf_name="recon_collide")
 
@@ -423,7 +415,7 @@ async def test_one_name_at_two_sites_raises_ledger_corruption() -> None:
     """Instance names are unique by mint, so one name occupying two deck sites
     can only mean a corrupted ledger; reconcile refuses loudly instead of
     silently projecting one of the two."""
-    recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    recorder = RecordingHandler()
     store = InMemoryLabwareStore()
     build, _, _ = await _bind_resident(recorder, store, wf_name="recon_dup_name")
 
@@ -450,10 +442,10 @@ async def test_edit_location_moves_a_plate_between_two_sites_of_one_deck() -> No
     early: it raises, the operator's call fails, and the plate is left recorded
     at both ends.
     """
-    recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    recorder = RecordingHandler()
     build, lh = await _build(recorder, wf_name="recon_edit_within_deck")
-    runtime = SystemRuntime(
-        build.system, event_bus=build.event_bus, labware_store=InMemoryLabwareStore(),
+    runtime = await memory_runtime(
+        build.system, event_bus=build.event_bus
     )
     await runtime.start()
     try:
@@ -493,10 +485,10 @@ async def test_edit_location_onto_a_busy_site_leaves_the_source_holding_it() -> 
     nothing else pins it: the ordering around it has been rewritten more than
     once, and each rewrite can trade this away without a test going red.
     """
-    recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    recorder = RecordingHandler()
     build, _ = await _build(recorder, wf_name="recon_edit_busy_target")
-    runtime = SystemRuntime(
-        build.system, event_bus=build.event_bus, labware_store=InMemoryLabwareStore(),
+    runtime = await memory_runtime(
+        build.system, event_bus=build.event_bus
     )
     await runtime.start()
     try:

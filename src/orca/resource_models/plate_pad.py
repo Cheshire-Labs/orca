@@ -2,11 +2,12 @@ from typing import List, Optional
 
 from cheshire_drivers.null_plate_pad import NullPlatePadDriver
 
+from orca.resource_models.device_error import SlotOccupiedError
 from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.labware_placeable_interface import ILabwarePlaceable, IPlateMover
+from orca.resource_models.labware_directory import LabwarePlacements
 from orca.resource_models.position_occupancy import PositionOccupancy
 from orca.resource_models.resources import IInitializable, IResource
-from orca.resource_models.simulation_manager import SimulationManager
 
 
 class PlatePad(IResource, IInitializable, ILabwarePlaceable):
@@ -21,7 +22,7 @@ class PlatePad(IResource, IInitializable, ILabwarePlaceable):
         self._supports_deadlock_resolution = supports_deadlock_resolution
         if driver is None:
             driver = NullPlatePadDriver(name)
-        self._sim_manager = SimulationManager(driver, NullPlatePadDriver("Basic Plate Pad"))
+        self._driver = driver
         self._is_initialized = False
         self._occupancy = PositionOccupancy(name)
 
@@ -29,9 +30,12 @@ class PlatePad(IResource, IInitializable, ILabwarePlaceable):
     def name(self) -> str:
         return self._name
 
+    def bind_placements(self, placements: LabwarePlacements) -> None:
+        self._occupancy.bind_placements(placements)
+
     @property
     def is_initialized(self) -> bool:
-        return self._sim_manager.driver.is_initialized
+        return self._driver.is_initialized
 
     @property
     def labware(self) -> Optional[LabwareInstance]:
@@ -49,33 +53,38 @@ class PlatePad(IResource, IInitializable, ILabwarePlaceable):
         self._occupancy.arrive(labware)
 
     async def initialize(self) -> None:
-        await self._sim_manager.driver.initialize()
+        await self._driver.initialize()
         self._is_initialized = True
 
-    async def notify_picked(self, labware: LabwareInstance, mover: IPlateMover) -> None:
-        await self._sim_manager.driver.notify_picked(labware.name, labware.labware_type)
+    async def notify_picked(self, labware: LabwareInstance | None, mover: IPlateMover) -> None:
+        if labware is None:
+            return
+        await self._driver.notify_picked(labware.name, labware.labware_type)
         self._occupancy.leave(labware)
 
-    async def _do_notify_picked(self, labware: LabwareInstance) -> None:
-        await self._sim_manager.driver.notify_picked(labware.name, labware.labware_type)
+    async def _do_notify_picked(self, labware: LabwareInstance | None) -> None:
+        if labware is not None:
+            await self._driver.notify_picked(labware.name, labware.labware_type)
 
     async def dispose_labware(self, labware: LabwareInstance) -> None:
         self._occupancy.leave(labware)
 
-    async def notify_placed(self, labware: LabwareInstance, mover: IPlateMover) -> None:
-        await self._sim_manager.driver.notify_placed(labware.name, labware.labware_type)
+    async def notify_placed(self, labware: LabwareInstance | None, mover: IPlateMover) -> None:
+        if labware is None:
+            return
+        await self._driver.notify_placed(labware.name, labware.labware_type)
         self._occupancy.arrive(labware)
 
-    async def prepare_for_pick(self, labware: LabwareInstance, mover: IPlateMover) -> None:
+    async def prepare_for_pick(self, labware: LabwareInstance | None, mover: IPlateMover) -> None:
+        if labware is None:
+            return
         if not self._occupancy.holds(labware):
             raise ValueError(f"Labware {labware} not found on plate pad {self}")
-        await self._sim_manager.driver.prepare_for_pick(labware.name, labware.labware_type)
+        await self._driver.prepare_for_pick(labware.name, labware.labware_type)
 
-    async def prepare_for_place(self, labware: LabwareInstance, mover: IPlateMover) -> None:
+    async def prepare_for_place(self, labware: LabwareInstance | None, mover: IPlateMover) -> None:
         occupant = self._occupancy.labware
         if occupant is not None and occupant is not labware:
-            raise ValueError(
-                f"Trying to place Labware {labware}, but Labware {occupant} "
-                f"already on plate pad {self}"
-            )
-        await self._sim_manager.driver.prepare_for_place(labware.name, labware.labware_type)
+            raise SlotOccupiedError(self._name, occupant.name, occupant.template_name)
+        if labware is not None:
+            await self._driver.prepare_for_place(labware.name, labware.labware_type)

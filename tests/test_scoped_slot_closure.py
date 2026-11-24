@@ -23,10 +23,10 @@ from typing import cast
 import pytest
 
 from orca.resource_models.labware import PlateTemplate
-from orca.runtime.group_aware_labware_registry import GroupAwareLabwareRegistry
-from orca.runtime.group_execution_context import GroupExecutionContext
-from orca.runtime.labware_group import LabwareGroup, LabwareGroupMember
-from orca.runtime.submission import BatchMode
+from orca.workflow_models.group_aware_labware_registry import GroupAwareLabwareRegistry
+from orca.workflow_models.group_execution_context import GroupExecutionContext
+from orca.workflow_models.labware_group import LabwareGroup, LabwareGroupMember
+from orca.workflow_models.submission import BatchMode
 from orca.sdk.workflow import ThreadTemplate, WorkflowTemplate
 from orca.workflow_models.labware_threads.executing_labware_thread import (
     ExecutingLabwareThread,

@@ -2,13 +2,15 @@
 from dataclasses import dataclass
 from typing import Dict, List, Sequence
 
+from orca.events.event_name import checked_handler_event_name
 from orca.events.event_bus_interface import EventHandlerType
 from orca.resource_models.capacity import CapacityPolicy
-from orca.resource_models.labware_state import IOverflowStrategy
+from orca.workflow_models.labware_state import IOverflowStrategy
 from orca.variables.variable_definition import VariableDefinition
 from orca.variables.variable_store import _validate_workflow_variable_name
 from orca.workflow_models.method_template import IMethodTemplate
 from orca.workflow_models.thread_template import ThreadTemplate
+from orca.workflow_models.errors import ImmovableThreadCannotBeEntryError, ReuseThreadCannotBeEntryError
 
 
 @dataclass
@@ -95,15 +97,9 @@ class WorkflowTemplate:
 
     def add_thread(self, thread: ThreadTemplate, is_start: bool = False) -> None:
         if is_start:
-            # Local import: orca.runtime.runtime_interface pulls plugins +
-            # events transitively, which would close a cycle through
-            # workflow_models. Importing at call time keeps the field-free
-            # state at module load.
             if thread.start_reuse_existing:
-                from orca.runtime.runtime_interface import ReuseThreadCannotBeEntryError
                 raise ReuseThreadCannotBeEntryError(thread.name)
             if thread.immovable:
-                from orca.runtime.runtime_interface import ImmovableThreadCannotBeEntryError
                 raise ImmovableThreadCannotBeEntryError(thread.name)
         self._threads[thread.name] = thread
         # _threads is the feeder graph; drop the memo so transitive_feeders_for recomputes.
@@ -112,7 +108,7 @@ class WorkflowTemplate:
             self._start_threads[thread.name] = thread
 
     def add_event_handler(self, event_name: str, handler: EventHandlerType) -> None:
-        self._event_hooks.append(EventHookInfo(event_name, handler))
+        self._event_hooks.append(EventHookInfo(checked_handler_event_name(event_name), handler))
 
     def register_auto_spawn(self, thread: ThreadTemplate,
                             capacity: CapacityPolicy | None = None,

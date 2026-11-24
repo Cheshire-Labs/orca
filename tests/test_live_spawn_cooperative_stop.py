@@ -20,8 +20,11 @@ stop and runs `_handle_thread_stop` cleanly.
 """
 
 import asyncio
+from tests.thread_builder import build_executing_thread
+from tests.test_helpers import make_labware_placer
 from unittest.mock import MagicMock
 
+from tests.placements_for_tests import this_tests_placements
 from orca.resource_models.labware_location_service import (
     ArrivalMechanism,
     InMemoryLabwareLocationService,
@@ -29,7 +32,7 @@ from orca.resource_models.labware_location_service import (
 from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.location import Location
 from orca.resource_models.plate_pad import PlatePad
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from orca.workflow_models.labware_threads.labware_thread import (
     LabwareThreadInstance,
 )
@@ -68,7 +71,7 @@ def _make_thread(
 def _ledger_expecting(
     labware: LabwareInstance, location: Location,
 ) -> InMemoryLabwareLocationService:
-    service = InMemoryLabwareLocationService()
+    service = InMemoryLabwareLocationService(this_tests_placements())
     service.expect(labware, location, ArrivalMechanism.MANUAL_PLACE)
     return service
 
@@ -84,7 +87,7 @@ class TestManualPlaceSpawnCooperativeStop:
         labware = _fresh_labware()
         thread = _make_thread(labware, location, stop_event=stop_event)
 
-        spawn = ManualPlaceSpawn(location, _ledger_expecting(labware, location))
+        spawn = _manual_place(location, _ledger_expecting(labware, location))
         # No operator places labware; without the cooperative-stop seam
         # the call would hang on `asyncio.sleep` and timeout. With the
         # seam it returns immediately.
@@ -102,7 +105,7 @@ class TestManualPlaceSpawnCooperativeStop:
         labware = _fresh_labware()
         thread = _make_thread(labware, location, stop_event=stop_event)
 
-        spawn = ManualPlaceSpawn(location, _ledger_expecting(labware, location))
+        spawn = _manual_place(location, _ledger_expecting(labware, location))
         acquire_task = asyncio.create_task(spawn.acquire(thread))
         # Let the task enter its first sleep.
         await asyncio.sleep(0)
@@ -123,7 +126,7 @@ class TestManualPlaceSpawnCooperativeStop:
         assert thread.stop_event is None
         service = _ledger_expecting(labware, location)
 
-        spawn = ManualPlaceSpawn(location, service)
+        spawn = ManualPlaceSpawn(location, service, make_labware_placer(service))
         acquire_task = asyncio.create_task(spawn.acquire(thread))
         await asyncio.sleep(0)
         assert not acquire_task.done()
@@ -206,11 +209,8 @@ class TestHandleThreadCompletionRespectsStopEvent:
         registry entry is NOT transitioned to ENDED (labware is still
         physically present) and `drain_for_handoff` does NOT fire."""
         from unittest.mock import MagicMock
-        from orca.resource_models.labware_state import (
+        from orca.workflow_models.labware_state import (
             InMemoryLabwareRegistry, LabwareState,
-        )
-        from orca.workflow_models.labware_threads.executing_labware_thread import (
-            ExecutingLabwareThread,
         )
         from orca.workflow_models.status_enums import LabwareThreadStatus
 
@@ -244,7 +244,7 @@ class TestHandleThreadCompletionRespectsStopEvent:
             status_state.append(name)
         status_manager.set_status = MagicMock(side_effect=_set_status)
 
-        et = ExecutingLabwareThread(
+        et = build_executing_thread(
             thread=thread,
             event_bus=MagicMock(),
             move_handler=MagicMock(),
@@ -285,3 +285,7 @@ class TestHandleThreadCompletionRespectsStopEvent:
         # Registry no longer holds the labware (unregistered on stop).
         # Critical contract: it was NOT marked ENDED.
         assert registry.get_state(labware.id) is None
+
+
+def _manual_place(location: Location, service: InMemoryLabwareLocationService) -> ManualPlaceSpawn:
+    return ManualPlaceSpawn(location, service, make_labware_placer(service))

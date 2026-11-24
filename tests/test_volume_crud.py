@@ -9,12 +9,12 @@ ledger record.
 from tests.test_helpers import bind_ledger, named_for_template
 import pytest
 
-from cheshire_drivers import RecordingLiquidHandlerDriver
-from cheshire_drivers.plr import ChatterboxLiquidHandlerDriver
 from orca.state.projections import sparse_volumes
 from orca.state.ops_history import OpsHistory
 from orca.state.records import (
+    AspirateDetails,
     DeviceOperation,
+    DispenseDetails,
     InitialStateDetails,
     OperationDetails,
     OperationRecord,
@@ -23,14 +23,15 @@ from orca.state.records import (
 )
 from orca.runtime.danger import ConfirmationRequired
 from orca.runtime.labware_store import InMemoryLabwareStore
-from orca.runtime.sim_labware import SimTroughTemplate
-from orca.runtime.system_runtime import SystemRuntime
+from orca.resource_models.sim_labware import SimTroughTemplate
 from tests.test_labware_state_reconciliation import (
     RESERVOIR_SITE,
     _bind_resident,
     _require_resident,
 )
 from tests.test_system_runtime import _build_simple_system
+from tests.memory_activity import memory_ops_store, memory_runtime
+from tests.recording_handler import RecordingHandler
 
 
 def _instance_for(system, labware_id):
@@ -40,7 +41,7 @@ def _instance_for(system, labware_id):
 class TestSetAndGet:
     async def test_set_then_get_reflects_volume(self) -> None:
         system, _ = await _build_simple_system()
-        runtime = SystemRuntime(system, labware_store=InMemoryLabwareStore())
+        runtime = await memory_runtime(system)
         await runtime.start()
         try:
             snap = await runtime.labware.register("plate_96", confirm=True)
@@ -54,7 +55,7 @@ class TestSetAndGet:
 
     async def test_get_is_empty_for_fresh_register(self) -> None:
         system, _ = await _build_simple_system()
-        runtime = SystemRuntime(system, labware_store=InMemoryLabwareStore())
+        runtime = await memory_runtime(system)
         await runtime.start()
         try:
             snap = await runtime.labware.register("plate_96", confirm=True)
@@ -64,7 +65,7 @@ class TestSetAndGet:
 
     async def test_set_is_absolute_overwrite_then_get(self) -> None:
         system, _ = await _build_simple_system()
-        runtime = SystemRuntime(system, labware_store=InMemoryLabwareStore())
+        runtime = await memory_runtime(system)
         await runtime.start()
         try:
             snap = await runtime.labware.register("plate_96", confirm=True)
@@ -78,7 +79,7 @@ class TestSetAndGet:
 class TestSetWritesOperatorLedgerRecord:
     async def test_set_writes_set_volume_record_source_operator(self) -> None:
         system, _ = await _build_simple_system()
-        runtime = SystemRuntime(system, labware_store=InMemoryLabwareStore())
+        runtime = await memory_runtime(system)
         await runtime.start()
         try:
             snap = await runtime.labware.register("plate_96", confirm=True)
@@ -97,7 +98,7 @@ class TestSetWritesOperatorLedgerRecord:
 class TestDangerGate:
     async def test_set_without_confirm_raises(self) -> None:
         system, _ = await _build_simple_system()
-        runtime = SystemRuntime(system, labware_store=InMemoryLabwareStore())
+        runtime = await memory_runtime(system)
         await runtime.start()
         try:
             snap = await runtime.labware.register("plate_96", confirm=True)
@@ -108,7 +109,7 @@ class TestDangerGate:
 
     async def test_set_without_reason_raises(self) -> None:
         system, _ = await _build_simple_system()
-        runtime = SystemRuntime(system, labware_store=InMemoryLabwareStore())
+        runtime = await memory_runtime(system)
         await runtime.start()
         try:
             snap = await runtime.labware.register("plate_96", confirm=True)
@@ -121,7 +122,7 @@ class TestDangerGate:
 class TestCapacityValidation:
     async def test_overfill_rejected(self) -> None:
         system, _ = await _build_simple_system()
-        runtime = SystemRuntime(system, labware_store=InMemoryLabwareStore())
+        runtime = await memory_runtime(system)
         await runtime.start()
         try:
             snap = await runtime.labware.register("plate_96", confirm=True)
@@ -135,7 +136,7 @@ class TestCapacityValidation:
 
     async def test_at_capacity_accepted(self) -> None:
         system, _ = await _build_simple_system()
-        runtime = SystemRuntime(system, labware_store=InMemoryLabwareStore())
+        runtime = await memory_runtime(system)
         await runtime.start()
         try:
             snap = await runtime.labware.register("plate_96", confirm=True)
@@ -151,7 +152,7 @@ class TestLedgerFirstSeeding:
         ledger-first: the next placement seeds the driver from the folded
         ledger, not the (empty) template default."""
         system, _ = await _build_simple_system()
-        runtime = SystemRuntime(system, labware_store=InMemoryLabwareStore())
+        runtime = await memory_runtime(system)
         await runtime.start()
         try:
             snap = await runtime.labware.register("plate_96", confirm=True)
@@ -173,10 +174,9 @@ def _op(operation: DeviceOperation, labware: str, details: OperationDetails) -> 
 
 
 class TestOperatorOverrideSparse:
-    """Regression for the ledger-first seeding hazard: an undeclared labware's
-    zero baseline must NOT ride the wire (it would swap the driver to a strict
-    tracker at 0 and break the first aspirate). Only operator-set wells, and
-    non-zero folded wells, are projected."""
+    """A zero or undeclared start must not ride the wire: the driver would make that
+    well strict and refuse the next aspirate. Only wells declared with a non-zero
+    starting volume, and operator-set wells, are projected."""
 
     def test_no_operator_set_returns_none(self) -> None:
         # Default plate/trough seed: every well zero-padded, no operator set.
@@ -202,20 +202,50 @@ class TestOperatorOverrideSparse:
         # An operator deliberately asserting empty rides the wire (strict-at-0).
         assert sparse_volumes(ops, "tr") == {"A1": 0.0}
 
+    def test_a_running_tally_on_an_undeclared_trough_stays_off_the_wire(self) -> None:
+        """Nobody said what the trough held, so -10 is a tally, not a level to enforce."""
+        ops = [
+            _op(DeviceOperation.INITIAL_STATE, "tr",
+                InitialStateDetails(labware="tr", well_volumes={"A1": 0.0}, single_pool=True)),
+            _op(DeviceOperation.ASPIRATE, "tr",
+                AspirateDetails(labware="tr", positions=["A1"], volumes=[10.0])),
+        ]
+        assert sparse_volumes(ops, "tr") is None
+
+    def test_only_declared_wells_ride_the_wire(self) -> None:
+        ops = [
+            _op(DeviceOperation.INITIAL_STATE, "p",
+                InitialStateDetails(labware="p", well_volumes={"A1": 0.0, "A2": 0.0})),
+            _op(DeviceOperation.SET_VOLUME, "p", SetVolumeDetails(labware="p", well_volumes={"A2": 50.0})),
+            _op(DeviceOperation.DISPENSE, "p",
+                DispenseDetails(labware="p", positions=["A1", "A2"], volumes=[20.0, 20.0])),
+        ]
+        assert sparse_volumes(ops, "p") == {"A2": 70.0}
+
+    def test_a_tally_on_a_zero_well_of_a_declared_plate_stays_off_the_wire(self) -> None:
+        """A plate seed fills its unnamed wells with 0, so one declared well must not declare them all."""
+        ops = [
+            _op(DeviceOperation.INITIAL_STATE, "p",
+                InitialStateDetails(labware="p", well_volumes={"A1": 100.0, "B1": 0.0})),
+            _op(DeviceOperation.ASPIRATE, "p",
+                AspirateDetails(labware="p", positions=["B1"], volumes=[10.0])),
+        ]
+        assert sparse_volumes(ops, "p") == {"A1": 100.0}
+
 
 class TestDefaultTroughStaysLenient:
     async def test_seeded_default_trough_resolves_to_none(self) -> None:
         """A default (undeclared) trough is seeded {"A1": 0.0} at creation. Its
         driver projection must be None (send nothing -> lenient), not {"A1": 0.0}
         which would make the first aspirate raise on a strict-at-0 tracker."""
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         template = SimTroughTemplate("trough")
         instance = await template.create_instance()
         await instance.enter_record(bind_ledger(instance, history))
         assert await instance.driver_well_state() is None
 
     async def test_operator_set_default_trough_resolves_to_value(self) -> None:
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         template = SimTroughTemplate("trough")
         instance = await template.create_instance()
         await instance.enter_record(bind_ledger(instance, history))
@@ -232,12 +262,12 @@ class TestOnDeckPush:
         tracker (well_state wire); ledger and the pushed driver projection
         agree. The push names that one resident: a set is not a reason to
         re-project the rest of the deck."""
-        recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+        recorder = RecordingHandler()
         store = InMemoryLabwareStore()
         build, lh, runtime = await _bind_resident(recorder, store, wf_name="recon_set_volume")
         try:
             resident = _require_resident(build, RESERVOIR_SITE)
-            # The run bound this resident in PURE_SIM. An operator write means the
+            # The run bound this resident in CHECK_RUN. An operator write means the
             # real device, so it lands in the LIVE world, which that run never laid
             # out. Bring it up first: narrowness is a claim about a write into a
             # deck whose occupancy is already known.

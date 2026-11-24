@@ -1,10 +1,10 @@
 """Tests for ThreadFacade.spawn_thread / SystemRuntime.spawn_thread_in_execution.
 
-Operator-driven thread spawn is the recovery path for AUTO_SPAWN_FAILED
-incidents (the automatic spawn machinery could not find a matching
-template). These tests drive the facade directly.
+An operator spawns a thread from a named template into a running execution.
+These tests drive the facade directly.
 """
 
+from orca.config import OrcaConfig
 import asyncio
 from collections.abc import AsyncGenerator
 from typing import Any
@@ -14,12 +14,13 @@ import pytest
 import orca.orca as orca
 from orca.events.event_bus import EventBus
 from orca.runtime.danger import ConfirmationRequired
+from orca.runtime.labware_service import LabwareService
 from orca.runtime.labware_store import InMemoryLabwareStore
 from orca.runtime.system_runtime import SystemRuntime
 from orca.system.SdkToSystemBuilder import SdkToSystemBuilder
 from orca.sdk.system import SystemMap
-from orca.system.resource_registry import ResourceRegistry
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.resource_models.resource_registry import ResourceRegistry
+from orca.modes.run_modes import WorkflowRunMode
 from orca.workflow_models.action_context import ActionContext
 from orca.workflow_models.action_template import ActionTemplate
 from orca.workflow_models.method_context import MethodContext
@@ -34,6 +35,10 @@ from tests.test_helpers import (
     wait_until,
     wire_system_map,
 )
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 
 async def _build_spawn_system() -> tuple[SystemRuntime, Any, str]:
@@ -90,11 +95,14 @@ async def _build_spawn_system() -> tuple[SystemRuntime, Any, str]:
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=event_bus,
+        event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     system = builder.get_system()
-    runtime = SystemRuntime(system, event_bus=event_bus)
+    runtime = await memory_runtime(system, event_bus=event_bus)
     return runtime, workflow, "spawned_thread"
 
 
@@ -104,7 +112,7 @@ async def test_spawn_thread_creates_and_starts_thread() -> None:
     runtime, workflow, template_name = await _build_spawn_system()
     await runtime.start()
 
-    submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+    submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
     execution_id = submission.execution_id
     await wait_until(lambda: len(runtime.list_threads(execution_id)) >= 1, timeout=15.0)
 
@@ -122,12 +130,26 @@ async def test_spawn_thread_creates_and_starts_thread() -> None:
 
 
 @pytest.mark.asyncio
+async def test_spawn_thread_finds_the_template_by_its_labware_name() -> None:
+    runtime, workflow, _function_name = await _build_spawn_system()
+    await runtime.start()
+
+    submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
+    await wait_until(lambda: len(runtime.list_threads(submission.execution_id)) >= 1, timeout=15.0)
+    snap = await runtime.threads.spawn_thread(submission.execution_id, "plate_spawned", confirm=True)
+
+    assert snap.name.startswith("plate_spawned")
+    await execution_outcome(runtime, submission, timeout=15.0)
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_spawn_thread_requires_confirm() -> None:
     """spawn_thread refuses without confirm=True, raising ConfirmationRequired."""
     runtime, workflow, template_name = await _build_spawn_system()
     await runtime.start()
 
-    submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+    submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
     await wait_until(lambda: len(runtime.list_threads(submission.execution_id)) >= 1, timeout=10.0)
 
     with pytest.raises(ConfirmationRequired):
@@ -143,7 +165,7 @@ async def test_spawn_thread_unknown_template_raises_keyerror() -> None:
     runtime, workflow, _ = await _build_spawn_system()
     await runtime.start()
 
-    submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+    submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
     await wait_until(lambda: len(runtime.list_threads(submission.execution_id)) >= 1, timeout=10.0)
 
     with pytest.raises(KeyError):
@@ -175,14 +197,14 @@ async def test_spawn_thread_rejects_wrong_type_labware() -> None:
     The ValueError stops the mix-up before the wrong-typed instance
     reaches action dispatch."""
     runtime, workflow, template_name = await _build_spawn_system()
-    # Reset the labware store explicitly so register() persists and
+    # Reset the labware service explicitly so register() persists and
     # spawn_thread can look the instance up by id.
-    runtime._labware_store = InMemoryLabwareStore()
+    runtime._labware_service = LabwareService(InMemoryLabwareStore())
     from orca.runtime.facades.labware import LabwareFacade
-    runtime._labware = LabwareFacade(runtime.system, runtime._labware_store, runtime)
+    runtime._labware = LabwareFacade(runtime.system, runtime._labware_service, runtime)
     await runtime.start()
 
-    submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+    submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
     execution_id = submission.execution_id
     await wait_until(lambda: len(runtime.list_threads(execution_id)) >= 1, timeout=10.0)
 

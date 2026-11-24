@@ -21,6 +21,7 @@ import time
 
 import uvicorn
 
+from orca.runtime.event_store import not_a_runtime_event
 from orca.daemon.app import create_app
 from orca.daemon.lifecycle import (
     DaemonInfo,
@@ -76,10 +77,11 @@ async def _serve(port: int) -> None:
 
 
 def _setup_logging() -> None:
-    """Route orca.* logs to ~/.orca/daemon.log for post-mortem inspection."""
+    """Route orca.* logs to ~/.orca/daemon.log for post-mortem inspection. Runtime events are in state.db instead."""
     LOG_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
     handler = logging.FileHandler(LOG_FILE_PATH, mode="a", encoding="utf-8")
     handler.setLevel(logging.INFO)
+    handler.addFilter(not_a_runtime_event)
     handler.setFormatter(
         logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s"),
     )

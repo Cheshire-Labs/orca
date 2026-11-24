@@ -18,6 +18,7 @@ else. The refusal that stops the engine touching a device an operator has taken
 covers it either way.
 """
 
+from orca.config import OrcaConfig
 import asyncio
 from collections.abc import AsyncGenerator
 
@@ -30,8 +31,10 @@ from orca.resource_models.labware_placeable_interface import IPlateMover
 from orca.resource_models.location import Location
 from orca.resource_models.resource_pool import ResourcePool
 from orca.resource_models.transporter import Transporter
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from orca.runtime.system_runtime import SystemRuntime
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
 from orca.sdk.system import ResourceRegistry, SystemMap
 from orca.sdk.workflow import WorkflowTemplate
 from orca.system.SdkToSystemBuilder import SdkToSystemBuilder
@@ -47,23 +50,23 @@ from tests.mock import UniversalMockDevice
 from tests.test_helpers import (
     create_test_plate_template,
     create_test_teachpoints,
-    seeded_teachpoint_service,
     wait_for_paused_thread,
     wait_until,
     wire_system_map,
 )
+from tests.setup_package import teachpoint_file
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 SITE = "dev1/site-1"
 
 
 class _ArmThatJamsOnOnePlace(Transporter):
     def __init__(self, name: str, position_ids: list[str]) -> None:
-        super().__init__(
-            name,
-            teachpoint_store=seeded_teachpoint_service(
+        super().__init__(name)
+        self.bind_teachpoints(teachpoint_file(
                 create_test_teachpoints(position_ids)
-            ),
-        )
+            ))
         self.jam_at: str | None = None
 
     async def place(self, location: Location) -> None:
@@ -81,7 +84,7 @@ class _DeviceThatCountsItsHooks(UniversalMockDevice):
         self.refuse_next_arrival = False
 
     async def _do_notify_placed(
-        self, labware: LabwareInstance, mover: IPlateMover,
+        self, labware: LabwareInstance | None, mover: IPlateMover,
         target: str | None = None, site: str | None = None,
     ) -> None:
         self.arrival_hooks += 1
@@ -130,11 +133,14 @@ async def _build() -> tuple[
     builder = SdkToSystemBuilder(
         name="test_system", description="", labwares=[plate],
         resources_registry=registry, system_map=system_map,
-        workflows=[workflow], event_bus=event_bus,
+        workflows=[workflow], event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     return (
-        SystemRuntime(builder.get_system(), event_bus=event_bus),
+        await memory_runtime(builder.get_system(), event_bus=event_bus),
         workflow, arm, device,
     )
 
@@ -146,7 +152,7 @@ async def test_a_plate_the_operator_carried_fires_no_device_hook() -> None:
     await runtime.start()
     try:
         record = await runtime.submit_workflow(
-            workflow.name, mode=WorkflowRunMode.PURE_SIM,
+            workflow.name, mode=WorkflowRunMode.CHECK_RUN,
         )
         paused = await wait_for_paused_thread(runtime, record.id)
         assert device.arrival_hooks == 0, "the place jammed; nothing arrived"
@@ -179,7 +185,7 @@ async def test_the_owed_arrival_call_refuses_a_device_an_operator_has_taken() ->
     device.refuse_next_arrival = True
     await runtime.start()
     record = await runtime.submit_workflow(
-        workflow.name, mode=WorkflowRunMode.PURE_SIM,
+        workflow.name, mode=WorkflowRunMode.CHECK_RUN,
     )
     try:
         paused = await wait_for_paused_thread(runtime, record.id)

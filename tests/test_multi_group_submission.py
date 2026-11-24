@@ -6,19 +6,19 @@ registry keys slots by (template, group_id, submission_id), so receiver
 threads spawned reactively stay scoped to their originating group.
 """
 
+from orca.config import OrcaConfig
 from collections.abc import AsyncGenerator
 from uuid import uuid4
 
 import orca.orca as orca
 from orca.resource_models.resource_pool import ResourcePool
-from orca.runtime.labware_group import LabwareGroup, LabwareGroupMember
-from orca.runtime.system_runtime import SystemRuntime
+from orca.workflow_models.labware_group import LabwareGroup, LabwareGroupMember
 from orca.sdk.events import EventBus
 from orca.sdk.system import ResourceRegistry, SystemMap
 from orca.sdk.workflow import MethodTemplate, ThreadTemplate, WorkflowTemplate
 from orca.system.SdkToSystemBuilder import SdkToSystemBuilder
 from orca.system.system_interface import ISystem
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from tests.test_helpers import (
     create_test_device,
     create_test_plate_template,
@@ -26,6 +26,10 @@ from tests.test_helpers import (
     wait_until,
     wire_system_map,
 )
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 
 async def _build_simple_system() -> tuple[ISystem, WorkflowTemplate]:
@@ -67,7 +71,10 @@ async def _build_simple_system() -> tuple[ISystem, WorkflowTemplate]:
     builder = SdkToSystemBuilder(
         name="mg_system", description="",
         labwares=[plate], resources_registry=registry, system_map=system_map,
-        workflows=[workflow], event_bus=event_bus,
+        workflows=[workflow], event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     return builder.get_system(), workflow
@@ -82,7 +89,7 @@ async def test_three_groups_spawn_three_entry_threads_with_distinct_ids() -> Non
     (reservation conflict on pad1). A richer fixture lands in T6h.
     """
     system, workflow = await _build_simple_system()
-    runtime = SystemRuntime(system)
+    runtime = await memory_runtime(system)
     await runtime.start()
 
     groups = tuple(
@@ -92,7 +99,7 @@ async def test_three_groups_spawn_three_entry_threads_with_distinct_ids() -> Non
         )
         for _ in range(3)
     )
-    submission = await runtime.submit(workflow, groups=groups, mode=WorkflowRunMode.PURE_SIM)
+    submission = await runtime.submit(workflow, groups=groups, mode=WorkflowRunMode.CHECK_RUN)
 
     await wait_until(
         lambda: runtime._executions[submission.execution_id].executing_workflow is not None,

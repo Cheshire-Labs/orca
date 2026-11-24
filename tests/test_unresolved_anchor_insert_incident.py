@@ -12,6 +12,7 @@ Three seams:
   3. action-lane drop -> incident with target_type="action".
 """
 
+from orca.config import OrcaConfig
 import asyncio
 from collections.abc import AsyncGenerator
 
@@ -27,23 +28,27 @@ from orca.runtime.incident_store import (
     RecoveryAction,
     UnresolvedAnchorInsertDetail,
 )
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from orca.runtime.system_runtime import ExecutionState, SystemRuntime
 from orca.sdk.events import EventBus
 from orca.sdk.system import ResourceRegistry, SystemMap
 from orca.sdk.workflow import WorkflowTemplate
 from orca.system.SdkToSystemBuilder import SdkToSystemBuilder
+from orca.modes.sim_pacing import SimPacer
 from orca.system.reservation_manager.errors import (
+    ActionContinuedContext,
     ActionFailedContext,
+    AutoSpawnFailedDetail,
+    CoLabwareTimeoutDetail,
     IRecoverableTimeoutCoordinator,
+    MoveContinuedContext,
+    MoveFailedContext,
+    ThreadDiedContext,
     IThreadIncidentDeclarer,
     OrphanedBacklogContext,
     UnresolvableDeadlockContext,
 )
 from orca.workflow_models.action_context import ActionContext
-from orca.workflow_models.labware_threads.executing_labware_thread import (
-    ExecutingLabwareThread,
-)
 from orca.workflow_models.labware_threads.labware_thread import (
     LabwareThreadInstance,
 )
@@ -62,6 +67,11 @@ from tests.test_mutation_coordinator import (
     _make_method,
     _make_thread,
 )
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.thread_builder import build_executing_thread
+from tests.memory_activity import memory_labware_service
 
 
 async def _empty_gen() -> AsyncGenerator[str, None]:
@@ -194,6 +204,43 @@ class _BoomDeclarer(IThreadIncidentDeclarer):
     ) -> None:
         raise NotImplementedError
 
+    def declare_co_labware_timeout(
+        self, execution_id: str, thread_id: str, context: CoLabwareTimeoutDetail
+    ) -> None:
+        raise NotImplementedError
+
+
+    def declare_auto_spawn_failure(
+
+        self, execution_id: str, context: AutoSpawnFailedDetail, error_message: str,
+
+    ) -> None:
+
+        raise NotImplementedError
+
+    def declare_thread_death(
+        self, execution_id: str, thread_id: str, context: ThreadDiedContext
+    ) -> None:
+        raise NotImplementedError
+
+    def declare_move_failure(
+        self, execution_id: str, thread_id: str, context: MoveFailedContext
+    ) -> None:
+        raise NotImplementedError
+
+    def declare_action_continued(
+        self, execution_id: str, thread_id: str, context: ActionContinuedContext
+    ) -> None:
+        raise NotImplementedError
+
+    def declare_move_continued(
+        self, execution_id: str, thread_id: str, context: MoveContinuedContext
+    ) -> None:
+        raise NotImplementedError
+
+    def sim_pacer_for(self, execution_id: str) -> SimPacer | None:
+        raise NotImplementedError
+
     def declare_orphaned_backlog(
         self, execution_id: str, context: OrphanedBacklogContext
     ) -> None:
@@ -212,13 +259,14 @@ def test_declarer_failure_does_not_propagate() -> None:
         labware=LabwareInstance("plate_96", "96_well"),
         start_location=pad,
         end_locations=[pad],
-        run_mode=WorkflowRunMode.PURE_SIM,
+        run_mode=WorkflowRunMode.CHECK_RUN,
     )
 
-    et = ExecutingLabwareThread.__new__(ExecutingLabwareThread)
-    et._thread_incident_declarer = _BoomDeclarer()
-    et._context = WorkflowExecutionContext(execution_id="e1", workflow_name="w1")
-    et._thread = thread
+    et = build_executing_thread(
+        thread=thread,
+        thread_incident_declarer=_BoomDeclarer(),
+        context=WorkflowExecutionContext(execution_id="e1", workflow_name="w1"),
+    )
 
     # Must not raise.
     et._declare_unresolved_anchor_inserts(
@@ -255,6 +303,39 @@ class _RecordingDeclarer(IThreadIncidentDeclarer):
     ) -> None:
         raise NotImplementedError
 
+    def declare_co_labware_timeout(
+        self, execution_id: str, thread_id: str, context: CoLabwareTimeoutDetail
+    ) -> None:
+        raise NotImplementedError
+
+    def declare_auto_spawn_failure(
+        self, execution_id: str, context: AutoSpawnFailedDetail, error_message: str,
+    ) -> None:
+        raise NotImplementedError
+
+    def declare_thread_death(
+        self, execution_id: str, thread_id: str, context: ThreadDiedContext
+    ) -> None:
+        raise NotImplementedError
+
+    def declare_move_failure(
+        self, execution_id: str, thread_id: str, context: MoveFailedContext
+    ) -> None:
+        raise NotImplementedError
+
+    def declare_action_continued(
+        self, execution_id: str, thread_id: str, context: ActionContinuedContext
+    ) -> None:
+        raise NotImplementedError
+
+    def declare_move_continued(
+        self, execution_id: str, thread_id: str, context: MoveContinuedContext
+    ) -> None:
+        raise NotImplementedError
+
+    def sim_pacer_for(self, execution_id: str) -> SimPacer | None:
+        raise NotImplementedError
+
     def declare_orphaned_backlog(
         self, execution_id: str, context: OrphanedBacklogContext
     ) -> None:
@@ -272,13 +353,14 @@ def test_the_thread_forwards_what_the_lane_reported() -> None:
         labware=LabwareInstance("plate_96", "96_well"),
         start_location=pad,
         end_locations=[pad],
-        run_mode=WorkflowRunMode.PURE_SIM,
+        run_mode=WorkflowRunMode.CHECK_RUN,
     )
     declarer = _RecordingDeclarer()
-    et = ExecutingLabwareThread.__new__(ExecutingLabwareThread)
-    et._thread_incident_declarer = declarer
-    et._context = WorkflowExecutionContext(execution_id="e1", workflow_name="w1")
-    et._thread = thread
+    et = build_executing_thread(
+        thread=thread,
+        thread_incident_declarer=declarer,
+        context=WorkflowExecutionContext(execution_id="e1", workflow_name="w1"),
+    )
 
     et._declare_unresolved_anchor_inserts(
         [
@@ -305,10 +387,10 @@ class TestUnresolvedAnchorInsertIncident:
         f = await _build_mutation_system(method_names=["shake_1"])
         await f.runtime.start()
         try:
-            f.runtime.declare_unresolved_anchor_insert(
+            f.runtime.incident_declarer.declare_unresolved_anchor_insert(
                 "e1", "t1", "shake_1", "after", "method", "extra", True,
             )
-            f.runtime.declare_unresolved_anchor_insert(
+            f.runtime.incident_declarer.declare_unresolved_anchor_insert(
                 "e1", "t1", "typo_1", "after", "method", "extra", False,
             )
 
@@ -326,7 +408,7 @@ class TestUnresolvedAnchorInsertIncident:
     async def test_method_lane_anchor_that_never_runs_fires_warning(self) -> None:
         f = await _build_mutation_system(method_names=["shake_1", "seal_1"])
         await f.runtime.start()
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         threads = await wait_for_threads(f.runtime, record.id)
         await pause_and_wait(f.runtime, record.id, threads[0].id)
 
@@ -386,12 +468,15 @@ class TestUnresolvedAnchorInsertIncident:
         builder = SdkToSystemBuilder(
             name="test_system", description="", labwares=[plate],
             resources_registry=registry, system_map=system_map,
-            workflows=[workflow], event_bus=event_bus,
+            workflows=[workflow], event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+            labware_catalog=bundled_labware_catalog(),
+            labware_service=memory_labware_service(),
+            unsaved_positions=memory_unsaved_positions(),
         )
         await builder.bind_labwares()
-        runtime = SystemRuntime(builder.get_system(), event_bus=event_bus)
+        runtime = await memory_runtime(builder.get_system(), event_bus=event_bus)
         await runtime.start()
-        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         paused_id = await wait_for_paused(runtime, record.id)
 
         @orca.action(device=pool, inputs=[plate], tag="extra_seal")
@@ -418,7 +503,7 @@ class TestUnresolvedAnchorInsertIncident:
     async def test_resolved_anchor_fires_no_incident(self) -> None:
         f = await _build_mutation_system(method_names=["shake_1", "seal_1"])
         await f.runtime.start()
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         threads = await wait_for_threads(f.runtime, record.id)
         await pause_and_wait(f.runtime, record.id, threads[0].id)
 

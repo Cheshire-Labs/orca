@@ -7,7 +7,7 @@ mechanism that surfaces the stall.
 
 Every wait here is event-driven; none is a sleep budget. The poll this replaced
 was the flake: ``incidents.list()`` is a DB read, and at 0.1s it out-competed the
-detector's own 0.25s tick for the loop, so the detector could not reach its 2
+detector's own 0.25s tick for the loop, so the detector could not reach its
 stable ticks inside a window that was nominally 16x too large. It failed ~2 in 12
 pinned to one CPU. The test starved the thing it was waiting for.
 
@@ -25,8 +25,9 @@ import orca.orca as orca
 from orca.config import CoordinationConfig, OrcaConfig
 from orca.events.event_bus import EventBus
 from orca.runtime.incident_store import IncidentCategory, SystemStallDetail
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from orca.runtime.stall_detector import SystemStallError, ThreadStallSnapshot
+from orca.runtime.startup import STALL_REQUIRED_STABLE_TICKS
 from orca.runtime.system_runtime import SystemRuntime
 from orca.resource_models.resource_pool import ResourcePool
 from orca.sdk.system import ResourceRegistry, SystemMap
@@ -50,6 +51,10 @@ from tests.test_helpers import (
     wait_for_runtime_condition,
     wire_system_map,
 )
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 
 class _FakeLabware:
@@ -96,10 +101,13 @@ async def _build_stuck_runtime(
         name="test_system", description="", labwares=[plate],
         resources_registry=registry, system_map=system_map,
         workflows=[workflow], event_bus=event_bus,
-        config=OrcaConfig(coordination=CoordinationConfig(co_labware_timeout=600.0)),
+        config=OrcaConfig(coordination=CoordinationConfig(co_labware_timeout=600.0)), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
-    runtime = SystemRuntime(
+    runtime = await memory_runtime(
         builder.get_system(), event_bus=event_bus,
         stall_check_interval=stall_check_interval,
     )
@@ -123,7 +131,7 @@ async def test_never_arriving_co_labware_surfaces_stall_incident() -> None:
     await runtime.start()
     try:
         record = await runtime.submit_workflow(
-            "stall_test", mode=WorkflowRunMode.PURE_SIM)
+            "stall_test", mode=WorkflowRunMode.CHECK_RUN)
 
         # Patching is the predicate: the action becomes assignable on a status
         # transition, so this lands on that event rather than on a sleep guess.
@@ -170,7 +178,7 @@ async def test_wait_for_execution_raises_typed_stall_error() -> None:
     runtime, workflow = await _build_stuck_runtime(stall_check_interval=0.25)
     await runtime.start()
     try:
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
         await wait_for_runtime_condition(
             runtime,
             lambda: _patch_action_to_never_fire(runtime.system),
@@ -197,6 +205,11 @@ async def test_wait_for_execution_raises_typed_stall_error() -> None:
         await runtime.shutdown()
 
 
+def _tick_until_a_stall_can_settle(runtime: SystemRuntime) -> None:
+    for _ in range(STALL_REQUIRED_STABLE_TICKS):
+        runtime._check_for_stalls()
+
+
 @pytest.mark.asyncio
 async def test_stall_detection_is_per_execution(monkeypatch) -> None:
     """A healthy execution (in-flight thread) must NOT mask a stalled sibling.
@@ -221,8 +234,7 @@ async def test_stall_detection_is_per_execution(monkeypatch) -> None:
     handled: list[str] = []
     monkeypatch.setattr(runtime, "_handle_stall", lambda eid, report: handled.append(eid))
 
-    runtime._check_for_stalls()   # tick 1
-    runtime._check_for_stalls()   # tick 2 -> wedged settles
+    _tick_until_a_stall_can_settle(runtime)
     assert handled == ["wedged"], (
         f"only the wedged execution should stall; the healthy one must not be "
         f"masked nor falsely flagged. handled={handled}"
@@ -237,7 +249,7 @@ async def test_resume_clears_the_stall_episode_and_rearms_the_detector() -> None
     runtime, workflow = await _build_stuck_runtime(stall_check_interval=0.25)
     await runtime.start()
     try:
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
         await wait_for_runtime_condition(
             runtime,
             lambda: _patch_action_to_never_fire(runtime.system),
@@ -281,7 +293,7 @@ async def test_declared_deadlock_latches_the_submission_gate(monkeypatch) -> Non
         runtime, "pause_all_threads",
         lambda eid, reason="manual", message=None: fanned.append((eid, reason, message)) or {})
 
-    incident = runtime.declare_unresolvable_deadlock(
+    incident = runtime.incident_declarer.declare_unresolvable_deadlock(
         "e1",
         UnresolvableDeadlockContext(
             requesting_thread_id="t-requester",
@@ -316,7 +328,7 @@ async def test_stop_confirm_on_a_stalled_execution_returns_aborted() -> None:
     runtime, workflow = await _build_stuck_runtime(stall_check_interval=0.25)
     await runtime.start()
     try:
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
         await wait_for_runtime_condition(
             runtime,
             lambda: _patch_action_to_never_fire(runtime.system),
@@ -365,8 +377,7 @@ async def test_reservation_wait_on_a_busy_sibling_execution_is_not_a_stall(monke
     handled: list[str] = []
     monkeypatch.setattr(runtime, "_handle_stall", lambda eid, report: handled.append(eid))
 
-    runtime._check_for_stalls()   # tick 1
-    runtime._check_for_stalls()   # tick 2
+    _tick_until_a_stall_can_settle(runtime)
     assert handled == [], (
         f"a reservation wait on hardware a busy sibling holds is contention, "
         f"not a stall; handled={handled}"
@@ -377,8 +388,7 @@ async def test_reservation_wait_on_a_busy_sibling_execution_is_not_a_stall(monke
     snapshots["busy"] = [
         ThreadStallSnapshot("b1", LabwareThreadStatus.AWAITING_CO_THREADS, "plate"),
     ]
-    runtime._check_for_stalls()   # tick 1 of the new signature
-    runtime._check_for_stalls()   # tick 2 -> both settle
+    _tick_until_a_stall_can_settle(runtime)
     assert set(handled) == {"busy", "waiting"}, (
         f"once the whole system is quiescent the mixed shape must declare; "
         f"handled={handled}"
@@ -407,8 +417,7 @@ async def test_mixed_stall_incident_message_covers_both_wait_kinds(monkeypatch) 
         runtime, "pause_all_threads",
         lambda eid, reason="manual", message=None: paused.append((eid, reason)))
 
-    runtime._check_for_stalls()   # tick 1
-    runtime._check_for_stalls()   # tick 2 -> mixed shape settles
+    _tick_until_a_stall_can_settle(runtime)
 
     incidents = await runtime.incidents.list(category=IncidentCategory.SYSTEM_STALL)
     assert incidents, "mixed stall never surfaced a SYSTEM_STALL incident"
@@ -479,10 +488,13 @@ async def _build_joined_stuck_runtime() -> tuple[SystemRuntime, WorkflowTemplate
         name="test_system", description="", labwares=[plate_main, plate_child],
         resources_registry=registry, system_map=system_map,
         workflows=[workflow], event_bus=event_bus,
-        config=OrcaConfig(coordination=CoordinationConfig(co_labware_timeout=600.0)),
+        config=OrcaConfig(coordination=CoordinationConfig(co_labware_timeout=600.0)), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
-    runtime = SystemRuntime(
+    runtime = await memory_runtime(
         builder.get_system(), event_bus=event_bus, stall_check_interval=0.25)
     return runtime, workflow
 
@@ -512,7 +524,7 @@ async def test_a_parked_contributor_does_not_hide_the_stall() -> None:
     await runtime.start()
     try:
         record = await runtime.submit_workflow(
-            "joined_stall_test", mode=WorkflowRunMode.PURE_SIM)
+            "joined_stall_test", mode=WorkflowRunMode.CHECK_RUN)
         await wait_for_runtime_condition(
             runtime,
             lambda: _patch_owner_action_to_never_fire(runtime.system),

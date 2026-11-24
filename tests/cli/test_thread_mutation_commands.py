@@ -140,17 +140,17 @@ def test_skip_method_invokes_client_with_parsed_args() -> None:
     assert "skipped method 'incubate'" in result.output
 
 
-def test_abort_method_invokes_client_with_parsed_args() -> None:
+def test_recover_abort_method_invokes_client_with_parsed_args() -> None:
     client = _mock_client()
     with patch.object(execution_mod, "get_client", return_value=client):
-        result = runner.invoke(app, ["--force", *_THREAD_PATH, "abort-method",
-                                     _EXEC_ID, _THREAD_ID,
-                                     "--method-name", "shake", "--reason", "stuck"])
+        result = runner.invoke(app, ["--force", *_THREAD_PATH, "recover",
+                                     _EXEC_ID, _THREAD_ID, "abort-method",
+                                     "--reason", "stuck"])
     assert result.exit_code == 0, result.output
-    client.thread_abort_method.assert_called_once_with(
-        _EXEC_ID, _THREAD_ID, method_name="shake", reason="stuck",
+    client.recover_thread.assert_called_once_with(
+        _EXEC_ID, _THREAD_ID, "ABORT_METHOD", reason="stuck",
     )
-    assert "aborted method 'shake'" in result.output
+    assert "abort-method applied to thread" in result.output
 
 
 def test_insert_method_invokes_client_with_parsed_args() -> None:

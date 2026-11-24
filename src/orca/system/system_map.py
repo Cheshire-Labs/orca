@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 import itertools
 import logging
-from typing import Dict, List, Mapping, Optional, Set, Tuple, TypedDict
+from typing import AbstractSet, Dict, List, Mapping, Optional, Set, Tuple, TypedDict
 
 from typing_extensions import Self
 from orca.resource_models.labware_placeable_interface import ILabwarePlaceable
@@ -17,8 +17,8 @@ from orca.resource_models.plate_pad import PlatePad
 orca_logger = logging.getLogger("orca")
 from orca.resource_models.transporter import Transporter
 from orca.resource_models.transporter_base import TransporterBase
-from orca.system.resource_registry import IResourceRegistry
-from orca.system.resource_registry import IResourceRegistryObserver
+from orca.resource_models.resource_registry import IResourceRegistry
+from orca.resource_models.resource_registry import IResourceRegistryObserver
 
 class NodeData(TypedDict):
     location: Location
@@ -134,6 +134,9 @@ class RouteGraphMissingTeachpointError(nx.NetworkXNoPath):
     """
 
 
+_EDGE_WEIGHT = 5.0
+
+
 class SystemMap(ILocationRegistry, IResourceLocator, IResourceLocationObserver, IResourceRegistryObserver):
     """ SystemMap is a representation of the system's locations and their connections."""
     def __init__(self, resource_registry: IResourceRegistry) -> None:
@@ -196,12 +199,24 @@ class SystemMap(ILocationRegistry, IResourceLocator, IResourceLocationObserver, 
             self.assign_resource_to_location(location.position_id, location.resource)
 
         location.add_observer(self)
+        # A transporter not wired yet observes this location from `add_transporter`.
         for transporter in self._resource_registry.transporters:
-            await self._maybe_register_transporter_on_location(transporter, location)
+            if transporter.name in self._added_transporters:
+                self._observe_if_reached(
+                    transporter, location, await self._taught_position_ids(transporter),
+                )
 
     async def add_site_location(self, site: DeckSiteLocation) -> None:
         """Register a device-owned site as a FLAT routing node."""
         await self.add_location(site)
+
+    def every_position(self) -> List[Location]:
+        """Every location labware can be recorded at: routing nodes, device mutex keys and mover grippers."""
+        return [
+            *self.locations,
+            *self._mutex_locations.values(),
+            *(mover.gripper_location for mover in self._resource_registry.movers),
+        ]
 
     def register_mutex_location(self, location: Location) -> None:
         """Register a device's reservation mutex key: resolvable via
@@ -309,25 +324,16 @@ class SystemMap(ILocationRegistry, IResourceLocator, IResourceLocationObserver, 
     def get_transporter_between(self, source: str, target: str) -> TransporterBase:
         return self._graph.get_edge_data(source, target)["transporter"]
 
-    def movers_between(self, source: str, target: str) -> set[str]:
-        """Names of every mover on any shortest route from source to target.
+    async def add_edge(
+        self, start: str, end: str, transporter: TransporterBase, weight: float = _EDGE_WEIGHT,
+    ) -> None:
+        if self._add_graph_edge(start, end, transporter, weight):
+            taught = await self._taught_position_ids(transporter)
+            self._observe_edge_ends(start, end, transporter, taught)
 
-        Empty when the two are not connected, which is the answer a caller
-        asking "who carries this" wants rather than an exception.
-        """
-        if not (self.location_exists(source) and self.location_exists(target)):
-            return set()
-        try:
-            paths = self.get_all_shortest_any_paths(source, target)
-        except (nx.NetworkXNoPath, nx.NodeNotFound):
-            return set()
-        return {
-            self.get_transporter_between(leg_start, leg_end).name
-            for path in paths
-            for leg_start, leg_end in zip(path, path[1:])
-        }
-
-    async def add_edge(self, start: str, end: str, transporter: TransporterBase, weight: float = 5.0) -> None:
+    def _add_graph_edge(
+        self, start: str, end: str, transporter: TransporterBase, weight: float,
+    ) -> bool:
         if start not in self._graph.get_nodes():
             raise ValueError(f"Node {start} does not exist")
         if end not in self._graph.get_nodes():
@@ -336,7 +342,7 @@ class SystemMap(ILocationRegistry, IResourceLocator, IResourceLocationObserver, 
             incumbent = self._graph.get_edge_data(start, end)["transporter"]
             if incumbent is not transporter:
                 # Two movers reach one node pair, and multi-mover edges are
-                # not modelled. First writer wins; rejecting breaks hamilton_smc.
+                # not modelled. First writer wins; rejecting breaks a topology where two movers serve one node pair.
                 orca_logger.warning(
                     "add_edge: %s -> %s is already served by %s, so %s is "
                     "shadowed and will never carry between them. orca models "
@@ -345,32 +351,39 @@ class SystemMap(ILocationRegistry, IResourceLocator, IResourceLocationObserver, 
                     "a topology error and there is nothing to change.",
                     start, end, incumbent.name, transporter.name,
                 )
-            return
+            return False
         self._graph.add_edge(start, end, transporter=transporter, weight=weight)
-        await self._maybe_register_transporter_on_location(transporter, self.get_location(start))
-        await self._maybe_register_transporter_on_location(transporter, self.get_location(end))
+        return True
 
-    async def _maybe_register_transporter_on_location(
-        self, transporter: TransporterBase, location: Location
+    def _add_edges_both_ways(
+        self, a: str, b: str, transporter: TransporterBase, taught: AbstractSet[str],
     ) -> None:
-        """Register `transporter` as an `ILabwareLocationObserver` of
-        `location` if the transporter's teachpoints actually include it.
+        for start, end in ((a, b), (b, a)):
+            if self._add_graph_edge(start, end, transporter, _EDGE_WEIGHT):
+                self._observe_edge_ends(start, end, transporter, taught)
 
-        This is the wiring that makes a sim pick work: when labware lands
-        at a teachpoint via `Location.initialize_labware`, the
-        transporter's observer callback seeds its sim's PLR graph so the
-        validator does not reject the first pick. Real-hardware drivers
-        no-op the seed.
-        """
+    def _observe_edge_ends(
+        self, start: str, end: str, transporter: TransporterBase, taught: AbstractSet[str],
+    ) -> None:
+        self._observe_if_reached(transporter, self.get_location(start), taught)
+        self._observe_if_reached(transporter, self.get_location(end), taught)
+
+    @staticmethod
+    async def _taught_position_ids(transporter: TransporterBase) -> AbstractSet[str]:
+        if not isinstance(transporter, Transporter):
+            return frozenset()
+        return {t.position_id for t in await transporter.get_teachpoints()}
+
+    @staticmethod
+    def _observe_if_reached(
+        transporter: TransporterBase, location: Location, taught: AbstractSet[str],
+    ) -> None:
+        # This makes a sim pick work: when labware lands at a teachpoint, the
+        # transporter seeds its sim's PLR graph so the first pick is not rejected.
         if not isinstance(transporter, Transporter):
             return
-        position_ids = {t.position_id for t in await transporter.get_teachpoints()}
-        if (
-            location.position_id not in position_ids
-            and not transporter.covers_position(location.position_id)
-        ):
-            return
-        location.add_observer(transporter)
+        if location.position_id in taught or transporter.covers_position(location.position_id):
+            location.add_observer(transporter)
 
     def set_edge_weight(self, start: str, end: str, weight: float) -> None:
         self._graph.set_edge_weight(start, end, weight)
@@ -379,6 +392,9 @@ class SystemMap(ILocationRegistry, IResourceLocator, IResourceLocationObserver, 
         available_graph = self._get_available_graph([source])
         return available_graph.has_path(source, target)
     
+    def has_node(self, position_id: str) -> bool:
+        return self._graph.has_node(position_id)
+
     def has_any_route(self, source: str, target: str) -> bool:
         return self._graph.has_path(source, target)
         
@@ -443,14 +459,16 @@ class SystemMap(ILocationRegistry, IResourceLocator, IResourceLocationObserver, 
         )
 
     def get_shortest_paths_to_deadlock_resolution(self, source: str) -> List[List[str]]:
-        paths = []
+        """Paths to every parking pad a mover reaches from ``source``. A pad no mover reaches is left out."""
+        paths: List[List[str]] = []
         for name in self._graph.get_nodes().keys():
-            if name != source and self.is_deadlock_resolution_location(name):
-                paths.extend(
-                    path
-                    for path in self.get_all_shortest_any_paths(source, name)
-                    if self.is_path_admissible(path)
-                )
+            if name == source or not self.is_deadlock_resolution_location(name):
+                continue
+            try:
+                candidates = self.get_all_shortest_any_paths(source, name)
+            except nx.NetworkXNoPath:
+                continue
+            paths.extend(path for path in candidates if self.is_path_admissible(path))
 
         return paths
     
@@ -498,6 +516,9 @@ class SystemMap(ILocationRegistry, IResourceLocator, IResourceLocationObserver, 
         if self._resource_registry is not None and not self._resource_registry.has_resource(transporter.name):
             self._resource_registry.add_resource(transporter)
         taught_teachpoints = await transporter.get_teachpoints()
+        taught_ids = {tp.position_id for tp in taught_teachpoints}
+        for location in self.locations:
+            self._observe_if_reached(transporter, location, taught_ids)
         # A name another teachpoint routes THROUGH is a transit pose, not a
         # destination: the arm passes it on the way somewhere and never leaves
         # labware there. It gets no routing node, and it is not required to
@@ -519,9 +540,8 @@ class SystemMap(ILocationRegistry, IResourceLocator, IResourceLocationObserver, 
         self._transporter_positions[transporter.name] = position_ids
         if transporter.single_carriage:
             self._register_exclusion_group(transporter.name, position_ids)
-        for edge in itertools.combinations(position_ids, 2):
-            await self.add_edge(edge[0], edge[1], transporter)
-            await self.add_edge(edge[1], edge[0], transporter)
+        for a, b in itertools.combinations(position_ids, 2):
+            self._add_edges_both_ways(a, b, transporter, taught_ids)
 
     async def add_taught_position(
         self, transporter: Transporter, position_id: str,
@@ -537,6 +557,7 @@ class SystemMap(ILocationRegistry, IResourceLocator, IResourceLocationObserver, 
         if transporter.name not in self._added_transporters:
             return
         taught = await transporter.get_teachpoints()
+        taught_ids = {tp.position_id for tp in taught}
         transit_only = {
             tp.gateway for tp in taught if tp.gateway is not None
         } - {
@@ -566,11 +587,9 @@ class SystemMap(ILocationRegistry, IResourceLocator, IResourceLocationObserver, 
                 transporter.register_position_alias(node_id, position_id)
         for node_id in fresh:
             for other in covered:
-                await self.add_edge(node_id, other, transporter)
-                await self.add_edge(other, node_id, transporter)
-        for edge in itertools.combinations(fresh, 2):
-            await self.add_edge(edge[0], edge[1], transporter)
-            await self.add_edge(edge[1], edge[0], transporter)
+                self._add_edges_both_ways(node_id, other, transporter, taught_ids)
+        for a, b in itertools.combinations(fresh, 2):
+            self._add_edges_both_ways(a, b, transporter, taught_ids)
         covered.extend(fresh)
         if transporter.single_carriage:
             self._register_exclusion_group(transporter.name, covered)

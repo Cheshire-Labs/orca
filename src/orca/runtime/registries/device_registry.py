@@ -12,33 +12,33 @@ describe one device rather than its client, and come from `DeviceLinkReader`,
 which every other read surface shares so two routes cannot answer differently.
 The entry carries that read whole, mode included, so its flags cannot come from
 two different observations. Topology cards are built fresh on every call from
-`ITopologyRegistry.get_device(...)`. Workflow-mode validation
-(`assert_runnable`) iterates every name and consults each entry.
+`ITopologyRegistry.get_device(...)`. `unreachable` names the devices a sim or live run cannot reach.
 
 Wired into `SystemRuntime` as `runtime.devices`. `runtime.topology` and
 `runtime.gateway` coexist with this view because their consumers read the
 per-surface entry types directly; unifying them is a separate refactor.
 """
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 from orca.runtime.registries.device_link import DeviceLinkReader, ResourceLookup
-from orca.runtime.run_modes import resolve_effective_mode_for_device
-from orca.runtime.runtime_interface import (
+from orca.modes.run_modes import WorkflowRunMode
+from orca.runtime.registry_protocols import (
     IDeviceConnectionSource,
     IDeviceRegistry,
     ITopologyRegistry,
+)
+from orca.runtime.errors import (
     TopologyCollisionError,
-    WorkflowDeviceMissingError,
-    WorkflowDeviceNotConnectedError,
 )
 from orca.runtime.status_models import (
     ConnectionCard,
     DeviceRegistryEntry,
     TopologyCard,
     TopologyDeviceEntry,
-    WorkflowRunMode,
 )
+
+NOT_CONNECTED = "its orca-client is not connected"
 
 
 class DeviceRegistryImpl(IDeviceRegistry):
@@ -55,10 +55,11 @@ class DeviceRegistryImpl(IDeviceRegistry):
         topology_source: ITopologyRegistry,
         connection_source: IDeviceConnectionSource,
         system: ResourceLookup,
+        base_mode: Callable[[], WorkflowRunMode],
     ) -> None:
         self._topology = topology_source
         self._connections = connection_source
-        self._links = DeviceLinkReader(connection_source, system)
+        self._links = DeviceLinkReader(connection_source, system, base_mode)
 
     async def get(self, name: str) -> DeviceRegistryEntry | None:
         topology_entry = self._topology.get_device(name)
@@ -66,18 +67,19 @@ class DeviceRegistryImpl(IDeviceRegistry):
         if topology_entry is None and connection_card is None:
             return None
         topology_card = (
-            self._build_topology_card(topology_entry)
+            declared_card(topology_entry)
             if topology_entry is not None
             else None
         )
-        if topology_card is not None and connection_card is not None:
-            self._verify_kind_match(topology_card, connection_card)
+        mismatch = _interface_mismatch(topology_card, connection_card)
+        if mismatch is not None:
+            raise TopologyCollisionError(name, mismatch)
         return DeviceRegistryEntry(
             name=name,
             topology_card=topology_card,
             connection_card=connection_card,
             registry=self,
-            device_link=self._links.read(name),
+            device_link=await self._links.read(name),
         )
 
     async def list_all(self) -> list[DeviceRegistryEntry]:
@@ -107,66 +109,41 @@ class DeviceRegistryImpl(IDeviceRegistry):
             topology_entry = topology_by_name.get(name)
             connection_card = connection_by_name.get(name)
             topology_card = (
-                self._build_topology_card(topology_entry)
+                declared_card(topology_entry)
                 if topology_entry is not None
                 else None
             )
-            if topology_card is not None and connection_card is not None:
-                self._verify_kind_match(topology_card, connection_card)
+            # One mis-advertised device answers its own row with the mismatch; the rest still list.
             result.append(
                 DeviceRegistryEntry(
                     name=name,
                     topology_card=topology_card,
                     connection_card=connection_card,
                     registry=self,
-                    device_link=self._links.read(name),
+                    device_link=await self._links.read(name),
+                    interface_mismatch=_interface_mismatch(topology_card, connection_card),
                 ),
             )
         return result
 
-    async def assert_runnable(
-        self, names: Iterable[str], mode: WorkflowRunMode,
-    ) -> None:
-        """Validate that every named device can run under `mode` (per R1).
-
-        The check is per-device: a device's topology `sim_override` can ratchet
-        it to PURE_SIM under a LIVE / DEVICE_SIM submission, so connection is
-        required only when the *resolved* mode hits the wire.
-
-        PURE_SIM-resolved: the device needs a topology card.
-        DEVICE_SIM / LIVE-resolved: the device needs both cards AND a live
-        connection.
-
-        Aggregates every offending name into a single error rather than
-        failing on the first; operators get the full picture in one shot.
-        """
-        missing_topology: list[str] = []
-        missing_connection: list[str] = []
+    async def unreachable(self, names: Iterable[str]) -> dict[str, str]:
+        """Each named device a sim or live command cannot reach, and why: no declaration, or no connected orca-client."""
+        out: dict[str, str] = {}
         for name in names:
+            if not self._links.needs_a_client(name):
+                continue
             entry = await self.get(name)
-            if entry is None or entry.topology_card is None:
-                # Undeclared in topology: no override exists, so the submission
-                # mode stands. PURE_SIM needs the declaration; wire modes report
-                # it as not-connected.
-                if mode is WorkflowRunMode.PURE_SIM:
-                    missing_topology.append(name)
-                else:
-                    missing_connection.append(name)
+            if (
+                entry is not None and entry.topology_card is not None and entry.connection_card is not None
+                and await entry.is_client_connected()
+            ):
                 continue
-            resolved = resolve_effective_mode_for_device(
-                mode, entry.topology_sim_override(),
-            ).resolved
-            if resolved is WorkflowRunMode.PURE_SIM:
-                continue
-            if entry.connection_card is None or not await entry.is_client_connected():
-                missing_connection.append(name)
-        if missing_topology:
-            raise WorkflowDeviceMissingError(missing_topology)
-        if missing_connection:
-            raise WorkflowDeviceNotConnectedError(
-                missing_connection,
-                undeclared_connected=await self._undeclared_connected_names(),
-            )
+            out[name] = NOT_CONNECTED
+        undeclared = await self._undeclared_connected_names() if out else []
+        if undeclared:
+            hint = f"; connected but not declared in the topology: {', '.join(undeclared)}, possibly a name mismatch"
+            out = {name: why + hint for name, why in out.items()}
+        return out
 
     async def _undeclared_connected_names(self) -> list[str]:
         """Live connection names that are not declared in topology.
@@ -174,7 +151,7 @@ class DeviceRegistryImpl(IDeviceRegistry):
         Surfaced on a not-connected failure as a name-mismatch hint: a device
         connected under a name the topology does not declare is the usual
         reason a declared device shows as not connected. Filtered by
-        `is_connected` (same liveness rule as `assert_runnable`) so a stale
+        `is_connected` (same liveness rule as `unreachable`) so a stale
         registration is not reported as a live connection.
         """
         cards = await self._connections.list_connection_cards()
@@ -190,50 +167,31 @@ class DeviceRegistryImpl(IDeviceRegistry):
     async def _is_client_connected(self, name: str) -> bool:
         return await self._connections.is_connected(name)
 
-    @staticmethod
-    def _build_topology_card(entry: TopologyDeviceEntry) -> TopologyCard:
-        # `sim_override` flows from `Device(sim_override=...)` /
-        # `Transporter(sim_override=...)` through the topology registry to
-        # `TopologyCard.topology_sim_override`, which the mode resolver
-        # reads as the "topology per-device" precedence layer.
-        return TopologyCard(
-            name=entry.name,
-            declared_kind=entry.kind,
-            declared_interfaces=frozenset(entry.interfaces),
-            mounting_locations=entry.position_ids,
-            topology_sim_override=entry.sim_override,
-            disconnect_timeout_seconds=None,
-            declared_interfaces_are_class_defaults=entry.interfaces_are_class_defaults,
-        )
 
-    @staticmethod
-    def _verify_kind_match(
-        topology_card: TopologyCard, connection_card: ConnectionCard,
-    ) -> None:
-        """Per C2: connection's advertised interfaces must be a superset of topology's.
+def _interface_mismatch(topology_card: TopologyCard | None, connection_card: ConnectionCard | None) -> str | None:
+    """Why the connection's interfaces are not a superset of the topology's, or None when they are (C2).
 
-        Kind label string is informational, not enforced. A connection
-        advertising a strict superset (e.g. IShaker + ITempSettable when
-        topology declares IShaker) passes; a connection advertising a
-        non-overlapping or incomplete set (e.g. IDelidder vs IShaker) raises
-        `TopologyCollisionError` so the runtime fails loud rather than
-        dispatching a workflow against a contract the wire can't honor.
-        """
-        if topology_card.declared_interfaces_are_class_defaults:
-            # A class default is not a declaration, so there is no contract to
-            # be a superset of.
-            return
-        if topology_card.declared_interfaces.issubset(
-            connection_card.advertised_interfaces,
-        ):
-            return
-        missing = sorted(
-            topology_card.declared_interfaces
-            - connection_card.advertised_interfaces,
-        )
-        raise TopologyCollisionError(
-            f"Device {topology_card.name!r}: connection-advertised "
-            f"interfaces {sorted(connection_card.advertised_interfaces)!r} "
-            f"is not a superset of topology-declared "
-            f"{sorted(topology_card.declared_interfaces)!r}; missing {missing!r}",
-        )
+    The kind label is informational. A class default is not a declaration, so it sets no contract.
+    """
+    if topology_card is None or connection_card is None or topology_card.declared_interfaces_are_class_defaults:
+        return None
+    missing = sorted(topology_card.declared_interfaces - connection_card.advertised_interfaces)
+    if not missing:
+        return None
+    return (
+        f"Device {topology_card.name!r}: connection-advertised "
+        f"interfaces {sorted(connection_card.advertised_interfaces)!r} "
+        f"is not a superset of topology-declared "
+        f"{sorted(topology_card.declared_interfaces)!r}; missing {missing!r}"
+    )
+
+
+def declared_card(entry: TopologyDeviceEntry) -> TopologyCard:
+    """What the topology declares for one device."""
+    return TopologyCard(
+        name=entry.name,
+        declared_kind=entry.kind,
+        declared_interfaces=frozenset(entry.interfaces),
+        mounting_locations=entry.position_ids,
+        declared_interfaces_are_class_defaults=entry.interfaces_are_class_defaults,
+    )

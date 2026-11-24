@@ -16,7 +16,7 @@ from cheshire_drivers.teachpoints import (
 from orca.resource_models.transporter import Transporter
 from orca.runtime.danger import ConfirmationRequired
 from orca.runtime.facades.teachpoints import TeachpointFacade
-from orca.runtime.teachpoint_service import seeded_teachpoint_service
+from tests.setup_package import teachpoint_file, with_teachpoints
 
 
 def _teachpoint(taught_with: str | None = None) -> Teachpoint:
@@ -55,10 +55,9 @@ class _System:
 
 @pytest.fixture
 def facade() -> TeachpointFacade:
-    transporter = Transporter(
+    transporter = with_teachpoints(Transporter(
         name="pf400",
-        teachpoint_store=seeded_teachpoint_service([_teachpoint()]),
-    )
+    ), teachpoint_file([_teachpoint()]))
     return TeachpointFacade(_System(transporter))
 
 

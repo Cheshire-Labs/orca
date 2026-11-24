@@ -11,11 +11,13 @@ from orca.spawn import (
     _VALID_END_SENTINELS,
     _VALID_START_SENTINELS,
 )
+from orca.workflow_models.labware_group import LabwareGroup
 from orca.workflow_models.method_template import IMethodTemplate
 
-from typing import AsyncGenerator, Callable, List, Literal
+from typing import AsyncGenerator, Callable, Iterable, List, Literal
 
 from orca.workflow_models.thread_context import ThreadContext
+from orca.resource_models.device_deck_site import DeviceDeckSite
 
 _ALL_SPAWN_SENTINELS = _VALID_START_SENTINELS | _VALID_END_SENTINELS
 
@@ -75,7 +77,7 @@ def _reject_if_sentinel(value: Location | str, side: Literal["start", "end"]) ->
 ThreadFunc = Callable[[ThreadContext], AsyncGenerator[IMethodTemplate, None]]
 
 StartArg = Location | str | tuple[Location | str, str]
-EndCandidates = Location | str | list[Location | str]
+EndCandidates = Location | str | list[Location | str] | list[Location] | list[str]
 EndArg = EndCandidates | tuple[EndCandidates, str]
 
 
@@ -145,7 +147,7 @@ def _normalize_start(start: StartArg) -> tuple[Location | str, StartSpawnFlags]:
 
 
 def _as_candidate_list(value: EndCandidates) -> list[Location | str]:
-    candidates = list(value) if isinstance(value, list) else [value]
+    candidates: list[Location | str] = list(value) if isinstance(value, list) else [value]
     if not candidates:
         raise ValueError("end needs at least one location")
     for candidate in candidates:
@@ -199,9 +201,7 @@ class ThreadTemplateNameCollisionError(KeyError):
     Thread names are unique per workflow, not deployment-wide: two
     workflows may each declare a ``sample_plate`` thread. The collision
     fires only when two distinct thread objects claim the same name inside
-    the same workflow's bundle. Inherits ``KeyError`` for backward compat:
-    every pre-existing catcher of ``KeyError`` from the registry-add path
-    continues to handle the case. The typed fields (``template_name`` plus
+    the same workflow's bundle. The typed fields (``template_name`` plus
     optional workflow attributions) let API surfaces produce a typed
     ``thread_template_name_collision`` envelope so AI agents and operator
     portals can branch on the failure category instead of regex-matching
@@ -348,14 +348,13 @@ class ThreadTemplate:
 
     @property
     def func_name(self) -> str:
-        """Name of the decorated function (``@orca.thread`` target).
-
-        Operators typically write this string in
-        ``LabwareGroupMember.thread_template_name`` because it matches how
-        they reference the thread in code. Submit-time validation accepts
-        either ``func_name`` or the labware template's ``name``.
-        """
+        """Name of the decorated function (``@orca.thread`` target)."""
         return self._func_name
+
+    @property
+    def names(self) -> tuple[str, str]:
+        """The names a group member may give this thread: its labware name, then its function name."""
+        return (self.name, self.func_name)
 
     @property
     def end_leave_in_place(self) -> bool:
@@ -458,10 +457,29 @@ class ThreadTemplate:
         self._ends = list(ends)
         # A deck slot is an operator-managed residency, not a disposal point:
         # ending there is only coherent as LEAVE_IN_PLACE (deck resident).
-        from orca.resource_models.device_deck_site import DeviceDeckSite
         for end in ends:
             if isinstance(end.resource, DeviceDeckSite) and not self._end_leave_in_place:
                 raise DeckSiteEndRequiresLeaveInPlaceError(self.name, end.position_id)
+
+
+def thread_named(templates: Iterable[ThreadTemplate], name: str) -> ThreadTemplate | None:
+    """The thread a group member names. A labware name wins, because only labware names are unique in a workflow."""
+    candidates = list(templates)
+    by_labware = next((t for t in candidates if t.name == name), None)
+    if by_labware is not None:
+        return by_labware
+    return next((t for t in candidates if t.func_name == name), None)
+
+
+def threads_a_group_names(group: LabwareGroup, templates: Iterable[ThreadTemplate]) -> dict[str, str]:
+    """The labware name of each thread the group's members name, to the member name used; a labware name wins."""
+    candidates = list(templates)
+    named: dict[str, str] = {}
+    for member in group.members:
+        thread = thread_named(candidates, member.thread_template_name)
+        if thread is not None and named.get(thread.name) != thread.name:
+            named[thread.name] = member.thread_template_name
+    return named
 
 
 _PENDING_THREAD_TEMPLATES: List[ThreadTemplate] = []

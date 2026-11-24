@@ -4,7 +4,7 @@ from uuid import uuid4
 
 import pytest
 
-from orca.runtime.labware_group import LabwareGroup, LabwareGroupMember
+from orca.workflow_models.labware_group import LabwareGroup, LabwareGroupMember
 
 
 def test_group_rejects_duplicate_thread_templates() -> None:

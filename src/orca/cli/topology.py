@@ -1,8 +1,8 @@
 """`orca topology` CLI verbs.
 
-`mount` is backend-dispatched: against the local daemon it mounts a
-`build_topology(stores)` factory spec to build an empty SystemRuntime; against
-a cloud deployment it submits a topology.py source file (full system rebuild).
+`mount` is backend-dispatched: the local daemon builds its package folder
+(`topology.py` plus `workflows/`) into a SystemRuntime; a cloud deployment
+takes a submitted topology.py source file (full system rebuild).
 `get` works against both.
 
 Pairs with `orca unload`, which tears the mounted runtime down.
@@ -13,7 +13,7 @@ from pathlib import Path
 import typer
 
 from orca.cli import output
-from orca.cli.backend import active_backend, cloud_backend_installed, cloud_client, cloud_help, get_client
+from orca.cli.backend import active_backend, cloud_backend_installed, cloud_client, cloud_help, daemon_client, get_client
 
 
 app = typer.Typer(
@@ -24,15 +24,11 @@ app = typer.Typer(
 
 @app.command("mount")
 def topology_mount(
-    target: str = typer.Argument(
-        ...,
-        help="A 'module:build_topology' factory spec, which the daemon "
-             "imports from the directory `orca start` ran in."
+    target: str | None = typer.Argument(
+        None,
+        help="Local: leave out; the daemon builds its own package folder."
              + cloud_help(" On the cloud backend, a topology.py source file, submitted to trigger a rebuild."),
-    ),
-    sim: bool = typer.Option(
-        False, "--sim",
-        help="Local only: start the mounted runtime in simulation mode.",
+        show_default=False,
     ),
     message: str = typer.Option(
         "", "--message", "-m",
@@ -40,21 +36,29 @@ def topology_mount(
         hidden=not cloud_backend_installed(),
     ),
 ) -> None:
-    """Mount the lab. Builds the instrument/config foundation a workflow runs on.
+    """Mount the lab: build the system a workflow runs on.
 
-    The daemon builds an empty SystemRuntime from a `module:build_topology`
-    spec. The daemon, not this command, imports the module, so it resolves
-    from the directory `orca start` ran in or from installed packages.
+    The daemon builds its package folder, `ORCA_PACKAGE_DIR` or the folder
+    `orca start` ran in: `topology.py` and every `workflows/<name>.py`. To pick
+    up edited files, run `orca runtime reload`.
     """
     if active_backend() == "local":
-        from orca.cli.client import LocalDaemonClient
-        client = LocalDaemonClient()
-        state = client.mount_topology(target, sim=sim)
-        output.info(
-            f"mounted topology {target!r} (sim={sim}); runtime is {state.name}",
-        )
+        if target is not None:
+            output.fail(
+                "the local daemon builds its own package folder (ORCA_PACKAGE_DIR, or the "
+                "folder `orca start` ran in); run `orca topology mount` with no argument",
+                code=output.EXIT_USAGE,
+            )
+        client = daemon_client()
+        state = client.mount_package()
+        output.info(f"mounted the package folder; runtime is {state.name}")
         return
 
+    if target is None:
+        output.fail(
+            "cloud topology mount expects a topology.py source file",
+            code=output.EXIT_USAGE,
+        )
     source = Path(target)
     if not source.is_file():
         output.fail(

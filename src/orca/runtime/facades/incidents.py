@@ -6,25 +6,42 @@ incident record as seen. The underlying error condition (if still active)
 is not remedied by acknowledgement.
 """
 
+from collections.abc import Awaitable, Callable
+from typing import Protocol
+
 from orca.runtime.danger import DangerLevel, dangerous
-from orca.runtime.incident_service import IncidentService
+from orca.runtime.incident_service import IIncidentService
+from orca.resource_models.unheld_command import UnheldCommand
 from orca.runtime.incident_store import (
     IncidentCategory,
+    RecoverableTimeoutContext,
     SystemIncident,
 )
-from orca.runtime.recoverable_timeout import RecoverableTimeoutCoordinator
-from orca.runtime.runtime_interface import IIncidentFacade
+from orca.runtime.recoverable_timeout import RecoverableTimeoutCoordinator, RecoverableTimeoutNotHeldError
+from orca.runtime.facade_interfaces import IIncidentFacade
+
+
+class IUnheldOutcomes(Protocol):
+    """Settles a command whose outcome is unknown and whose incident holds nothing."""
+
+    async def settle(self, unheld: UnheldCommand, completed: bool, filed_at: float) -> bool:
+        """Returns True when completed applied nothing because the labware has moved since `filed_at`."""
+        ...
 
 
 class IncidentFacade(IIncidentFacade):
     """Concrete IncidentFacade implementation."""
 
     def __init__(
-        self, service: IncidentService,
+        self, service: IIncidentService,
         recoverable_timeouts: RecoverableTimeoutCoordinator,
+        unheld: IUnheldOutcomes,
+        clear_device_fault: Callable[[str], Awaitable[None]],
     ) -> None:
         self._service = service
         self._recoverable_timeouts = recoverable_timeouts
+        self._unheld = unheld
+        self._clear_device_fault = clear_device_fault
 
     async def list(
         self, *,
@@ -96,9 +113,11 @@ class IncidentFacade(IIncidentFacade):
         message="Fail the held command for incident '{incident_id}'. Its "
                 "failure policy fires.",
     )
-    def recoverable_timeout_abort(
+    async def recoverable_timeout_abort(
         self, incident_id: str, operator: str, *, reason: str,
     ) -> None:
+        if await self._settle_unheld(incident_id, completed=False) is not None:
+            return
         self._recoverable_timeouts.abort(incident_id, operator, reason)
 
     @dangerous(
@@ -107,7 +126,35 @@ class IncidentFacade(IIncidentFacade):
         message="Say the device finished the held command for incident "
                 "'{incident_id}'. The engine records it as a success.",
     )
-    def recoverable_timeout_mark_complete(
+    async def recoverable_timeout_mark_complete(
         self, incident_id: str, operator: str, *, reason: str,
-    ) -> None:
+    ) -> bool:
+        """Returns True when the record was left as it is because the labware has moved since the command."""
+        left_as_it_is = await self._settle_unheld(incident_id, completed=True)
+        if left_as_it_is is not None:
+            return left_as_it_is
         self._recoverable_timeouts.mark_complete(incident_id, operator, reason)
+        return False
+
+    async def _settle_unheld(self, incident_id: str, *, completed: bool) -> bool | None:
+        """A command whose outcome is unknown and that nothing holds: the decision settles its records.
+
+        Read from the stored incident, so it settles after a restart. In the world an operator is in, as every
+        operator write is. Mark complete also clears the fault the controller latched on the device, as it does for
+        a held run's command. None when the incident is not one of these; otherwise whether mark complete left the
+        record as it is because the labware has moved since.
+        """
+        try:
+            incident = await self._service.get(incident_id)
+        except KeyError:
+            return None
+        detail = incident.detail
+        if not isinstance(detail, RecoverableTimeoutContext) or detail.unheld is None:
+            return None
+        if incident.acknowledged:
+            raise RecoverableTimeoutNotHeldError(f"incident {incident_id!r} is already settled")
+        left_as_it_is = await self._unheld.settle(detail.unheld, completed, incident.timestamp)
+        if completed:
+            await self._clear_device_fault(detail.unheld.device_name)
+        self._service.acknowledge(incident_id)
+        return left_as_it_is

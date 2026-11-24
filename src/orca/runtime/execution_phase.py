@@ -25,11 +25,13 @@ class ExecutionPhase(str, Enum):
       still be > 0 for seconds until cancellation propagates through
       their stop-event polls. Non-terminal; the task-done callback
       transitions STOPPING -> ABORTED once the task fully unwinds.
-    - COMPLETED / FAILED / ABORTED: terminal.
+    - COMPLETED / PARTIAL_COMPLETED / FAILED / ABORTED: terminal. PARTIAL_COMPLETED: the operator
+      aborted some threads and at least one completed.
     """
     ACCEPTING = "accepting"
     DRAINING = "draining"
     STOPPING = "stopping"
     COMPLETED = "completed"
+    PARTIAL_COMPLETED = "partial_completed"
     FAILED = "failed"
     ABORTED = "aborted"

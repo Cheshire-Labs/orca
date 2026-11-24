@@ -8,22 +8,25 @@ Tests cover:
 - SMC assay E2E with mutation (slow)
 """
 
+from orca.config import OrcaConfig
 import asyncio
 from dataclasses import dataclass
 from typing import AsyncGenerator
 
 import pytest
 
+from orca.resource_models.location import Location
+from orca.workflow_models.labware_threads.executing_labware_thread import ExecutingLabwareThread
+
 from orca.state.ops_store import SYSTEM_ID
 
 import orca.orca as orca
 from orca.events.event_handler_interface import IEventHandler
 from orca.events.execution_context import ExecutionContext, MethodExecutionContext, ThreadExecutionContext
-from orca.plugins import MethodTracker
+from tests.thread_recorder import ThreadRecorder
 from orca.resource_models.devices import Device
 from orca.resource_models.labware import LabwareTemplate
 from orca.resource_models.resource_pool import ResourcePool
-from orca.runtime.device_factory import SimDeviceFactory
 from orca.runtime.sinks import CollectorSink
 from orca.runtime.system_runtime import ExecutionState, SystemRuntime
 from orca.sdk.events import EventBus
@@ -38,10 +41,16 @@ from orca.workflow_models.method_template import IMethodTemplate, MethodTemplate
 from orca.workflow_models.mutation_position import AtHead, AtTail
 from orca.workflow_models.thread_context import ThreadContext
 from orca.workflow_models.thread_template import ThreadTemplate
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from tests.mock import UniversalMockDevice
 from tests.mutation_helpers import wait_for_threads, pause_and_wait, wait_for_paused
-from tests.test_helpers import create_test_plate_template, create_test_transporter, wire_system_map
+from tests.test_helpers import (
+    create_test_plate_template, create_test_transporter, state_every_liquid_handler_head_empty, wire_system_map,
+)
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 
 
@@ -109,11 +118,14 @@ async def _build_system(
     builder = SdkToSystemBuilder(
         name="test_system", description="", labwares=[plate],
         resources_registry=registry, system_map=system_map,
-        workflows=[workflow], event_bus=event_bus,
+        workflows=[workflow], event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     system = builder.get_system()
-    runtime = SystemRuntime(system, event_bus=event_bus)
+    runtime = await memory_runtime(system, event_bus=event_bus)
     return Fixture(runtime, workflow, device, event_bus, plate, pool)
 
 
@@ -132,7 +144,7 @@ class TestRawMutationOperations:
         collector = CollectorSink()
         f.runtime.register_sink(collector)
         await f.runtime.start()
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         threads = await wait_for_threads(f.runtime, record.id)
         thread = f.runtime.system.get_executing_thread(threads[0].id)
 
@@ -169,7 +181,7 @@ class TestRawMutationOperations:
         collector = CollectorSink()
         f.runtime.register_sink(collector)
         await f.runtime.start()
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         threads = await wait_for_threads(f.runtime, record.id)
         thread = f.runtime.system.get_executing_thread(threads[0].id)
 
@@ -216,7 +228,7 @@ class TestMutationGuards:
     async def test_completed_thread_rejects_mutation(self) -> None:
         f = await _build_system()
         await f.runtime.start()
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         status = await asyncio.wait_for(f.runtime.wait(record.id), timeout=30.0)
         assert status.status == ExecutionState.COMPLETED
 
@@ -241,7 +253,7 @@ class TestMutationGuards:
         collector = CollectorSink()
         f.runtime.register_sink(collector)
         await f.runtime.start()
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         threads = await wait_for_threads(f.runtime, record.id)
 
         await pause_and_wait(f.runtime, record.id, threads[0].id)
@@ -283,7 +295,7 @@ class TestThreadIdInContext:
         f.runtime.register_sink(collector)
         await f.runtime.start()
 
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         await asyncio.wait_for(f.runtime.wait(record.id), timeout=30.0)
         await f.runtime.shutdown()
 
@@ -313,7 +325,7 @@ class TestThreadIdInContext:
         f.runtime.register_sink(collector)
         await f.runtime.start()
 
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         await asyncio.wait_for(f.runtime.wait(record.id), timeout=30.0)
         await f.runtime.shutdown()
 
@@ -363,7 +375,7 @@ class TestSubmissionInProgressTransitionTiming:
         if the test sees IN_PROGRESS only AFTER the action sleep window,
         the timing fix has regressed.
         """
-        from orca.runtime.submission import SubmissionStatus
+        from orca.workflow_models.submission import SubmissionStatus
 
         device = UniversalMockDevice("device1")
         transporter = create_test_transporter("robot1", ["device1", "pad1"])
@@ -406,15 +418,18 @@ class TestSubmissionInProgressTransitionTiming:
         builder = SdkToSystemBuilder(
             name="test_system", description="", labwares=[plate],
             resources_registry=registry, system_map=system_map,
-            workflows=[workflow], event_bus=event_bus,
+            workflows=[workflow], event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+            labware_catalog=bundled_labware_catalog(),
+            labware_service=memory_labware_service(),
+            unsaved_positions=memory_unsaved_positions(),
         )
         await builder.bind_labwares()
         system = builder.get_system()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
         await runtime.start()
 
         try:
-            submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+            submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
             # Wait for the slow action to begin -- entry thread is now running
             # but blocked on ``release_action``. If the IN_PROGRESS transition
             # is gated on entry-thread completion, status would still be
@@ -515,14 +530,17 @@ class TestOpsHistoryThreadIdEndToEnd:
         builder = SdkToSystemBuilder(
             name="test_system", description="", labwares=[plate],
             resources_registry=registry, system_map=system_map,
-            workflows=[workflow], event_bus=event_bus,
+            workflows=[workflow], event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+            labware_catalog=bundled_labware_catalog(),
+            labware_service=memory_labware_service(),
+            unsaved_positions=memory_unsaved_positions(),
         )
         await builder.bind_labwares()
         system = builder.get_system()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
         await runtime.start()
 
-        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         status = await asyncio.wait_for(runtime.wait(record.id), timeout=30.0)
         assert status.status == ExecutionState.COMPLETED
 
@@ -563,7 +581,7 @@ class TestHandlerDrivenMutation:
         f.runtime.register_sink(collector)
         await f.runtime.start()
 
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         status = await asyncio.wait_for(f.runtime.wait(record.id), timeout=30.0)
         assert status.status == ExecutionState.COMPLETED
 
@@ -603,7 +621,7 @@ class TestHandlerDrivenMutation:
         await f.runtime.start()
         handler.set_system(f.runtime.system)
 
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         status = await asyncio.wait_for(f.runtime.wait(record.id), timeout=30.0)
         assert status.status == ExecutionState.COMPLETED
 
@@ -659,7 +677,7 @@ class TestHandlerDrivenMutation:
         await f.runtime.start()
         handler.set_system(f.runtime.system)
 
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         status = await asyncio.wait_for(f.runtime.wait(record.id), timeout=30.0)
         assert status.status == ExecutionState.COMPLETED
 
@@ -719,7 +737,7 @@ class TestHandlerDrivenMutation:
         await f.runtime.start()
         handler.set_system(f.runtime.system)
 
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         status = await asyncio.wait_for(f.runtime.wait(record.id), timeout=30.0)
         assert status.status == ExecutionState.COMPLETED
 
@@ -781,7 +799,7 @@ class TestHandlerDrivenMutation:
         await f.runtime.start()
         handler.set_system(f.runtime.system)
 
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         status = await asyncio.wait_for(f.runtime.wait(record.id), timeout=30.0)
         assert status.status == ExecutionState.COMPLETED
 
@@ -811,7 +829,7 @@ class TestSmcAssayWithMutation:
     @pytest.mark.slow
     @pytest.mark.timeout(360)
     async def test_smc_all_mutation_operations(self) -> None:
-        from examples.smc_assay.smc_assay_example import build_smc
+        from tests.example_builds import build_smc
         smc = await build_smc()
         # SystemBuild.workflow is Optional in the multi-workflow shape;
         # build_smc() always populates it for the SMC example.
@@ -901,23 +919,24 @@ class TestSmcAssayWithMutation:
 
                     self.system.resume_thread(tid)
 
-        runtime = SystemRuntime(smc.system, event_bus=smc.event_bus)
-        tracker = MethodTracker()
-        runtime.register_plugin(tracker)
+        runtime = await memory_runtime(smc.system, event_bus=smc.event_bus)
+        recorder = ThreadRecorder()
+        runtime.register_plugin(recorder)
 
         handler = ComprehensiveMutationHandler(smc.system)
         smc.event_bus.subscribe("METHOD.COMPLETED", handler)
         smc.event_bus.subscribe("THREAD.PAUSED", handler)
 
         await runtime.start()
-        record = await runtime.submit_workflow(smc.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        await state_every_liquid_handler_head_empty(runtime)
+        record = await runtime.submit_workflow(smc.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         await asyncio.wait_for(runtime.wait(record.id), timeout=300.0)
         await runtime.shutdown()
 
         # Collect plate_1's completed methods
-        snapshots = tracker.all_completed_snapshots
+        snapshots = recorder.completed_methods
         plate_1_methods: list[str] = []
-        for tid, name in tracker._thread_names.items():
+        for tid, name in recorder.thread_names.items():
             if name.startswith("plate_1"):
                 plate_1_methods = snapshots.get(tid, [])
                 break
@@ -975,7 +994,7 @@ class TestManualPause:
         f = await _build_system()
         await f.runtime.start()
 
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         threads = await wait_for_threads(f.runtime, record.id)
         thread_id = threads[0].id
 
@@ -985,12 +1004,46 @@ class TestManualPause:
         assert paused_id == thread_id
         await f.runtime.shutdown()
 
+    async def test_a_pause_asked_for_during_a_move_stops_the_thread_before_its_action_runs(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A route is several moves and then the action; a pause waits for none of them after the one in flight."""
+        real_move = ExecutingLabwareThread._resolve_and_execute_move
+        real_action = ExecutingLabwareThread._handle_thread_at_assigned_action_location
+        actions_run: list[str] = []
+
+        async def move_then_ask_to_pause(thread: ExecutingLabwareThread, target_sites: list[Location]) -> None:
+            await real_move(thread, target_sites)
+            thread.request_pause()
+
+        async def record_action(thread: ExecutingLabwareThread) -> None:
+            actions_run.append(thread.name)
+            await real_action(thread)
+
+        monkeypatch.setattr(ExecutingLabwareThread, "_resolve_and_execute_move", move_then_ask_to_pause)
+        monkeypatch.setattr(ExecutingLabwareThread, "_handle_thread_at_assigned_action_location", record_action)
+        f = await _build_system()
+        await f.runtime.start()
+        try:
+            record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
+            paused_id = await wait_for_paused(f.runtime, record.id)
+
+            assert actions_run == []
+
+            monkeypatch.setattr(ExecutingLabwareThread, "_resolve_and_execute_move", real_move)
+            f.runtime.resume_thread(record.id, paused_id)
+            status = await asyncio.wait_for(f.runtime.wait(record.id), timeout=10.0)
+            assert status.status == ExecutionState.COMPLETED
+            assert actions_run
+        finally:
+            await f.runtime.shutdown()
+
     async def test_resume_thread_continues_execution(self) -> None:
         """After resume_thread, a manually paused thread continues."""
         f = await _build_system()
         await f.runtime.start()
 
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         threads = await wait_for_threads(f.runtime, record.id)
         thread_id = threads[0].id
 
@@ -1010,7 +1063,7 @@ class TestManualPause:
         f = await _build_failing_system()
         await f.runtime.start()
 
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         paused_id = await wait_for_paused(f.runtime, record.id)
 
         with pytest.raises(ValueError):
@@ -1032,7 +1085,7 @@ class TestPauseGateOnMutation:
         f = await _build_system()
         await f.runtime.start()
 
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         threads = await wait_for_threads(f.runtime, record.id)
         thread_id = threads[0].id
 
@@ -1064,7 +1117,7 @@ class TestActionMutation:
         f.runtime.register_sink(collector)
         await f.runtime.start()
 
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         thread_id = await wait_for_paused(f.runtime, record.id)
 
         @orca.action(
@@ -1104,7 +1157,7 @@ class TestActionMutation:
         f.runtime.register_sink(collector)
         await f.runtime.start()
 
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         thread_id = await wait_for_paused(f.runtime, record.id)
 
         f.runtime.system.skip_pending_action(thread_id, action_command="seal")
@@ -1147,7 +1200,7 @@ class TestMutationWithVariables:
 
     async def test_inserted_method_with_var_resolves(self) -> None:
         """insert_method with a Var-parameterized action resolves from the store."""
-        from orca.variables import Var, VariableDefinition
+        from orca.variables import VariableDefinition
 
         device = RecordingDevice("device1")
         transporter = create_test_transporter("robot1", ["device1", "pad1"])
@@ -1188,20 +1241,22 @@ class TestMutationWithVariables:
         builder = SdkToSystemBuilder(
             name="test", description="", labwares=[plate],
             resources_registry=registry, system_map=system_map,
-            workflows=[workflow], event_bus=event_bus,
+            workflows=[workflow], event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+            labware_catalog=bundled_labware_catalog(),
+            labware_service=memory_labware_service(),
+            unsaved_positions=memory_unsaved_positions(),
         )
         await builder.bind_labwares()
         system = builder.get_system()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
         await runtime.start()
 
-        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         threads = await wait_for_threads(runtime, record.id)
         await pause_and_wait(runtime, record.id, threads[0].id)
 
-        # First shake completed with literal values
-        assert len(device.shake_calls) == 1
-        assert device.shake_calls[0] == (1, 500)
+        # A pause is honoured before the next action, so the first shake has not run.
+        assert device.shake_calls == []
 
         # Insert a new method with Var-parameterized shake
         @orca.action(device=pool, inputs=[plate])
@@ -1221,6 +1276,7 @@ class TestMutationWithVariables:
         assert status.status == ExecutionState.COMPLETED
 
         # The inserted shake should have resolved inserted_duration=4444
+        assert device.shake_calls[0] == (1, 500)
         assert len(device.shake_calls) == 2
         assert device.shake_calls[1] == (4444, 800), (
             f"Expected inserted method to use variable default 4444, "

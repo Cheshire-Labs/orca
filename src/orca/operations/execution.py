@@ -1,80 +1,72 @@
+from orca.operations.execution_models import (
+    CLOSE_EXECUTION_ROUTE,
+    GET_EXECUTION_DETAIL_ROUTE,
+    LIST_EXECUTIONS_ROUTE,
+    REMOVE_EXECUTION_ROUTE,
+    SET_EXECUTION_SIM_SPEEDUP_ROUTE,
+    STOP_EXECUTION_ROUTE,
+)
 """Execution-lifecycle Operations.
 
 `CloseExecutionOperation` transitions an ACCEPTING execution to
 DRAINING; live threads keep running, but JOIN_EXISTING submissions
 for the same workflow start a fresh execution.
 
-`GetExecutionOperation` returns the live ExecutionRecord (id +
-workflow + status + error) for a single execution. Accepts an
-optional ``terminal_lookup`` callable so a deployment that persists
-terminal executions can rehydrate records the live runtime no longer
-holds (Bug SS).
-
-`ListExecutionsOperation` returns every live execution's record;
-the optional ``terminal_list`` callable merges DB-backed terminal
-records into the response so a rebuild + list survives Bug SS too.
-
-`GetExecutionDetailOperation` returns the rich snapshot
-(`ExecutionDetail`) including thread snapshots; ``terminal_detail_lookup``
-falls back to an empty-threads ExecutionDetail rehydrated from the
-DB row when the runtime no longer holds the execution.
+`ExecutionReader` answers what one execution is: the live runtime's
+detail, else the stored record a restart leaves. The detail read and
+the thread list both answer through it, and the list builds each live
+row from the same detail.
 
 `StopExecutionOperation` stops a running execution.
 
 `RemoveExecutionOperation` removes a terminal execution from the
 live in-memory list (the persisted history is untouched).
 
-The terminal-lookup callables come from the runtime's
-``ExecutionRecordService`` (``runtime.execution_records``), which both
-the orca-core daemon (over its SQLite store) and a hosted deployment
-(over its injected store) wire. A deployment with no execution-record
-service passes ``None``.
+The stored records come from the runtime's ``ExecutionRecordService``
+(``runtime.execution_records``), which both servers wire over the store
+they chose.
 """
 
+from orca.operations.binding import RestBinding
 from typing import ClassVar, Literal
 from pydantic import BaseModel
-from orca.operations._protocol import OperationError, OperationErrorCode
-from orca.runtime.execution_phase import ExecutionPhase
-from orca.runtime.execution_record import ExecutionRecord, ExecutionState
+from orca.operations.error_codes import ErrorCode
+from orca.operations.protocol import OperationError
+from orca.runtime.execution_record import ExecutionRecord
 from orca.runtime.status_models import ExecutionDetail
-from orca.runtime.runtime_interface import ISystemRuntime, SimTimeScaleNotApplicableError
+from orca.runtime.runtime_interface import ISystemRuntime
+from orca.runtime.errors import SimSpeedupNotApplicableError
 from orca.operations.execution_models import (
     CloseExecutionRequest,
     CloseExecutionResponse,
     ExecutionRecordModel,
     GetExecutionDetailRequest,
     GetExecutionDetailResponse,
-    GetExecutionRequest,
-    GetExecutionResponse,
     ListExecutionsRequest,
     ListExecutionsResponse,
     RemoveExecutionRequest,
     RemoveExecutionResponse,
-    SetExecutionTimeScaleRequest,
-    SetExecutionTimeScaleResponse,
+    SetExecutionSimSpeedupRequest,
+    SetExecutionSimSpeedupResponse,
     StopExecutionRequest,
     StopExecutionResponse,
 )
 from collections.abc import Awaitable, Callable, Iterable
 
 
-# Deployment-injected callables for sink-fallback rehydration. None on
-# deployments without a DB-backed terminal-record store (the daemon).
-TerminalLookup = Callable[[str], Awaitable["ExecutionRecord | None"]]
+TerminalList = Callable[[], Awaitable[Iterable[ExecutionRecord]]]
 
 
-TerminalList = Callable[[], Awaitable[Iterable["ExecutionRecord"]]]
-
-
-TerminalDetailLookup = Callable[[str], Awaitable["ExecutionDetail | None"]]
+TerminalDetailLookup = Callable[[str], Awaitable[ExecutionDetail | None]]
 
 
 # -- CloseExecutionOperation -------------------------------------------------
 
 
 class CloseExecutionOperation:
-    Request: ClassVar[type[BaseModel]] = CloseExecutionRequest
-    Response: ClassVar[type[BaseModel]] = CloseExecutionResponse
+    Request: ClassVar[type[BaseModel]] = CLOSE_EXECUTION_ROUTE.request
+    Response: ClassVar[type[BaseModel]] = CLOSE_EXECUTION_ROUTE.response
+    binding: ClassVar[RestBinding] = CLOSE_EXECUTION_ROUTE.binding
 
     def __init__(self, runtime: ISystemRuntime):
         self._runtime = runtime
@@ -85,127 +77,117 @@ class CloseExecutionOperation:
                 req.execution_id, reason=req.reason, confirm=True,
             )
         except KeyError as exc:
-            raise OperationError.not_found(
+            raise OperationError.of(
+                ErrorCode.EXECUTION_NOT_FOUND,
                 f"execution {req.execution_id!r} not found",
                 execution_id=req.execution_id,
             ) from exc
         except RuntimeError as exc:
-            raise OperationError.conflict(str(exc)) from exc
+            raise OperationError.of(ErrorCode.CONFLICT, str(exc)) from exc
         phase = result.phase.value if hasattr(result.phase, "value") else str(result.phase)
         return CloseExecutionResponse(
             execution_id=result.execution_id, phase=phase,
         )
 
 
-# -- GetExecutionOperation ---------------------------------------------------
+# The executions that ran as kept check runs.
+CheckRunExecutions = Callable[[], Awaitable[set[str]]]
 
 
-class GetExecutionOperation:
-    Request: ClassVar[type[BaseModel]] = GetExecutionRequest
-    Response: ClassVar[type[BaseModel]] = GetExecutionResponse
+# -- ExecutionReader ---------------------------------------------------------
+
+
+class ExecutionReader:
+    """One execution's detail: the live runtime's, else the stored record a restart leaves. None when neither has it."""
 
     def __init__(
         self, runtime: ISystemRuntime,
-        terminal_lookup: TerminalLookup | None = None,
+        terminal_detail_lookup: TerminalDetailLookup,
+        check_run_executions: CheckRunExecutions,
     ):
         self._runtime = runtime
-        self._terminal_lookup = terminal_lookup
+        self._terminal_detail_lookup = terminal_detail_lookup
+        self._check_run_executions = check_run_executions
 
-    async def run(self, req: GetExecutionRequest) -> GetExecutionResponse:
+    async def detail(self, execution_id: str) -> GetExecutionDetailResponse | None:
         try:
-            status = self._runtime.get_execution_status(req.execution_id)
-            return GetExecutionResponse(
-                execution=ExecutionRecordModel.from_status(status),
-            )
+            detail: ExecutionDetail | None = self._runtime.get_execution_detail(execution_id)
         except KeyError:
-            pass
-        if self._terminal_lookup is not None:
-            record = await self._terminal_lookup(req.execution_id)
-            if record is not None:
-                return GetExecutionResponse(
-                    execution=ExecutionRecordModel.from_record(record),
-                )
-        raise OperationError.not_found(
-            f"execution {req.execution_id!r} not found",
-            execution_id=req.execution_id,
-        )
+            detail = await self._terminal_detail_lookup(execution_id)
+        if detail is None:
+            return None
+        check_run = execution_id in await self._check_run_executions()
+        return GetExecutionDetailResponse.from_detail(detail, check_run=check_run)
 
 
 # -- ListExecutionsOperation -------------------------------------------------
 
 
 class ListExecutionsOperation:
-    Request: ClassVar[type[BaseModel]] = ListExecutionsRequest
-    Response: ClassVar[type[BaseModel]] = ListExecutionsResponse
+    Request: ClassVar[type[BaseModel]] = LIST_EXECUTIONS_ROUTE.request
+    Response: ClassVar[type[BaseModel]] = LIST_EXECUTIONS_ROUTE.response
+    binding: ClassVar[RestBinding] = LIST_EXECUTIONS_ROUTE.binding
 
     def __init__(
         self, runtime: ISystemRuntime,
-        terminal_list: TerminalList | None = None,
+        terminal_list: TerminalList,
+        check_run_executions: CheckRunExecutions,
     ):
         self._runtime = runtime
         self._terminal_list = terminal_list
+        self._check_run_executions = check_run_executions
 
     async def run(self, req: ListExecutionsRequest) -> ListExecutionsResponse:
         del req
         execs: list[ExecutionRecordModel] = []
         live_ids: set[str] = set()
         for exe in self._runtime.iter_executions():
-            phase: ExecutionPhase | ExecutionState = exe.phase
-            execs.append(ExecutionRecordModel(
-                id=exe.id,
-                workflow_name=exe.workflow_name,
-                status=phase.value if hasattr(phase, "value") else str(phase),
-                error=exe.error,
-                paused=exe.is_paused,
-                pause_reason=exe.pause_reason,
-                abort_armed=exe.abort_armed,
-                sim_time_scale=exe.sim_time_scale,
-            ))
+            try:
+                detail = self._runtime.get_execution_detail(exe.id)
+            except KeyError:
+                # A live run whose labware was cleared by force has no position to report: its stored record is listed.
+                continue
+            execs.append(GetExecutionDetailResponse.from_detail(detail).record())
             live_ids.add(exe.id)
-        if self._terminal_list is not None:
-            for record in await self._terminal_list():
-                if record.id in live_ids:
-                    continue
-                execs.append(ExecutionRecordModel.from_record(record))
-        return ListExecutionsResponse(executions=execs)
+        for record in await self._terminal_list():
+            if record.id in live_ids:
+                continue
+            execs.append(ExecutionRecordModel.from_record(record))
+        check_runs = await self._check_run_executions()
+        return ListExecutionsResponse(executions=[
+            e.model_copy(update={"check_run": True}) if e.id in check_runs else e for e in execs
+        ])
 
 
 # -- GetExecutionDetailOperation ---------------------------------------------
 
 
 class GetExecutionDetailOperation:
-    Request: ClassVar[type[BaseModel]] = GetExecutionDetailRequest
-    Response: ClassVar[type[BaseModel]] = GetExecutionDetailResponse
+    Request: ClassVar[type[BaseModel]] = GET_EXECUTION_DETAIL_ROUTE.request
+    Response: ClassVar[type[BaseModel]] = GET_EXECUTION_DETAIL_ROUTE.response
+    binding: ClassVar[RestBinding] = GET_EXECUTION_DETAIL_ROUTE.binding
 
-    def __init__(
-        self, runtime: ISystemRuntime,
-        terminal_detail_lookup: TerminalDetailLookup | None = None,
-    ):
-        self._runtime = runtime
-        self._terminal_detail_lookup = terminal_detail_lookup
+    def __init__(self, reader: ExecutionReader):
+        self._reader = reader
 
     async def run(self, req: GetExecutionDetailRequest) -> GetExecutionDetailResponse:
-        try:
-            detail = self._runtime.get_execution_detail(req.execution_id)
-            return GetExecutionDetailResponse.from_detail(detail)
-        except KeyError:
-            pass
-        if self._terminal_detail_lookup is not None:
-            detail = await self._terminal_detail_lookup(req.execution_id)
-            if detail is not None:
-                return GetExecutionDetailResponse.from_detail(detail)
-        raise OperationError.not_found(
-            f"execution {req.execution_id!r} not found",
-            execution_id=req.execution_id,
-        )
+        detail = await self._reader.detail(req.execution_id)
+        if detail is None:
+            raise OperationError.of(
+                ErrorCode.EXECUTION_NOT_FOUND,
+                f"execution {req.execution_id!r} not found",
+                execution_id=req.execution_id,
+            )
+        return detail
 
 
 # -- StopExecutionOperation --------------------------------------------------
 
 
 class StopExecutionOperation:
-    Request: ClassVar[type[BaseModel]] = StopExecutionRequest
-    Response: ClassVar[type[BaseModel]] = StopExecutionResponse
+    Request: ClassVar[type[BaseModel]] = STOP_EXECUTION_ROUTE.request
+    Response: ClassVar[type[BaseModel]] = STOP_EXECUTION_ROUTE.response
+    binding: ClassVar[RestBinding] = STOP_EXECUTION_ROUTE.binding
 
     def __init__(self, runtime: ISystemRuntime):
         self._runtime = runtime
@@ -216,7 +198,8 @@ class StopExecutionOperation:
                 req.execution_id, abort=req.confirm, reason=req.reason, confirm=True,
             )
         except KeyError as exc:
-            raise OperationError.not_found(
+            raise OperationError.of(
+                ErrorCode.EXECUTION_NOT_FOUND,
                 f"execution {req.execution_id!r} not found",
                 execution_id=req.execution_id,
             ) from exc
@@ -244,55 +227,54 @@ class StopExecutionOperation:
         )
 
 
-# -- SetExecutionTimeScaleOperation ------------------------------------------
+# -- SetExecutionSimSpeedupOperation ------------------------------------------
 
 
-def _time_scale_message(scale: float) -> str:
-    if scale == 0:
-        return "no pacing: every simulated step completes as fast as it can"
-    if scale == 1:
+def _sim_speedup_message(speedup: float) -> str:
+    if speedup == 1:
         return "real time"
-    if scale < 1:
-        return f"{1 / scale:g}x faster than real time"
-    return f"{scale:g}x slower than real time"
+    if speedup > 1:
+        return f"{speedup:g}x faster than real time"
+    return f"{1 / speedup:g}x slower than real time"
 
 
-class SetExecutionTimeScaleOperation:
-    Request: ClassVar[type[BaseModel]] = SetExecutionTimeScaleRequest
-    Response: ClassVar[type[BaseModel]] = SetExecutionTimeScaleResponse
+class SetExecutionSimSpeedupOperation:
+    Request: ClassVar[type[BaseModel]] = SET_EXECUTION_SIM_SPEEDUP_ROUTE.request
+    Response: ClassVar[type[BaseModel]] = SET_EXECUTION_SIM_SPEEDUP_ROUTE.response
+    binding: ClassVar[RestBinding] = SET_EXECUTION_SIM_SPEEDUP_ROUTE.binding
 
     def __init__(self, runtime: ISystemRuntime):
         self._runtime = runtime
 
-    async def run(self, req: SetExecutionTimeScaleRequest) -> SetExecutionTimeScaleResponse:
+    async def run(self, req: SetExecutionSimSpeedupRequest) -> SetExecutionSimSpeedupResponse:
         try:
-            scale = self._runtime.set_execution_time_scale(
-                req.execution_id, req.sim_time_scale,
+            speedup = self._runtime.set_execution_sim_speedup(
+                req.execution_id, req.sim_speedup,
             )
         except KeyError as exc:
-            raise OperationError.not_found(
+            raise OperationError.of(
+                ErrorCode.EXECUTION_NOT_FOUND,
                 f"execution {req.execution_id!r} not found",
                 execution_id=req.execution_id,
             ) from exc
-        except SimTimeScaleNotApplicableError as exc:
-            raise OperationError.typed(
-                OperationErrorCode.INVALID_INPUT,
+        except SimSpeedupNotApplicableError as exc:
+            raise OperationError.of(
+                ErrorCode.SIM_SPEEDUP_NOT_APPLICABLE,
                 str(exc),
-                wire_code="SIM_TIME_SCALE_NOT_APPLICABLE",
-                status_code=422,
                 reason=exc.reason,
                 execution_id=req.execution_id,
             ) from exc
         except ValueError as exc:
-            raise OperationError.invalid_input(str(exc)) from exc
+            raise OperationError.validation_error(str(exc)) from exc
         except RuntimeError as exc:
-            raise OperationError.conflict(
+            raise OperationError.of(
+                ErrorCode.CONFLICT,
                 str(exc), execution_id=req.execution_id,
             ) from exc
-        return SetExecutionTimeScaleResponse(
+        return SetExecutionSimSpeedupResponse(
             execution_id=req.execution_id,
-            sim_time_scale=scale,
-            message=_time_scale_message(scale),
+            sim_speedup=speedup,
+            message=_sim_speedup_message(speedup),
         )
 
 
@@ -300,8 +282,9 @@ class SetExecutionTimeScaleOperation:
 
 
 class RemoveExecutionOperation:
-    Request: ClassVar[type[BaseModel]] = RemoveExecutionRequest
-    Response: ClassVar[type[BaseModel]] = RemoveExecutionResponse
+    Request: ClassVar[type[BaseModel]] = REMOVE_EXECUTION_ROUTE.request
+    Response: ClassVar[type[BaseModel]] = REMOVE_EXECUTION_ROUTE.response
+    binding: ClassVar[RestBinding] = REMOVE_EXECUTION_ROUTE.binding
 
     def __init__(self, runtime: ISystemRuntime):
         self._runtime = runtime
@@ -312,12 +295,22 @@ class RemoveExecutionOperation:
                 req.execution_id, reason=req.reason, confirm=True,
             )
         except KeyError as exc:
-            raise OperationError.not_found(
+            raise OperationError.of(
+                ErrorCode.EXECUTION_NOT_FOUND,
                 f"execution {req.execution_id!r} not found",
                 execution_id=req.execution_id,
             ) from exc
         except (ValueError, RuntimeError) as exc:
-            raise OperationError.conflict(
+            raise OperationError.of(
+                ErrorCode.CONFLICT,
                 str(exc), execution_id=req.execution_id,
             ) from exc
         return RemoveExecutionResponse(execution_id=req.execution_id)
+
+
+EXECUTION_CONTROL_OPERATIONS = (
+    CloseExecutionOperation,
+    StopExecutionOperation,
+    SetExecutionSimSpeedupOperation,
+    RemoveExecutionOperation,
+)

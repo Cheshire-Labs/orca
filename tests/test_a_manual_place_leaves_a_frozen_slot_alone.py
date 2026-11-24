@@ -20,7 +20,7 @@ import pytest
 pytestmark = pytest.mark.asyncio
 
 from orca.resource_models.labware import LabwareTemplate
-from orca.runtime.sim_labware import SimPlateTemplate
+from orca.resource_models.sim_labware import SimPlateTemplate
 from orca.workflow_models.actions.util import (
     AssignedLabwareManager,
     DoubleAssignmentError,

@@ -7,6 +7,7 @@ Verifies:
 - Concurrent event coordination across threads
 """
 
+from orca.config import OrcaConfig
 import asyncio
 from typing import AsyncGenerator
 
@@ -15,7 +16,7 @@ import pytest
 import orca.orca as orca
 from orca.events.event_bus import EventBus
 from orca.resource_models.resource_pool import ResourcePool
-from orca.system.resource_registry import ResourceRegistry
+from orca.resource_models.resource_registry import ResourceRegistry
 from orca.system.system_map import SystemMap
 from orca.system.SdkToSystemBuilder import SdkToSystemBuilder
 from orca.runtime.system_runtime import SystemRuntime
@@ -26,13 +27,17 @@ from orca.workflow_models.status_enums import RecoveryDecision
 from orca.workflow_models.thread_context import ThreadContext
 from orca.workflow_models.thread_template import ThreadTemplate
 from orca.workflow_models.workflow_templates import WorkflowTemplate
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from tests.mock import UniversalMockDevice
 from tests.test_helpers import (
     execution_outcome,
     create_test_plate_template, create_test_transporter,
     wait_for_paused_thread, wait_until, wire_system_map,
 )
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 
 async def _await_event_waiters(
@@ -90,11 +95,14 @@ async def _build_single_thread_system(
         name="test_system", description="",
         labwares=[plate], resources_registry=registry,
         system_map=system_map,
-        workflows=[workflow], event_bus=event_bus,
+        workflows=[workflow], event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     system = builder.get_system()
-    runtime = SystemRuntime(system, event_bus=event_bus)
+    runtime = await memory_runtime(system, event_bus=event_bus)
     return runtime, workflow
 
 
@@ -145,11 +153,14 @@ async def _build_two_thread_system(
         labwares=[main_plate, emitter_plate],
         resources_registry=registry,
         system_map=system_map,
-        workflows=[workflow], event_bus=event_bus,
+        workflows=[workflow], event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     system = builder.get_system()
-    runtime = SystemRuntime(system, event_bus=event_bus)
+    runtime = await memory_runtime(system, event_bus=event_bus)
     return runtime, workflow
 
 
@@ -185,7 +196,7 @@ class TestYieldThreadLabwareAccess:
 
         runtime, workflow = await _build_single_thread_system(yield_tmpl, [check_labware])
         await runtime.start()
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
         status = await execution_outcome(runtime, submission, timeout=10.0)
 
         assert status.status == "completed", (
@@ -222,7 +233,7 @@ class TestYieldThreadLabwareAccess:
 
         runtime, workflow = await _build_single_thread_system(yield_tmpl, [shake_and_log])
         await runtime.start()
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
         status = await execution_outcome(runtime, submission, timeout=10.0)
 
         assert status.status == "completed", f"got {status.status}: {status.error}"
@@ -286,7 +297,7 @@ class TestBranchLabwareAccess:
             all_methods=[read_plate, shake_noop],
         )
         await runtime.start()
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
         status = await execution_outcome(runtime, submission, timeout=10.0)
 
         assert status.status == "completed", (
@@ -327,7 +338,7 @@ class TestGeneratorErrorRecovery:
 
         runtime, workflow = await _build_single_thread_system(yield_tmpl, [])
         await runtime.start()
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
 
         # Thread should pause for error recovery, not crash silently
         paused = await wait_for_paused_thread(runtime, submission.execution_id)
@@ -414,7 +425,7 @@ class TestBranchNoMatchRecovery:
             main_thread, emit_unknown, all_methods=[shake],
         )
         await runtime.start()
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
 
         # Thread should pause for error recovery, not crash
         paused = await wait_for_paused_thread(runtime, submission.execution_id)
@@ -475,7 +486,7 @@ class TestBranchBehaviorVerification:
             all_methods=[path_a, path_b],
         )
         await runtime.start()
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
         status = await execution_outcome(runtime, submission, timeout=10.0)
 
         assert status.status == "completed", f"got {status.status}: {status.error}"
@@ -522,7 +533,7 @@ class TestBranchBehaviorVerification:
             all_methods=[post_wait_method],
         )
         await runtime.start()
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
         status = await execution_outcome(runtime, submission, timeout=10.0)
 
         assert status.status == "completed", f"got {status.status}: {status.error}"
@@ -623,14 +634,17 @@ class TestConcurrentEventWaits:
             labwares=[plate_a, plate_b, plate_c],
             resources_registry=registry,
             system_map=system_map,
-            workflows=[workflow], event_bus=event_bus,
+            workflows=[workflow], event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+            labware_catalog=bundled_labware_catalog(),
+            labware_service=memory_labware_service(),
+            unsaved_positions=memory_unsaved_positions(),
         )
         await builder.bind_labwares()
         system = builder.get_system()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
 
         await runtime.start()
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
         status = await execution_outcome(runtime, submission, timeout=10.0)
 
         assert status.status == "completed", f"got {status.status}: {status.error}"
@@ -687,7 +701,7 @@ class TestWaitStepTimeoutRetry:
             main_thread, delayed_emit, all_methods=[after_wait],
         )
         await runtime.start()
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
 
         # Wait for the thread to pause due to timeout
         paused = await wait_for_paused_thread(runtime, submission.execution_id)
@@ -761,7 +775,7 @@ class TestYieldThreadEventCoordination:
             all_methods=[action_a, action_b],
         )
         await runtime.start()
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
         status = await execution_outcome(runtime, submission, timeout=10.0)
 
         assert status.status == "completed", f"got {status.status}: {status.error}"

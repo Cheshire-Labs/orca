@@ -1,7 +1,7 @@
 """System configuration for orca-core runtime behavior.
 
-Loaded from JSON config files via Pydantic. Propagated through the system
-to all components that need timing/retry/timeout configuration.
+Read from the deployment package's optional `system_config.json`. A missing file
+or setting keeps the default; a misspelled setting is refused.
 
 Physical timing context:
 - Plate moves take ~10 seconds
@@ -11,11 +11,17 @@ Physical timing context:
 - Simulation is fast; hardware is slow. Defaults must work for both.
 """
 
-from pydantic import BaseModel, Field
+from pathlib import Path
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+SYSTEM_CONFIG_FILE = "system_config.json"
 
 
 class ReservationConfig(BaseModel):
     """Reservation acquisition retry behavior."""
+
+    model_config = ConfigDict(extra="forbid")
 
     move_reservation_timeout: float | None = Field(
         default=None,
@@ -46,7 +52,8 @@ class ReservationConfig(BaseModel):
             "the shared deck if you cannot move on' - a plate must not occupy "
             "a device other threads need while it waits (possibly hours) for "
             "its own destination. Must stay below the stall detector's "
-            "quiescence window (2 ticks of 10s) or a stalled-looking system "
+            "quiescence window (at least 20s: 3 ticks of 10s, the first of which "
+            "can land just after the state began) or a stalled-looking system "
             "pauses before the vacate can break the jam."
         ),
     )
@@ -74,6 +81,8 @@ class ReservationConfig(BaseModel):
 class CoordinationConfig(BaseModel):
     """Thread coordination timeouts."""
 
+    model_config = ConfigDict(extra="forbid")
+
     co_labware_timeout: float | None = Field(
         default=None,
         description=(
@@ -83,8 +92,8 @@ class CoordinationConfig(BaseModel):
             "labware. This wait is NOT reservation acquisition, so the "
             "reservation deadlock detector does not see it; a contributor that "
             "dies is surfaced by execution-failure escalation, and a genuinely "
-            "wedged wait is recovered by operator stop. Set a finite value in "
-            "tests for fast failure."
+            "wedged wait is recovered by operator stop. When it runs out, the "
+            "thread pauses at CO_LABWARE_WAIT; RETRY waits again with the whole timeout."
         ),
     )
 
@@ -93,14 +102,16 @@ class CoordinationConfig(BaseModel):
         description=(
             "Default max seconds a thread waits for an event (orca.on / orca.branch). "
             "None = wait indefinitely (production default). "
-            "Per-step timeout overrides this. "
-            "Set to a short value in tests for fast failure."
+            "Per-step timeout overrides this. When it runs out, the thread pauses at "
+            "WAIT_EVENT_TIMEOUT; RETRY waits again with the whole timeout."
         ),
     )
 
 
 class OrcaConfig(BaseModel):
-    """Top-level orca-core configuration."""
+    """Top-level orca-core configuration: the contents of `system_config.json`."""
+
+    model_config = ConfigDict(extra="forbid")
 
     reservation: ReservationConfig = Field(default_factory=ReservationConfig)
     coordination: CoordinationConfig = Field(default_factory=CoordinationConfig)

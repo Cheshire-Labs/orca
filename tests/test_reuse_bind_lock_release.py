@@ -1,7 +1,7 @@
 """Review item L8: `_resolve_reuse_bind` must release `spawn_lock`
-BEFORE the slow `await self._labware_store.register(fresh)` call.
+BEFORE the slow `await self._labware_service.register(fresh)` call.
 
-On a DB-backed `ILabwareStore`, `register()` is a network round-trip.
+On a DB-backed labware store, `register()` is a network round-trip.
 Holding the per-Location spawn_lock across that I/O serializes every
 spawn-bind dispatch on the location -- even ones for different threads
 that would have bound to the freshly-claimed labware. The lock only
@@ -24,10 +24,12 @@ from orca.resource_models.location import Location
 from orca.resource_models.plate_pad import PlatePad
 from orca.state.contents import LabwareContentsLedger
 from orca.state.ops_history import OpsHistory
+from orca.runtime.labware_service import LabwareService
 from orca.runtime.labware_store import InMemoryLabwareStore
 from orca.workflow_models.workflows.executing_workflow import (
     ExecutingWorkflow, ResolvedAcquisition,
 )
+from tests.memory_activity import memory_ops_store
 
 
 class _BlockingStore(InMemoryLabwareStore):
@@ -69,15 +71,14 @@ def _make_system_stub():
     system = MagicMock()
     system.labwares = []
     system.add_labware = lambda lw: system.labwares.append(lw)
-    # Fresh binds reconcile the LH deck after registering; on a non-LH start
-    # location it is a no-op, but the call is awaited so it must be async.
-    system.reconcile_lh_deck_occupancy = AsyncMock()
-    # Reuse-bind finishes through the placement chokepoint (bind_resident);
+    # Reuse-bind finishes through the placement chokepoint (arrived with Arrival.BOUND);
     # awaited, so it must be async on the stub.
-    system.labware_placer = MagicMock(bind_resident=AsyncMock())
+    system.labware_placer = MagicMock(
+        arrived=AsyncMock(), claim=lambda labware, at: at.initialize_labware(labware),
+    )
     # A real ledger: the bound labware gets its opening entry before
-    # bind_resident projects it.
-    system.labware_contents = LabwareContentsLedger(OpsHistory())
+    # arrived projects it.
+    system.labware_contents = LabwareContentsLedger(OpsHistory(store=memory_ops_store()))
     return system
 
 
@@ -93,7 +94,7 @@ def _make_executing_workflow_stub(
         pass
 
     holder = _Holder()
-    holder._labware_store = store
+    holder._labware_service = LabwareService(store)
     holder._system = system
     holder._workflow = MagicMock(id="exec-test")
     holder._resolve_reuse_bind = (

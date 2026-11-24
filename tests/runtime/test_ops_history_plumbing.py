@@ -19,7 +19,8 @@ from orca.state.records import (
 )
 from orca.resource_models.tracking_context import TrackingContext
 from orca.resource_models.tracking_observer import NullTrackingObserver
-from orca.state.jsonl_store import JsonlOpsHistoryStore
+from orca.runtime.sqlite_ops_history_store import SqliteOpsHistoryStore
+from tests.ephemeral_ops_store import ops_history_engine
 from orca.state.ops_store import SYSTEM_ID
 
 
@@ -36,7 +37,7 @@ class TestOpsHistoryExecutionScoping:
     @pytest.mark.asyncio
     async def test_for_execution_isolates_writes(self, tmp_path: Path) -> None:
         """Two OpsHistory views over the same store write to distinct buckets."""
-        store = JsonlOpsHistoryStore(tmp_path)
+        store = SqliteOpsHistoryStore(ops_history_engine(tmp_path / "ops.db"))
         history = OpsHistory(store=store)
         e1 = history.for_execution("exec-1")
         e2 = history.for_execution("exec-2")
@@ -49,8 +50,8 @@ class TestOpsHistoryExecutionScoping:
     async def test_default_history_uses_system_sentinel_bucket(
         self, tmp_path: Path,
     ) -> None:
-        """Bare OpsHistory() writes to ``_system`` so test harnesses keep working."""
-        store = JsonlOpsHistoryStore(tmp_path)
+        """An OpsHistory given no execution writes to the ``_system`` bucket."""
+        store = SqliteOpsHistoryStore(ops_history_engine(tmp_path / "ops.db"))
         history = OpsHistory(store=store)
         await history.append_record(_record("a1"))
         assert [r.action_id for r in await store.list(SYSTEM_ID)] == ["a1"]
@@ -60,7 +61,7 @@ class TestOpsHistoryExecutionScoping:
         self, tmp_path: Path,
     ) -> None:
         """Seeding a labware via for_execution(eid) writes INITIAL_STATE to bucket eid."""
-        store = JsonlOpsHistoryStore(tmp_path)
+        store = SqliteOpsHistoryStore(ops_history_engine(tmp_path / "ops.db"))
         history = OpsHistory(store=store)
         view = history.for_execution("exec-1")
         await view.append_initial_state(
@@ -82,7 +83,7 @@ class TestTrackingContextRoutesByExecutionId:
         self, tmp_path: Path,
     ) -> None:
         """Action execution call sites pass the workflow's execution_id."""
-        store = JsonlOpsHistoryStore(tmp_path)
+        store = SqliteOpsHistoryStore(ops_history_engine(tmp_path / "ops.db"))
         # Bind context to system bucket; action callers override per-write.
         ctx = TrackingContext(
             observer=NullTrackingObserver(),
@@ -97,7 +98,7 @@ class TestTrackingContextRoutesByExecutionId:
         self, tmp_path: Path,
     ) -> None:
         """Legacy callers that pass only the record use the bound bucket."""
-        store = JsonlOpsHistoryStore(tmp_path)
+        store = SqliteOpsHistoryStore(ops_history_engine(tmp_path / "ops.db"))
         ctx = TrackingContext(
             observer=NullTrackingObserver(),
             ops_history=OpsHistory(store=store, execution_id="exec-A"),

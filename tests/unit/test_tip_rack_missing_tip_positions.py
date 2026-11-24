@@ -13,6 +13,7 @@ from orca.state.provenance import Provenance
 from orca.state.ops_history import OpsHistory
 from tests.test_helpers import bind_ledger
 from tests.unit.test_labware_can_continue import _append_pickup, _seed_rack
+from tests.memory_activity import memory_ops_store
 
 
 def _make_fake_rack(name: str = "tips_384") -> MagicMock:
@@ -25,7 +26,7 @@ def _make_fake_rack(name: str = "tips_384") -> MagicMock:
 class TestMissingTipPositions:
     @pytest.mark.asyncio
     async def test_present_positions_report_nothing_missing(self) -> None:
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         inst = TipRackInstance(_make_fake_rack(), template_name="tips_384", labware_type="tips_384")
         bind_ledger(inst, history)
         await _seed_rack(history, inst.name, ["A1", "A2", "B1"])
@@ -34,7 +35,7 @@ class TestMissingTipPositions:
 
     @pytest.mark.asyncio
     async def test_names_only_the_positions_actually_missing(self) -> None:
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         inst = TipRackInstance(_make_fake_rack(), template_name="tips_384", labware_type="tips_384")
         bind_ledger(inst, history)
         await _seed_rack(history, inst.name, ["A1", "A2"])
@@ -47,7 +48,7 @@ class TestMissingTipPositions:
         """A rack this route never bound has no baseline to check against --
         the same "nothing said" default `_can_continue_default` uses, not a
         false claim that every position is empty."""
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         inst = TipRackInstance(_make_fake_rack(), template_name="tips_384", labware_type="tips_384")
         bind_ledger(inst, history)
 
@@ -66,7 +67,7 @@ class TestTipCountPresent:
 
     @pytest.mark.asyncio
     async def test_counts_the_positions_the_ledger_backs(self) -> None:
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         inst = TipRackInstance(_make_fake_rack(), template_name="tips_384", labware_type="tips_384")
         bind_ledger(inst, history)
         await _seed_rack(history, inst.name, ["A1", "A2", "B1"])
@@ -76,7 +77,7 @@ class TestTipCountPresent:
 
     @pytest.mark.asyncio
     async def test_no_baseline_counts_zero(self) -> None:
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         inst = TipRackInstance(_make_fake_rack(), template_name="tips_384", labware_type="tips_384")
         bind_ledger(inst, history)
 
@@ -103,7 +104,7 @@ class TestTipReadingProvenance:
 
     @pytest.mark.asyncio
     async def test_a_seeded_rack_reads_known(self) -> None:
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         inst = TipRackInstance(_make_fake_rack(), template_name="tips_384", labware_type="tips_384")
         bind_ledger(inst, history)
         await _seed_rack(history, inst.name, ["A1", "A2"])
@@ -112,7 +113,7 @@ class TestTipReadingProvenance:
 
     @pytest.mark.asyncio
     async def test_a_restart_leaves_the_reading_stale(self) -> None:
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         inst = TipRackInstance(_make_fake_rack(), template_name="tips_384", labware_type="tips_384")
         bind_ledger(inst, history)
         await _seed_rack(history, inst.name, ["A1", "A2"])
@@ -134,7 +135,7 @@ class TestTipReadingProvenance:
         pick through at a position the record calls empty: a restart is when a
         person reloads a rack by hand, an abort is the machine losing its own
         record of what it did."""
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         inst = TipRackInstance(_make_fake_rack(), template_name="tips_384", labware_type="tips_384")
         bind_ledger(inst, history)
         await _seed_rack(history, inst.name, ["A1", "A2"])
@@ -152,7 +153,7 @@ class TestTipReadingProvenance:
 
     @pytest.mark.asyncio
     async def test_a_rack_nothing_ever_described_reads_unknown(self) -> None:
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         inst = TipRackInstance(_make_fake_rack(), template_name="tips_384", labware_type="tips_384")
         bind_ledger(inst, history)
 

@@ -1,6 +1,6 @@
 """DeploymentProfileFacade: external UI surface over IDeploymentProfileStore.
 
-Reads pass through. Writes are `@dangerous` so CLI/REST/MCP all get uniform
+Reads pass through. Writes are `@dangerous` so CLI/REST all get uniform
 confirmation prompts via the danger registry.
 
 Editing a profile here does NOT affect executions that are already running.
@@ -10,8 +10,8 @@ effect at the NEXT submission that names the profile.
 """
 
 from orca.runtime.danger import DangerLevel, dangerous
-from orca.runtime.interfaces import IDeploymentProfileStore
-from orca.runtime.runtime_interface import IDeploymentProfileFacade
+from orca.resource_models.store_interfaces import IDeploymentProfileStore
+from orca.runtime.facade_interfaces import IDeploymentProfileFacade
 from orca.variables.deployment_profile import DeploymentProfile
 
 

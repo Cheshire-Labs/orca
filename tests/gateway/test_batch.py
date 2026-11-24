@@ -1,17 +1,16 @@
-"""Unit tests for BatchExecutor.
+"""Unit tests for the batch Operation's loop, `run_batch`, over the operator command runner.
 
-Dispatch resolution and the external-control flag are stubbed here: what these
-pin is the executor's own retry, stop-on-error and aggregation behaviour. That a
-batched command records in the ledger and holds the flag is pinned against a
-real runtime in ``tests/test_adhoc_commands_are_recorded.py``.
+Dispatch resolution and the external-control flag are stubbed here: what these pin is the batch's own retry,
+stop-on-error and aggregation behaviour. That a batched command records in
+the ledger and holds the flag is pinned against a real runtime in ``tests/test_adhoc_commands_are_recorded.py``.
 """
 
-from typing import Optional
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
-from orca.runtime.run_modes import WorkflowRunMode
+from pydantic import JsonValue
 
 from orca.gateway.controller.exceptions import (
     CommandExecutionError,
@@ -19,35 +18,71 @@ from orca.gateway.controller.exceptions import (
     DeviceLockedError,
     DeviceOfflineError,
 )
-from orca.gateway.batch import BatchExecutor
-from orca.gateway.batch import CommandResult, DeviceCommand
+from orca.events.execution_context import DeviceCommandContext
+from orca.gateway.controller.command_events import current_command
+from orca.gateway.operator_commands import OperatorDeviceCommands
+from orca.gateway.registry.snapshot import DeviceSnapshot
+from orca.runtime.server_events import ServerEvents
+from orca.events.runtime_event import RuntimeEvent
+from orca.operations.operator_device import BatchCommand, run_batch
+from orca.operations.operator_device_models import BatchCommandResultDTO
+from orca.modes.run_modes import WorkflowRunMode
 from tests.gateway._control_scope import stub_control_scope
+from tests.gateway_parts import gateway_with
+from tests.named_commands import named_commands
+
+DEVICE = "shaker-1"
+
+
+def _knows_the_shaker() -> MagicMock:
+    """A connection tracker that has the shaker registered, so the batch can read it before each command."""
+    tracker = MagicMock()
+    tracker.get_device = AsyncMock(return_value=DeviceSnapshot(
+        type="shaker", name=DEVICE, interfaces=["IShaker"], capabilities=[], provides_state=False, methods={},
+        site="test", lab="test", workcell=None, status="ready", last_seen=datetime.now(timezone.utc),
+    ))
+    return tracker
+
+
+@dataclass(frozen=True)
+class _Batch:
+    results: list[BatchCommandResultDTO]
+    failed_at_index: int | None
+    total_duration_ms: float
+
+    @property
+    def success(self) -> bool:
+        return self.failed_at_index is None
+
+
+class _Executor:
+    def __init__(self, controller: MagicMock) -> None:
+        self._runner = OperatorDeviceCommands(gateway_with(tracker=_knows_the_shaker(), controller=controller), lambda: None)
+
+    async def execute_batch(self, commands: list[BatchCommand], stop_on_error: bool = True) -> _Batch:
+        results, failed_at, total_ms = await run_batch(
+            named_commands(self._runner, DEVICE), commands, stop_on_error=stop_on_error, reason=None,
+        )
+        return _Batch(results, failed_at, total_ms)
 
 
 @pytest.fixture
 def mock_controller() -> MagicMock:
-    """Create a mock DeviceController."""
     controller = MagicMock()
     controller.execute_command = AsyncMock()
     return controller
 
 
 @pytest.fixture
-def executor(
-    mock_controller: MagicMock, monkeypatch: pytest.MonkeyPatch,
-) -> BatchExecutor:
-    """A BatchExecutor whose control scope resolves without a real topology."""
-    stub_control_scope(monkeypatch, mock_controller)
-    return BatchExecutor(mock_controller, lambda _name: WorkflowRunMode.LIVE)
+def executor(mock_controller: MagicMock, monkeypatch: pytest.MonkeyPatch) -> _Executor:
+    """A batch whose control scope resolves without a real topology."""
+    stub_control_scope(monkeypatch)
+    return _Executor(mock_controller)
 
 
-class TestBatchExecutorSuccess:
-    """Test successful batch execution."""
-
+class TestBatchSuccess:
     @pytest.mark.asyncio
-    async def test_execute_empty_batch(
-        self, executor: BatchExecutor
-    ) -> None:
+    async def test_execute_empty_batch(self, executor: _Executor) -> None:
         result = await executor.execute_batch([])
         assert result.success is True
         assert result.results == []
@@ -55,27 +90,17 @@ class TestBatchExecutorSuccess:
         assert result.total_duration_ms >= 0
 
     @pytest.mark.asyncio
-    async def test_execute_single_command(
-        self,
-        executor: BatchExecutor,
-        mock_controller: MagicMock,
-    ) -> None:
+    async def test_execute_single_command(self, executor: _Executor, mock_controller: MagicMock) -> None:
         mock_controller.execute_command.return_value = {"status": "ok"}
 
-        commands = [
-            DeviceCommand(device_id="shaker-1", command="shake", params={"speed": 500, "duration": 30})
-        ]
-
-        result = await executor.execute_batch(commands)
+        result = await executor.execute_batch([BatchCommand(command="shake", params={"speed": 500, "duration": 30})])
 
         assert result.success is True
         assert len(result.results) == 1
         assert result.results[0].success is True
         assert result.results[0].result == {"status": "ok"}
-        assert result.failed_at_index is None
-
         mock_controller.execute_command.assert_called_once_with(
-            device_id="shaker-1",
+            device_id=DEVICE,
             command="shake",
             params={"speed": 500, "duration": 30},
             timeout_seconds=None,
@@ -85,417 +110,166 @@ class TestBatchExecutorSuccess:
         )
 
     @pytest.mark.asyncio
-    async def test_execute_multiple_commands(
-        self,
-        executor: BatchExecutor,
-        mock_controller: MagicMock,
-    ) -> None:
+    async def test_execute_multiple_commands(self, executor: _Executor, mock_controller: MagicMock) -> None:
         mock_controller.execute_command.return_value = {"status": "ok"}
+        names = ["open", "lock_plate", "shake", "unlock_plate", "close"]
 
-        commands = [
-            DeviceCommand(device_id="shaker-1", command="open"),
-            DeviceCommand(device_id="shaker-1", command="lock_plate"),
-            DeviceCommand(device_id="shaker-1", command="shake", params={"speed": 500, "duration": 30}),
-            DeviceCommand(device_id="shaker-1", command="unlock_plate"),
-            DeviceCommand(device_id="shaker-1", command="close"),
-        ]
-
-        result = await executor.execute_batch(commands)
+        result = await executor.execute_batch([BatchCommand(command=n) for n in names])
 
         assert result.success is True
-        assert len(result.results) == 5
-        assert all(r.success for r in result.results)
-        assert result.failed_at_index is None
+        assert [r.command for r in result.results] == names
         assert mock_controller.execute_command.call_count == 5
 
     @pytest.mark.asyncio
-    async def test_execute_with_timeout(
-        self,
-        executor: BatchExecutor,
-        mock_controller: MagicMock,
-    ) -> None:
+    async def test_execute_with_timeout(self, executor: _Executor, mock_controller: MagicMock) -> None:
         mock_controller.execute_command.return_value = {"status": "ok"}
 
-        commands = [
-            DeviceCommand(device_id="centrifuge-1", command="centrifuge", params={"g": 1000}, timeout=60.0)
-        ]
-
-        result = await executor.execute_batch(commands)
+        result = await executor.execute_batch([BatchCommand(command="centrifuge", params={"g": 1000}, timeout=60.0)])
 
         assert result.success is True
-        mock_controller.execute_command.assert_called_with(
-            device_id="centrifuge-1",
-            command="centrifuge",
-            params={"g": 1000},
-            timeout_seconds=60.0,
-            effective_mode=WorkflowRunMode.LIVE,
-            effective_interfaces=None,
-            confirm=False,
-        )
+        assert mock_controller.execute_command.call_args.kwargs["timeout_seconds"] == 60.0
 
 
-class TestBatchExecutorErrors:
-    """Test error handling in batch execution."""
-
+class TestBatchErrors:
     @pytest.mark.asyncio
-    async def test_stop_on_error_true(
-        self,
-        executor: BatchExecutor,
-        mock_controller: MagicMock,
-    ) -> None:
-        # Second command fails
+    async def test_stop_on_error_true(self, executor: _Executor, mock_controller: MagicMock) -> None:
         mock_controller.execute_command.side_effect = [
-            {"status": "ok"},
-            DeviceOfflineError("Device disconnected"),
-            {"status": "ok"},  # Should not be reached
+            {"status": "ok"}, DeviceOfflineError("Device disconnected"), {"status": "ok"},
         ]
-
-        commands = [
-            DeviceCommand(device_id="shaker-1", command="open"),
-            DeviceCommand(device_id="shaker-1", command="shake", params={"speed": 500}),
-            DeviceCommand(device_id="shaker-1", command="close"),
-        ]
+        commands = [BatchCommand(command="open"), BatchCommand(command="shake"), BatchCommand(command="close")]
 
         result = await executor.execute_batch(commands, stop_on_error=True)
 
         assert result.success is False
-        assert len(result.results) == 2  # Stopped after second command
-        assert result.results[0].success is True
-        assert result.results[1].success is False
+        assert [r.success for r in result.results] == [True, False]
         assert result.results[1].error_type == "DeviceOfflineError"
         assert result.failed_at_index == 1
         assert mock_controller.execute_command.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_stop_on_error_false(
-        self,
-        executor: BatchExecutor,
-        mock_controller: MagicMock,
-    ) -> None:
-        # Second command fails, but continue
+    async def test_stop_on_error_false(self, executor: _Executor, mock_controller: MagicMock) -> None:
         mock_controller.execute_command.side_effect = [
-            {"status": "ok"},
-            DeviceOfflineError("Device disconnected"),
-            {"status": "ok"},  # Should still execute
+            {"status": "ok"}, DeviceOfflineError("Device disconnected"), {"status": "ok"},
         ]
-
-        commands = [
-            DeviceCommand(device_id="shaker-1", command="open"),
-            DeviceCommand(device_id="shaker-1", command="shake", params={"speed": 500}),
-            DeviceCommand(device_id="shaker-1", command="close"),
-        ]
+        commands = [BatchCommand(command="open"), BatchCommand(command="shake"), BatchCommand(command="close")]
 
         result = await executor.execute_batch(commands, stop_on_error=False)
 
-        assert result.success is False
-        assert len(result.results) == 3  # All commands attempted
-        assert result.results[0].success is True
-        assert result.results[1].success is False
-        assert result.results[2].success is True
-        assert result.failed_at_index == 1  # First failure
+        assert [r.success for r in result.results] == [True, False, True]
+        assert result.failed_at_index == 1
         assert mock_controller.execute_command.call_count == 3
 
     @pytest.mark.asyncio
-    async def test_device_offline_error(
-        self,
-        executor: BatchExecutor,
-        mock_controller: MagicMock,
-    ) -> None:
+    async def test_device_offline_error(self, executor: _Executor, mock_controller: MagicMock) -> None:
         mock_controller.execute_command.side_effect = DeviceOfflineError("Device not connected")
 
-        commands = [DeviceCommand(device_id="shaker-1", command="shake")]
-        result = await executor.execute_batch(commands)
+        result = await executor.execute_batch([BatchCommand(command="shake")])
 
-        assert result.success is False
-        assert result.results[0].success is False
         assert result.results[0].error_type == "DeviceOfflineError"
-        assert result.results[0].error is not None
-        assert "not connected" in result.results[0].error
+        assert "not connected" in (result.results[0].error or "")
 
     @pytest.mark.asyncio
-    async def test_command_timeout_error(
-        self,
-        executor: BatchExecutor,
-        mock_controller: MagicMock,
-    ) -> None:
+    async def test_command_timeout_error(self, executor: _Executor, mock_controller: MagicMock) -> None:
         mock_controller.execute_command.side_effect = CommandTimeoutError("Operation timed out")
 
-        commands = [DeviceCommand(device_id="centrifuge-1", command="centrifuge")]
-        result = await executor.execute_batch(commands)
+        result = await executor.execute_batch([BatchCommand(command="centrifuge")])
 
-        assert result.success is False
-        assert result.results[0].success is False
         assert result.results[0].error_type == "CommandTimeoutError"
 
     @pytest.mark.asyncio
-    async def test_command_execution_error(
-        self,
-        executor: BatchExecutor,
-        mock_controller: MagicMock,
-    ) -> None:
-        error = CommandExecutionError("Motor stalled", error_type="MotorError")
-        mock_controller.execute_command.side_effect = error
+    async def test_command_execution_error(self, executor: _Executor, mock_controller: MagicMock) -> None:
+        mock_controller.execute_command.side_effect = CommandExecutionError("Motor stalled", error_type="MotorError")
 
-        commands = [DeviceCommand(device_id="shaker-1", command="shake")]
-        result = await executor.execute_batch(commands)
+        result = await executor.execute_batch([BatchCommand(command="shake")])
 
-        assert result.success is False
-        assert result.results[0].success is False
         assert result.results[0].error_type == "MotorError"
         assert result.results[0].error == "Motor stalled"
+        assert result.results[0].result is None
 
 
-class TestBatchExecutorRetry:
-    """Test retry logic for DeviceLockedError."""
-
+class TestALockedDevice:
     @pytest.mark.asyncio
-    async def test_retry_on_device_locked_success(
-        self,
-        executor: BatchExecutor,
-        mock_controller: MagicMock,
-    ) -> None:
-        # Fail twice with DeviceLockedError, then succeed
-        mock_controller.execute_command.side_effect = [
-            DeviceLockedError("Device busy"),
-            DeviceLockedError("Device still busy"),
-            {"status": "ok"},
-        ]
+    async def test_a_locked_device_fails_the_command_at_once(self, executor: _Executor, mock_controller: MagicMock) -> None:
+        """An operator is refused while the engine holds the device, never queued."""
+        mock_controller.execute_command.side_effect = DeviceLockedError("Device busy")
 
-        # Reduce delays for faster test
-        executor.INITIAL_RETRY_DELAY = 0.01
-        executor.MAX_RETRY_DELAY = 0.01
+        result = await executor.execute_batch([BatchCommand(command="shake")])
 
-        commands = [DeviceCommand(device_id="shaker-1", command="shake")]
-        result = await executor.execute_batch(commands)
-
-        assert result.success is True
-        assert result.results[0].success is True
-        assert mock_controller.execute_command.call_count == 3
-
-    @pytest.mark.asyncio
-    async def test_retry_exhausted(
-        self,
-        executor: BatchExecutor,
-        mock_controller: MagicMock,
-    ) -> None:
-        # Always fail with DeviceLockedError
-        mock_controller.execute_command.side_effect = DeviceLockedError("Device always busy")
-
-        # Reduce delays for faster test
-        executor.INITIAL_RETRY_DELAY = 0.01
-        executor.MAX_RETRY_DELAY = 0.01
-
-        commands = [DeviceCommand(device_id="shaker-1", command="shake")]
-        result = await executor.execute_batch(commands)
-
-        assert result.success is False
-        assert result.results[0].success is False
         assert result.results[0].error_type == "DeviceLockedError"
-        # Should have tried MAX_LOCK_RETRIES + 1 times (initial + retries)
-        assert mock_controller.execute_command.call_count == executor.MAX_LOCK_RETRIES + 1
+        assert mock_controller.execute_command.call_count == 1
 
     @pytest.mark.asyncio
-    async def test_no_retry_for_other_errors(
-        self,
-        executor: BatchExecutor,
-        mock_controller: MagicMock,
-    ) -> None:
-        # DeviceOfflineError should not be retried
+    async def test_no_retry_for_other_errors(self, executor: _Executor, mock_controller: MagicMock) -> None:
         mock_controller.execute_command.side_effect = DeviceOfflineError("Device offline")
 
-        commands = [DeviceCommand(device_id="shaker-1", command="shake")]
-        result = await executor.execute_batch(commands)
+        result = await executor.execute_batch([BatchCommand(command="shake")])
 
         assert result.success is False
-        assert mock_controller.execute_command.call_count == 1  # No retry
+        assert mock_controller.execute_command.call_count == 1
 
 
-class TestBatchExecutorProgressCallback:
-    """Test progress callback functionality."""
+class _Told:
+    """Each COMMAND event as (status, command), in order."""
+
+    def __init__(self) -> None:
+        self.told: list[tuple[str, str]] = []
+
+    def on_event(self, event: RuntimeEvent) -> None:
+        if isinstance(event.context, DeviceCommandContext):
+            self.told.append((event.status, event.context.command))
+
+
+def _reporting(controller: MagicMock, answers: list[JsonValue | Exception]) -> list[tuple[str, str]]:
+    """A controller that reports each command to the sender's block as the real one does."""
+    seen = _Told()
+    events = ServerEvents()
+    events.add_sink(seen)
+    controller.command_events = events
+    pending = list(answers)
+
+    async def execute_command(**kwargs: JsonValue) -> JsonValue:
+        block = current_command()
+        assert block is not None
+        block.reached(events, "SIM", {}, None, None)
+        answer = pending.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    controller.execute_command = AsyncMock(side_effect=execute_command)
+    return seen.told
+
+
+class TestBatchEvents:
+    @pytest.mark.asyncio
+    async def test_each_command_shows_a_start_and_an_end(self, executor: _Executor, mock_controller: MagicMock) -> None:
+        told = _reporting(mock_controller, [{"status": "ok"}, {"status": "ok"}])
+
+        await executor.execute_batch([BatchCommand(command="open"), BatchCommand(command="close")])
+
+        assert told == [("STARTED", "open"), ("COMPLETED", "open"), ("STARTED", "close"), ("COMPLETED", "close")]
 
     @pytest.mark.asyncio
-    async def test_callback_called_for_each_command(
-        self,
-        executor: BatchExecutor,
-        mock_controller: MagicMock,
+    async def test_a_failed_command_shows_its_failure_and_nothing_after_it(
+        self, executor: _Executor, mock_controller: MagicMock,
     ) -> None:
-        mock_controller.execute_command.return_value = {"status": "ok"}
-
-        callback_calls: list[tuple[int, DeviceCommand, Optional[CommandResult]]] = []
-
-        def callback(
-            index: int,
-            command: DeviceCommand,
-            result: Optional[CommandResult],
-        ) -> None:
-            callback_calls.append((index, command, result))
-
-        commands = [
-            DeviceCommand(device_id="shaker-1", command="open"),
-            DeviceCommand(device_id="shaker-1", command="shake"),
-            DeviceCommand(device_id="shaker-1", command="close"),
-        ]
-
-        await executor.execute_batch(commands, progress_callback=callback)
-
-        assert len(callback_calls) == 3
-        assert callback_calls[0][0] == 0
-        assert callback_calls[1][0] == 1
-        assert callback_calls[2][0] == 2
-
-        # All callbacks should have successful results
-        assert all(call[2] is not None and call[2].success for call in callback_calls)
-
-    @pytest.mark.asyncio
-    async def test_callback_called_even_on_failure(
-        self,
-        executor: BatchExecutor,
-        mock_controller: MagicMock,
-    ) -> None:
-        mock_controller.execute_command.side_effect = [
-            {"status": "ok"},
-            DeviceOfflineError("Disconnected"),
-        ]
-
-        callback_calls: list[tuple[int, DeviceCommand, Optional[CommandResult]]] = []
-
-        def callback(
-            index: int,
-            command: DeviceCommand,
-            result: Optional[CommandResult],
-        ) -> None:
-            callback_calls.append((index, command, result))
-
-        commands = [
-            DeviceCommand(device_id="shaker-1", command="open"),
-            DeviceCommand(device_id="shaker-1", command="shake"),
-        ]
+        told = _reporting(mock_controller, [{"status": "ok"}, DeviceOfflineError("Disconnected")])
 
         await executor.execute_batch(
-            commands, stop_on_error=True, progress_callback=callback
+            [BatchCommand(command="open"), BatchCommand(command="shake"), BatchCommand(command="close")],
+            stop_on_error=True,
         )
 
-        assert len(callback_calls) == 2
-        assert callback_calls[0][2] is not None and callback_calls[0][2].success is True
-        assert callback_calls[1][2] is not None and callback_calls[1][2].success is False
-
-
-class TestDeviceCommand:
-    """Test DeviceCommand model.
-
-    The all-fields-set case is covered through real executor use by
-    TestBatchExecutorSuccess.test_execute_single_command (device_id /
-    command / params forwarded verbatim) and test_execute_with_timeout
-    (timeout forwarded as timeout_seconds), so no ctor-echo test for it.
-    """
-
-    def test_create_command_minimal(self) -> None:
-        cmd = DeviceCommand(device_id="centrifuge-1", command="stop")
-
-        assert cmd.device_id == "centrifuge-1"
-        assert cmd.command == "stop"
-        assert cmd.params is None
-        assert cmd.timeout is None
-
-    def test_create_command_with_empty_params(self) -> None:
-        cmd = DeviceCommand(device_id="sealer-1", command="open", params={})
-
-        assert cmd.device_id == "sealer-1"
-        assert cmd.command == "open"
-        assert cmd.params == {}
-
-
-class TestCommandResult:
-    """CommandResult fields are populated by the executor, not the ctor."""
+        assert told == [("STARTED", "open"), ("COMPLETED", "open"), ("STARTED", "shake"), ("FAILED", "shake")]
 
     @pytest.mark.asyncio
-    async def test_successful_result_carries_controller_return_and_command(
-        self,
-        executor: BatchExecutor,
-        mock_controller: MagicMock,
+    async def test_a_batch_told_to_keep_going_starts_the_command_after_a_failure(
+        self, executor: _Executor, mock_controller: MagicMock,
     ) -> None:
-        mock_controller.execute_command.return_value = {"status": "ok"}
-        cmd = DeviceCommand(device_id="shaker-1", command="shake")
+        told = _reporting(mock_controller, [DeviceOfflineError("Disconnected"), {"status": "ok"}])
 
-        batch = await executor.execute_batch([cmd])
-        result = batch.results[0]
-
-        assert result.command is cmd
-        assert result.success is True
-        assert result.result == {"status": "ok"}
-        assert result.error is None
-        assert result.error_type is None
-        assert result.duration_ms >= 0.0
-
-    @pytest.mark.asyncio
-    async def test_failed_result_carries_error_message_and_type(
-        self,
-        executor: BatchExecutor,
-        mock_controller: MagicMock,
-    ) -> None:
-        mock_controller.execute_command.side_effect = DeviceOfflineError(
-            "Device not found"
+        await executor.execute_batch(
+            [BatchCommand(command="shake"), BatchCommand(command="close")], stop_on_error=False,
         )
-        cmd = DeviceCommand(device_id="shaker-1", command="shake")
 
-        batch = await executor.execute_batch([cmd])
-        result = batch.results[0]
-
-        assert result.command is cmd
-        assert result.success is False
-        assert result.error == "Device not found"
-        assert result.error_type == "DeviceOfflineError"
-        assert result.result is None
-
-
-class TestBatchResult:
-    """BatchResult fields are populated by the executor, not the ctor."""
-
-    @pytest.mark.asyncio
-    async def test_executor_reports_all_success_aggregate(
-        self,
-        executor: BatchExecutor,
-        mock_controller: MagicMock,
-    ) -> None:
-        mock_controller.execute_command.return_value = {"status": "ok"}
-        commands = [
-            DeviceCommand(device_id="shaker-1", command="open"),
-            DeviceCommand(device_id="shaker-1", command="close"),
-        ]
-
-        batch = await executor.execute_batch(commands)
-
-        assert batch.success is True
-        assert batch.failed_at_index is None
-        assert batch.commands_executed == 2
-        assert batch.commands_executed == len(batch.results)
-        assert [r.success for r in batch.results] == [True, True]
-        assert batch.total_duration_ms >= 0.0
-
-    @pytest.mark.asyncio
-    async def test_failed_batch_aggregates_first_failure(
-        self,
-        executor: BatchExecutor,
-        mock_controller: MagicMock,
-    ) -> None:
-        """The executor flips overall success off and records the index of the
-        first failing command while continuing under stop_on_error=False."""
-        mock_controller.execute_command.side_effect = [
-            {"status": "ok"},
-            DeviceOfflineError("Disconnected"),
-            {"status": "ok"},
-        ]
-        commands = [
-            DeviceCommand(device_id="shaker-1", command="open"),
-            DeviceCommand(device_id="shaker-1", command="shake"),
-            DeviceCommand(device_id="shaker-1", command="close"),
-        ]
-
-        batch = await executor.execute_batch(commands, stop_on_error=False)
-
-        assert batch.success is False
-        assert batch.failed_at_index == 1
-        assert batch.commands_executed == 3
-        assert [r.success for r in batch.results] == [True, False, True]
-        assert batch.results[1].error_type == "DeviceOfflineError"
-        assert batch.total_duration_ms >= 0.0
+        assert told == [("STARTED", "shake"), ("FAILED", "shake"), ("STARTED", "close"), ("COMPLETED", "close")]

@@ -5,12 +5,12 @@ import pytest
 from orca.resource_models.labware import PlateTemplate
 from orca.resource_models.resource_pool import ResourcePool
 from orca.workflow_models.action_template import Action
-from orca.workflow_models.workflows.workflow_factories import MethodActionFactory
+from orca.workflow_models.actions.method_action_factory import MethodActionFactory
 from tests.mock import UniversalMockDevice
 
 
 def _make_plate(name: str) -> PlateTemplate:
-    from orca.runtime.sim_labware import SimPlateTemplate
+    from orca.resource_models.sim_labware import SimPlateTemplate
     return SimPlateTemplate(name)
 
 

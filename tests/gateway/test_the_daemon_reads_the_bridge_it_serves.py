@@ -1,7 +1,7 @@
 """A bridge connected to the daemon's own gateway shows up on the daemon's reads.
 
 The daemon serves `/ws/devices`, so a device bridge registers its devices in
-`device_connection_tracker` inside the daemon process. `DeviceRegistryImpl`
+the tracker of the daemon's own gateway. `DeviceRegistryImpl`
 reads connections through the `IDeviceConnectionSource` its `SystemRuntime` was
 given, and with nothing given that is `NullDeviceConnectionSource`, which
 answers "nothing connected" forever. The two halves then disagree inside one
@@ -17,12 +17,13 @@ the defect: both halves pass their own suites.
 import time
 from collections.abc import AsyncGenerator
 
-import pytest
 from cheshire_drivers import AccessConfig, CartesianCoordinates, Teachpoint
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from starlette.testclient import WebSocketTestSession
 
 from cheshire_drivers.gateway_protocol import (
-    ConnectMessage,
+    ClientHello,
     DeviceConnectInfo,
     DeviceLinkInfo,
     DeviceStatusInfo,
@@ -31,15 +32,12 @@ from cheshire_drivers.gateway_protocol import (
 )
 from orca.daemon.app import create_app
 from orca.devices.shaker import Shaker
-from orca.gateway.controller import device_controller
+from orca.gateway.controller.controller import DeviceController
 from orca.gateway.gateway_backed_driver import GatewayBackedDriver
-from orca.gateway.registry import device_connection_tracker
 from orca.gateway.registry.snapshot import DeviceSnapshot
-from orca.gateway.websocket.connection_events import connection_events
-from orca.gateway.websocket.manager import connection_manager
+from orca.gateway.websocket.connection_events import ConnectionEventBus
 from orca.resource_models.plate_pad import PlatePad
 from orca.resource_models.transporter import Transporter
-from orca.runtime.store_factory import IRuntimeStoreFactory
 from orca.sdk.build import Topology
 from orca.sdk.labware import PlateTemplate
 from orca.sdk.workflow import MethodTemplate
@@ -50,6 +48,9 @@ from orca.workflow_models.thread_context import ThreadContext
 from orca.workflow_models.workflow_context import WorkflowContext
 from orca.workflow_models.workflow_templates import WorkflowTemplate
 import orca.orca as orca
+from tests.daemon.fixture_package import write_package
+from tests.gateway_parts import answer_assignment
+from tests.setup_package import package_stores, write_access_configs, write_teachpoints
 
 
 _TOPOLOGY_SPEC = f"{__name__}:build_topology"
@@ -62,16 +63,16 @@ _DECLARED_DEVICE = "shaker_1"
 _POSITIONS = ("shaker_1", "pad_1")
 
 
-def build_topology(stores: IRuntimeStoreFactory) -> Topology:
-    """One shaker, one pad, one arm. Mounted through `POST /mount-topology`.
+def _write_package() -> None:
+    write_package(topology=_TOPOLOGY_SPEC, workflows={"shake_once": _WORKFLOW_SPEC})
 
-    A real `Shaker` rather than a test mock: the connect handshake checks the
-    bridge's advertised interfaces against the topology's declared set, and a
-    mock declaring every interface would be refused before it registers.
-    """
+
+def _write_setup() -> None:
+    """The arm's positions, written to the package the daemon reads."""
+    stores = package_stores()
     access = AccessConfig(name="default_vertical", access_type="vertical")
-    stores.access_configs(seed=[access])
-    teachpoints = [
+    write_access_configs(stores, [access])
+    write_teachpoints(stores, "robot_1", [
         Teachpoint(
             position_id=name,
             coordinates=CartesianCoordinates(
@@ -82,15 +83,14 @@ def build_topology(stores: IRuntimeStoreFactory) -> Topology:
             access=access,
         )
         for index, name in enumerate(_POSITIONS)
-    ]
+    ])
+
+
+def build_topology() -> Topology:
+    """One shaker, one pad, one arm. Mounted through `POST /mount-package`."""
     return Topology(
         locations={"shaker_1": Shaker("shaker_1"), "pad_1": PlatePad("pad_1")},
-        transporters=[
-            Transporter(
-                "robot_1",
-                teachpoint_store=stores.teachpoints("robot_1", seed=teachpoints),
-            ),
-        ],
+        transporters=[Transporter("robot_1")],
     )
 
 
@@ -118,26 +118,11 @@ def build_workflow(topology: Topology) -> WorkflowTemplate:
     return shake_once
 
 
-@pytest.fixture(autouse=True)
-def _clean_singletons():
-    """The connection manager and the tracker are process singletons."""
-    yield
-    connection_manager._connections.clear()
-    device_connection_tracker._clients.clear()
-    device_connection_tracker._devices.clear()
-
-
-def _connect_envelope(name: str) -> str:
-    msg = ConnectMessage(
-        site="test",
-        lab="simulation",
-        devices=[
-            DeviceConnectInfo(
-                name=name, type="shaker", interfaces=frozenset({"IShaker"}),
-            ),
-        ],
-    )
-    return MessageEnvelope.wrap_connect(msg).model_dump_json()
+def _connect_bridge(ws: WebSocketTestSession, name: str) -> None:
+    hello = ClientHello(client_id="lab_pc", site="test", lab="simulation")
+    built = DeviceConnectInfo(name=name, type="shaker", interfaces=frozenset({"IShaker"}))
+    ws.send_text(MessageEnvelope.wrap_hello(hello).model_dump_json())
+    answer_assignment(ws, built)
 
 
 def _status_envelope(name: str) -> str:
@@ -155,7 +140,7 @@ def _status_envelope(name: str) -> str:
     return MessageEnvelope.wrap_status(msg).model_dump_json()
 
 
-def _await_reported(name: str, timeout: float = 10.0) -> DeviceSnapshot:
+def _await_reported(app: FastAPI, name: str, timeout: float = 10.0) -> DeviceSnapshot:
     """Wait for the daemon's loop to apply the bridge's status report.
 
     The app runs on TestClient's own event loop, so the tracker's lock belongs
@@ -164,7 +149,7 @@ def _await_reported(name: str, timeout: float = 10.0) -> DeviceSnapshot:
     """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        snapshot = device_connection_tracker.peek_snapshot(name)
+        snapshot = app.state.daemon.connections.gateway.tracker.peek_snapshot(name)
         if snapshot is not None and snapshot.link_mode is not None:
             return snapshot
         time.sleep(0.01)
@@ -172,23 +157,24 @@ def _await_reported(name: str, timeout: float = 10.0) -> DeviceSnapshot:
 
 
 def test_a_bridge_on_the_daemons_gateway_reads_as_connected() -> None:
-    with TestClient(create_app()) as client:
-        mount = client.post(
-            "/mount-topology", json={"spec": _TOPOLOGY_SPEC, "sim": False},
-        )
+    _write_package()
+    _write_setup()
+    app = create_app()
+    with TestClient(app) as client:
+        mount = client.post("/api/runtime/mount-package", json={})
         assert mount.status_code == 200, mount.text
         try:
             with client.websocket_connect("/ws/devices") as ws:
-                ws.send_text(_connect_envelope(_DECLARED_DEVICE))
+                _connect_bridge(ws, _DECLARED_DEVICE)
                 ws.send_text(_status_envelope(_DECLARED_DEVICE))
-                _await_reported(_DECLARED_DEVICE)
+                _await_reported(app, _DECLARED_DEVICE)
 
-                row = client.get(f"/devices/registry/{_DECLARED_DEVICE}")
+                row = client.get(f"/api/devices/{_DECLARED_DEVICE}")
                 assert row.status_code == 200, row.text
                 body = row.json()
                 ws.close()
         finally:
-            client.post("/unload", json={})
+            client.post("/api/runtime/unload", json={})
 
     card = body["connection_card"]
     assert card is not None, "a connected bridge must produce a connection card"
@@ -198,7 +184,7 @@ def test_a_bridge_on_the_daemons_gateway_reads_as_connected() -> None:
     assert body["is_initialized"] is True
     assert body["device_link_mode"] == "LIVE"
     eligibility = body["mode_eligibility"]
-    assert eligibility["device_sim"] is True
+    assert eligibility["sim"] is True
     assert eligibility["live"] is True
 
 
@@ -207,23 +193,24 @@ def test_a_bridge_only_device_is_listed_beside_the_declared_ones() -> None:
     still gets a row. Reading topology alone hides the misnamed device the
     operator actually connected, which is the usual reason a declared one
     reads as absent."""
-    with TestClient(create_app()) as client:
-        mount = client.post(
-            "/mount-topology", json={"spec": _TOPOLOGY_SPEC, "sim": False},
-        )
+    _write_package()
+    _write_setup()
+    app = create_app()
+    with TestClient(app) as client:
+        mount = client.post("/api/runtime/mount-package", json={})
         assert mount.status_code == 200, mount.text
         try:
             with client.websocket_connect("/ws/devices") as ws:
-                ws.send_text(_connect_envelope("shaker_typo"))
+                _connect_bridge(ws, "shaker_typo")
                 ws.send_text(_status_envelope("shaker_typo"))
-                _await_reported("shaker_typo")
+                _await_reported(app, "shaker_typo")
 
-                listing = client.get("/devices/registry")
+                listing = client.get("/api/devices")
                 assert listing.status_code == 200, listing.text
                 names = [row["name"] for row in listing.json()["devices"]]
                 ws.close()
         finally:
-            client.post("/unload", json={})
+            client.post("/api/runtime/unload", json={})
 
     assert "shaker_typo" in names
     assert _DECLARED_DEVICE in names
@@ -232,22 +219,21 @@ def test_a_bridge_only_device_is_listed_beside_the_declared_ones() -> None:
 def test_a_mounted_device_is_driven_through_the_bridge() -> None:
     """The daemon builds devices through orca-client: the live driver of every
     mounted device is reached over `/ws/devices`, never run inside the daemon."""
+    _write_package()
     app = create_app()
     with TestClient(app) as client:
-        mount = client.post(
-            "/mount-topology", json={"spec": _TOPOLOGY_SPEC, "sim": False},
-        )
+        mount = client.post("/api/runtime/mount-package", json={})
         assert mount.status_code == 200, mount.text
         try:
-            system = app.state.system_runtime.system
+            system = app.state.daemon.holder.runtime.system
             shaker = system.get_device(_DECLARED_DEVICE)
             arm = next(t for t in system.transporters if t.name == "robot_1")
             live_drivers = {
-                "shaker_1": type(shaker.live_driver),
-                "robot_1": type(arm.live_driver),
+                "shaker_1": type(shaker.driver),
+                "robot_1": type(arm.driver),
             }
         finally:
-            client.post("/unload", json={})
+            client.post("/api/runtime/unload", json={})
 
     for name, driver_class in live_drivers.items():
         assert issubclass(driver_class, GatewayBackedDriver), (name, driver_class)
@@ -255,38 +241,42 @@ def test_a_mounted_device_is_driven_through_the_bridge() -> None:
 
 def test_the_daemon_hands_bridge_connects_and_drops_to_the_controller() -> None:
     """A dropped bridge starts the controller's disconnect grace, and a returning
-    one resumes its commands. The hooks leave with the app."""
+    one fails the command it held; each is also sent as a DEVICE event. The hooks leave with the app."""
+    app = create_app()
+    gateway = app.state.daemon.connections.gateway
+    connection_events = gateway.events
+    device_controller = gateway.controller
+    assert isinstance(connection_events, ConnectionEventBus)
+    assert isinstance(device_controller, DeviceController)
     before_connected = list(connection_events._connected)
     before_disconnected = list(connection_events._disconnected)
-    before_grace = device_controller._disconnect_grace
-    with TestClient(create_app()):
+    with TestClient(app):
         assert device_controller.on_device_disconnected in connection_events._disconnected
-        assert len(connection_events._connected) == len(before_connected) + 1
-        assert device_controller._disconnect_grace is not before_grace
-        during_grace = device_controller._disconnect_grace
+        assert len(connection_events._connected) == len(before_connected) + 2
+        assert len(connection_events._disconnected) == len(before_disconnected) + 2
     assert connection_events._connected == before_connected
     assert connection_events._disconnected == before_disconnected
-    assert device_controller._disconnect_grace is not during_grace
 
 
-def test_with_no_bridge_the_daemon_refuses_device_sim_and_live_naming_the_devices() -> None:
-    """PURE_SIM needs no orca-client; DEVICE_SIM and LIVE do."""
+def test_with_no_bridge_the_daemon_refuses_sim_and_live_naming_the_devices() -> None:
+    """CHECK_RUN needs no orca-client; SIM and LIVE do. CHECK_RUN goes last: no other run starts while it runs."""
+    _write_package()
     with TestClient(create_app()) as client:
-        mount = client.post("/mount-topology", json={"spec": _TOPOLOGY_SPEC, "sim": False})
+        mount = client.post("/api/runtime/mount-package", json={})
         assert mount.status_code == 200, mount.text
-        load = client.post("/workflows", json={"spec": _WORKFLOW_SPEC})
-        assert load.status_code == 200, load.text
         try:
             runs = {
                 mode: client.post(
-                    "/executions", json={"workflow_name": "shake_once", "run_mode": mode},
+                    "/api/executions", json={"workflow_name": "shake_once", "run_mode": mode},
                 )
-                for mode in ("PURE_SIM", "DEVICE_SIM", "LIVE")
+                for mode in ("SIM", "LIVE", "CHECK_RUN")
             }
         finally:
-            client.post("/unload", json={})
+            client.post("/api/runtime/unload", json={})
 
-    assert runs["PURE_SIM"].status_code == 200, runs["PURE_SIM"].text
-    for mode in ("DEVICE_SIM", "LIVE"):
+    assert runs["CHECK_RUN"].status_code == 200, runs["CHECK_RUN"].text
+    for mode in ("SIM", "LIVE"):
         assert runs[mode].status_code == 409, runs[mode].text
+        # The arm is on no route the workflow declares, and is still brought up, and refused, at the start.
         assert "shaker_1" in runs[mode].text and "robot_1" in runs[mode].text
+

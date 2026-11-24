@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 import asyncio
-from typing import Dict, Iterable, List
+from typing import Callable, Dict, Iterable, List, Set
 
 from orca.resource_models.location import Location
 from orca.system.reservation_manager.errors import UnresolvableDeadlockContext
@@ -89,7 +89,7 @@ class IReservationCollection(ABC):
     def unresolvable_deadlock(self) -> asyncio.Event:
         """An event set when this collection is blocked by an unresolvable deadlock.
 
-        Round 1: signaled by `ThreadDeadlockDetector.find_unresolvable_blocker`
+        Signaled by `ThreadDeadlockDetector.find_unresolvable_blocker`
         when the blocker labware is owned by a thread template marked
         `immovable=True`. The resolver raises `UnresolvableDeadlockError`
         instead of retrying. Reusable for future deadlock variants without
@@ -142,16 +142,38 @@ class IThreadReservationCoordinator(ABC):
     async def try_reserve_location(
         self, thread_id: str, position_id: str, request: LocationReservation
     ) -> bool:
-        """Single-shot attempt to reserve a location, bypassing the move queue
-        and deadlock detector. True iff granted.
+        """Single-shot attempt to reserve a location, bypassing the move queue.
+        True iff granted.
 
-        The bypass keeps the request out of the wait-for graph, so a caller must
-        guarantee its reservation cannot sit in an undetected deadlock cycle:
-        either the target is non-routable (a deck child site never becomes a
-        park target) or the caller holds no other reservation (a spawn placing a
-        fresh plate is a leaf waiter). Used for spawn placement
+        One attempt is not a wait. A caller that loops on this until granted is
+        waiting, and says so with ``note_location_wait`` so the deadlock detector
+        sees the wait. Used for spawn placement
         (``MoveHandler.acquire_placement_reservation``).
         """
+        raise NotImplementedError
+
+    @abstractmethod
+    def note_location_wait(self, thread_id: str, request: LocationReservation) -> None:
+        """Tell the deadlock detector this thread waits, outside the queue, for one location."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def end_location_wait(self, thread_id: str) -> None:
+        """The wait is over, granted or given up. A location promised to the thread is promised no longer."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def note_co_labware_wait(self, thread_id: str, missing_labware_ids: Callable[[], Set[str]]) -> None:
+        """Tell the deadlock detector this thread holds its device until every missing plate arrives."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def end_co_labware_wait(self, thread_id: str) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def note_cannot_yield(self, thread_id: str) -> None:
+        """This thread was told to yield and has nowhere to move its plate. It is not told again until it is granted a request."""
         raise NotImplementedError
 
     @abstractmethod

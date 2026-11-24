@@ -1,229 +1,284 @@
 """FastAPI factory for the orca daemon.
 
-A fresh daemon has no system loaded: `app.state.system_runtime` starts as
-None. `POST /mount-topology` creates a SystemRuntime; `POST /workflows`
-registers a workflow on it; `POST /unload` tears it down. Routes that
-require a loaded system check via `_require_system_runtime` and return 409
-when the slot is empty.
+`create_app` builds every part once through `orca.runtime.startup` and holds it in one `DaemonState`. The
+activity database opens when the app starts, and runs the last process left
+running are marked failed then. A fresh daemon has no system loaded.
+`DaemonState.holder`, the `RuntimeHolder` both servers use, holds the mounted system.
+`POST /api/runtime/mount-package` builds the package folder (its `topology.py` and
+`workflows/`), `POST /api/runtime/reload` rebuilds it from the files on disk,
+and `POST /api/runtime/unload` tears it down. Every route but `/health`, `/shutdown` and the websockets is an
+Operation under `/api`; one that needs a loaded system answers 503
+`runtime_not_ready` without one.
 
-The daemon serves the device-bridge gateway itself, so it is also the host that
-injects gateway state into the runtime: `app.state.device_connections` adapts the
-connection tracker `/ws/devices` writes, and `POST /mount-topology` passes it to
-the `SystemRuntime` as both the gateway registry and the unified device
-registry's connection source. A runtime built without it reads
-`NullDeviceConnectionSource` and reports every connected bridge as absent.
+The daemon serves the device-bridge gateway itself, so the runtime it mounts
+reads connections from the tracker `/ws/devices` writes.
 
 `create_app` takes two injection points:
-- `initial_system_runtime`: tests pass a pre-started SystemRuntime to skip
-  the mount path. Production passes None; `POST /mount-topology` populates it.
+- `injected`: tests pass a started SystemRuntime with the setup and activity
+  stores it was built over, to skip the mount path. Production passes None.
 - `on_exit`: callback invoked after `POST /shutdown` flushes its response.
   Production passes a SIGTERM self-signal to terminate the daemon process.
   Tests pass None (or a no-op) so the test runner is not killed.
 """
 
-from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+import logging
+import os
+from collections.abc import AsyncIterator, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from dataclasses import dataclass
+from pathlib import Path
 
-from fastapi import FastAPI, Request, status
+from fastapi import APIRouter, FastAPI
+from pydantic import TypeAdapter, ValidationError
 from fastapi.responses import JSONResponse
+from starlette.background import BackgroundTask
 
-from orca.daemon.event_stream import SseEventSink
-from orca.daemon.operations_router import create_operations_router
-from orca.daemon.routes import create_router
-from cheshire_drivers.gateway_protocol import DeviceConnectInfo
-from orca.gateway.connection_source import DeviceConnectionSource
-from orca.gateway.controller import device_controller
-from orca.gateway.controller.disconnect_grace import DisconnectGrace
-from orca.gateway.mode_resolution import system_mode_resolver
-from orca.gateway.registry import device_connection_tracker
-from orca.gateway.remote_device_factory import RemoteDeviceFactory
-from orca.gateway.websocket.connection_events import connection_events
-from orca.gateway.websocket.manager import connection_manager
-from orca.gateway.websocket.health_monitor import WireHealthMonitor
-from orca.gateway.websocket.router import router as gateway_router
-from orca.runtime.danger import ConfirmationRequired
-from orca.runtime.deployment_registries import (
-    DeploymentRegistries,
-    build_in_memory_deployment_layer,
+from orca.api.event_feed import EventFeed
+from orca.runtime.server_events import ServerEvents
+from orca.api import health_router, install_error_handlers, mount_api, mount_event_stream
+from orca.daemon.api_context import DaemonApiContext, LocalhostAuth
+from orca.gateway.connection_handling import device_connection_handling
+from orca.daemon.daemon_state import DaemonState, OnExit
+from orca.daemon.check_run_stores import SqliteCheckRunStores, check_runs_folder
+from orca.daemon.operation_catalog import DaemonOperationCatalog
+from orca.gateway.auth import NullConnectionAuthenticator
+from orca.gateway.device_gateway import ServerDeviceGateway
+from orca.gateway.websocket.router import create_gateway_router
+from orca.operations.error_codes import ErrorCode
+from orca.operations.protocol import OperationError
+from orca.operations.system_loading_models import SHUTDOWN_ROUTE
+from orca.operations.wire_models import ShutdownResponse
+from orca.operations.audit import StoredAuditLog
+from orca.operations.events import StoredEventLog
+from orca.daemon.activity_database import ActivityDatabase
+from orca.runtime.activity_database import IActivityStores, state_db_path
+from orca.runtime.interrupted_runs import mark_interrupted_executions
+from orca.runtime.runtime_holder import RuntimeHolder
+from orca.runtime.runtime_interface import ISystemRuntime
+from orca.runtime.sinks import LogSink
+from orca.modes.sim_pacing import FRAMEWORK_SIM_SPEEDUP, parse_default_sim_speedup
+from orca.plugins.config import PluginConfig
+from orca.runtime.startup import (
+    ConfiguredPlugins,
+    PackageSetupStoreFactory,
+    build_device_gateway,
+    build_server_parts,
+    load_plugins,
+    operator_device_commands,
+    runtime_settings,
+    start_log_store_writers,
 )
-from orca.runtime.run_modes import OPERATOR_DEVICE_WRITE_BASE
-from orca.runtime.system_runtime import SystemRuntime
+from orca.runtime.store_factory import IRuntimeStoreFactory, default_package_root
 
 
-OnExit = Callable[[], Awaitable[None]]
+_logger = logging.getLogger(__name__)
 
 
-async def _emit_dropped_disconnects(
-    dropped: list[tuple[str, list[str]]],
-) -> None:
-    """Fire device.disconnected for every device on each pruned client."""
-    for _client_id, device_ids in dropped:
-        for device_id in device_ids:
-            await connection_events.emit_disconnected(device_id)
+@dataclass(frozen=True)
+class InjectedSystem:
+    """A started runtime a test hands the daemon, with the stores and gateway it was built over."""
+
+    runtime: ISystemRuntime
+    setup: IRuntimeStoreFactory
+    activity: IActivityStores
+    gateway: ServerDeviceGateway
 
 
-def _install_disconnect_grace(app: FastAPI) -> None:
-    """Give the controller the per-device grace each topology card declares."""
-
-    async def _resolve_disconnect_timeout(device_id: str) -> float | None:
-        runtime: SystemRuntime | None = app.state.system_runtime
-        if runtime is None:
-            return None
-        entry = await runtime.device_registry.get(device_id)
-        if entry is None or entry.topology_card is None:
-            return None
-        return entry.topology_card.disconnect_timeout_seconds
-
-    grace = DisconnectGrace()
-    grace.set_topology_resolver(_resolve_disconnect_timeout)
-    device_controller.set_disconnect_grace(grace)
+def default_client_from_env() -> str:
+    """``ORCA_DEFAULT_CLIENT`` names the orca-client that runs devices whose setup names none; unset means ``local``."""
+    return os.environ.get("ORCA_DEFAULT_CLIENT", "").strip() or "local"
 
 
-async def _resume_commands_on_reconnect(
-    device: DeviceConnectInfo, _client_id: str,
-) -> None:
-    await device_controller.on_device_reconnected(device.name)
-
-
-@asynccontextmanager
-async def _daemon_lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Run the daemon's /ws/devices gateway for the life of the app.
-
-    The stale-connection sweep prunes dead bridges and fires
-    device.disconnected for them. The controller's disconnect grace and
-    reconnect hook are wired for the life of the app, and removed on shutdown.
-    """
-    monitor = WireHealthMonitor(connection_manager)
-    monitor.start(on_dropped=_emit_dropped_disconnects)
-    app.state.wire_health_monitor = monitor
-    _install_disconnect_grace(app)
-    connection_events.subscribe_disconnected(device_controller.on_device_disconnected)
-    connection_events.subscribe_connected(_resume_commands_on_reconnect)
+def default_sim_speedup_from_env() -> float | None:
+    """``ORCA_SIM_SPEEDUP`` is the deployment default: unset is 100, ``off`` means no waiting."""
     try:
-        yield
-    finally:
-        connection_events.unsubscribe_connected(_resume_commands_on_reconnect)
-        connection_events.unsubscribe_disconnected(
-            device_controller.on_device_disconnected,
+        return parse_default_sim_speedup(os.environ.get("ORCA_SIM_SPEEDUP"), FRAMEWORK_SIM_SPEEDUP)
+    except ValueError as e:
+        raise OperationError.of(
+            ErrorCode.VALIDATION_ERROR,
+            f"ORCA_SIM_SPEEDUP is not a sim speed-up: {e}",
+        ) from e
+
+
+def plugins_from_env() -> ConfiguredPlugins:
+    """``ORCA_PLUGINS`` is a JSON list of plugin configs, such as ``[{"type": "webhook", "url": "..."}]``; unset means none."""
+    raw = os.environ.get("ORCA_PLUGINS", "").strip()
+    if not raw:
+        return ConfiguredPlugins()
+    try:
+        configs = TypeAdapter(list[PluginConfig]).validate_json(raw)
+    except ValidationError as e:
+        raise ValueError(f"ORCA_PLUGINS is not a JSON list of plugin configs: {e}") from e
+    return load_plugins(configs)
+
+
+async def _mark_interrupted_runs(daemon: DaemonState) -> None:
+    # A bad run record must not stop the daemon; it is logged and startup continues.
+    try:
+        await mark_interrupted_executions(daemon.activity.execution_records, [daemon.events])
+    except Exception:
+        _logger.exception("could not mark the runs the last daemon left running")
+
+
+async def _unload_on_exit(holder: RuntimeHolder) -> None:
+    # The rest of the teardown must run even when the unload fails.
+    if not holder.is_built:
+        return
+    try:
+        await holder.unload()
+    except Exception:
+        _logger.exception("the mounted system did not unload as the daemon stopped")
+
+
+def _daemon_lifespan(daemon: DaemonState) -> Callable[[FastAPI], AbstractAsyncContextManager[None]]:
+    """Open the activity database and run the /ws/devices gateway for the life of the app.
+
+    Runs the last process left running are marked failed before anything mounts.
+    Every audit row and event is written to the activity database while the app runs.
+    The device connection handling every gateway host runs is wired for the life of the app.
+    However the app stops, a mounted system is unloaded first, as `POST /shutdown` does.
+    """
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        await daemon.activity.open()
+        writers = start_log_store_writers(
+            daemon.activity.audit, daemon.activity.events, daemon.activity.unsaved_records, daemon.activity.event_saves,
         )
-        device_controller.set_disconnect_grace(DisconnectGrace())
-        await monitor.stop()
-        # Dispose the daemon-lifetime store engines (access-config + catalog) so
-        # their aiosqlite worker threads do not outlive the loop at process exit.
-        store_factory = getattr(app.state, "store_factory", None)
-        if store_factory is not None:
-            await store_factory.aclose()
+        daemon.plugins.start(daemon.events)
+        await _mark_interrupted_runs(daemon)
+        try:
+            async with device_connection_handling(daemon.gateway, daemon.events) as monitor:
+                app.state.wire_health_monitor = monitor
+                try:
+                    yield
+                finally:
+                    await _unload_on_exit(daemon.holder)
+        finally:
+            await daemon.plugins.stop()
+            for writer in writers:
+                await writer.stop()
+            await daemon.activity.aclose()
+
+    return lifespan
+
+
+def _daemon_state(
+    injected: InjectedSystem | None, on_exit: OnExit | None, package_root: Path,
+) -> DaemonState:
+    # One feed for the daemon's lifetime, so a /ws/events subscriber keeps
+    # receiving across mount and unload.
+    event_sink = EventFeed()
+    events = ServerEvents()
+    events.add_sink(LogSink())
+    events.add_sink(event_sink)
+    # Every runtime this daemon mounts reads connections from the tracker that /ws/devices writes.
+    gateway = injected.gateway if injected is not None else build_device_gateway(events, default_sim_speedup_from_env())
+
+    def _mounted() -> ISystemRuntime | None:
+        return daemon.holder.built_runtime
+
+    setup: IRuntimeStoreFactory
+    activity: IActivityStores
+    if injected is not None:
+        injected.runtime.register_sink(events)
+        setup, activity = injected.setup, injected.activity
+    else:
+        # Setup lives in the package folder's files, so the operator
+        # surface works before a mount and the runtime reads the same files after.
+        setup = PackageSetupStoreFactory(package_root, default_client=default_client_from_env())
+        activity = ActivityDatabase(state_db_path(package_root))
+
+    # The device factory is bound while the package is built, so every device it declares is driven through the device bridge.
+    parts = build_server_parts(setup, gateway, _mounted)
+    plugins = plugins_from_env()
+    holder = RuntimeHolder(
+        package_dir=package_root,
+        setup=setup,
+        activity=activity,
+        connections=parts.connections,
+        sinks=[events],
+        labware_events=events,
+        device_factory=parts.device_factory,
+        plugins=plugins,
+        settings=runtime_settings(default_sim_speedup_from_env()),
+        check_run_stores=SqliteCheckRunStores(check_runs_folder(package_root)),
+        runtime=injected.runtime if injected is not None else None,
+    )
+    daemon = DaemonState(
+        package_root=package_root,
+        setup=setup,
+        activity=activity,
+        registries=parts.registries,
+        audit_log=StoredAuditLog(activity.audit),
+        event_log=StoredEventLog(activity.events),
+        connections=parts.connections,
+        gateway=gateway,
+        event_sink=event_sink,
+        events=events,
+        device_commands=operator_device_commands(gateway, _mounted),
+        plugins=plugins,
+        on_exit=on_exit,
+        holder=holder,
+    )
+    return daemon
+
+
+def _shutdown(daemon: DaemonState) -> APIRouter:
+    router = APIRouter()
+
+    @router.post(
+        SHUTDOWN_ROUTE.binding.path, response_model=SHUTDOWN_ROUTE.response, tags=[SHUTDOWN_ROUTE.binding.tag],
+    )
+    async def shutdown() -> JSONResponse:
+        """Unload if needed, then exit the process once this response is sent."""
+        if daemon.holder.is_built:
+            await daemon.holder.unload()
+        # The exit runs after the response flushes, or uvicorn would tear down mid-write.
+        background = BackgroundTask(daemon.on_exit) if daemon.on_exit is not None else None
+        return JSONResponse(
+            content=ShutdownResponse().model_dump(mode="json"), background=background,
+        )
+
+    return router
 
 
 def create_app(
-    initial_system_runtime: SystemRuntime | None = None,
     on_exit: OnExit | None = None,
+    package_root: Path | None = None,
+    injected: InjectedSystem | None = None,
 ) -> FastAPI:
     """Build a FastAPI app for a daemon.
 
     See module docstring for the injection-point contract.
     """
+    daemon = _daemon_state(injected, on_exit, package_root or default_package_root())
     app = FastAPI(
         title="orca-daemon",
         version="0.1.0",
         docs_url="/docs",
         redoc_url=None,
-        lifespan=_daemon_lifespan,
+        lifespan=_daemon_lifespan(daemon),
     )
-    app.state.system_runtime = initial_system_runtime
-    app.state.topology = None
-    app.state.spec = None
-    app.state.sim = False
-    app.state.mounting = None
-    app.state.on_exit = on_exit
-    # Deployment-scoped registries (labware catalog, access configs, profiles)
-    # live for the daemon's lifetime, in front of any mounted system, so the
-    # operator CRUD surface works pre-runtime. They share the SAME store
-    # instances the runtime resolves against (single source of truth):
-    #  - injected runtime (tests): build the layer over the runtime's stores.
-    #  - fresh daemon: hold ONE store factory; mount reuses it so the runtime
-    #    and the registries layer never diverge.
-    if initial_system_runtime is not None:
-        app.state.store_factory = None
-        app.state.deployment_registries = DeploymentRegistries(
-            labware_catalog=initial_system_runtime.labware_catalog_store,
-            access_config_store=initial_system_runtime.access_config_store,
-            move_defaults_service=initial_system_runtime.move_defaults_service,
-            grip_profile_service=initial_system_runtime.grip_profile_service,
-            profile_store=initial_system_runtime.profile_store,
-        )
-    else:
-        app.state.store_factory, app.state.deployment_registries = (
-            build_in_memory_deployment_layer()
-        )
-
-    # Every runtime this daemon mounts reads connections from the tracker that
-    # /ws/devices writes.
-    app.state.device_connections = DeviceConnectionSource(device_connection_tracker)
-    # Bound while a topology is imported, so every device it declares is
-    # driven through the device bridge.
-    app.state.device_factory = RemoteDeviceFactory(
-        controller=device_controller,
-        mode_resolver=system_mode_resolver(
-            lambda: app.state.system_runtime,
-            when_unseeded=OPERATOR_DEVICE_WRITE_BASE,
-        ),
-        profile_source=device_connection_tracker.peek_interfaces,
-    )
-
-    # One sink for the daemon's lifetime. SSE subscribers register queues
-    # on this; the /mount-topology route hands it to each new SystemRuntime.
-    # The sink persists across mount/unload cycles so a reconnecting client
-    # does not have to reestablish the subscription across every reload.
-    app.state.event_sink = SseEventSink()
-
-    # Pre-loaded runtime (used by tests) gets the sink attached now too.
-    if initial_system_runtime is not None:
-        initial_system_runtime.register_sink(app.state.event_sink)
+    app.state.daemon = daemon
 
     # No per-request `current_run_mode` seed: each read states the base it
     # means, and execution entrypoints seed for dispatch.
+    install_error_handlers(app)
 
-    @app.exception_handler(ConfirmationRequired)
-    async def _confirmation_required_handler(
-        _request: Request, exc: ConfirmationRequired,
-    ) -> JSONResponse:
-        """Map ConfirmationRequired to 400 with the prompt descriptor.
-
-        All daemon mutation routes pass confirm=True today so this is a
-        defensive net for future routes / callers that forget. The body
-        carries the descriptor so a UI can render the prompt without
-        hardcoding copy.
-        """
-        descriptor = exc.descriptor
-        return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            content={
-                "detail": str(exc),
-                "code": "confirmation_required",
-                "action_name": exc.action_name,
-                "danger_level": descriptor.danger_level.name,
-                "message": descriptor.message,
-                "requires_reason": descriptor.requires_reason,
-                "parameters": [
-                    {
-                        "name": p.name,
-                        "type_name": p.type_name,
-                        "required": p.required,
-                        "default": p.default,
-                        "description": p.description,
-                    }
-                    for p in descriptor.parameters
-                ],
-                "call_args": exc.call_args,
-            },
-        )
-
-    app.include_router(create_router())
-    app.include_router(create_operations_router())
-    # The device-bridge gateway: a standalone daemon serves /ws/devices so an
-    # on-prem device bridge can connect and drive real hardware. Auth defaults
-    # to allow-all (single-node LAN); a hosting layer overrides via
-    # app.state.connection_authenticator.
-    app.include_router(gateway_router)
+    app.include_router(health_router(lambda: daemon.holder))
+    app.include_router(_shutdown(daemon))
+    operations_router = APIRouter()
+    mount_api(
+        operations_router, DaemonOperationCatalog(),
+        lambda _request: DaemonApiContext(daemon), LocalhostAuth(),
+    )
+    app.include_router(operations_router)
+    mount_event_stream(app.router, lambda _websocket: daemon.event_sink, LocalhostAuth())
+    # A standalone daemon serves /ws/devices so an on-prem device bridge can
+    # connect. It trusts its LAN, so the handshake allows every caller.
+    app.include_router(create_gateway_router(
+        daemon.gateway,
+        authenticator=NullConnectionAuthenticator(),
+    ))
     return app

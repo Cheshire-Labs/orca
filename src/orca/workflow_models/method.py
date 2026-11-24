@@ -1,9 +1,10 @@
 import asyncio
 import logging
 import uuid
-from typing import AsyncGenerator, List, Set
+from typing import AsyncGenerator, Iterable, List, Set
 
 from orca.async_util import drain_cancelled_waiters
+from orca.resource_models.error_policy_overrides import WrongPartnerPlateError
 from orca.resource_models.labware import LabwareInstance, LabwareTemplate
 from orca.resource_models.location import Location
 from orca.resource_models.resource_pool import ResourcePool
@@ -17,7 +18,7 @@ from orca.state.records import (
     OperationDetails,
 )
 from orca.resource_models.tracking_context import TrackingContext
-from orca.runtime.group_execution_context import GroupExecutionContext
+from orca.workflow_models.group_execution_context import GroupExecutionContext
 from orca.variables.variable_store import IVariableResolver, NullVariableResolver
 from orca.workflow_models.actions.assigned_location_action import AssignedLocationAction
 from orca.workflow_models.actions.executable_location_action import ExecutableLocationAction
@@ -35,6 +36,12 @@ from orca.workflow_models.status_enums import ActionStatus, FailurePolicy, Metho
 from orca.workflow_models.status_manager import StatusManager
 
 orca_logger = logging.getLogger("orca")
+
+
+def group_served_by(groups: Iterable[str | None]) -> str | None:
+    """The one labware group among an action's threads, or None when there is none or more than one."""
+    named = {group for group in groups if group is not None}
+    return next(iter(named)) if len(named) == 1 else None
 
 
 class MethodResolutionAbortedError(Exception):
@@ -108,6 +115,9 @@ class MethodInstance(IMethod):
         for step in self.actions:
             step.try_assign_labware(input_template, thread.labware)
 
+    def note_labware_lost(self, labware_name: str) -> None:
+        """A thread's own method has no other thread waiting on it."""
+
 
 class ExecutingMethod(IMethod):
     """Runtime wrapper for a method. Always wraps a MergeLane of UnresolvedLocationActions.
@@ -145,6 +155,7 @@ class ExecutingMethod(IMethod):
         self._participating_thread_ids: set[str] = set()
         self._current_submission_id: str | None = None
         self._participating_thread_names: dict[str, str] = {}
+        self._participating_groups: dict[str, str | None] = {}
         self._was_skipped: bool = False
         self._was_aborted: bool = False
         self._dropped_anchor_inserts: list[DroppedAnchorInsert] = []
@@ -182,7 +193,20 @@ class ExecutingMethod(IMethod):
         self._pool_indices[receiver_name] = index
 
     def set_partner_constraints(self, template_name: str, constraints: dict[str, str]) -> None:
+        """Every thread taking part adds what it named; two different names for one template cannot both hold."""
+        named = self._partner_constraints.get(template_name)
+        if named is not None and named != constraints:
+            raise WrongPartnerPlateError(
+                f"Method {self.name!r} was asked for two different {template_name!r} labware: "
+                f"{named['barcode']!r} and {constraints['barcode']!r}. Each thread taking part "
+                f"named one; a step uses one labware per template."
+            )
         self._partner_constraints[template_name] = constraints
+
+    @property
+    def partner_barcodes(self) -> dict[str, str]:
+        """Template name to the barcode of the labware that must fill it."""
+        return {name: named["barcode"] for name, named in self._partner_constraints.items()}
 
     def get_partner_constraints(self, template_name: str) -> dict[str, str] | None:
         return self._partner_constraints.get(template_name)
@@ -255,6 +279,10 @@ class ExecutingMethod(IMethod):
         thread: IHasLabware,
     ) -> None:
         self._method.assign_thread(input_template, thread)
+
+    def note_labware_lost(self, labware_name: str) -> None:
+        if not self._shared_coord.completed.is_set():
+            self._shared_coord.note_labware_lost_by_its_bringer(labware_name)
 
     @property
     def wait_event_name(self) -> str | None:
@@ -338,7 +366,7 @@ class ExecutingMethod(IMethod):
                                         context)
 
     def set_current_thread(
-        self, thread_id: str, thread_name: str, submission_id: str | None = None,
+        self, thread_id: str, thread_name: str, submission_id: str | None = None, group_id: str | None = None,
     ) -> None:
         """Set the thread currently executing this method. For shared methods,
         each participating thread calls this, building the full participant list.
@@ -352,6 +380,11 @@ class ExecutingMethod(IMethod):
         self._current_submission_id = submission_id
         self._participating_thread_ids.add(thread_id)
         self._participating_thread_names[thread_id] = thread_name
+        self._participating_groups[thread_id] = group_id
+
+    def group_served(self) -> str | None:
+        """Asked when a record is written, so a thread that joins after the action binds still counts."""
+        return group_served_by(self._participating_groups.values())
 
     @property
     def participating_thread_ids(self) -> set[str]:
@@ -498,7 +531,7 @@ class ExecutingMethod(IMethod):
         directly, not via orca.join) calls this. Contributors await
         ``wait_for_current_action`` instead; see that method's docstring.
 
-        ``requesting_labware`` (Round 5 S1-B) lets the reservation layer
+        ``requesting_labware`` lets the reservation layer
         recognize own-labware-at-target as a non-conflict. Without it,
         an entry thread whose own labware sits at its own start_location
         rejected forever because the reservation layer could not tell own
@@ -606,13 +639,6 @@ class ExecutingMethod(IMethod):
             f"shared method '{self._method.name}' completed without binding "
             f"a current action for contributor"
         )
-
-    async def resolve_next_action(self, thread_id: str, current_location: Location, action_resolver: DynamicResourceActionResolver) -> ExecutableLocationAction | None:
-        """Consume and reserve the next action in one call (backward compat)."""
-        unresolved = await self.consume_next_unresolved_action(action_resolver)
-        if unresolved is None:
-            return None
-        return await self.resolve_current_action(thread_id, current_location, action_resolver)
 
     @property
     def current_failure_policy(self) -> FailurePolicy:
@@ -731,29 +757,23 @@ class ExecutingMethod(IMethod):
 
         self._recovery_generation += 1
         # Capture the action group before applying the decision, then publish the
-        # terminal outcome to participants; RETRY/RETRY_OP re-drive and publish nothing.
+        # terminal outcome to participants; RETRY/RETRY_ACTION re-drive and publish nothing.
         action_coord = self._current_action_coord
 
-        if decision == RecoveryDecision.RETRY:
+        if decision == RecoveryDecision.RETRY_ACTION:
             self.retry_current_action()
             return
         if decision == RecoveryDecision.CONTINUE:
-            # Ledger first: dropping the action drops its operation log with it.
             await self._current_action.record_operator_continued()
             self._current_action.action.release_reservation()
             await self.advance_past_current_action()
         elif decision == RecoveryDecision.ABORT_ACTION:
-            # An abort drops the action's operation log with it, so what the
-            # action really did is lost. Say so before letting go of it.
-            await self._current_action.record_operations_dropped()
             self._current_action.action.release_reservation()
             await self.advance_past_current_action()
         elif decision == RecoveryDecision.ABORT_METHOD:
-            await self._current_action.record_operations_dropped()
             self._current_action.action.release_reservation()
             await self.abort()
         elif decision == RecoveryDecision.ABORT_THREAD:
-            await self._current_action.record_operations_dropped()
             self._current_action.action.release_reservation()
             self._unsubscribe_current_action()
             self._current_action = None
@@ -766,13 +786,6 @@ class ExecutingMethod(IMethod):
             action_coord.publish_outcome(ActionResolution(decision))
 
     def _create_executable_action(self, assigned: AssignedLocationAction) -> ExecutableLocationAction:
-        # The previous shape omitted ``thread_id`` /
-        # ``thread_name`` / ``participating_thread_ids``, which left
-        # ``ExecutableLocationAction._process_tracking`` with no source
-        # for thread attribution. Every ops_history record landed with
-        # ``thread_id=""`` and the search-by-thread filter was a no-op.
-        # Mirror the ``status.setter`` shape on this class so the rich
-        # context flows through to tracking observers.
         context = MethodExecutionContext(execution_id=self._context.execution_id,
                                         workflow_name=self._context.workflow_name,
                                         method_id=self._method.id,
@@ -788,4 +801,5 @@ class ExecutingMethod(IMethod):
             self._tracking_context,
             self._pool_indices,
             self._current_submission_id,
+            self.group_served,
         )

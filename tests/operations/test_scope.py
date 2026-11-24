@@ -3,7 +3,7 @@
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from orca.operations._scope import (
+from orca.operations.scope import (
     ExecutionScope,
     Scope,
     ThreadScope,

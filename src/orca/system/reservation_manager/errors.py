@@ -8,14 +8,14 @@ from a stable path without crossing into module bodies.
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, List, Protocol, runtime_checkable
 
-from orca.runtime.sim_pacing import SimPacer
+from orca.modes.sim_pacing import SimPacer
 
 
 @dataclass(frozen=True)
 class UnresolvableDeadlockContext:
     """Context for an unresolvable deadlock. Reusable across deadlock variants.
 
-    Round 1 populates this with immovable-blocker findings (the requester's
+    Populated with immovable-blocker findings (the requester's
     reservation rejected by a labware whose owning thread declared
     ``immovable=True``). Future rounds may add more `reason` values for
     other unresolvable patterns without changing the dataclass shape.
@@ -27,6 +27,10 @@ class UnresolvableDeadlockContext:
     blocking_labware_id: str
     reason: str
     hint: str
+
+
+class NoRouteError(ValueError):
+    """No admissible path connects where labware is to where it has to go."""
 
 
 class UnresolvableDeadlockError(RuntimeError):
@@ -55,6 +59,23 @@ class UnresolvableDeadlockError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class AutoSpawnFailedDetail:
+    """An AUTO_SPAWN_FAILED incident: a thread could not spawn the thread bringing another labware to its action."""
+
+    requested_labware_name: str
+    requesting_thread_id: str
+
+
+@dataclass(frozen=True)
+class CoLabwareTimeoutDetail:
+    """A CO_LABWARE_TIMEOUT incident: an action's other labware did not arrive in time."""
+
+    missing_labware_names: tuple[str, ...]
+    waited_seconds: float
+    position_id: str
+
+
+@dataclass(frozen=True)
 class ActionFailedContext:
     """Context for an ACTION_FAILED incident.
 
@@ -68,8 +89,9 @@ class ActionFailedContext:
     it as the persisted ``IncidentDetail`` shape, mirroring
     ``UnresolvableDeadlockContext``.
 
-    ``device_command`` names the device call the action was suspended inside
-    when it failed, or is None when the surrounding body failed instead. The two
+    ``device_command`` names the step the action was suspended at when it failed
+    (a device call, or a wait that ran out of time), or is None when the
+    surrounding body failed instead. The two
     are different failures with different repairs, and this is what picks the
     ``RecoveryAction`` the incident advises.
     """
@@ -84,10 +106,10 @@ class ActionFailedContext:
 class ThreadDiedContext:
     """Context for a THREAD_DIED incident.
 
-    Recorded when a thread stops on an error nothing caught, so it never
-    reached a recovery pause and there is no paused thread to recover. Its
-    labware is wherever the crash left it, and naming that position is the
-    point: it is what an operator needs in order to go and clear the deck.
+    Recorded when a thread stops on an error nothing caught. The thread pauses at
+    UNHANDLED_ERROR, where only ABORT_THREAD applies. Its labware is wherever the
+    crash left it, and naming that position is the point: it is what an operator
+    needs in order to go and clear the deck.
     """
     thread_name: str
     labware_name: str
@@ -106,11 +128,18 @@ class ActionContinuedContext:
     with the failed action's side effects unknown. Nothing re-checks the world
     model against the device afterwards, so this is the durable statement that
     everything downstream of this point is unverified.
+
+    The ``unsaved_*`` fields are set when the thread carried on past a failed save: the command ran, and the record
+    does not have it. They keep the command, its arguments and the device's answer, as JSON, so the record can be put
+    right later.
     """
     action_command: str
     method_name: str
     error_type: str
     error_message: str
+    unsaved_command: str | None = None
+    unsaved_request: str | None = None
+    unsaved_result: str | None = None
 
 
 @dataclass(frozen=True)
@@ -205,7 +234,7 @@ class IThreadIncidentDeclarer(Protocol):
     """Contract for converting a thread-originated failure into a recorded
     incident plus the appropriate pause.
 
-    Implemented by ``SystemRuntime``. The Protocol exists so
+    Implemented by ``IncidentDeclarer``. The Protocol exists so
     ``ExecutingLabwareThread`` and ``ExecutingWorkflow`` (which live in
     ``workflow_models`` and cannot import ``runtime``) can hold a
     back-reference without closing an import cycle.
@@ -233,7 +262,7 @@ class IThreadIncidentDeclarer(Protocol):
     is expected (conditional paths); this only makes it loud. No pause.
 
     All surface on every operator surface (``orca incident list`` /
-    ``GET /api/incidents`` / ``incidents_list`` MCP).
+    ``GET /api/incidents``).
     """
 
     def declare_unresolvable_deadlock(
@@ -256,6 +285,20 @@ class IThreadIncidentDeclarer(Protocol):
         context: ThreadDiedContext,
     ) -> object: ...
 
+    def declare_co_labware_timeout(
+        self,
+        execution_id: str,
+        thread_id: str,
+        context: CoLabwareTimeoutDetail,
+    ) -> object: ...
+
+    def declare_auto_spawn_failure(
+        self,
+        execution_id: str,
+        context: AutoSpawnFailedDetail,
+        error_message: str,
+    ) -> object: ...
+
     @property
     def recoverable_timeout_coordinator(self) -> IRecoverableTimeoutCoordinator:
         """The engine's recoverable-timeout coordinator.
@@ -268,7 +311,7 @@ class IThreadIncidentDeclarer(Protocol):
 
     def sim_pacer_for(self, execution_id: str) -> SimPacer | None:
         """The pacer of a simulated execution; None for a LIVE one or an unknown id.
-        A thread seeds it onto ``current_sim_pacer`` at start (``orca.runtime.sim_pacing``)."""
+        A thread seeds it onto ``current_sim_pacer`` at start (``orca.modes.sim_pacing``)."""
         ...
 
     def declare_unresolved_anchor_insert(

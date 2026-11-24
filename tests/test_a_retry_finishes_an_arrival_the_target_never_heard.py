@@ -11,6 +11,7 @@ call that failed was the one call the retry would not make again, so the device
 never learned about a plate sitting on it and no later attempt ever told it.
 """
 
+from orca.config import OrcaConfig
 import asyncio
 from collections.abc import AsyncGenerator
 
@@ -19,8 +20,10 @@ from orca.events.event_bus import EventBus
 from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.labware_placeable_interface import IPlateMover
 from orca.resource_models.resource_pool import ResourcePool
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from orca.runtime.system_runtime import ExecutionState, SystemRuntime
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
 from orca.sdk.system import ResourceRegistry, SystemMap
 from orca.sdk.workflow import WorkflowTemplate
 from orca.system.SdkToSystemBuilder import SdkToSystemBuilder
@@ -39,6 +42,8 @@ from tests.test_helpers import (
     wait_for_paused_thread,
     wire_system_map,
 )
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 
 class _DeviceThatRefusesTheFirstArrival(UniversalMockDevice):
@@ -50,7 +55,7 @@ class _DeviceThatRefusesTheFirstArrival(UniversalMockDevice):
         self.arrivals = 0
 
     async def _do_notify_placed(
-        self, labware: LabwareInstance, mover: IPlateMover,
+        self, labware: LabwareInstance | None, mover: IPlateMover,
         target: str | None = None, site: str | None = None,
     ) -> None:
         self.arrivals += 1
@@ -97,11 +102,14 @@ async def _build() -> tuple[SystemRuntime, WorkflowTemplate, _DeviceThatRefusesT
     builder = SdkToSystemBuilder(
         name="test_system", description="", labwares=[plate],
         resources_registry=registry, system_map=system_map,
-        workflows=[workflow], event_bus=event_bus,
+        workflows=[workflow], event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     return (
-        SystemRuntime(builder.get_system(), event_bus=event_bus),
+        await memory_runtime(builder.get_system(), event_bus=event_bus),
         workflow, device,
     )
 
@@ -111,7 +119,7 @@ async def test_a_retry_tells_the_target_what_the_failed_call_never_did() -> None
     await runtime.start()
     try:
         record = await runtime.submit_workflow(
-            workflow.name, mode=WorkflowRunMode.PURE_SIM,
+            workflow.name, mode=WorkflowRunMode.CHECK_RUN,
         )
         paused = await wait_for_paused_thread(runtime, record.id)
         assert device.arrivals == 1

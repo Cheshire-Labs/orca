@@ -1,8 +1,7 @@
 """OpsHistoryFacade: read-only UI surface over the IOpsHistoryStore archive.
 
 Reads only -- there are no operator writes against ops history (records are
-emitted by the action-execution pipeline through TrackingContext). REST and
-MCP both program against ``runtime.ops_history.<method>``.
+emitted by the action-execution pipeline through TrackingContext). REST programs against ``runtime.ops_history.<method>``.
 """
 
 from typing import List, Tuple
@@ -12,7 +11,7 @@ from orca.state.ops_store import (
     IOpsHistoryStore,
     OpsHistorySearchQuery,
 )
-from orca.runtime.runtime_interface import IOpsHistoryFacade
+from orca.runtime.facade_interfaces import IOpsHistoryFacade
 
 
 class OpsHistoryFacade(IOpsHistoryFacade):

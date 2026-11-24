@@ -14,6 +14,7 @@ other remote driver, and the system's own memory of which worlds it brought up
 had the same hole.
 """
 
+from orca.config import OrcaConfig
 from dataclasses import dataclass
 from typing import Optional, cast
 
@@ -31,13 +32,15 @@ from orca.devices.shaker import Shaker
 from orca.events.event_bus import EventBus
 from orca.gateway.controller.controller import DeviceController
 from orca.gateway.remote_device_factory import RemoteDeviceFactory
-from orca.gateway.websocket.connection_events import connection_events
+from orca.gateway.device_gateway import DeviceGateway
+from orca.gateway.websocket.connection_events import IConnectionEvents
+from tests.gateway_parts import gateway_parts
 from orca.resource_models.transporter import Transporter
-from orca.runtime.device_factory_context import use_device_factory
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.driver_management.device_factory_context import use_device_factory
+from orca.modes.run_modes import WorkflowRunMode
 from orca.runtime.system_runtime import SystemRuntime
 from orca.system.SdkToSystemBuilder import SdkToSystemBuilder
-from orca.system.resource_registry import ResourceRegistry
+from orca.resource_models.resource_registry import ResourceRegistry
 from orca.system.system_map import SystemMap
 
 from tests.test_helpers import (
@@ -46,6 +49,11 @@ from tests.test_helpers import (
     seeded,
     wire_system_map,
 )
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.gateway.mode_doubles import fixed_mode
+from tests.memory_activity import memory_labware_service
 
 pytestmark = pytest.mark.asyncio
 
@@ -73,7 +81,6 @@ class _RecordingController:
         params: Optional[dict[str, JsonValue]] = None,
         timeout_seconds: Optional[float] = None,
         effective_mode: WorkflowRunMode = WorkflowRunMode.LIVE,
-        resend_on_reconnect: bool = True,
         kind: CommandKind = CommandKind.ACTUATION,
         execution_id: Optional[str] = None,
     ) -> JsonValue:
@@ -110,14 +117,14 @@ def _agent_report(*, is_initialized: bool) -> DeviceStatusInfo:
     )
 
 
-async def _runtime_over_an_agent() -> tuple[
+async def _runtime_over_an_agent(gateway: DeviceGateway) -> tuple[
     SystemRuntime, Transporter, _RecordingController,
 ]:
     """A shaker and an arm, both reached through one device bridge."""
     controller = _RecordingController()
     factory = RemoteDeviceFactory(
         controller=cast(DeviceController, controller),
-        mode_resolver=lambda _name: WorkflowRunMode.LIVE,
+        mode_resolver=fixed_mode(WorkflowRunMode.LIVE),
     )
     with use_device_factory(factory):
         shaker = Shaker(SHAKER)
@@ -132,16 +139,23 @@ async def _runtime_over_an_agent() -> tuple[
         name="agent_restart_sys", description="",
         labwares=[create_test_plate_template("plate_96")],
         resources_registry=registry, system_map=system_map,
-        workflows=[], event_bus=EventBus(),
+        workflows=[], event_bus=EventBus(), config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
-    runtime = SystemRuntime(builder.get_system(), event_bus=EventBus())
+    runtime = await memory_runtime(
+        builder.get_system(), event_bus=EventBus(), gateway=gateway,
+    )
     await runtime.start()
     return runtime, transporter, controller
 
 
-async def _reconnect(name: str, device_type: str, runtime: SystemRuntime) -> None:
-    await connection_events.emit_connected(_connect_info(name, device_type), "agent-1")
+async def _reconnect(
+    name: str, device_type: str, runtime: SystemRuntime, events: IConnectionEvents,
+) -> None:
+    await events.emit_connected(_connect_info(name, device_type), "agent-1")
     await runtime.flush_deck_reseeds()
 
 
@@ -149,13 +163,14 @@ class TestAnArmIsBroughtUpAgainAfterItsAgentRestarts:
     async def test_a_reconnect_makes_ensure_initialized_bring_the_arm_up(self) -> None:
         """The bench hazard, as a test: the arm is sent a move having never
         been brought up because a cache outlived the session that earned it."""
-        runtime, transporter, controller = await _runtime_over_an_agent()
+        parts = gateway_parts()
+        runtime, transporter, controller = await _runtime_over_an_agent(parts.gateway)
         try:
             with seeded(WorkflowRunMode.LIVE):
                 await transporter.ensure_initialized()
                 assert controller.count(ARM, "initialize") == 1
 
-                await _reconnect(ARM, "transporter", runtime)
+                await _reconnect(ARM, "transporter", runtime, parts.events)
                 await transporter.ensure_initialized()
 
             assert controller.count(ARM, "initialize") == 2, (
@@ -165,40 +180,41 @@ class TestAnArmIsBroughtUpAgainAfterItsAgentRestarts:
             )
         finally:
             await runtime.shutdown()
-            connection_events.clear()
 
     async def test_the_link_is_reopened_before_the_arm_is_brought_up(self) -> None:
         """A rebuilt device bridge holds a closed link too, so a bring-up that
         skips `connect` initializes a driver that never reached the
         instrument."""
-        runtime, transporter, controller = await _runtime_over_an_agent()
+        parts = gateway_parts()
+        runtime, transporter, controller = await _runtime_over_an_agent(parts.gateway)
         try:
             with seeded(WorkflowRunMode.LIVE):
                 await transporter.ensure_initialized()
 
-                await _reconnect(ARM, "transporter", runtime)
+                await _reconnect(ARM, "transporter", runtime, parts.events)
                 await transporter.ensure_initialized()
 
+            # Each bring-up is followed by one rebuild of the arm's world from the record (`reset_world`).
             assert controller.sequence(ARM) == [
-                "connect", "initialize", "connect", "initialize",
+                "connect", "initialize", "reset_world", "connect", "initialize", "reset_world",
             ], (
                 "the second bring-up must reopen the link first; observed "
                 f"{controller.sequence(ARM)}"
             )
         finally:
             await runtime.shutdown()
-            connection_events.clear()
 
     async def test_an_agent_report_of_not_brought_up_ends_the_claim(self) -> None:
         """A restarted device bridge may not reconnect through this runtime at
         all, but it reports; the party holding the driver objects wins the
         argument."""
-        runtime, transporter, controller = await _runtime_over_an_agent()
+        parts = gateway_parts()
+        runtime, transporter, controller = await _runtime_over_an_agent(parts.gateway)
         try:
             with seeded(WorkflowRunMode.LIVE):
                 await transporter.ensure_initialized()
 
-                await connection_events.emit_reported(
+                await parts.events.emit_reported(
                     ARM, _agent_report(is_initialized=False),
                 )
                 await transporter.ensure_initialized()
@@ -210,17 +226,17 @@ class TestAnArmIsBroughtUpAgainAfterItsAgentRestarts:
             )
         finally:
             await runtime.shutdown()
-            connection_events.clear()
 
     async def test_a_report_that_the_arm_is_up_costs_no_bring_up(self) -> None:
         """The negative control: healthy reports arrive with every heartbeat,
         and re-initializing on each one would reset the arm's tracking all run."""
-        runtime, transporter, controller = await _runtime_over_an_agent()
+        parts = gateway_parts()
+        runtime, transporter, controller = await _runtime_over_an_agent(parts.gateway)
         try:
             with seeded(WorkflowRunMode.LIVE):
                 await transporter.ensure_initialized()
 
-                await connection_events.emit_reported(
+                await parts.events.emit_reported(
                     ARM, _agent_report(is_initialized=True),
                 )
                 await transporter.ensure_initialized()
@@ -231,29 +247,26 @@ class TestAnArmIsBroughtUpAgainAfterItsAgentRestarts:
             )
         finally:
             await runtime.shutdown()
-            connection_events.clear()
 
     async def test_a_shut_down_runtime_stops_answering_for_its_drivers(self) -> None:
         """A hosted deployment rebuilds SystemRuntime in place; a listener left behind would
         keep invalidating drivers a live successor now owns."""
-        runtime, transporter, controller = await _runtime_over_an_agent()
-        try:
-            with seeded(WorkflowRunMode.LIVE):
-                await transporter.ensure_initialized()
-            await runtime.shutdown()
+        parts = gateway_parts()
+        runtime, transporter, controller = await _runtime_over_an_agent(parts.gateway)
+        with seeded(WorkflowRunMode.LIVE):
+            await transporter.ensure_initialized()
+        await runtime.shutdown()
 
-            await connection_events.emit_reported(
-                ARM, _agent_report(is_initialized=False),
-            )
-            with seeded(WorkflowRunMode.LIVE):
-                await transporter.ensure_initialized()
+        await parts.events.emit_reported(
+            ARM, _agent_report(is_initialized=False),
+        )
+        with seeded(WorkflowRunMode.LIVE):
+            await transporter.ensure_initialized()
 
-            assert controller.count(ARM, "initialize") == 1, (
-                "a dead runtime must not touch driver state; observed "
-                f"{controller.count(ARM, 'initialize')} initialize dispatches"
-            )
-        finally:
-            connection_events.clear()
+        assert controller.count(ARM, "initialize") == 1, (
+            "a dead runtime must not touch driver state; observed "
+            f"{controller.count(ARM, 'initialize')} initialize dispatches"
+        )
 
 
 class TestTheWholeRemoteDriverFamilyForgets:
@@ -262,13 +275,14 @@ class TestTheWholeRemoteDriverFamilyForgets:
         re-checks the arm, so the bring-up walk is where its recovery lands.
         Both orca's memories have to let go: the driver's cached flag and the
         system's record of which worlds it already brought up."""
-        runtime, _transporter, controller = await _runtime_over_an_agent()
+        parts = gateway_parts()
+        runtime, _transporter, controller = await _runtime_over_an_agent(parts.gateway)
         try:
             with seeded(WorkflowRunMode.LIVE):
                 await runtime.system.ensure_runtime_initialized()
                 assert controller.count(SHAKER, "initialize") == 1
 
-                await _reconnect(SHAKER, "shaker", runtime)
+                await _reconnect(SHAKER, "shaker", runtime, parts.events)
                 await runtime.system.ensure_runtime_initialized()
 
             assert controller.count(SHAKER, "initialize") == 2, (
@@ -278,18 +292,18 @@ class TestTheWholeRemoteDriverFamilyForgets:
             )
         finally:
             await runtime.shutdown()
-            connection_events.clear()
 
     async def test_only_the_reconnected_device_comes_up_again(self) -> None:
         """Bringing a device up takes its session and resets what it was
         tracking, so one device bridge's return must not sweep the whole
         workcell."""
-        runtime, _transporter, controller = await _runtime_over_an_agent()
+        parts = gateway_parts()
+        runtime, _transporter, controller = await _runtime_over_an_agent(parts.gateway)
         try:
             with seeded(WorkflowRunMode.LIVE):
                 await runtime.system.ensure_runtime_initialized()
 
-                await _reconnect(SHAKER, "shaker", runtime)
+                await _reconnect(SHAKER, "shaker", runtime, parts.events)
                 await runtime.system.ensure_runtime_initialized()
 
             assert controller.count(ARM, "initialize") == 1, (
@@ -299,4 +313,3 @@ class TestTheWholeRemoteDriverFamilyForgets:
             )
         finally:
             await runtime.shutdown()
-            connection_events.clear()

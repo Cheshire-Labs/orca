@@ -12,25 +12,18 @@ from typing import Any, Callable, Dict, List, Optional, TypeVar, cast
 import pytest
 
 from cheshire_drivers.centrifuge_models import CentrifugeRequest
+from cheshire_drivers.liquid_handler_models import MovePlateRequest
 from cheshire_drivers.protocol_runner_models import RunProtocolRequest
 from cheshire_drivers.shaker_models import ShakeRequest
-from cheshire_drivers.sims import (
-    SimCentrifugeDriver,
-    SimDelidderDriver,
-    SimLiquidHandlerWithProtocolDriver,
-    SimPlateWasherDriver,
-    SimReaderDriver,
-    SimSealerDriver,
-    SimShakerDriver,
-)
 
 from orca.devices.centrifuge import Centrifuge
 from orca.devices.devices import Delidder, LiquidHandlerProtocol, PlateWasher, Reader
 from orca.devices.shaker import Shaker
 from orca.devices.sealer import Sealer
 from orca.resource_models.devices import Device
-from orca.runtime.device_factory_context import use_device_factory
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.driver_management.device_factory_context import use_device_factory
+from orca.modes.device_modes import DeviceMode
+from orca.modes.run_modes import WorkflowRunMode
 
 from orca.gateway.controller.controller import DeviceController
 from orca.gateway.controller.exceptions import ModeUnresolvableError
@@ -48,7 +41,7 @@ from orca.gateway.remote_drivers import (
     RemoteShakerDriver,
 )
 from orca.gateway.remote_drivers import RunProtocolNotSupportedError
-from tests.gateway.mode_doubles import DeclaredDevice, unseeded_await
+from tests.gateway.mode_doubles import DeclaredDevice, unseeded_await, fixed_mode
 
 
 @dataclass
@@ -74,7 +67,6 @@ class _FakeController:
         params: Optional[Dict[str, Any]] = None,
         timeout_seconds: Optional[float] = None,
         effective_mode: WorkflowRunMode = WorkflowRunMode.LIVE,
-        resend_on_reconnect: bool = True,
         execution_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         self.calls.append(
@@ -97,16 +89,10 @@ def _make_factory(
     profiles: Optional[Dict[str, frozenset[str]]] = None,
 ) -> tuple[RemoteDeviceFactory, _FakeController]:
     controller = _FakeController()
-    profile_map = dict(profiles or {})
-
-    def _profile_source(name: str) -> Optional[frozenset[str]]:
-        return profile_map.get(name)
-
     factory = RemoteDeviceFactory(
         controller=cast(DeviceController, controller),
-        default_timeout=30.0,
-        mode_resolver=lambda _name: mode,
-        profile_source=_profile_source,
+        mode_resolver=fixed_mode(mode),
+        profile_source=None if profiles is None else lambda _kind, name, _deck_modeling: profiles[name],
     )
     return factory, controller
 
@@ -120,8 +106,8 @@ def _sdk_build(
     """Build `cls(name)` under a bound gateway factory (the no-driver SDK path).
 
     Mirrors a deployment author writing `Shaker("ml_star")` with the gateway
-    factory bound: the ctor's `resolve_drivers` pulls its (live, sim) pair from
-    `factory.build_drivers`. Devices carry a device-type kind, so the concrete
+    factory bound: the ctor's `resolve_driver` pulls its driver from
+    `factory.build_driver`. Devices carry a device-type kind, so the concrete
     class is the sole input.
     """
     with use_device_factory(factory):
@@ -129,80 +115,64 @@ def _sdk_build(
 
 
 class TestFactoryDeviceTypes:
-    """Gateway SDK-ctor build wires the right Remote*/Sim* driver pair per device."""
+    """Gateway SDK-ctor build wires the right Remote* driver per device."""
 
-    def test_shaker_returns_shaker_with_remote_and_sim(self) -> None:
+    def test_shaker_returns_shaker_with_remote(self) -> None:
         factory, _ = _make_factory()
         device = _sdk_build(factory, Shaker, "shaker_1")
         assert isinstance(device, Shaker)
-        # Both drivers are wired via SimulationManager.
-        assert isinstance(device._sim_manager._live_driver, RemoteShakerDriver)
-        assert isinstance(device._sim_manager._sim_driver, SimShakerDriver)
+        assert isinstance(device.driver, RemoteShakerDriver)
 
-    def test_centrifuge_returns_centrifuge_with_remote_and_sim(self) -> None:
+    def test_centrifuge_returns_centrifuge_with_remote(self) -> None:
         factory, _ = _make_factory()
         device = _sdk_build(factory, Centrifuge, "cent_1")
         assert isinstance(device, Centrifuge)
-        assert isinstance(device._sim_manager._live_driver, RemoteCentrifugeDriver)
-        assert isinstance(device._sim_manager._sim_driver, SimCentrifugeDriver)
+        assert isinstance(device.driver, RemoteCentrifugeDriver)
 
-    def test_sealer_returns_sealer_with_remote_and_sim(self) -> None:
+    def test_sealer_returns_sealer_with_remote(self) -> None:
         factory, _ = _make_factory()
         device = _sdk_build(factory, Sealer, "seal_1")
         assert isinstance(device, Sealer)
-        assert isinstance(device._sim_manager._live_driver, RemoteSealerDriver)
-        assert isinstance(device._sim_manager._sim_driver, SimSealerDriver)
+        assert isinstance(device.driver, RemoteSealerDriver)
 
-    def test_reader_returns_reader_with_remote_and_sim(self) -> None:
+    def test_reader_returns_reader_with_remote(self) -> None:
         factory, _ = _make_factory()
         device = _sdk_build(factory, Reader, "rdr_1")
         assert isinstance(device, Reader)
-        assert isinstance(device._sim_manager._live_driver, RemoteReaderDriver)
-        assert isinstance(device._sim_manager._sim_driver, SimReaderDriver)
+        assert isinstance(device.driver, RemoteReaderDriver)
 
-    def test_delidder_returns_delidder_with_remote_and_sim(self) -> None:
+    def test_delidder_returns_delidder_with_remote(self) -> None:
         factory, _ = _make_factory()
         device = _sdk_build(factory, Delidder, "delid_1")
         assert isinstance(device, Delidder)
-        assert isinstance(device._sim_manager._live_driver, RemoteDelidderDriver)
-        assert isinstance(device._sim_manager._sim_driver, SimDelidderDriver)
+        assert isinstance(device.driver, RemoteDelidderDriver)
 
-    def test_plate_washer_returns_plate_washer_with_remote_and_sim(self) -> None:
+    def test_plate_washer_returns_plate_washer_with_remote(self) -> None:
         factory, _ = _make_factory()
         device = _sdk_build(factory, PlateWasher, "pw_1")
         assert isinstance(device, PlateWasher)
-        assert isinstance(device._sim_manager._live_driver, RemotePlateWasherDriver)
-        assert isinstance(device._sim_manager._sim_driver, SimPlateWasherDriver)
+        assert isinstance(device.driver, RemotePlateWasherDriver)
 
     def test_liquid_handler_cold_start_defaults_to_plr_only(self) -> None:
-        """No connection card yet -> plr-only LIVE profile (safe default).
+        """No profile source -> plr-only LIVE profile (safe default).
 
-        Before an orca-client connects there is no advertised profile, so the
-        factory picks the plr-only live driver (advertises {ILiquidHandler}).
-        A rebuild after the client connects upgrades the profile. The sim slot
-        is always the protocol-capable composite so PURE_SIM run_protocol works
-        regardless of the live profile (the operator surface reads the live
-        driver, not the sim).
+        With no profile source the factory picks the plr-only live driver
+        (advertises {ILiquidHandler}).
         """
         factory, _ = _make_factory()
         device = _sdk_build(factory, LiquidHandlerProtocol, "lh_1")
         assert isinstance(device, LiquidHandlerProtocol)
-        live = device._sim_manager._live_driver
+        live = device.driver
         assert type(live) is RemoteLiquidHandlerDriver
         assert live.interfaces == frozenset({"ILiquidHandler"})
-        assert isinstance(
-            device._sim_manager._sim_driver, SimLiquidHandlerWithProtocolDriver
-        )
 
 
 class TestLiquidHandlerProfileSelection:
-    """The LH live driver advertises the connection-card profile per instance.
+    """The LH live driver takes its profile per instance from its profile source.
 
-    The profile source is the orca-client's advertised interface set
-    (DeviceConnectInfo.interfaces, surfaced through the connection tracker).
-    The factory reads it at build time and picks the matching live driver
-    class so the orca facade + connect-time superset check see the device's
-    true capability set, not a frozen {ILiquidHandler}.
+    The factory reads the profile source at build time and picks the matching
+    live driver class so the orca facade sees the device's true capability
+    set, not a frozen {ILiquidHandler}.
     """
 
     def test_both_profile_advertises_lh_and_protocol(self) -> None:
@@ -210,35 +180,27 @@ class TestLiquidHandlerProfileSelection:
             profiles={"mlstar": frozenset({"ILiquidHandler", "IProtocolRunner"})},
         )
         device = _sdk_build(factory, LiquidHandlerProtocol, "mlstar")
-        live = device._sim_manager._live_driver
+        live = device.driver
         assert type(live) is RemoteLiquidHandlerWithProtocolDriver
         assert live.interfaces == frozenset({"ILiquidHandler", "IProtocolRunner"})
-        assert isinstance(
-            device._sim_manager._sim_driver, SimLiquidHandlerWithProtocolDriver
-        )
 
     def test_protocol_only_profile_advertises_protocol_runner(self) -> None:
         factory, _ = _make_factory(
             profiles={"bravo": frozenset({"IProtocolRunner"})},
         )
         device = _sdk_build(factory, LiquidHandlerProtocol, "bravo")
-        live = device._sim_manager._live_driver
+        live = device.driver
         assert type(live) is RemoteProtocolOnlyLiquidHandlerDriver
         assert live.interfaces == frozenset({"IProtocolRunner"})
-        # Sim slot must support run_protocol so PURE_SIM bravo workflows run.
-        assert callable(getattr(device._sim_manager._sim_driver, "run_protocol", None))
 
     def test_plr_only_profile_advertises_lh_only(self) -> None:
         factory, _ = _make_factory(
             profiles={"opentrons": frozenset({"ILiquidHandler"})},
         )
         device = _sdk_build(factory, LiquidHandlerProtocol, "opentrons")
-        live = device._sim_manager._live_driver
+        live = device.driver
         assert type(live) is RemoteLiquidHandlerDriver
         assert live.interfaces == frozenset({"ILiquidHandler"})
-        assert isinstance(
-            device._sim_manager._sim_driver, SimLiquidHandlerWithProtocolDriver
-        )
 
 
 class TestLiquidHandlerRunProtocolFailFast:
@@ -252,7 +214,7 @@ class TestLiquidHandlerRunProtocolFailFast:
             profiles={"opentrons": frozenset({"ILiquidHandler"})},
         )
         device = _sdk_build(factory, LiquidHandlerProtocol, "opentrons")
-        live = device._sim_manager._live_driver
+        live = device.driver
         live_cls = type(live)
         assert live_cls is RemoteLiquidHandlerDriver
         with pytest.raises(RunProtocolNotSupportedError):
@@ -268,7 +230,7 @@ class TestLiquidHandlerRunProtocolFailFast:
             profiles={"bravo": frozenset({"IProtocolRunner"})},
         )
         device = _sdk_build(factory, LiquidHandlerProtocol, "bravo")
-        live = device._sim_manager._live_driver
+        live = device.driver
         live_cls = type(live)
         assert live_cls is RemoteProtocolOnlyLiquidHandlerDriver
         await live.run_protocol(
@@ -282,7 +244,7 @@ class TestLiquidHandlerRunProtocolFailFast:
             profiles={"mlstar": frozenset({"ILiquidHandler", "IProtocolRunner"})},
         )
         device = _sdk_build(factory, LiquidHandlerProtocol, "mlstar")
-        live = device._sim_manager._live_driver
+        live = device.driver
         live_cls = type(live)
         assert live_cls is RemoteLiquidHandlerWithProtocolDriver
         await live.run_protocol(
@@ -291,65 +253,40 @@ class TestLiquidHandlerRunProtocolFailFast:
         assert [c.command for c in controller.calls] == ["run_protocol"]
 
 
-class TestNoDriverSdkBuildDrivers:
-    """`build_drivers` powers the no-driver SDK ctor flow via `resolve_drivers`.
+class TestNoDriverSdkBuildDriver:
+    """`build_driver` gives each device kind its one forwarding driver."""
 
-    A deployment-package author writes ``Shaker(name="x")`` (or
-    ``Transporter(name="x", teachpoint_store=...)``) and orca-core's
-    ``resolve_drivers`` calls ``factory.build_drivers(device_type, name)``
-    on the active factory.
-    """
-
-    def test_shaker_returns_remote_and_sim_pair(self) -> None:
+    def test_shaker_gets_a_forwarding_driver(self) -> None:
         factory, _ = _make_factory()
-        live, sim = factory.build_drivers("shaker", "shaker_1")
-        assert isinstance(live, RemoteShakerDriver)
-        assert isinstance(sim, SimShakerDriver)
+        assert isinstance(factory.build_driver("shaker", "shaker_1"), RemoteShakerDriver)
 
-    def test_transporter_returns_remote_and_sim_pair(self) -> None:
-        """Transporter now has a wire-forwarding driver paired with a sim.
-
-        `RemoteTransporterDriver` implements
-        `ITransporterDriver` as a thin wire-forwarder over
-        `DeviceController.execute_command`. The factory wires it into
-        the live slot just like every device driver; sim driver fills
-        the in-process slot. orca-core's `SimulationManager` toggles
-        per dispatch via the factory's mode resolver.
-        """
-        from cheshire_drivers.sims import SimTransporterDriver
-
-        from orca.gateway.remote_transporter_driver import (
-            RemoteTransporterDriver,
-        )
+    def test_storage_gets_a_forwarding_driver(self) -> None:
+        """A stacker's dispense moves hardware, so it goes to the stacker's orca-client like every command."""
+        from orca.gateway.remote_drivers import RemoteStorageDriver, RemoteWasteDriver
 
         factory, _ = _make_factory()
-        live, sim = factory.build_drivers("transporter", "transporter_1")
-        assert isinstance(live, RemoteTransporterDriver)
-        assert isinstance(sim, SimTransporterDriver)
+        assert isinstance(factory.build_driver("storage", "stacker_1"), RemoteStorageDriver)
+        assert isinstance(factory.build_driver("waste", "waste_1"), RemoteWasteDriver)
 
-    def test_translator_pair_declares_one_carriage_on_both_slots(self) -> None:
-        """A hosted translator must still read as a single carriage.
+    def test_transporter_gets_a_forwarding_driver(self) -> None:
+        from orca.gateway.remote_transporter_driver import RemoteTransporterDriver
 
-        `single_carriage` is read off the LIVE driver at topology-build time,
-        before any device bridge has connected, so the proxy cannot learn it
-        over the wire. Handing a translator the plain transporter pair is what
-        let the reservation layer promise both endpoints of one physical carriage.
-        """
-        from cheshire_drivers.translator_driver import SimTranslatorDriver
+        factory, _ = _make_factory()
+        assert isinstance(factory.build_driver("transporter", "transporter_1"), RemoteTransporterDriver)
 
+    def test_a_translator_declares_one_carriage(self) -> None:
+        """`single_carriage` is read at topology-build time, before any device bridge has connected."""
         from orca.gateway.remote_transporter_driver import RemoteTranslatorDriver
 
         factory, _ = _make_factory()
-        live, sim = factory.build_drivers("translator", "translator_1")
-        assert isinstance(live, RemoteTranslatorDriver)
-        assert isinstance(sim, SimTranslatorDriver)
-        assert live.single_carriage is True
-        assert sim.single_carriage is True
+        driver = factory.build_driver("translator", "translator_1")
+        assert isinstance(driver, RemoteTranslatorDriver)
+        assert driver.single_carriage is True
 
     def test_unknown_device_type_raises(self) -> None:
         factory, _ = _make_factory()
         with pytest.raises(ValueError, match="Unknown device type"):
-            factory.build_drivers("nonexistent_kind", "x")
+            factory.build_driver("nonexistent_kind", "x")
 
 
 class TestRemoteDriverSendIncludesEffectiveMode:
@@ -360,7 +297,7 @@ class TestRemoteDriverSendIncludesEffectiveMode:
         factory, controller = _make_factory(mode=WorkflowRunMode.LIVE)
         device = _sdk_build(factory, Shaker, "shaker_1")
         # Pull the live driver and exercise its driver-level method directly.
-        live = device._sim_manager._live_driver
+        live = device.driver
         assert isinstance(live, RemoteShakerDriver)
         await live.shake(ShakeRequest(speed=200.0, duration=10.0))
         assert len(controller.calls) == 1
@@ -376,10 +313,10 @@ class TestRemoteDriverSendIncludesEffectiveMode:
         REST, the CLI and MCP all call `Device.connect()`, which dispatches via
         the run-mode-aware `driver` property. Driving the proxy object directly
         skips that hop, so it cannot catch a device wired to the wrong driver.
-        Seeded LIVE, because an unseeded caller resolves to PURE_SIM and would
+        Seeded LIVE, because an unseeded caller resolves to CHECK_RUN and would
         be talking to the sim stub.
         """
-        from orca.runtime.run_modes import current_run_mode
+        from orca.modes.run_modes import current_run_mode
 
         factory, controller = _make_factory(mode=WorkflowRunMode.LIVE)
         device = _sdk_build(factory, Shaker, "shaker_1")
@@ -408,7 +345,7 @@ class TestRemoteDriverSendIncludesEffectiveMode:
         """
         factory, controller = _make_factory(mode=WorkflowRunMode.LIVE)
         device = _sdk_build(factory, Shaker, "shaker_1")
-        live = device._sim_manager._live_driver
+        live = device.driver
         assert isinstance(live, RemoteShakerDriver)
 
         await live.connect()
@@ -418,19 +355,19 @@ class TestRemoteDriverSendIncludesEffectiveMode:
         assert live.is_initialized is False
 
     @pytest.mark.asyncio
-    async def test_shaker_shake_with_device_sim_mode(self) -> None:
-        factory, controller = _make_factory(mode=WorkflowRunMode.DEVICE_SIM)
+    async def test_shaker_shake_with_sim_mode(self) -> None:
+        factory, controller = _make_factory(mode=WorkflowRunMode.SIM)
         device = _sdk_build(factory, Shaker, "shaker_1")
-        live = device._sim_manager._live_driver
+        live = device.driver
         assert isinstance(live, RemoteShakerDriver)
         await live.shake(ShakeRequest(speed=200.0, duration=10.0))
-        assert controller.calls[0].effective_mode is WorkflowRunMode.DEVICE_SIM
+        assert controller.calls[0].effective_mode is WorkflowRunMode.SIM
 
     @pytest.mark.asyncio
     async def test_centrifuge_includes_effective_mode(self) -> None:
         factory, controller = _make_factory(mode=WorkflowRunMode.LIVE)
         device = _sdk_build(factory, Centrifuge, "cent_1")
-        live = device._sim_manager._live_driver
+        live = device.driver
         assert isinstance(live, RemoteCentrifugeDriver)
         await live.centrifuge(CentrifugeRequest(g=500.0, duration=30.0))
         assert controller.calls[0].command == "centrifuge"
@@ -462,7 +399,7 @@ class TestModeResolverFollowsTheRuntime:
     That is the cold-start path: the first build fails, the operator drops a
     corrected topology and reloads, and drivers built in between must pick up
     the declaration. A factory that answered for itself while it had nobody to
-    ask would drive a real instrument for a device declared DEVICE_SIM.
+    ask would drive a real instrument for a device declared SIM.
     """
 
     @staticmethod
@@ -473,7 +410,7 @@ class TestModeResolverFollowsTheRuntime:
         factory = RemoteDeviceFactory(
             controller=cast(DeviceController, controller),
             mode_resolver=system_mode_resolver(
-                lambda: runtime_slot[0], when_unseeded=WorkflowRunMode.LIVE,
+                lambda: runtime_slot[0], base_mode=lambda: WorkflowRunMode.LIVE,
             ),
         )
         return factory, controller
@@ -483,11 +420,11 @@ class TestModeResolverFollowsTheRuntime:
         self,
     ) -> None:
         """A driver built before the runtime cannot read any declaration, and
-        a device that declared DEVICE_SIM would be driven live if it guessed."""
+        a device that declared SIM would be driven live if it guessed."""
         runtime_slot: List[Optional[_FakeRuntime]] = [None]
         factory, controller = self._factory_over(runtime_slot)
         device = _sdk_build(factory, Shaker, "shaker_1")
-        live = device._sim_manager._live_driver
+        live = device.driver
         assert isinstance(live, RemoteShakerDriver)
 
         with pytest.raises(ModeUnresolvableError):
@@ -503,21 +440,21 @@ class TestModeResolverFollowsTheRuntime:
         runtime_slot: List[Optional[_FakeRuntime]] = [None]
         factory, controller = self._factory_over(runtime_slot)
         device = _sdk_build(factory, Shaker, "shaker_1")
-        live = device._sim_manager._live_driver
+        live = device.driver
         assert isinstance(live, RemoteShakerDriver)
 
         # Runtime up, and it declares the device sim-side. The driver built
         # before it existed honours that without being rebuilt; drivers do not
         # cache the mode.
         runtime_slot[0] = _FakeRuntime(_FakeSystem(
-            DeclaredDevice(WorkflowRunMode.DEVICE_SIM, name="shaker_1"),
+            DeclaredDevice(DeviceMode.SIM, name="shaker_1"),
         ))
         await unseeded_await(live.shake(ShakeRequest(speed=100.0, duration=5.0)))
-        assert controller.calls[-1].effective_mode is WorkflowRunMode.DEVICE_SIM
+        assert controller.calls[-1].effective_mode is WorkflowRunMode.SIM
 
-        # And a device it declares with no override still reaches the wire.
+        # And a device set to live reaches the wire as LIVE.
         runtime_slot[0] = _FakeRuntime(_FakeSystem(
-            DeclaredDevice(None, name="shaker_1"),
+            DeclaredDevice(DeviceMode.LIVE, name="shaker_1"),
         ))
         await unseeded_await(live.shake(ShakeRequest(speed=100.0, duration=5.0)))
         assert controller.calls[-1].effective_mode is WorkflowRunMode.LIVE
@@ -536,7 +473,7 @@ class TestRemoteSealerGetTemperature:
     async def test_missing_temperature_key_raises(self) -> None:
         factory, controller = _make_factory(mode=WorkflowRunMode.LIVE)
         device = _sdk_build(factory, Sealer, "seal_1")
-        live = device._sim_manager._live_driver
+        live = device.driver
         assert isinstance(live, RemoteSealerDriver)
         # Prime the fake controller to return a response with no
         # `temperature` field, simulating a driver that failed to report.
@@ -549,7 +486,7 @@ class TestRemoteSealerGetTemperature:
     async def test_present_temperature_is_returned(self) -> None:
         factory, controller = _make_factory(mode=WorkflowRunMode.LIVE)
         device = _sdk_build(factory, Sealer, "seal_1")
-        live = device._sim_manager._live_driver
+        live = device.driver
         assert isinstance(live, RemoteSealerDriver)
         controller.responses.append({"temperature": 42.5})
 
@@ -582,3 +519,20 @@ class TestRemoteDriverInterfaces:
         assert RemoteLiquidHandlerDriver.provides_state is True
         assert RemoteLiquidHandlerWithProtocolDriver.provides_state is True
         assert RemoteProtocolOnlyLiquidHandlerDriver.provides_state is True
+
+
+class TestAMovePlateWithNoPlateCrossesTheWire:
+    @pytest.mark.asyncio
+    async def test_a_move_with_no_plate_on_record_reaches_orca_client_as_a_valid_request(self) -> None:
+        """The wire drops None fields, so a move naming no plate must still parse on orca-client's side."""
+        factory, controller = _make_factory(
+            mode=WorkflowRunMode.LIVE, profiles={"opentrons": frozenset({"ILiquidHandler"})},
+        )
+        live = _sdk_build(factory, LiquidHandlerProtocol, "opentrons").driver
+        assert isinstance(live, RemoteLiquidHandlerDriver)
+
+        await live.move_plate(MovePlateRequest(plate=None, from_position="slot_1", to_position="slot_2"))
+
+        sent = MovePlateRequest.model_validate(controller.calls[0].params)
+        assert sent.plate is None
+        assert (sent.from_position, sent.to_position) == ("slot_1", "slot_2")

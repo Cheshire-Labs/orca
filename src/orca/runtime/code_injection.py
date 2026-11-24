@@ -1,6 +1,6 @@
 """Compile @orca.method / @orca.action source from the wire into runtime templates.
 
-Used by a hosted deployment's `thread_insert_method` / `thread_insert_action` REST/MCP
+Used by a hosted deployment's `thread_insert_method` / `thread_insert_action` REST
 tools (and the orca-core daemon equivalents). Wire callers send the
 Python source defining a single decorated function; this module compiles
 it, executes it in an isolated namespace, and returns the resulting

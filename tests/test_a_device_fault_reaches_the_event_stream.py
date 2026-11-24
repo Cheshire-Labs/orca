@@ -9,9 +9,9 @@ found out when the next thread refused.
 import pytest
 
 from orca.events.execution_context import DeviceFaultContext
-from orca.events.intervention import InterventionKind, classify_intervention
+from orca.runtime.intervention import InterventionKind, classify_intervention
 from orca.events.runtime_event import RuntimeEvent
-from orca.gateway.controller.controller import DeviceController
+from tests.gateway_parts import gateway_parts
 from orca.runtime.system_runtime import SystemRuntime
 from orca.gateway.device_fault import (
     DeviceFault,
@@ -46,7 +46,7 @@ def fault_event(*, cleared: bool, device_name: str = "pf400_1") -> RuntimeEvent:
 
 @pytest.mark.asyncio
 async def test_latching_a_fault_tells_the_listener():
-    controller = DeviceController()
+    controller = gateway_parts().controller
     seen: list[tuple[str, DeviceFault | None]] = []
     controller.set_fault_listener(lambda name, fault: seen.append((name, fault)))
 
@@ -65,7 +65,7 @@ async def test_latching_a_fault_tells_the_listener():
 @pytest.mark.asyncio
 async def test_only_the_first_fault_is_announced():
     """The first fault is the one kept, so it is the only one worth saying."""
-    controller = DeviceController()
+    controller = gateway_parts().controller
     seen: list[tuple[str, DeviceFault | None]] = []
     controller.set_fault_listener(lambda name, fault: seen.append((name, fault)))
 
@@ -81,7 +81,7 @@ async def test_only_the_first_fault_is_announced():
 @pytest.mark.asyncio
 async def test_clearing_a_fault_tells_the_listener_it_is_gone():
     """A surface that latched onto the fault can drop it without polling."""
-    controller = DeviceController()
+    controller = gateway_parts().controller
     await controller._latch_fault(
         "pf400_1", "initialize", "cmd-1",
         OSError("dropped"), DeviceFaultOutcome.FAILED, "exec-1",
@@ -96,7 +96,7 @@ async def test_clearing_a_fault_tells_the_listener_it_is_gone():
 
 @pytest.mark.asyncio
 async def test_clearing_a_device_with_no_fault_announces_nothing():
-    controller = DeviceController()
+    controller = gateway_parts().controller
     seen: list[tuple[str, DeviceFault | None]] = []
     controller.set_fault_listener(lambda name, fault: seen.append((name, fault)))
 
@@ -107,7 +107,7 @@ async def test_clearing_a_device_with_no_fault_announces_nothing():
 
 @pytest.mark.asyncio
 async def test_a_listener_that_raises_never_reaches_the_command_path():
-    controller = DeviceController()
+    controller = gateway_parts().controller
 
     def explode(name: str, fault: DeviceFault | None) -> None:
         raise RuntimeError("observer is broken")

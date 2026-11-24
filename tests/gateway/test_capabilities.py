@@ -10,8 +10,8 @@ command)` instead of the deleted dict.
 
 import pytest
 
+from cheshire_drivers.command_table import COMMANDS
 from orca.gateway.registry.capabilities import (
-    NAME_TO_INTERFACE,
     validate_capability_for_device,
 )
 
@@ -94,7 +94,7 @@ class TestCapabilities:
 
     def test_validate_capability_returns_false_for_unknown_interface(self):
         """validate_capability returns False when the advertised interface
-        name does not appear in NAME_TO_INTERFACE.
+        name has no interface in the command table.
 
         Pre-Stream-A this test was about unknown device_type strings.
         Behavioral intent (unknown contract -> reject every command) is
@@ -116,26 +116,12 @@ class TestCapabilities:
             command="set_acceleration",
         ) is True
 
-    def test_name_to_interface_registry_structure(self):
-        """NAME_TO_INTERFACE contains the expected interface entries.
-
-        Pre-Stream-A this test verified DEVICE_CAPABILITIES had entries for
-        each device type; behavioral intent (every supported device family
-        is registered) preserved here.
-        """
-        assert isinstance(NAME_TO_INTERFACE, dict)
-        # Each device family has an interface entry
+    def test_every_device_family_has_an_interface_in_the_command_table(self):
         for required in {
             "IShaker", "ICentrifuge", "IThermocycler", "ISealer", "ITransporter",
             "ILiquidHandler",
         }:
-            assert required in NAME_TO_INTERFACE, (
-                f"NAME_TO_INTERFACE missing required interface {required!r}"
-            )
-        # Each entry is a class
-        for name, cls in NAME_TO_INTERFACE.items():
-            assert isinstance(name, str)
-            assert isinstance(cls, type), f"NAME_TO_INTERFACE[{name!r}] is not a class"
+            assert isinstance(COMMANDS.interface(required), type), required
 
     def test_stationary_devices_have_stop(self):
         """Stationary device types (shaker, centrifuge, sealer) support 'stop'.
@@ -319,10 +305,8 @@ class TestReadablePropertiesReachTheDevice:
     """
 
     def test_the_two_readable_properties_are_admitted(self) -> None:
-        from cheshire_drivers.response_lookup import WIRE_READABLE_PROPERTIES
-
         for iface in ("IShaker", "ITransporter", "ILiquidHandler"):
-            for name in WIRE_READABLE_PROPERTIES:
+            for name in ("is_initialized", "is_connected"):
                 assert validate_capability_for_device(
                     frozenset({iface}), frozenset(), name
                 ), f"{iface} refuses to answer {name}"

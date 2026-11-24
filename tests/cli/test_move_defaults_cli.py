@@ -12,7 +12,7 @@ from typer.testing import CliRunner
 
 from orca.cli import output
 from orca.cli.app import app
-from orca.daemon.schemas import MoveDefaultsDTO, MoveDefaultsPatchRequest
+from orca.operations.wire_models import MoveDefaultsDTO, MoveDefaultsPatchRequest
 
 
 runner = CliRunner()

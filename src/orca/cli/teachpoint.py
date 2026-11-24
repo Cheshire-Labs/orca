@@ -5,6 +5,7 @@ passed as a small flat JSON dict via ``--coords`` (inline) or
 ``--coords-file`` (path); the scalar fields ride as typed options. The
 coord conversion + validation runs server-side in the shared
 teachpoint-wire module, so both backends behave identically.
+`export` and `import` move a device's teachpoints as one JSON file.
 """
 
 import json
@@ -12,11 +13,14 @@ from pathlib import Path
 
 import typer
 from cheshire_drivers.move_parameters import MoveParameterPatch
-from pydantic import ValidationError
+from pydantic import JsonValue, TypeAdapter, ValidationError
 
 from orca.cli import output
 from orca.cli.backend import get_client
-from orca.daemon.schemas import GripProfilePatchRequest, TeachpointDTO
+from orca.cli.device_operator import register_teachpoint_verbs
+from orca.operations.wire_models import GripProfilePatchRequest, TeachpointDTO
+
+_ROWS = TypeAdapter(list[dict[str, JsonValue]])
 
 
 app = typer.Typer(
@@ -171,20 +175,20 @@ def create_teachpoint(
         None, "--reason", help="Why, for the audit trail.",
     ),
 ) -> None:
-    """Register a new teachpoint. 400 on bad coords or unknown access config,
+    """Register a new teachpoint. 422 on bad coords or unknown access config,
     404 on unknown device, 409 on duplicate."""
-    coord_data = _load_coords(coords, coords_file)
-    client = get_client()
-    created = client.teachpoints_add(
-        device_id, position_id, coord_type, coord_data,
-        access_config, gateway, orientation, taught_with, reason=reason,
+    row: dict[str, JsonValue] = {
+        "position_id": position_id, "coord_type": coord_type, "coords": dict(_load_coords(coords, coords_file)),
+        "access_config_name": access_config, "gateway": gateway, "orientation": orientation,
+        "taught_with": taught_with,
+    }
+    result = get_client().teachpoints_create(
+        device_id, [{k: v for k, v in row.items() if v is not None}], reason=reason,
     )
     if output.get_mode().value == "json":
-        output.emit_json(created.model_dump(mode="json"))
+        output.emit_json(result.model_dump(mode="json"))
         return
-    output.info(
-        f"created teachpoint [cyan]{created.position_id}[/cyan] on {created.device_id}",
-    )
+    output.info(f"created teachpoint [cyan]{position_id}[/cyan] on {device_id}")
 
 
 @app.command("update")
@@ -249,6 +253,68 @@ def delete_teachpoint(
     output.info(
         f"deleted teachpoint [cyan]{position_id}[/cyan] on {device_id}",
     )
+
+
+@app.command("export")
+def export_teachpoints(
+    device_id: str = typer.Argument(..., help="Transporter device id."),
+    out: str | None = typer.Option(
+        None, "--out", help="Write the rows to this JSON file instead of printing them.",
+    ),
+) -> None:
+    """Every teachpoint on a device. `teachpoints import` takes the file as it is."""
+    items = get_client().teachpoints_list(device_id)
+    rows = [i.model_dump(mode="json") for i in items]
+    if out is not None:
+        Path(out).write_text(json.dumps(rows, indent=2), encoding="utf-8")
+        output.info(f"exported {len(rows)} teachpoints from {device_id} to {out}")
+        return
+    if output.get_mode().value == "json":
+        output.emit_json(rows)
+        return
+    output.emit_table(
+        f"Teachpoints ({device_id})",
+        ["position_id", "coord_type", "access_config", "gateway"],
+        [
+            [i.position_id, i.coord_type, i.access_config_name or "", i.gateway or ""]
+            for i in items
+        ],
+    )
+
+
+def _load_rows(path: str) -> list[dict[str, JsonValue]]:
+    try:
+        raw = Path(path).read_text(encoding="utf-8")
+    except OSError as exc:
+        output.fail(f"failed to read {path!r}: {exc}", code=output.EXIT_USAGE)
+    try:
+        return _ROWS.validate_json(raw)
+    except ValidationError as exc:
+        output.fail(
+            f"{path!r} must hold a JSON list of teachpoint objects: {exc}",
+            code=output.EXIT_USAGE,
+        )
+
+
+@app.command("import")
+def import_teachpoints(
+    device_id: str = typer.Argument(..., help="Transporter device id the rows go to."),
+    file: str = typer.Argument(..., help="JSON list of teachpoint rows, as `teachpoints export` writes."),
+    overwrite: bool = typer.Option(
+        False, "--overwrite", help="Replace a teachpoint whose name is already taken.",
+    ),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
+    ),
+) -> None:
+    """Save every row or none: one refused row refuses the file, and each refused row is listed. 404 on an unknown device."""
+    result = get_client().teachpoints_create(
+        device_id, _load_rows(file), overwrite, reason=reason,
+    )
+    if output.get_mode().value == "json":
+        output.emit_json(result.model_dump(mode="json"))
+        return
+    output.info(result.summary)
 
 
 labware_app = typer.Typer(
@@ -366,3 +432,6 @@ def _emit_labware_overrides(tp: TeachpointDTO) -> None:
             for labware_type, patch in tp.by_labware.items()
         ],
     )
+
+
+register_teachpoint_verbs(app)

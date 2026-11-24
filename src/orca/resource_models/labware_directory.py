@@ -6,8 +6,11 @@ resolve one. Putting it in `orca/state/` forced a structural protocol on the
 ledger's callers and cost them the concrete type they actually use.
 """
 
+from dataclasses import dataclass
+
 from orca.resource_models.labware import LabwareInstance
 from orca.state.identity import LabwareRef
+from orca.state.placement import PlacementLedger
 
 
 class LabwareDirectory:
@@ -30,14 +33,9 @@ class LabwareDirectory:
         self._by_id.pop(labware.id, None)
 
 
-_directory = LabwareDirectory()
+@dataclass(frozen=True)
+class LabwarePlacements:
+    """One system's record of what is where: the ledger, and the labware its refs name."""
 
-
-def labware_directory() -> LabwareDirectory:
-    return _directory
-
-
-def reset_labware_directory() -> None:
-    """Empty it. A system build owns its world; nothing outlives one."""
-    global _directory
-    _directory = LabwareDirectory()
+    ledger: PlacementLedger
+    directory: LabwareDirectory

@@ -6,7 +6,7 @@ from tests.mock import EXTERNAL_MOVER
 the same transition -- the thread's labware goes from expected at the
 start_location to present there -- and only the cause differs:
 
-- `PURE_SIM` / `DEVICE_SIM`: the engine writes the slot immediately (retry
+- `CHECK_RUN` / `SIM`: the engine writes the slot immediately (retry
   on `DeviceBusyError`, same loop the deleted `DefaultSpawn` ran).
 - `LIVE`: an operator puts the labware down and registers it. Register
   adopts the expectation this thread is holding, so the instance the thread
@@ -18,7 +18,9 @@ These tests exercise the strategy directly. The engine's
 
 import asyncio
 
+from tests.test_helpers import make_labware_placer
 from orca.resource_models.labware import LabwareInstance
+from tests.placements_for_tests import this_tests_placements
 from orca.resource_models.labware_location_service import (
     ArrivalMechanism,
     InMemoryLabwareLocationService,
@@ -26,7 +28,7 @@ from orca.resource_models.labware_location_service import (
 )
 from orca.resource_models.location import ILabwareLocationObserver, Location
 from orca.resource_models.plate_pad import PlatePad
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from orca.workflow_models.labware_threads.labware_thread import (
     LabwareThreadInstance,
 )
@@ -61,7 +63,7 @@ def _ledger_expecting(
 ) -> InMemoryLabwareLocationService:
     """A ledger in the state the thread constructor leaves it: the labware
     belongs at the location and has not arrived."""
-    service = InMemoryLabwareLocationService()
+    service = InMemoryLabwareLocationService(this_tests_placements())
     service.expect(labware, location, ArrivalMechanism.MANUAL_PLACE)
     return service
 
@@ -81,14 +83,14 @@ class TestManualPlaceSpawnSimModes:
     write the factory's pre-fabricated labware into the slot, fire
     observers, never wait for an operator."""
 
-    async def test_pure_sim_writes_slot_and_notifies_observers(self) -> None:
+    async def test_check_run_writes_slot_and_notifies_observers(self) -> None:
         location = _make_platepad_location()
         labware = _fresh_labware()
         observer = _RecordingObserver()
         location.add_observer(observer)
 
-        thread = _make_thread(labware, location, run_mode=WorkflowRunMode.PURE_SIM)
-        spawn = ManualPlaceSpawn(location, _ledger_expecting(labware, location))
+        thread = _make_thread(labware, location, run_mode=WorkflowRunMode.CHECK_RUN)
+        spawn = _manual_place(location, _ledger_expecting(labware, location))
         await spawn.acquire(thread)
 
         assert location.labware is labware
@@ -98,18 +100,18 @@ class TestManualPlaceSpawnSimModes:
         assert event == "initialized"
         assert loc_name == "pad1"
 
-    async def test_device_sim_writes_slot(self) -> None:
+    async def test_sim_writes_slot(self) -> None:
         location = _make_platepad_location()
         labware = _fresh_labware()
 
-        thread = _make_thread(labware, location, run_mode=WorkflowRunMode.DEVICE_SIM)
-        spawn = ManualPlaceSpawn(location, _ledger_expecting(labware, location))
+        thread = _make_thread(labware, location, run_mode=WorkflowRunMode.SIM)
+        spawn = _manual_place(location, _ledger_expecting(labware, location))
         await spawn.acquire(thread)
 
         assert location.labware is labware
 
     async def test_sim_waits_for_occupied_slot_to_clear(self) -> None:
-        """Slot occupied by a prior thread's labware: PURE_SIM waits
+        """Slot occupied by a prior thread's labware: CHECK_RUN waits
         until the slot clears (same shape as the deleted DefaultSpawn's
         retry-on-busy)."""
         location = _make_platepad_location()
@@ -117,8 +119,8 @@ class TestManualPlaceSpawnSimModes:
         location.initialize_labware(prior_labware)
 
         fresh = _fresh_labware()
-        thread = _make_thread(fresh, location, run_mode=WorkflowRunMode.PURE_SIM)
-        spawn = ManualPlaceSpawn(location, _ledger_expecting(fresh, location))
+        thread = _make_thread(fresh, location, run_mode=WorkflowRunMode.CHECK_RUN)
+        spawn = _manual_place(location, _ledger_expecting(fresh, location))
         acquire_task = asyncio.create_task(spawn.acquire(thread))
 
         await asyncio.sleep(0)
@@ -141,7 +143,7 @@ class TestManualPlaceSpawnLive:
         labware = _fresh_labware()
         thread = _make_thread(labware, location, run_mode=WorkflowRunMode.LIVE)
         service = _ledger_expecting(labware, location)
-        spawn = ManualPlaceSpawn(location, service)
+        spawn = ManualPlaceSpawn(location, service, make_labware_placer(service))
 
         acquire_task = asyncio.create_task(spawn.acquire(thread))
         await asyncio.sleep(0)
@@ -165,7 +167,7 @@ class TestManualPlaceSpawnLive:
         started_as = thread.id
 
         acquire_task = asyncio.create_task(
-            ManualPlaceSpawn(location, service).acquire(thread)
+            ManualPlaceSpawn(location, service, make_labware_placer(service)).acquire(thread)
         )
         await asyncio.sleep(0)
         location.initialize_labware(labware)
@@ -188,7 +190,7 @@ class TestManualPlaceSpawnLive:
         service.expect(someone_elses, location, ArrivalMechanism.MANUAL_PLACE)
 
         acquire_task = asyncio.create_task(
-            ManualPlaceSpawn(location, service).acquire(thread)
+            ManualPlaceSpawn(location, service, make_labware_placer(service)).acquire(thread)
         )
         await asyncio.sleep(0)
 
@@ -203,3 +205,7 @@ class TestManualPlaceSpawnLive:
         await acquire_task
 
         assert thread.labware is mine
+
+
+def _manual_place(location: Location, service: InMemoryLabwareLocationService) -> ManualPlaceSpawn:
+    return ManualPlaceSpawn(location, service, make_labware_placer(service))

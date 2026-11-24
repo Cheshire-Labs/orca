@@ -26,9 +26,8 @@ import pytest
 
 import orca.orca as orca
 from orca.runtime.execution import ExecutionPhase
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.submission import BatchMode
-from orca.runtime.system_runtime import SystemRuntime
+from orca.modes.run_modes import WorkflowRunMode
+from orca.workflow_models.submission import BatchMode
 from orca.sdk.events import EventBus
 from orca.sdk.workflow import MethodTemplate, ThreadTemplate, WorkflowTemplate
 from orca.system.system_interface import ISystem
@@ -46,6 +45,7 @@ from tests.closure_e2e_scaffold import (
     wait_for_boot,
 )
 from tests.test_helpers import wait_until
+from tests.memory_activity import memory_runtime
 
 
 class _Recorder:
@@ -153,7 +153,7 @@ async def test_fatal_crash_fails_execution_and_clears_recorded_waiter() -> None:
     recorder = _Recorder()
     router = _MidRouter()
     system, workflow, event_bus = await _build_system(recorder, router)
-    runtime = SystemRuntime(system, event_bus=event_bus)
+    runtime = await memory_runtime(system, event_bus=event_bus)
     await runtime.start()
     try:
         sub = await runtime.submit(
@@ -163,7 +163,7 @@ async def test_fatal_crash_fails_execution_and_clears_recorded_waiter() -> None:
                 feeder_group("grp-2"),
             ],
             batch_mode=BatchMode.STANDALONE,
-            mode=WorkflowRunMode.PURE_SIM,
+            mode=WorkflowRunMode.CHECK_RUN,
         )
         eid = sub.execution_id
         await wait_for_boot(runtime, eid)

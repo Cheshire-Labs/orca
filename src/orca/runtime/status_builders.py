@@ -59,6 +59,9 @@ def derive_waiting_for(thread: ExecutingLabwareThread) -> str | None:
 
     status = thread.status
 
+    if status == LabwareThreadStatus.AWAITING_START_LOCATION:
+        return thread.start_location.name
+
     if status == LabwareThreadStatus.AWAITING_MOVE_TARGET_AVAILABILITY:
         move_action = thread.move_action
         if move_action is not None:
@@ -77,7 +80,7 @@ def derive_waiting_for(thread: ExecutingLabwareThread) -> str | None:
         if thread.assigned_method is None:
             # Comma-joined like every other multi-subject waiting_for
             # (missing co-labware, contended action candidates).
-            return ", ".join(loc.name for loc in thread.end_locations)
+            return ", ".join(thread.pending_reservation_candidates or [loc.name for loc in thread.end_locations])
         assigned_action = thread.assigned_action
         if assigned_action is not None:
             return assigned_action.action.location.name
@@ -101,7 +104,7 @@ def derive_waiting_for(thread: ExecutingLabwareThread) -> str | None:
         return None
 
     if status == LabwareThreadStatus.AWAITING_ACTION_RESERVATION:
-        # Round 5 S1-A: the resource-pool resolver's retry loop populates
+        # The resource-pool resolver's retry loop populates
         # ``thread._pending_reservation_candidates`` with the locations
         # it is racing against. Surface them as a comma-joined list so
         # the operator sees what is contended ("shaker_1, shaker_2")
@@ -125,6 +128,22 @@ def derive_waiting_for(thread: ExecutingLabwareThread) -> str | None:
     return None
 
 
+def _location_name(thread: ExecutingLabwareThread) -> str | None:
+    """Where the thread's labware is. A labware that never arrived is named at the start it was expected at.
+
+    None for an ended thread whose labware the record no longer tracks, such as after a clear-all.
+    A thread still running with no tracked position is a fault and raises.
+    """
+    if thread.start_labware_never_arrived:
+        return thread.start_location.name
+    if not thread.status.is_terminal():
+        return thread.current_location.name
+    try:
+        return thread.current_location.name
+    except KeyError:
+        return None
+
+
 def _build_thread_snapshot(thread: ExecutingLabwareThread) -> ThreadSnapshot:
     current_method = thread.assigned_method
     method_snapshot: MethodSnapshot | None = None
@@ -144,7 +163,7 @@ def _build_thread_snapshot(thread: ExecutingLabwareThread) -> ThreadSnapshot:
         id=thread.id,
         name=thread.name,
         status=thread.status.name,
-        current_location=thread.current_location.name,
+        current_location=_location_name(thread),
         current_method=method_snapshot,
         completed_method_count=len(thread.completed_methods),
         last_error=last_error_str,
@@ -153,6 +172,7 @@ def _build_thread_snapshot(thread: ExecutingLabwareThread) -> ThreadSnapshot:
         labware_template_name=labware_template.name if labware_template is not None else None,
         labware_id=thread.labware.id,
         labware_name=thread.labware.name,
+        group_id=thread.group_id,
         paused_device_command=thread.paused_device_command,
         pause_message=thread.pause_message,
         pause_site=thread.pause_site.value if thread.pause_site is not None else None,

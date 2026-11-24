@@ -13,15 +13,15 @@ callback; the websocket layer calls `emit_connected` / `emit_disconnected` /
 unhandled exception in one listener doesn't lose subsequent listeners (each
 call is guarded). Listeners are expected to be fast: log the event, update an
 in-memory tracker, fire a downstream coroutine, etc.
-
-Standalone (non-gateway) deployments do not use this module.
 """
 
 import asyncio
 import logging
-from typing import Awaitable, Callable, List
+from typing import Awaitable, Callable, List, Protocol
 
 from cheshire_drivers.gateway_protocol import DeviceConnectInfo, DeviceStatusInfo
+
+from orca.gateway.registry.connection_tracker import IDeviceConnectionTracker
 
 logger = logging.getLogger(__name__)
 
@@ -31,14 +31,37 @@ DisconnectedListener = Callable[[str], Awaitable[None]]
 ReportedListener = Callable[[str, DeviceStatusInfo], Awaitable[None]]
 
 
+class IConnectionEvents(Protocol):
+    """Per-device connect, disconnect and report signals from the device bridges."""
+
+    def subscribe_connected(self, listener: ConnectedListener) -> None: ...
+
+    def subscribe_disconnected(self, listener: DisconnectedListener) -> None: ...
+
+    def subscribe_reported(self, listener: ReportedListener) -> None: ...
+
+    def unsubscribe_connected(self, listener: ConnectedListener) -> None: ...
+
+    def unsubscribe_disconnected(self, listener: DisconnectedListener) -> None: ...
+
+    def unsubscribe_reported(self, listener: ReportedListener) -> None: ...
+
+    async def emit_connected(
+        self, device: DeviceConnectInfo, client_id: str,
+    ) -> None: ...
+
+    async def emit_disconnected(self, device_id: str) -> None: ...
+
+    async def emit_reported(
+        self, device_name: str, reported: DeviceStatusInfo,
+    ) -> None: ...
+
+
 class ConnectionEventBus:
     """Async-callback registry for per-device connect / disconnect signals.
 
-    Subscriptions are unbounded and process-lifetime: there's no
-    automatic cleanup. Subscribers are expected to register at startup
-    (e.g., from `RuntimeLifecycle._build_unlocked`) and stay registered
-    until process exit. For tests, use `clear()` to reset between
-    cases so cross-test leakage doesn't pollute assertions.
+    Subscriptions are unbounded: there's no automatic cleanup. Each
+    subscriber unsubscribes when it shuts down.
     """
 
     def __init__(self) -> None:
@@ -72,12 +95,6 @@ class ConnectionEventBus:
             self._reported.remove(listener)
         except ValueError:
             pass
-
-    def clear(self) -> None:
-        """Drop every subscription. Test-only utility."""
-        self._connected.clear()
-        self._disconnected.clear()
-        self._reported.clear()
 
     async def emit_connected(
         self, device: DeviceConnectInfo, client_id: str,
@@ -128,6 +145,10 @@ class ConnectionEventBus:
                 )
 
 
-# Module-level singleton. The websocket router fires events through this;
-# the runtime lifecycle subscribes through this.
-connection_events = ConnectionEventBus()
+async def take_status_report(
+    tracker: IDeviceConnectionTracker, events: IConnectionEvents, client_id: str, devices: dict[str, DeviceStatusInfo],
+) -> None:
+    """Record what an orca-client sees on each device it owns, and tell the listeners."""
+    for name, reported in devices.items():
+        if await tracker.apply_agent_report(client_id, name, reported):
+            await events.emit_reported(name, reported)

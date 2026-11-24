@@ -20,11 +20,10 @@ import pytest
 from orca.devices.devices import Storage
 from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.labware_staging_bridge import LabwareStagingBridge
-from orca.runtime.labware_store import InMemoryLabwareStore
-from orca.runtime.runtime_interface import StartLocationsOccupiedError
-from orca.runtime.system_runtime import SystemRuntime
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.runtime.errors import StartLocationsOccupiedError
+from orca.modes.run_modes import WorkflowRunMode
 from tests.test_system_runtime import _build_simple_system
+from tests.memory_activity import memory_runtime
 
 
 class TestPreCheckSkipsIPlateSource:
@@ -40,7 +39,7 @@ class TestPreCheckSkipsIPlateSource:
         the same start_location MUST be accepted -- the source still
         has plates queued behind the one at output."""
         system, _ = await _build_simple_system()
-        runtime = SystemRuntime(system, labware_store=InMemoryLabwareStore())
+        runtime = await memory_runtime(system)
         await runtime.start()
         try:
             # Replace pad1's PlatePad-backed location with a Storage-backed
@@ -61,7 +60,7 @@ class TestPreCheckSkipsIPlateSource:
             # Submit the workflow whose entry thread starts at pad1. With
             # the IPlateSource skip, the pre-check accepts. Without it
             # (pre-fix), this raises StartLocationsOccupiedError.
-            sub = await runtime.submit_workflow("simple_workflow", mode=WorkflowRunMode.PURE_SIM)
+            sub = await runtime.submit_workflow("simple_workflow", mode=WorkflowRunMode.CHECK_RUN)
             assert sub is not None
         finally:
             await runtime.shutdown()
@@ -75,18 +74,18 @@ class TestPreCheckSkipsIPlateSource:
         that prevents the silent stall on operator-left labware.
         """
         system, _ = await _build_simple_system()
-        runtime = SystemRuntime(system, labware_store=InMemoryLabwareStore())
+        runtime = await memory_runtime(system)
         await runtime.start()
         try:
-            # pad1 is a PlatePad by default. Place a plate there.
+            # pad1 is a PlatePad by default. Place a plate the thread cannot adopt there.
             pad1 = system.system_map.get_location("pad1")
-            existing_plate = LabwareInstance("plate_96", "96_well")
+            existing_plate = LabwareInstance("other_plate", "96_well")
             system.add_labware(existing_plate)
             pad1.initialize_labware(existing_plate)
             assert pad1.labware is existing_plate
 
             # Submit MUST refuse -- PlatePad single-slot semantic is unchanged.
             with pytest.raises(StartLocationsOccupiedError):
-                await runtime.submit_workflow("simple_workflow", mode=WorkflowRunMode.PURE_SIM)
+                await runtime.submit_workflow("simple_workflow", mode=WorkflowRunMode.CHECK_RUN)
         finally:
             await runtime.shutdown()

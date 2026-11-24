@@ -13,8 +13,8 @@ shared-reagent deadlock).
 from unittest.mock import Mock
 
 from orca.resource_models.labware import TroughTemplate
-from orca.runtime.group_aware_labware_registry import GroupAwareLabwareRegistry
-from orca.runtime.group_execution_context import GroupExecutionContext
+from orca.workflow_models.group_aware_labware_registry import GroupAwareLabwareRegistry
+from orca.workflow_models.group_execution_context import GroupExecutionContext
 
 
 def _resident_template(name: str) -> Mock:

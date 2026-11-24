@@ -1,16 +1,19 @@
 from abc import ABC
+from contextlib import asynccontextmanager
 import logging
-from cheshire_drivers.command_timings import collect_command_timings
+from cheshire_drivers.command_timings import CommandTiming, collect_command_timings
+from cheshire_drivers.device_sites import DEFAULT_SITE
 from cheshire_drivers.interfaces import BaseDriver
-from orca.resource_models.resources import IDevice, IModeAware
+from orca.modes.device_modes import DeviceMode, IDeviceModes
+from orca.resource_models.resources import EngineCommandLog, IDevice, IModeAware, engine_time_limit
 from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.labware_placeable_interface import IPlateMover
 from orca.resource_models.location import Location
-from typing import ClassVar, Generic, List, Optional, TypeVar
+from typing import AsyncIterator, ClassVar, Generic, List, TypeVar
 
-from orca.resource_models.simulation_manager import SimulationManager
+from orca.resource_models.device_run_mode import DeviceRunMode
 from orca.resource_models.tracked_lock import TrackedLock
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import BaseMode, WorkflowRunMode, out_of_run
 
 orca_logger = logging.getLogger("orca")
 
@@ -35,41 +38,31 @@ class Device(IDevice, IModeAware, Generic[TDriver], ABC):
 
     KIND: ClassVar[str]
 
+    @property
+    def deck_modeling(self) -> bool:
+        """True for a liquid handler that keeps a model of its deck."""
+        return False
+
     def __init__(self,
                  name: str,
                  driver: TDriver,
-                 sim_driver: TDriver,
-                 sim_override: WorkflowRunMode | None = None,
                  site_names: list[str] | None = None,
                  ) -> None:
         self._name = name
-        # Physical labware positions this device owns: one nest by
+        # Physical labware positions this device owns: one site by
         # default; multi-position devices (centrifuge buckets) declare theirs.
-        self._site_names: list[str] = list(site_names) if site_names else ["slot"]
-        # Per-device run-mode override declared at topology construction time.
-        # Read by `SystemTopologyRegistry` and surfaced on `TopologyCard.topology_sim_override`
-        # so the v3.4 12-row resolver can honor "force this device into sim
-        # under an otherwise-LIVE deployment" without bespoke wiring per call
-        # site. Threaded onto `SimulationManager` so dispatch routes through
-        # the resolver natively.
-        self._sim_override = sim_override
-        self._sim_manager = SimulationManager(
-            driver,
-            sim_driver,
-            sim_override=sim_override,
-        )
+        self._site_names: list[str] = list(site_names) if site_names else [DEFAULT_SITE]
+        self._driver = driver
+        self._run_mode = DeviceRunMode(name)
+        self._engine_commands = EngineCommandLog(name, self._engine_time_limit)
         self._is_initialized = False
         self._lock = TrackedLock(f"{name} device lock")
         self._locations: List[Location] = []
         self._sites: List[Location] = []
-        # External-control flag: set by a hosted device-integration gateway
-        # when an operator or AI sends an ad-hoc troubleshooting command. The
-        # action-dispatch path refuses to acquire `self._lock` while this is
-        # set, so production workflows can't accidentally race against
-        # operator-driven recovery commands. Reason / audit trail lives in
-        # operations history + the pause UI; this layer is just the flag.
-        self._under_external_control: bool = False
+        # A count, not a flag: a refused operator command closes its scope while another is still open.
+        self._external_control_scopes = 0
         self._external_control_hold: str | None = None
+        self._offline = False
 
     @property
     def name(self) -> str:
@@ -77,23 +70,17 @@ class Device(IDevice, IModeAware, Generic[TDriver], ABC):
 
     @property
     def driver(self) -> TDriver:
-        return self._sim_manager.driver
-
-    @property
-    def live_driver(self) -> TDriver:
-        """Live driver, unconditionally - for metadata-only reads.
-
-        See `SimulationManager.live_driver` for the contract: introspection
-        routes and topology-card builders read driver-class metadata that
-        describes the deployment's actual capability surface; the live
-        driver is canonical, the sim driver may declare a different
-        interface set. Dispatch callers must keep using `driver`.
-        """
-        return self._sim_manager.live_driver
+        return self._driver
 
     @property
     def lock(self) -> TrackedLock:
         return self._lock
+
+    @asynccontextmanager
+    async def reach_in_lease(self, mover: IPlateMover, purpose: str) -> AsyncIterator[None]:
+        """Hold this device while ``mover`` reaches into it."""
+        async with self._lock.held_for(f"{purpose} by {mover.name}"):
+            yield
 
     async def reset_labware_state(self) -> None:
         """Reset this device's labware projection to match the ledger.
@@ -113,20 +100,25 @@ class Device(IDevice, IModeAware, Generic[TDriver], ABC):
         """
         await self.reset_labware_state()
 
+    def _command_timing(self, command: str) -> CommandTiming | None:
+        return collect_command_timings(type(self.driver)).get(command)
+
+    def _engine_time_limit(self, command: str) -> float | None:
+        return engine_time_limit(type(self.driver), command)
+
     def command_max_seconds(self, command: str) -> float | None:
         """The advertised hard upper bound for ``command``, or None if unset.
 
         The recoverable-timeout dispatcher uses this to bound a device call.
-        Read from the live driver's ``@command_timing`` metadata so the bound
-        reflects the deployment's actual hardware, not the sim driver.
+        Read from the driver's ``@command_timing`` metadata.
         """
-        timing = collect_command_timings(type(self.live_driver)).get(command)
+        timing = self._command_timing(command)
         return timing.max_seconds if timing is not None else None
 
     def command_typical_seconds(self, command: str) -> float | None:
         """The advertised normal-case duration for ``command``, or None if unset.
         A simulated run paces a step that declares no duration by it."""
-        timing = collect_command_timings(type(self.live_driver)).get(command)
+        timing = self._command_timing(command)
         return timing.typical_seconds if timing is not None else None
 
     @property
@@ -165,7 +157,8 @@ class Device(IDevice, IModeAware, Generic[TDriver], ABC):
         """True when the device is under external (gateway) control.
 
         Two things set it and they have different lifetimes. The gateway takes
-        it around each ad-hoc command and gives it straight back. An operator
+        it around each operator scope and gives it back when the last open scope
+        closes. An operator
         can also HOLD it (``hold_external_control``) across everything they are
         about to do by hand, which is the only way to say "I am driving this,
         keep the workflow off it" for longer than one command.
@@ -176,7 +169,7 @@ class Device(IDevice, IModeAware, Generic[TDriver], ABC):
         The gateway side is the *higher* priority by design -- gateway commands
         never gate on Orca state; Orca always gates on gateway state.
         """
-        return self._under_external_control or self._external_control_hold is not None
+        return self._external_control_scopes > 0 or self._external_control_hold is not None
 
     @property
     def external_control_hold(self) -> str | None:
@@ -188,55 +181,54 @@ class Device(IDevice, IModeAware, Generic[TDriver], ABC):
         return self._external_control_hold
 
     def take_external_control(self) -> None:
-        """Mark the device as under external (gateway) control. Idempotent."""
-        self._under_external_control = True
+        """Open one operator scope on the device."""
+        self._external_control_scopes += 1
 
     def release_external_control(self) -> None:
-        """Clear the per-command external-control flag. Idempotent.
+        """Close one operator scope. A release with none open does nothing.
 
-        The gateway calls this when an ad-hoc command finishes. It leaves an
-        operator's standing hold alone: a command sent DURING a hold would
-        otherwise hand the device back on its way out, which is the opposite of
-        what the operator asked for.
+        It leaves an operator's standing hold alone: a command sent DURING a
+        hold would otherwise hand the device back on its way out.
         """
-        self._under_external_control = False
+        self._external_control_scopes = max(0, self._external_control_scopes - 1)
 
     def hold_external_control(self, reason: str | None = None) -> None:
         """Take this device out of the workflow's reach until it is released."""
         self._external_control_hold = reason or ""
+
+    @property
+    def is_offline(self) -> bool:
+        """Did not come up at the run's start while another device in its pool did; the pool uses the others."""
+        return self._offline
+
+    def mark_offline(self, offline: bool) -> None:
+        self._offline = offline
 
     def release_external_control_hold(self) -> None:
         """Give the device back to the workflow. Idempotent."""
         self._external_control_hold = None
 
     @property
-    def sim_override(self) -> WorkflowRunMode | None:
-        """Per-device run-mode override declared at construction time.
+    def engine_commands(self) -> EngineCommandLog:
+        return self._engine_commands
 
-        Surfaced on `TopologyCard.topology_sim_override` via the topology
-        registry. The mode resolver consults this between the submit-time
-        operator override and the deployment base mode.
-        """
-        return self._sim_override
+    def use_device_modes(self, modes: IDeviceModes, base_mode: BaseMode = out_of_run) -> None:
+        self._run_mode.use_device_modes(modes, base_mode)
 
-    def mode_under(self, base: WorkflowRunMode) -> WorkflowRunMode:
-        """The run mode this device dispatches under given a base mode.
+    async def setting(self) -> DeviceMode:
+        return await self._run_mode.setting()
 
-        Same answer the driver swap uses; see `SimulationManager`.
-        """
-        return self._sim_manager.mode_under(base)
+    def held_labware_id(self) -> str | None:
+        """The labware a mover this device owns is holding, such as a deck gripper; None for most devices."""
+        return None
 
-    def driver_under(self, base: WorkflowRunMode) -> TDriver:
-        """The driver a dispatch under `base` lands on; see `SimulationManager`."""
-        return self._sim_manager.driver_under(base)
+    async def mode_under(self, base: WorkflowRunMode) -> WorkflowRunMode:
+        """The run mode this device dispatches under given a base mode; see `DeviceRunMode`."""
+        return await self._run_mode.mode_under(base)
 
-    @property
-    def effective_mode(self) -> WorkflowRunMode:
-        """The run mode this device is dispatching under right now.
-
-        Same answer the driver swap uses; see `SimulationManager`.
-        """
-        return self._sim_manager.effective_mode
+    async def effective_mode(self) -> WorkflowRunMode:
+        """The run mode this device is dispatching under right now; see `DeviceRunMode`."""
+        return await self._run_mode.effective_mode()
 
     @property
     def locations(self) -> List[Location]:
@@ -278,17 +270,17 @@ class Device(IDevice, IModeAware, Generic[TDriver], ABC):
         """
         return tuple(lw.id for lw in self.all_loaded_labware)
 
-    async def _do_prepare_for_place(self, labware: LabwareInstance, mover: IPlateMover, target: str | None = None, site: str | None = None) -> None:
-        await self.driver.open()
+    async def _do_prepare_for_place(self, labware: LabwareInstance | None, mover: IPlateMover, target: str | None = None, site: str | None = None) -> None:
+        await self.engine_commands.run("open", self.driver.open)
 
-    async def _do_prepare_for_pick(self, labware: LabwareInstance, mover: IPlateMover, target: str | None = None, site: str | None = None) -> None:
-        await self.driver.open()
+    async def _do_prepare_for_pick(self, labware: LabwareInstance | None, mover: IPlateMover, target: str | None = None, site: str | None = None) -> None:
+        await self.engine_commands.run("open", self.driver.open)
 
-    async def _do_notify_picked(self, labware: LabwareInstance, mover: IPlateMover, target: str | None = None, site: str | None = None) -> None:
-        await self.driver.close()
+    async def _do_notify_picked(self, labware: LabwareInstance | None, mover: IPlateMover, target: str | None = None, site: str | None = None) -> None:
+        await self.engine_commands.run("close", self.driver.close)
 
-    async def _do_notify_placed(self, labware: LabwareInstance, mover: IPlateMover, target: str | None = None, site: str | None = None) -> None:
-        await self.driver.close()
+    async def _do_notify_placed(self, labware: LabwareInstance | None, mover: IPlateMover, target: str | None = None, site: str | None = None) -> None:
+        await self.engine_commands.run("close", self.driver.close)
 
     def __str__(self) -> str:
         return f"Equipment: {self._name}"

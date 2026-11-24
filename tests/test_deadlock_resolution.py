@@ -7,6 +7,7 @@ These tests verify that:
 3. Starvation prevention works (starved threads get priority)
 4. The deadlocked thread successfully completes after yielding
 """
+from orca.config import OrcaConfig
 import pytest
 import asyncio
 from collections.abc import AsyncGenerator
@@ -16,7 +17,7 @@ from orca.system.SdkToSystemBuilder import SdkToSystemBuilder
 from orca.sdk.workflow import WorkflowTemplate
 from orca.events.event_bus import EventBus
 from orca.resource_models.plate_pad import PlatePad
-from orca.runtime.run_modes import WorkflowRunMode, current_run_mode
+from orca.modes.run_modes import WorkflowRunMode, current_run_mode
 from orca.workflow_models.status_enums import LabwareThreadStatus
 from orca.workflow_models.action_context import ActionContext
 from orca.workflow_models.method_context import MethodContext
@@ -29,6 +30,10 @@ from tests.test_helpers import (
     create_test_plate_template,
     create_simple_system_map,
 )
+from tests.memory_activity import memory_ops_store, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 
 @pytest.mark.asyncio
@@ -134,17 +139,20 @@ async def test_two_robot_deadlock_resolution():
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=event_bus,
+        event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     system = builder.get_system()
 
     # Seed the per-task run-mode ContextVar so device.driver dispatch resolves
     # to the sim driver during this test. Manual workflow-instance setup bypasses
-    # WorkflowExecutor.start() which would normally seed.
-    current_run_mode.set(WorkflowRunMode.PURE_SIM)
+    # SystemRuntime._run_workflow(), which would normally seed.
+    current_run_mode.set(WorkflowRunMode.CHECK_RUN)
     workflow_instance = await system.create_and_register_workflow_instance(
-        workflow, run_mode=WorkflowRunMode.PURE_SIM,
+        workflow, run_mode=WorkflowRunMode.CHECK_RUN,
     )
     system.add_workflow(workflow_instance)
     executing_workflow = system.get_executing_workflow(workflow_instance.id)
@@ -262,17 +270,20 @@ async def test_starvation_prevention():
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=event_bus,
+        event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     system = builder.get_system()
 
     # Seed the per-task run-mode ContextVar so device.driver dispatch resolves
     # to the sim driver during this test. Manual workflow-instance setup bypasses
-    # WorkflowExecutor.start() which would normally seed.
-    current_run_mode.set(WorkflowRunMode.PURE_SIM)
+    # SystemRuntime._run_workflow(), which would normally seed.
+    current_run_mode.set(WorkflowRunMode.CHECK_RUN)
     workflow_instance = await system.create_and_register_workflow_instance(
-        workflow, run_mode=WorkflowRunMode.PURE_SIM,
+        workflow, run_mode=WorkflowRunMode.CHECK_RUN,
     )
     system.add_workflow(workflow_instance)
     executing_workflow = system.get_executing_workflow(workflow_instance.id)

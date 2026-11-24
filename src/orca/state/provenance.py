@@ -16,11 +16,8 @@ class Provenance(Enum):
     Three states, because there are only two questions worth asking: is there
     a value at all, and does somebody have to go and look. A boolean cannot
     tell "confirmed empty" from "nobody ever told me", which is the pair that
-    has to be told apart before a number is acted on.
-
-    There used to be a fourth, separating a value an operator stated from one
-    the record folded on its own. Nothing ever branched on the difference: it
-    is who last spoke, and ``Source`` on the same answer already says that.
+    has to be told apart before a number is acted on. Who last spoke is
+    ``Source`` on the same answer, not a provenance.
     """
 
     UNKNOWN = "unknown"

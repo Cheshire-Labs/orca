@@ -1,17 +1,18 @@
 """CLI tests for ``orca labware catalog``.
 
-Validates dispatch + rendering. Wire-shape parity with a hosted deployment is pinned
+Validates dispatch + rendering. The wire shape of a hosted deployment is pinned
 by the cloud backend's typed-response tests.
 """
 
 from collections.abc import Iterator, Sequence
-from unittest.mock import patch
 
 import pytest
 from typer.testing import CliRunner
 
 from orca.cli.app import app
-from orca.cli.control_plane import LabwareCatalogSummaryDTO
+from orca.operations.labware_catalog_models import (
+    LabwareCatalogSummary,
+)
 
 
 runner = CliRunner()
@@ -20,13 +21,13 @@ runner = CliRunner()
 class _FakeCloudClient:
     """Stand-in for the cloud backend client's ``list_labware``."""
 
-    def __init__(self, rows: Sequence[LabwareCatalogSummaryDTO]) -> None:
+    def __init__(self, rows: Sequence[LabwareCatalogSummary]) -> None:
         self._rows = list(rows)
         self.captured_category: str | None | object = object()
 
     def list_labware(
         self, category: str | None = None,
-    ) -> Sequence[LabwareCatalogSummaryDTO]:
+    ) -> Sequence[LabwareCatalogSummary]:
         self.captured_category = category
         if category is None:
             return list(self._rows)
@@ -38,15 +39,15 @@ def fake_cloud_client(
     monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[_FakeCloudClient]:
     rows = [
-        LabwareCatalogSummaryDTO(
+        LabwareCatalogSummary(
             labware_type="Cor_96_demo", display_name="Corning demo", category="plate",
             vendor="Corning", source="plr_seed", plr_class_name="Cor_96_demo",
         ),
-        LabwareCatalogSummaryDTO(
+        LabwareCatalogSummary(
             labware_type="HTF_demo", display_name="HTF tips", category="tip_rack",
             vendor="Hamilton", source="plr_seed", plr_class_name="HTF_demo",
         ),
-        LabwareCatalogSummaryDTO(
+        LabwareCatalogSummary(
             labware_type="PLT_CAR_demo", display_name="Plate carrier", category="carrier",
             vendor="Hamilton", source="plr_seed", plr_class_name="PLT_CAR_demo",
         ),

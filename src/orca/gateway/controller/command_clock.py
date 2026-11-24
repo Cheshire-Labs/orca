@@ -14,8 +14,19 @@ above any reasonable single-command duration so transient pre-upgrade
 clients keep working instead of erroring out).
 """
 
+from collections.abc import Mapping
+from typing import Protocol
+
+from pydantic import JsonValue
+
 from orca.gateway.registry.snapshot import DeviceSnapshot
-from orca.runtime.recoverable_timeout import DEFAULT_COMMAND_TIMEOUT_SECONDS
+from orca.runtime.recoverable_timeout import DEFAULT_COMMAND_TIMEOUT_SECONDS, time_limit
+
+
+class ICommandClock(Protocol):
+    """The timeout for one command sent to one device."""
+
+    def timeout_for(self, device: DeviceSnapshot, command: str, params: Mapping[str, JsonValue]) -> float: ...
 
 
 class DeviceCommandClock:
@@ -34,14 +45,15 @@ class DeviceCommandClock:
     def fallback_seconds(self) -> float:
         return self._fallback_seconds
 
-    def timeout_for(self, device: DeviceSnapshot, command: str) -> float:
-        """Return the timeout to use for ``command`` against ``device``.
+    def timeout_for(self, device: DeviceSnapshot, command: str, params: Mapping[str, JsonValue]) -> float:
+        """The command's time limit, as a run's recoverable timeout computes it: a 3 hour shake gets its 3 hours.
 
-        Consults ``device.methods[command].duration.max_seconds`` first;
-        falls back to ``fallback_seconds`` when the device hasn't
-        advertised a duration for the command.
+        Read from ``device.methods[command].duration``; ``fallback_seconds`` when the device advertised none.
         """
         info = device.methods.get(command)
+        requested = params.get("duration")
+        seconds = float(requested) if isinstance(requested, (int, float)) and not isinstance(requested, bool) else None
         if info is None or info.duration is None:
-            return self._fallback_seconds
-        return float(info.duration.max_seconds)
+            return max(self._fallback_seconds, seconds or 0.0)
+        limit = time_limit(info.duration.max_seconds, info.duration.typical_seconds, seconds)
+        return self._fallback_seconds if limit is None else limit

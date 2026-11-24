@@ -1,20 +1,15 @@
-"""SQLite-backed incident store (orca-core source-available persistence).
+"""The incident store over SQLite. Its reads and writes are in ``orca.runtime.db.incident_queries``.
 
-Dumb persistence behind ``IIncidentStore``: raw async reads/writes, no locking,
-no events. The orchestration (sync off-loop ``record``, the queue + drain, event
-emission) lives in ``IncidentService``. A hosted deployment ships a separate
-``PostgresIncidentStore`` against the same interface; the two stores share only
-the DB-neutral ``IncidentRow`` model and the mapping helpers, never an engine.
+Dumb persistence behind ``IIncidentStore``: no locking, no events. The sync
+off-loop ``record``, the queue and drain, and event emission live in
+``IncidentService``.
 """
 
 from datetime import datetime
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from orca.runtime.db import create_all_tables, make_session_factory
-from orca.runtime.db.incident_mapping import incident_to_row, row_to_incident
-from orca.runtime.db.models import IncidentRow
+from orca.runtime.db import create_all_tables, incident_queries, make_session_factory
 from orca.runtime.incident_store import (
     IIncidentStore,
     IncidentCategory,
@@ -40,14 +35,12 @@ class SqliteIncidentStore(IIncidentStore):
     async def insert(self, incident: SystemIncident) -> None:
         await self.create_schema()
         async with self._sf() as session:
-            session.add(incident_to_row(incident))
-            await session.commit()
+            await incident_queries.insert(session, incident)
 
     async def get(self, incident_id: str) -> SystemIncident | None:
         await self.create_schema()
         async with self._sf() as session:
-            row = await session.get(IncidentRow, incident_id)
-        return row_to_incident(row) if row is not None else None
+            return await incident_queries.get(session, incident_id)
 
     async def fetch(
         self,
@@ -58,45 +51,23 @@ class SqliteIncidentStore(IIncidentStore):
         since: float | None = None,
     ) -> list[SystemIncident]:
         await self.create_schema()
-        stmt = select(IncidentRow)
-        if unacknowledged_only:
-            stmt = stmt.where(IncidentRow.acknowledged.is_(False))
-        if category is not None:
-            stmt = stmt.where(IncidentRow.category == category.name)
-        if execution_id is not None:
-            stmt = stmt.where(IncidentRow.execution_id == execution_id)
-        if since is not None:
-            stmt = stmt.where(IncidentRow.timestamp >= since)
-        stmt = stmt.order_by(IncidentRow.timestamp)
         async with self._sf() as session:
-            result = await session.execute(stmt)
-            rows = result.scalars().all()
-        return [row_to_incident(row) for row in rows]
+            return await incident_queries.fetch(
+                session, unacknowledged_only=unacknowledged_only, category=category,
+                execution_id=execution_id, since=since,
+            )
 
     async def mark_acked(self, incident_id: str, acknowledged_at: datetime) -> None:
         await self.create_schema()
         async with self._sf() as session:
-            row = await session.get(IncidentRow, incident_id)
-            if row is not None:
-                row.acknowledged = True
-                row.acknowledged_at = acknowledged_at
-                await session.commit()
+            await incident_queries.mark_acked(session, incident_id, acknowledged_at)
 
     async def mark_all_acked(
         self, category: IncidentCategory | None, acknowledged_at: datetime
     ) -> int:
         await self.create_schema()
-        stmt = select(IncidentRow).where(IncidentRow.acknowledged.is_(False))
-        if category is not None:
-            stmt = stmt.where(IncidentRow.category == category.name)
         async with self._sf() as session:
-            result = await session.execute(stmt)
-            rows = result.scalars().all()
-            for row in rows:
-                row.acknowledged = True
-                row.acknowledged_at = acknowledged_at
-            await session.commit()
-        return len(rows)
+            return await incident_queries.mark_all_acked(session, category, acknowledged_at)
 
     async def aclose(self) -> None:
         await self._engine.dispose()

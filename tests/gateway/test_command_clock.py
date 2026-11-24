@@ -48,13 +48,27 @@ class TestDeviceCommandClock:
             ),
         })
 
-        assert clock.timeout_for(snapshot, "shake") == 7200.0
+        assert clock.timeout_for(snapshot, "shake", {}) == 7200.0
+
+    def test_a_request_longer_than_the_declared_max_gets_its_own_duration(self) -> None:
+        """A 3 hour shake by hand is not cancelled at the shake's 2 hour maximum."""
+        clock = DeviceCommandClock()
+        snapshot = _snapshot({
+            "shake": MethodInfo(
+                kind="method",
+                params={},
+                duration=CommandTiming(typical_seconds=60.0, max_seconds=7200.0),
+            ),
+        })
+
+        assert clock.timeout_for(snapshot, "shake", {"speed": 500, "duration": 10800}) == 10860.0
+        assert clock.timeout_for(snapshot, "shake", {"speed": 500, "duration": 60}) == 7200.0
 
     def test_falls_back_when_command_not_in_methods(self) -> None:
         clock = DeviceCommandClock()
         snapshot = _snapshot({})
 
-        assert clock.timeout_for(snapshot, "shake") == clock.fallback_seconds
+        assert clock.timeout_for(snapshot, "shake", {}) == clock.fallback_seconds
 
     def test_falls_back_when_duration_is_none(self) -> None:
         """Pre-cheshire-drivers-#6 orca-clients advertise MethodInfo without
@@ -64,14 +78,14 @@ class TestDeviceCommandClock:
             "shake": MethodInfo(kind="method", params={}, duration=None),
         })
 
-        assert clock.timeout_for(snapshot, "shake") == clock.fallback_seconds
+        assert clock.timeout_for(snapshot, "shake", {}) == clock.fallback_seconds
 
     def test_custom_fallback_honored(self) -> None:
         clock = DeviceCommandClock(fallback_seconds=120.0)
         snapshot = _snapshot({})
 
         assert clock.fallback_seconds == 120.0
-        assert clock.timeout_for(snapshot, "shake") == 120.0
+        assert clock.timeout_for(snapshot, "shake", {}) == 120.0
 
     def test_zero_or_negative_fallback_rejected(self) -> None:
         with pytest.raises(ValueError):
@@ -97,8 +111,8 @@ class TestDeviceCommandClock:
             ),
         })
 
-        assert clock.timeout_for(snapshot, "shake") == 7200.0
-        assert clock.timeout_for(snapshot, "stop") == 10.0
+        assert clock.timeout_for(snapshot, "shake", {}) == 7200.0
+        assert clock.timeout_for(snapshot, "stop", {}) == 10.0
 
     def test_default_fallback_is_conservative(self) -> None:
         """The default fallback must outlast typical operator-facing

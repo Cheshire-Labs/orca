@@ -13,6 +13,7 @@ This file is the unit half. The reproduced defect, at the error pause, is in
 ``test_a_paused_thread_gives_back_its_device.py``.
 """
 import asyncio
+from tests.thread_builder import build_executing_thread
 from unittest.mock import MagicMock
 
 import pytest
@@ -20,7 +21,7 @@ import pytest
 from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.location import Location
 from orca.resource_models.plate_pad import PlatePad
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from orca.workflow_models.labware_threads.executing_labware_thread import (
     ExecutingLabwareThread,
 )
@@ -45,7 +46,7 @@ def _thread_holding_a_device(
         labware=LabwareInstance("plate_96", "96_well"),
         start_location=location,
         end_locations=[location],
-        run_mode=WorkflowRunMode.PURE_SIM,
+        run_mode=WorkflowRunMode.CHECK_RUN,
     )
     context = MagicMock()
     context.execution_id = "exec-pause-device"
@@ -55,7 +56,7 @@ def _thread_holding_a_device(
     status_manager = MagicMock()
     status_manager.get_status.return_value = status.name
 
-    executing = ExecutingLabwareThread(
+    executing = build_executing_thread(
         thread=thread,
         event_bus=MagicMock(),
         move_handler=MagicMock(),

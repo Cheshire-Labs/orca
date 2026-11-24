@@ -2,7 +2,7 @@
 initialization.
 
 The route-level envelope shape is tested in
-`tests/daemon/test_routes_submit_envelope.py`; the 12-row resolver and
+`tests/daemon/test_routes_submit_envelope.py`; what each device runs as and
 `RunModeRequiredError` are tested in `tests/runtime/test_run_modes.py`;
 `RunModeMismatchError` (which replaces the v3.4
 `ConcurrentSubmissionRefusedError` refuse-all) and the lazy
@@ -10,18 +10,12 @@ first-thread-touch seam are tested in
 `tests/runtime/test_lazy_init_and_resolver.py`. This file covers the
 remaining runtime-layer surface:
 
-- `LiveSubmissionWithSimOverridesUnacknowledgedError`: class shape + the
-  runtime gate that raises it for a LIVE submission whose topology has a
-  sim-direction `sim_override` device + the `acknowledge_warnings=True`
-  bypass.
-
-These tests cover behavior the route-level envelope tests cannot exercise
-(the route's `assert_runnable` gate for LIVE submissions rejects on
-disconnected devices before the typed envelope can fire; the runtime
-tests below stand up a connected `FakeConnectionSource` so LIVE
-submissions reach the typed-error path).
+- A LIVE submission runs whatever each device is set to, with no confirmation
+  for devices set to sim. The tests stand up a connected
+  `FakeConnectionSource` so LIVE submissions pass `unreachable`.
 """
 
+from orca.config import OrcaConfig
 from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 
@@ -29,14 +23,13 @@ import pytest
 
 import orca.orca as orca
 from orca.resource_models.resource_pool import ResourcePool
-from orca.runtime.registries import NullGatewayRegistry
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.runtime_interface import (
-    LiveSubmissionWithSimOverridesUnacknowledgedError,
+from tests.no_devices import NullGatewayRegistry
+from orca.modes.device_modes import DeviceMode
+from orca.modes.run_modes import WorkflowRunMode
+from orca.runtime.errors import (
     RunModeMismatchError,
 )
 from orca.runtime.status_models import ConnectionCard
-from orca.runtime.system_runtime import SystemRuntime
 from orca.sdk.events import EventBus
 from orca.sdk.system import ResourceRegistry, SystemMap
 from orca.sdk.workflow import MethodTemplate, WorkflowTemplate
@@ -54,6 +47,10 @@ from tests.test_helpers import (
     create_test_transporter,
     wire_system_map,
 )
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 
 # -- Class-shape tests (cheap, no fixture) ----------------------------------
@@ -72,86 +69,51 @@ class TestRunModeMismatchErrorShape:
         exc = RunModeMismatchError(
             blocking_execution_id="exec-abc",
             blocking_workflow_name="sample_workflow",
-            existing_run_mode=WorkflowRunMode.PURE_SIM,
+            existing_run_mode=WorkflowRunMode.CHECK_RUN,
             submitted_run_mode=WorkflowRunMode.LIVE,
         )
         assert exc.blocking_execution_id == "exec-abc"
         assert exc.blocking_workflow_name == "sample_workflow"
-        assert exc.existing_run_mode is WorkflowRunMode.PURE_SIM
+        assert exc.existing_run_mode is WorkflowRunMode.CHECK_RUN
         assert exc.submitted_run_mode is WorkflowRunMode.LIVE
 
     def test_message_mentions_identifiers(self) -> None:
         exc = RunModeMismatchError(
             blocking_execution_id="exec-abc",
             blocking_workflow_name="sample_workflow",
-            existing_run_mode=WorkflowRunMode.PURE_SIM,
+            existing_run_mode=WorkflowRunMode.CHECK_RUN,
             submitted_run_mode=WorkflowRunMode.LIVE,
         )
         msg = str(exc)
         assert "exec-abc" in msg
         assert "sample_workflow" in msg
-        assert "PURE_SIM" in msg
+        assert "CHECK_RUN" in msg
         assert "LIVE" in msg
 
     def test_inherits_runtime_error(self) -> None:
-        """Inheritance gates the daemon route handler's exception ladder:
-        the route catches the typed class BEFORE the generic `RuntimeError`
-        catch (`daemon/routes.py:425-429`). A base-class change would
+        """Inheritance gates the submit Operation's exception ladder:
+        it catches the typed class BEFORE the generic `RuntimeError`
+        catch. A base-class change would
         flip 409 to a different status without anything else surfacing
         the regression."""
         exc = RunModeMismatchError(
             blocking_execution_id="x",
             blocking_workflow_name="y",
-            existing_run_mode=WorkflowRunMode.PURE_SIM,
+            existing_run_mode=WorkflowRunMode.CHECK_RUN,
             submitted_run_mode=WorkflowRunMode.LIVE,
         )
         assert isinstance(exc, RuntimeError)
 
 
-class TestLiveSubmissionWithSimOverridesUnacknowledgedErrorShape:
-    """`LiveSubmissionWithSimOverridesUnacknowledgedError` carries the
-    `devices` tuple-list the route helper enumerates into
-    `extras.devices[]`. The tuple shape `(name, override, resolved)` is
-    load-bearing because the helper assumes positional unpacking."""
-
-    # `devices` populated-from-real-validation is covered by the runtime gate
-    # test `test_runtime_refuses_live_when_sim_direction_override_unacknowledged`.
-
-    def test_message_mentions_devices(self) -> None:
-        exc = LiveSubmissionWithSimOverridesUnacknowledgedError(
-            devices=[
-                ("shaker_1", WorkflowRunMode.PURE_SIM, WorkflowRunMode.PURE_SIM),
-            ],
-        )
-        msg = str(exc)
-        assert "shaker_1" in msg
-
-    def test_inherits_value_error(self) -> None:
-        """`ValueError` base flips the route handler to 422 (not 409 or
-        500). An earlier `RuntimeError` base bypassed the typed-envelope
-        ladder; this test pins the contract."""
-        exc = LiveSubmissionWithSimOverridesUnacknowledgedError(devices=[])
-        assert isinstance(exc, ValueError)
-
-
 # -- Runtime gate fixtures --------------------------------------------------
 
 
-async def _build_system_with_sim_override(
-    override_device: tuple[str, WorkflowRunMode],
-) -> ISystem:
-    """Build a one-device-with-sim_override system for LIVE-gate testing.
-
-    The override device is added as the workflow's shake-action target
-    so the topology gate finds it during submit. Returns the System;
-    caller wraps in `SystemRuntime` with a `_StubGateway` reporting the
-    device as connected.
-    """
-    name, override = override_device
+async def _build_system_with_a_device_set_to(name: str, setting: DeviceMode) -> ISystem:
+    """A system whose workflow shakes on one device with `setting`."""
     plate = create_test_plate_template("plate_96")
 
     registry = ResourceRegistry()
-    device = create_test_device(name, sim_override=override)
+    device = create_test_device(name, setting=setting)
     registry.add_resource(device)
     transporter = create_test_transporter("robot1", [name, "pad1"])
     registry.add_resource(transporter)
@@ -191,7 +153,10 @@ async def _build_system_with_sim_override(
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=EventBus(),
+        event_bus=EventBus(), config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     return builder.get_system()
@@ -215,9 +180,7 @@ def _connection_card(
 
 def _live_connection_source() -> FakeConnectionSource:
     """Connection source reporting shaker1 + robot1 as live-connected.
-    The LIVE-branch of `assert_runnable` consults this; without it,
-    LIVE submissions short-circuit on `WorkflowDeviceNotConnectedError`
-    before reaching the v3.4 LIVE-with-sim-overrides gate."""
+    Without it a LIVE submission is refused with `DevicesNotReadyError`."""
     now = datetime.now(timezone.utc)
     cards = [
         _connection_card("shaker1"),
@@ -230,64 +193,25 @@ def _live_connection_source() -> FakeConnectionSource:
     return FakeConnectionSource(cards, now=now)
 
 
-# -- LiveSubmissionWithSimOverridesUnacknowledgedError gate behavior --------
-
-
-async def test_runtime_refuses_live_when_sim_direction_override_unacknowledged() -> None:
-    """A LIVE submission against a system with a sim-direction
-    `sim_override` device raises the typed error carrying the offending
-    device list. Requires a connected gateway so `assert_runnable`
-    passes and the v3.4 LIVE-with-sim-overrides gate is reached."""
-    system = await _build_system_with_sim_override(("shaker1", WorkflowRunMode.PURE_SIM))
-    runtime = SystemRuntime(
+async def test_a_live_run_with_a_device_set_to_sim_needs_no_confirmation() -> None:
+    system = await _build_system_with_a_device_set_to("shaker1", DeviceMode.SIM)
+    runtime = await memory_runtime(
         system,
         gateway_registry=NullGatewayRegistry(),
         connection_source=_live_connection_source(),
     )
     await runtime.start()
     try:
-        with pytest.raises(LiveSubmissionWithSimOverridesUnacknowledgedError) as exc_info:
-            await runtime.submit_workflow(
-                "override_workflow", mode=WorkflowRunMode.LIVE,
-            )
-        err = exc_info.value
-        assert err.devices == [
-            ("shaker1", WorkflowRunMode.PURE_SIM, WorkflowRunMode.PURE_SIM),
-        ]
-    finally:
-        await runtime.shutdown()
-
-
-async def test_runtime_accepts_live_when_acknowledge_warnings_true() -> None:
-    """`acknowledge_warnings=True` bypasses the LIVE-with-sim-overrides
-    gate. The submission proceeds; the operator has accepted the
-    topology drift."""
-    system = await _build_system_with_sim_override(("shaker1", WorkflowRunMode.PURE_SIM))
-    runtime = SystemRuntime(
-        system,
-        gateway_registry=NullGatewayRegistry(),
-        connection_source=_live_connection_source(),
-    )
-    await runtime.start()
-    try:
-        record = await runtime.submit_workflow(
-            "override_workflow",
-            mode=WorkflowRunMode.LIVE,
-            acknowledge_warnings=True,
-        )
+        record = await runtime.submit_workflow("override_workflow", mode=WorkflowRunMode.LIVE)
         assert record.workflow_name == "override_workflow"
     finally:
         await runtime.shutdown()
 
 
-async def test_runtime_accepts_live_with_no_sim_override_devices() -> None:
-    """A LIVE submission against a system with NO sim-direction
-    sim_overrides should NOT raise. The gate's warning-only filter
-    must skip when there's nothing to warn about."""
-    # Build a system where the device has NO sim_override.
+async def test_runtime_accepts_live_when_every_device_is_set_to_live() -> None:
     plate = create_test_plate_template("plate_96")
     registry = ResourceRegistry()
-    shaker = create_test_device("shaker1", sim_override=None)
+    shaker = create_test_device("shaker1", setting=DeviceMode.LIVE)
     registry.add_resource(shaker)
     transporter = create_test_transporter("robot1", ["shaker1", "pad1"])
     registry.add_resource(transporter)
@@ -326,12 +250,15 @@ async def test_runtime_accepts_live_with_no_sim_override_devices() -> None:
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=EventBus(),
+        event_bus=EventBus(), config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     system = builder.get_system()
 
-    runtime = SystemRuntime(
+    runtime = await memory_runtime(
         system,
         gateway_registry=NullGatewayRegistry(),
         connection_source=_live_connection_source(),

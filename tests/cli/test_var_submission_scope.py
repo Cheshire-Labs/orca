@@ -11,10 +11,9 @@ from unittest.mock import MagicMock, patch
 from typer.testing import CliRunner
 
 from orca.cli.app import app
-from orca.daemon.schemas import (
-    ExecutionRecordDTO,
+from orca.operations.execution_models import ExecutionRecordModel
+from orca.operations.variable_models import (
     SubmissionOverrideDTO,
-    VariableResolutionResponse,
     VariableSetResponse,
     VariableValue,
 )
@@ -30,7 +29,7 @@ SUBMISSION_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 def _client(mock_get_client: MagicMock) -> MagicMock:
     client = mock_get_client.return_value
     client.list_executions.return_value = [
-        ExecutionRecordDTO(
+        ExecutionRecordModel(
             id=EXECUTION_ID, workflow_name="smc_assay", status="running", error=None,
         ),
     ]
@@ -56,7 +55,7 @@ class TestSetWarnsWhenASubmissionStillWins:
         assert SUBMISSION_ID[:8] in result.output
         # The hint has to be a command that runs: both verbs need --execution.
         hint = " ".join(result.output.split())
-        assert f"orca var explain inject_fault --execution {EXECUTION_ID}" in hint
+        assert f"orca var get inject_fault --execution {EXECUTION_ID}" in hint
         assert (
             f"orca var unset inject_fault --execution {EXECUTION_ID} "
             f"--submission <id>"
@@ -121,7 +120,8 @@ class TestGetSaysWhereTheValueCameFrom:
             client = _client(mock_get_client)
             client.variables_get.return_value = VariableValue(
                 name="inject_fault", execution_id=EXECUTION_ID, value=False,
-                source=VariableSource.EXECUTION, shadowed_by=[SUBMISSION_ID],
+                source=VariableSource.EXECUTION,
+                overrides=[SubmissionOverrideDTO(submission_id=SUBMISSION_ID, value=True)],
             )
 
             result = runner.invoke(
@@ -152,12 +152,12 @@ class TestGetSaysWhereTheValueCameFrom:
         )
 
 
-class TestExplainListsEverySubmission:
+class TestGetListsEverySubmissionOverride:
 
     def test_it_prints_each_submissions_own_value(self) -> None:
         with patch("orca.cli.var.get_client") as mock_get_client:
             client = _client(mock_get_client)
-            client.variables_resolution.return_value = VariableResolutionResponse(
+            client.variables_get.return_value = VariableValue(
                 name="shake_time", execution_id=EXECUTION_ID, value=60,
                 source=VariableSource.WORKFLOW_DEFAULT,
                 overrides=[
@@ -166,7 +166,7 @@ class TestExplainListsEverySubmission:
             )
 
             result = runner.invoke(
-                app, ["var", "explain", "shake_time", "--execution", EXECUTION_ID],
+                app, ["var", "get", "shake_time", "--execution", EXECUTION_ID],
             )
 
         assert result.exit_code == 0, result.output

@@ -1,22 +1,18 @@
-"""list-ops-history answers from the durable record after a restart.
+"""search-ops-history for one execution answers from the durable record after a restart.
 
-The gap this pins (state-ownership handoff appendix, finding 2): the operation
-probed only the LIVE execution registry for existence, so after a restart a
-finished execution's archived ops read back as ``not_found`` even though the
-store held every record. Existence now falls back to the persisted
-execution-record; the live registry stays the first (cheap) probe.
+The live execution registry is the first existence probe; a restart empties it,
+so a finished execution's archived ops must still read back from the persisted
+execution record. An execution neither knows is ``execution_not_found``, not an empty list.
 """
-
-import builtins
-import time
 
 import pytest
 
-from orca.operations._protocol import OperationError
+from orca.operations.protocol import OperationError
 from orca.operations.ops_history import (
-    ListOpsHistoryOperation,
-    ListOpsHistoryRequest,
+    SearchOpsHistoryOperation,
+    SearchOpsHistoryRequest,
 )
+from orca.runtime.execution_record import ExecutionRecord
 from orca.state.records import (
     DeviceOperation,
     GenericOperationDetails,
@@ -27,41 +23,37 @@ from orca.state.records import (
 from orca.state.ops_store import OpsHistorySearchQuery
 
 
-def _record(execution_id: str) -> TrackingRecord:
-    now = time.time()
+def _record(execution_id: str, action_id: str = "a1", timestamp: float = 100.0) -> TrackingRecord:
     return TrackingRecord(
         execution_id=execution_id,
-        action_id="a1",
+        action_id=action_id,
         thread_id="t1",
         method_id=None,
         source=TrackingSource.DECLARED,
-        timestamp=now,
+        timestamp=timestamp,
         operations=[
             OperationRecord(
                 operation=DeviceOperation.SHAKE,
                 device_name="shaker",
                 affected_labware=["plate_1"],
-                action_id="a1",
+                action_id=action_id,
                 thread_id="t1",
                 details=GenericOperationDetails(command="shake", args_repr="()"),
-                timestamp=now,
+                timestamp=timestamp,
             )
         ],
     )
 
 
 class _FakeOpsHistory:
-    def __init__(self, records_by_execution: dict[str, list[TrackingRecord]]):
-        self._records = records_by_execution
+    def __init__(self, records: list[TrackingRecord]):
+        self._records = records
 
-    # ``list`` shadows the builtin inside the class body, same as the facade.
-    async def list(self, execution_id: str) -> builtins.list[TrackingRecord]:
-        return builtins.list(self._records.get(execution_id, []))
-
-    async def search(
-        self, query: OpsHistorySearchQuery,
-    ) -> builtins.list[tuple[str, TrackingRecord]]:
-        raise NotImplementedError
+    async def search(self, query: OpsHistorySearchQuery) -> list[tuple[str, TrackingRecord]]:
+        return [
+            (r.execution_id, r) for r in self._records
+            if query.execution_id is None or r.execution_id == query.execution_id
+        ]
 
 
 class _FakeExecutionRecords:
@@ -76,27 +68,39 @@ class _RestartedRuntime:
     """No live executions (the restart emptied the registry), but the durable
     record and the ops archive both know the execution."""
 
-    def __init__(self, known: set[str], records: dict[str, list[TrackingRecord]]):
+    def __init__(self, known: set[str], records: list[TrackingRecord]):
         self.ops_history = _FakeOpsHistory(records)
         self.execution_records = _FakeExecutionRecords(known)
 
-    def get_execution(self, execution_id: str):
+    def get_execution(self, execution_id: str) -> ExecutionRecord:
         raise KeyError(f"Execution '{execution_id}' not found")
 
 
 async def test_archived_execution_reads_back_after_restart() -> None:
-    runtime = _RestartedRuntime(
-        known={"e1"}, records={"e1": [_record("e1")]},
-    )
-    op = ListOpsHistoryOperation(runtime)
-    resp = await op.run(ListOpsHistoryRequest(execution_id="e1"))
-    assert resp.execution_id == "e1"
+    op = SearchOpsHistoryOperation(_RestartedRuntime(known={"e1"}, records=[_record("e1")]))
+    resp = await op.run(SearchOpsHistoryRequest(execution_id="e1"))
+    assert [r.execution_id for r in resp.records] == ["e1"]
+
+
+async def test_an_execution_unknown_everywhere_is_not_found() -> None:
+    op = SearchOpsHistoryOperation(_RestartedRuntime(known=set(), records=[]))
+    with pytest.raises(OperationError) as exc_info:
+        await op.run(SearchOpsHistoryRequest(execution_id="ghost"))
+    assert "not found" in str(exc_info.value)
+
+
+async def test_a_search_naming_no_execution_never_checks_one() -> None:
+    op = SearchOpsHistoryOperation(_RestartedRuntime(known=set(), records=[_record("e1")]))
+    resp = await op.run(SearchOpsHistoryRequest())
     assert len(resp.records) == 1
 
 
-async def test_unknown_everywhere_is_still_not_found() -> None:
-    runtime = _RestartedRuntime(known=set(), records={})
-    op = ListOpsHistoryOperation(runtime)
-    with pytest.raises(OperationError) as exc_info:
-        await op.run(ListOpsHistoryRequest(execution_id="ghost"))
-    assert "not found" in str(exc_info.value)
+async def test_records_come_back_oldest_first_and_a_limit_keeps_the_newest() -> None:
+    records = [_record("e1", "late", 300.0), _record("e1", "early", 100.0), _record("e1", "middle", 200.0)]
+    op = SearchOpsHistoryOperation(_RestartedRuntime(known={"e1"}, records=records))
+
+    everything = await op.run(SearchOpsHistoryRequest(execution_id="e1"))
+    newest_two = await op.run(SearchOpsHistoryRequest(execution_id="e1", limit=2))
+
+    assert [r.action_id for r in everything.records] == ["early", "middle", "late"]
+    assert [r.action_id for r in newest_two.records] == ["middle", "late"]

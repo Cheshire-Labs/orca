@@ -1,6 +1,7 @@
 """Tests for ILabwareLocationService -- single source of truth for labware position."""
 
 import pytest
+from tests.placements_for_tests import this_tests_placements
 from orca.resource_models.labware_location_service import (
     ArrivalMechanism,
     ILabwareLocationService,
@@ -19,7 +20,7 @@ def _make_location(name: str) -> Location:
 class TestInMemoryLabwareLocationService:
 
     async def test_update_and_get(self) -> None:
-        service = InMemoryLabwareLocationService()
+        service = InMemoryLabwareLocationService(this_tests_placements())
         labware = await create_test_labware_instance("plate_1")
         loc = _make_location("shaker1")
 
@@ -27,14 +28,14 @@ class TestInMemoryLabwareLocationService:
         assert service.get(labware) is loc
 
     async def test_get_raises_for_unknown_labware(self) -> None:
-        service = InMemoryLabwareLocationService()
+        service = InMemoryLabwareLocationService(this_tests_placements())
         labware = await create_test_labware_instance("plate_1")
 
         with pytest.raises(KeyError):
             service.get(labware)
 
     async def test_update_overwrites_previous(self) -> None:
-        service = InMemoryLabwareLocationService()
+        service = InMemoryLabwareLocationService(this_tests_placements())
         labware = await create_test_labware_instance("plate_1")
         loc1 = _make_location("shaker1")
         loc2 = _make_location("washer1")
@@ -44,7 +45,7 @@ class TestInMemoryLabwareLocationService:
         assert service.get(labware) is loc2
 
     async def test_get_all_returns_copy(self) -> None:
-        service = InMemoryLabwareLocationService()
+        service = InMemoryLabwareLocationService(this_tests_placements())
         lw1 = await create_test_labware_instance("plate_1")
         lw2 = await create_test_labware_instance("plate_2")
         loc1 = _make_location("shaker1")
@@ -63,7 +64,7 @@ class TestInMemoryLabwareLocationService:
         assert service.get(lw1) is loc1
 
     async def test_update_appends_to_history(self) -> None:
-        service = InMemoryLabwareLocationService()
+        service = InMemoryLabwareLocationService(this_tests_placements())
         labware = await create_test_labware_instance("plate_1")
         loc1 = _make_location("shaker1")
         loc2 = _make_location("washer1")
@@ -79,14 +80,14 @@ class TestInMemoryLabwareLocationService:
         assert names == ["shaker1", "washer1", "reader1"]
 
     async def test_get_history_raises_for_unknown_labware(self) -> None:
-        service = InMemoryLabwareLocationService()
+        service = InMemoryLabwareLocationService(this_tests_placements())
         labware = await create_test_labware_instance("plate_1")
 
         with pytest.raises(KeyError):
             service.get_history(labware)
 
     async def test_reset_clears_history_and_sets_location(self) -> None:
-        service = InMemoryLabwareLocationService()
+        service = InMemoryLabwareLocationService(this_tests_placements())
         labware = await create_test_labware_instance("plate_1")
         loc1 = _make_location("shaker1")
         loc2 = _make_location("washer1")
@@ -103,7 +104,7 @@ class TestInMemoryLabwareLocationService:
         assert history.get_history_names() == ["reader1"]
 
     async def test_history_current_location_matches_get(self) -> None:
-        service = InMemoryLabwareLocationService()
+        service = InMemoryLabwareLocationService(this_tests_placements())
         labware = await create_test_labware_instance("plate_1")
         loc1 = _make_location("shaker1")
         loc2 = _make_location("washer1")
@@ -116,7 +117,7 @@ class TestInMemoryLabwareLocationService:
         assert service.get(labware) is loc2
 
     async def test_history_previous_location(self) -> None:
-        service = InMemoryLabwareLocationService()
+        service = InMemoryLabwareLocationService(this_tests_placements())
         labware = await create_test_labware_instance("plate_1")
         loc1 = _make_location("shaker1")
         loc2 = _make_location("washer1")
@@ -128,7 +129,7 @@ class TestInMemoryLabwareLocationService:
         assert history.get_previous_location() is loc1
 
     async def test_multiple_labware_independent_histories(self) -> None:
-        service = InMemoryLabwareLocationService()
+        service = InMemoryLabwareLocationService(this_tests_placements())
         lw1 = await create_test_labware_instance("plate_1")
         lw2 = await create_test_labware_instance("plate_2")
         loc_a = _make_location("shaker1")
@@ -148,41 +149,36 @@ class TestExpectedPlacements:
     which of the two it means -- only PRESENT is a claim about physical reality,
     and only PRESENT is mirrored into the durable store."""
 
-    async def test_an_expectation_answers_get_but_fires_no_update(self) -> None:
-        service = InMemoryLabwareLocationService()
+    async def test_an_expectation_answers_get_but_records_no_arrival(self) -> None:
+        service = InMemoryLabwareLocationService(this_tests_placements())
         labware = await create_test_labware_instance("plate_1")
         pad = _make_location("pad1")
-        seen: list[str] = []
-        service.add_update_listener(lambda lw, loc: seen.append(lw.id))
 
         service.expect(labware, pad, ArrivalMechanism.MANUAL_PLACE)
 
         assert service.get(labware) is pad
         assert service.placement(labware) is PlacementState.EXPECTED
-        assert seen == [], "an expectation must not reach the store"
         assert len(service.get_history(labware)) == 0, "nothing has been anywhere"
 
-    async def test_arriving_fires_the_update_even_at_the_expected_location(
+    async def test_arriving_is_a_change_even_at_the_expected_location(
         self,
     ) -> None:
         """The position does not change on arrival, so a same-position check
-        alone would swallow the one write that matters."""
-        service = InMemoryLabwareLocationService()
+        alone would swallow the one save that matters."""
+        service = InMemoryLabwareLocationService(this_tests_placements())
         labware = await create_test_labware_instance("plate_1")
         pad = _make_location("pad1")
-        seen: list[str] = []
-        service.add_update_listener(lambda lw, loc: seen.append(lw.id))
 
         service.expect(labware, pad, ArrivalMechanism.MANUAL_PLACE)
-        service.update(labware, pad)
 
+        assert service.update(labware, pad) is True
         assert service.placement(labware) is PlacementState.PRESENT
-        assert seen == [labware.id]
+        assert service.update(labware, pad) is False, "a second write at the same place is no news"
 
     async def test_expected_at_answers_the_longest_waiting_first(self) -> None:
         """Two threads awaiting one pad must bind two different labwares, in the
         order they started waiting -- not both take whatever showed up."""
-        service = InMemoryLabwareLocationService()
+        service = InMemoryLabwareLocationService(this_tests_placements())
         first = await create_test_labware_instance("plate_1")
         second = await create_test_labware_instance("plate_1")
         pad = _make_location("pad1")
@@ -198,7 +194,7 @@ class TestExpectedPlacements:
         ) is second
 
     async def test_expected_at_discriminates_template_and_mechanism(self) -> None:
-        service = InMemoryLabwareLocationService()
+        service = InMemoryLabwareLocationService(this_tests_placements())
         plate = await create_test_labware_instance("plate_1")
         pad = _make_location("pad1")
         service.expect(plate, pad, ArrivalMechanism.MANUAL_PLACE)
@@ -215,7 +211,7 @@ class TestExpectedPlacements:
     ) -> None:
         """A retired labware keeps its last position because it really was
         there. One that never arrived has nothing worth keeping."""
-        service = InMemoryLabwareLocationService()
+        service = InMemoryLabwareLocationService(this_tests_placements())
         arrived = await create_test_labware_instance("plate_1")
         never = await create_test_labware_instance("plate_2")
         pad = _make_location("pad1")
@@ -237,7 +233,7 @@ class TestExpectedPlacements:
     async def test_retire_leaves_an_expectation_alone(self) -> None:
         """The two verbs guard on different states, so a caller that fires both
         (a wipe) does the right one and no-ops the other."""
-        service = InMemoryLabwareLocationService()
+        service = InMemoryLabwareLocationService(this_tests_placements())
         labware = await create_test_labware_instance("plate_1")
         pad = _make_location("pad1")
         service.expect(labware, pad, ArrivalMechanism.MANUAL_PLACE)

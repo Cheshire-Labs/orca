@@ -10,6 +10,7 @@ import pytest
 
 from orca.variables import VariableDefinition, VariableService, VariableStore
 from orca.variables.resolution import VariableSource
+from tests.memory_activity import memory_runtime
 
 
 def _service_with_one_execution() -> VariableService:
@@ -216,18 +217,20 @@ class TestASubmitTimeValueIsReachableOnTheRunningExecution:
         resolve, and the operator can find it under that submission's id."""
         import asyncio
 
-        from orca.runtime.run_modes import WorkflowRunMode
-        from orca.runtime.system_runtime import SystemRuntime
+        from orca.modes.run_modes import WorkflowRunMode
         from tests.test_system_runtime import _build_simple_system
 
         system, workflow = await _build_simple_system()
-        runtime = SystemRuntime(system)
+        system.variable_store.register_workflow_definitions(
+            workflow.name, {"inject_fault": VariableDefinition(type="bool", default=False)},
+        )
+        runtime = await memory_runtime(system)
         await runtime.start()
         try:
             submission = await runtime.submit(
                 workflow,
                 variables={"inject_fault": True},
-                mode=WorkflowRunMode.PURE_SIM,
+                mode=WorkflowRunMode.CHECK_RUN,
             )
             execution = runtime._executions[submission.execution_id]
             # The runtime writes the submission partition before it publishes

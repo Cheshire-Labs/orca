@@ -3,7 +3,7 @@
 from cheshire_drivers.move_parameters import MoveParameterPatch
 from cheshire_drivers.teachpoints import AccessConfig, CartesianCoordinates, Teachpoint
 
-from orca.runtime.move_parameters import resolve_move_parameters
+from orca.resource_models.move_parameters import resolve_move_parameters
 
 
 def _teachpoint(

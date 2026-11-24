@@ -12,7 +12,7 @@ import re
 
 from cheshire_source_text import code_lines_of, python_files
 
-from orca.operations._protocol import message_of
+from orca.operations.protocol import message_of
 
 
 class TestWhatTheOperatorReads:

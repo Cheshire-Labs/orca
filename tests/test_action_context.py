@@ -146,11 +146,11 @@ class TestActionContextTypedAccessors:
         )
 
     async def _make_plate_instance(self, name: str = "sample_plate"):
-        from orca.runtime.sim_labware import SimPlateTemplate
+        from orca.resource_models.sim_labware import SimPlateTemplate
         return await SimPlateTemplate(name).create_instance()
 
     async def _make_tip_rack_instance(self, name: str = "tips"):
-        from orca.runtime.sim_labware import SimTipRackTemplate
+        from orca.resource_models.sim_labware import SimTipRackTemplate
         return await SimTipRackTemplate(name).create_instance()
 
     def _make_trough_instance(self, name: str = "reagent_trough"):

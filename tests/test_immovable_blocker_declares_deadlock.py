@@ -23,6 +23,10 @@ tests pin the per-piece behavior.
 """
 from unittest.mock import Mock
 
+from collections.abc import AsyncGenerator
+
+from orca.workflow_models.method_template import IMethodTemplate
+from orca.workflow_models.thread_context import ThreadContext
 import pytest
 
 from orca.resource_models.labware import LabwareInstance
@@ -44,15 +48,21 @@ from orca.runtime.incident_store import (
 )
 from orca.runtime.recoverable_timeout import RecoverableTimeoutCoordinator
 from orca.system.reservation_manager.errors import (
+    ActionContinuedContext,
+    AutoSpawnFailedDetail,
+    CoLabwareTimeoutDetail,
     IThreadIncidentDeclarer,
+    MoveContinuedContext,
+    MoveFailedContext,
+    ThreadDiedContext,
     OrphanedBacklogContext,
     UnresolvableDeadlockContext,
     UnresolvableDeadlockError,
 )
-from orca.system.reservation_manager.move_handler import (
+from orca.workflow_models.actions.move_handler import (
     MoveActionCollectionReservationRequest,
 )
-from orca.system.thread_registry_interface import IThreadRegistry
+from orca.system.reservation_manager.thread_registry_interface import IThreadRegistry
 from orca.workflow_models.actions.move_action import MoveAction
 from orca.workflow_models.labware_threads.executing_labware_thread import (
     ExecutingLabwareThread,
@@ -432,14 +442,15 @@ class TestImmovableEntryGuard:
     def test_immovable_thread_refused_at_workflow_start(self) -> None:
         """WorkflowTemplate.add_thread refuses immovable=True at wf.start()."""
         from orca.resource_models.labware import PlateTemplate as LabwareTemplate
-        from orca.runtime.runtime_interface import ImmovableThreadCannotBeEntryError
+        from orca.workflow_models.errors import ImmovableThreadCannotBeEntryError
         from orca.workflow_models.thread_template import ThreadTemplate
         from orca.workflow_models.workflow_templates import WorkflowTemplate
 
         labware = LabwareTemplate("reagent", "plate")
 
-        async def _body(ctx):  # pragma: no cover - body never executed
-            yield
+        async def _body(ctx: ThreadContext) -> AsyncGenerator[IMethodTemplate, None]:  # pragma: no cover
+            for method in ():
+                yield method
 
         thread = ThreadTemplate(
             labware_template=labware,
@@ -461,8 +472,9 @@ class TestImmovableEntryGuard:
 
         labware = LabwareTemplate("reagent", "plate")
 
-        async def _body(ctx):  # pragma: no cover
-            yield
+        async def _body(ctx: ThreadContext) -> AsyncGenerator[IMethodTemplate, None]:  # pragma: no cover
+            for method in ():
+                yield method
 
         thread = ThreadTemplate(
             labware_template=labware,
@@ -489,8 +501,9 @@ class TestThreadTemplateImmovable:
 
         labware = LabwareTemplate("plate", "plate")
 
-        async def _body(ctx):  # pragma: no cover
-            yield
+        async def _body(ctx: ThreadContext) -> AsyncGenerator[IMethodTemplate, None]:  # pragma: no cover
+            for method in ():
+                yield method
 
         thread = ThreadTemplate(
             labware_template=labware,
@@ -506,8 +519,9 @@ class TestThreadTemplateImmovable:
 
         labware = LabwareTemplate("reagent", "plate")
 
-        async def _body(ctx):  # pragma: no cover
-            yield
+        async def _body(ctx: ThreadContext) -> AsyncGenerator[IMethodTemplate, None]:  # pragma: no cover
+            for method in ():
+                yield method
 
         thread = ThreadTemplate(
             labware_template=labware,
@@ -544,6 +558,43 @@ class _FakeDeclarer:
     ) -> object:
         self.action_failure_calls.append((execution_id, thread_id))
         return object()
+
+    def declare_co_labware_timeout(
+        self, execution_id: str, thread_id: str, context: CoLabwareTimeoutDetail,
+    ) -> None:
+        raise NotImplementedError
+
+
+    def declare_auto_spawn_failure(
+
+        self, execution_id: str, context: AutoSpawnFailedDetail, error_message: str,
+
+    ) -> None:
+
+        raise NotImplementedError
+
+    def declare_thread_death(
+        self, execution_id: str, thread_id: str, context: ThreadDiedContext
+    ) -> None:
+        raise NotImplementedError
+
+    def declare_move_failure(
+        self, execution_id: str, thread_id: str, context: MoveFailedContext
+    ) -> None:
+        raise NotImplementedError
+
+    def declare_action_continued(
+        self, execution_id: str, thread_id: str, context: ActionContinuedContext
+    ) -> None:
+        raise NotImplementedError
+
+    def declare_move_continued(
+        self, execution_id: str, thread_id: str, context: MoveContinuedContext
+    ) -> None:
+        raise NotImplementedError
+
+    async def clear_device_fault(self, device_id: str) -> None:
+        return None
 
     def declare_orphaned_backlog(
         self, execution_id: str, context: OrphanedBacklogContext,
@@ -608,7 +659,7 @@ class TestDeclarerPlumbing:
             "_event_bus", "_move_handler", "_status_manager", "_actions_resolver",
             "_labware_location_service", "_coordination_config", "_method_registry",
             "_executing_method_registry", "_variable_store", "_register_method_template",
-            "_labware_placer",
+            "_command_pipeline",
         ):
             setattr(factory, field, MagicMock())
         declarer = _FakeDeclarer()
@@ -638,29 +689,29 @@ class TestDeclarerPlumbing:
 
 
 class TestSystemRuntimeWiresSelfAsDeclarer:
-    """SystemRuntime.__init__ calls system.set_thread_incident_declarer(self)."""
+    """SystemRuntime.__init__ calls system.set_thread_incident_declarer(self.incident_declarer)."""
 
-    def test_runtime_init_calls_set_thread_incident_declarer_with_self(self) -> None:
+    async def test_runtime_init_calls_set_thread_incident_declarer_with_self(self) -> None:
         """Drive REAL `SystemRuntime.__init__` and verify it called
-        `system.set_thread_incident_declarer(self)`.
+        `system.set_thread_incident_declarer(runtime.incident_declarer)`.
 
         Uses a `MagicMock` for ``system`` so every attribute / method
-        access (set_executing_workflow_factory_refs, ops_history,
+        access (save_labware_to, ops_history,
         variable_store, etc.) returns a sensible mock that doesn't
         block __init__. The test fails if a future edit removes the
-        `self._system.set_thread_incident_declarer(self)` line from __init__.
+        `self._system.set_thread_incident_declarer(self._incident_declarer)` line from __init__.
         """
         from unittest.mock import MagicMock
 
-        from orca.runtime.system_runtime import SystemRuntime
+        from tests.memory_activity import memory_runtime
 
         system = MagicMock()
 
-        runtime = SystemRuntime(system)
+        runtime = await memory_runtime(system)
 
-        system.set_thread_incident_declarer.assert_called_once_with(runtime)
+        system.set_thread_incident_declarer.assert_called_once_with(runtime.incident_declarer)
 
-    def test_runtime_init_orders_thread_incident_declarer_after_incident_store(self) -> None:
+    async def test_runtime_init_orders_thread_incident_declarer_after_incident_store(self) -> None:
         """The docstring invariant for declare_unresolvable_deadlock:
         ``set_thread_incident_declarer`` must run AFTER ``_incident_service`` is
         bound, because ``declare_unresolvable_deadlock`` dereferences
@@ -672,7 +723,7 @@ class TestSystemRuntimeWiresSelfAsDeclarer:
         """
         from unittest.mock import MagicMock
 
-        from orca.runtime.system_runtime import SystemRuntime
+        from tests.memory_activity import memory_runtime
 
         system = MagicMock()
         seen_incident_service: list[object] = []
@@ -684,7 +735,7 @@ class TestSystemRuntimeWiresSelfAsDeclarer:
 
         system.set_thread_incident_declarer.side_effect = _capture_state
 
-        SystemRuntime(system)
+        await memory_runtime(system)
 
         assert len(seen_incident_service) == 1, (
             "set_thread_incident_declarer must be called exactly once during __init__"
@@ -694,12 +745,12 @@ class TestSystemRuntimeWiresSelfAsDeclarer:
         )
 
     def test_runtime_implements_thread_incident_declarer_protocol(self) -> None:
-        from orca.runtime.system_runtime import SystemRuntime
+        from orca.runtime.incident_declarer import IncidentDeclarer
 
-        assert hasattr(SystemRuntime, "declare_unresolvable_deadlock")
-        assert callable(SystemRuntime.declare_unresolvable_deadlock)
-        assert hasattr(SystemRuntime, "declare_action_failure")
-        assert callable(SystemRuntime.declare_action_failure)
+        assert hasattr(IncidentDeclarer, "declare_unresolvable_deadlock")
+        assert callable(IncidentDeclarer.declare_unresolvable_deadlock)
+        assert hasattr(IncidentDeclarer, "declare_action_failure")
+        assert callable(IncidentDeclarer.declare_action_failure)
 
 
 class TestExecutingThreadInvokesDeclarer:
@@ -842,6 +893,7 @@ class TestExecutingThreadInvokesDeclarer:
         declarer = _FakeDeclarer()
 
         thread = ExecutingLabwareThread.__new__(ExecutingLabwareThread)
+        thread._partner_constraints = {}  # type: ignore[attr-defined]
         thread._thread_incident_declarer = declarer  # type: ignore[attr-defined]
         thread._context = MagicMock()  # type: ignore[attr-defined]
         thread._context.execution_id = "exec-123"  # type: ignore[attr-defined]

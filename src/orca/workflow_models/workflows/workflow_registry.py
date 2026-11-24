@@ -2,13 +2,13 @@ from abc import ABC, abstractmethod
 from typing import Dict, List, Sequence
 from orca.events.event_bus_interface import IEventBus
 from orca.events.execution_context import WorkflowExecutionContext
-from orca.runtime.labware_group import LabwareGroup
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.submission import ResolvedAcquisition
-from orca.runtime.submission_modes import BatchMode
-from orca.system.interfaces import IMethodRegistry, IWorkflowRegistry
-from orca.system.labware_registry_interfaces import ILabwareRegistry
-from orca.system.thread_registry_interface import IThreadRegistry
+from orca.workflow_models.labware_group import LabwareGroup
+from orca.modes.run_modes import WorkflowRunMode
+from orca.workflow_models.submission import ResolvedAcquisition
+from orca.workflow_models.submission_modes import BatchMode
+from orca.workflow_models.workflows.registry_interfaces import IMethodRegistry, IWorkflowRegistry
+from orca.resource_models.labware_registry_interfaces import ILabwareRegistry
+from orca.system.reservation_manager.thread_registry_interface import IThreadRegistry
 from orca.resource_models.tracking_context import TrackingContext
 from orca.variables.variable_store import IVariableResolver
 from orca.workflow_models.interfaces import IMethod

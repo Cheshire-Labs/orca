@@ -14,6 +14,7 @@ takes direct delivery with no relay; taught any other slot, the forced relay is
 refused at run time because the deck has no gripper.
 """
 
+from orca.events.event_bus import EventBus
 import asyncio
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
@@ -27,7 +28,6 @@ from cheshire_drivers import (
     DeckLayoutConfig,
     Teachpoint,
 )
-from cheshire_drivers.plr import ChatterboxLiquidHandlerDriver
 from cheshire_drivers import RecordingLiquidHandlerDriver
 from cheshire_drivers.liquid_handler_models import GetDeckStateRequest
 from orca.devices.device_interfaces import ILiquidHandler
@@ -35,19 +35,26 @@ from orca.devices.devices import LiquidHandler, Storage
 from orca.resource_models.device_deck_site import DeviceDeckSite
 from orca.resource_models.plate_pad import PlatePad
 from orca.resource_models.transporter import Transporter
-from orca.runtime.device_factory import SimDeviceFactory
-from orca.runtime.device_factory_protocol import DriverPairElement
-from orca.runtime.device_factory_context import use_device_factory
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.store_factory import InMemoryRuntimeStoreFactory
-from orca.runtime.system_runtime import ExecutionState, SystemRuntime
-from orca.sdk.build import SystemBuild, Topology, build_system
+from orca.modes.run_modes import WorkflowRunMode
+from orca.runtime.system_runtime import ExecutionState
+from orca.sdk.build import SystemBuild, Topology
+from orca.sdk.package import build_system
 from orca.sdk.labware import PlateTemplate, TipRackTemplate
+from orca.state.ops_store import OpsHistorySearchQuery
+from orca.state.records import GenericOperationDetails
 from orca.workflow_models.action_context import ActionContext
 from orca.workflow_models.method_context import MethodContext
 from orca.workflow_models.status_enums import FailurePolicy
 from orca.workflow_models.thread_context import ThreadContext
 from tests.test_helpers import run_to_quiescence, named_for_template
+from tests.setup_package import package_stores, write_deck_layouts, write_teachpoints
+from tests.setup_package import with_teachpoints, with_deck_layouts
+from tests.memory_activity import memory_ops_store, memory_runtime
+from tests.real_device_path import the_real_device_path
+from tests.recording_handler import RecordingHandler
+
+# The system build must reach every position these runs touch.
+pytestmark = pytest.mark.positions_bound_by_the_build
 
 # A Flex deck declares no resources: its slots are built-in deck structure.
 FLEX_DECK = DeckLayoutConfig(deck_type="FlexDeck", resources=[])
@@ -57,51 +64,34 @@ _PLATE_SLOT = "C2-slot"       # the plate's working slot
 _TIPS_SLOT = "B2-slot"        # the tip rack's working slot
 
 
-class _LhDeckFactory:
-    """Serves the recording driver for the liquid handler, sim drivers for the rest."""
-
-    def __init__(self, lh: RecordingLiquidHandlerDriver) -> None:
-        self._lh = lh
-        self._fallback = SimDeviceFactory()
-
-    def build_drivers(
-        self, device_type: str, name: str, *, deck_modeling: bool = False,
-    ) -> tuple[DriverPairElement, DriverPairElement]:
-        if device_type == "liquid_handler":
-            return self._lh, self._lh
-        return self._fallback.build_drivers(device_type, name, deck_modeling=deck_modeling)
-
-
 async def build_flex_transit_system(recorder: RecordingLiquidHandlerDriver) -> SystemBuild:
-    stores = InMemoryRuntimeStoreFactory()
+    stores = package_stores()
 
     sample_plate = PlateTemplate(
         "sample_plate", labware_type="Cor_Falcon_96_wellplate_340ul_Fb_Black",
     )
     tips = TipRackTemplate("tips", labware_type="hamilton_96_tiprack_10uL_filter", with_tips=True)
 
-    with use_device_factory(_LhDeckFactory(recorder)):
-        flex = LiquidHandler(
-            "flex",
-            deck_layout_store=stores.deck_layouts("flex", seed={"default": FLEX_DECK}),
-            deck_layout="default",
-        )
-        stacker = Storage("stacker")
-        tip_stacker = Storage("tip_stacker")
-        waste = Storage("waste")
-        pad = PlatePad("pad")
+    the_real_device_path().simulate_with("flex", recorder)
+    flex = with_deck_layouts(LiquidHandler(
+        "flex",
+        deck_layout="default",
+    ), write_deck_layouts(stores, "flex", {"default": FLEX_DECK}))
+    stacker = Storage("stacker")
+    tip_stacker = Storage("tip_stacker")
+    waste = Storage("waste")
+    pad = PlatePad("pad")
 
-        c = CartesianCoordinates
-        arm = Transporter(
-            "arm",
-            teachpoint_store=stores.teachpoints("arm", seed=[
-                Teachpoint("stacker", c(0, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("tip_stacker", c(0, 400, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("pad", c(200, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint(f"flex/{_ARM_SITE}", c(400, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("waste", c(600, 200, 300, 0, 90, 180), orientation="right"),
-            ]),
-        )
+    c = CartesianCoordinates
+    arm = with_teachpoints(Transporter(
+        "arm",
+    ), write_teachpoints(stores, "arm", [
+            Teachpoint("stacker", c(0, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("tip_stacker", c(0, 400, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("pad", c(200, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint(f"flex/{_ARM_SITE}", c(400, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("waste", c(600, 200, 300, 0, 90, 180), orientation="right"),
+        ]))
 
     @orca.action(
         device=flex,
@@ -143,7 +133,7 @@ async def build_flex_transit_system(recorder: RecordingLiquidHandlerDriver) -> S
         transporters=[arm],
     )
     return await orca.build_system(
-        name="Flex Transit Test", workflow=flex_wf, topology=topology, stores=stores,
+        name="Flex Transit Test", workflow=flex_wf, topology=topology, stores=stores, event_bus=EventBus(), ops_history_store=memory_ops_store(),
     )
 
 
@@ -153,10 +143,10 @@ async def _run(
 ) -> AsyncIterator[tuple[LiquidHandler, dict[str, str]]]:
     """Run the Flex transit workflow to quiescence, shutting the runtime down after."""
     build = await build_flex_transit_system(recorder)
-    runtime = SystemRuntime(build.system, event_bus=build.event_bus)
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
     await runtime.start()
     try:
-        record = await runtime.submit_workflow("flex_transit", mode=WorkflowRunMode.PURE_SIM)
+        record = await runtime.submit_workflow("flex_transit", mode=WorkflowRunMode.CHECK_RUN)
         statuses = await run_to_quiescence(runtime, record.id)
         flex = next(d for d in build.system.devices if isinstance(d, LiquidHandler))
         yield flex, statuses
@@ -169,7 +159,7 @@ class TestFlexArmTaughtSiteTransit:
     @pytest.mark.slow
     @pytest.mark.asyncio
     async def test_transit_runs_to_completion(self) -> None:
-        recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+        recorder = RecordingHandler()
         async with _run(recorder) as (_flex, statuses):
             assert statuses, "no threads were created"
             assert all(s == "COMPLETED" for s in statuses.values()), statuses
@@ -180,7 +170,7 @@ class TestFlexArmTaughtSiteTransit:
         """Every transit labware materializes at the site the arm was taught and
         the gripper relays it to its working slot -- the entry point is derived
         from the teachpoint, not declared per carrier."""
-        recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+        recorder = RecordingHandler()
         async with _run(recorder) as (_flex, statuses):
             assert all(s == "COMPLETED" for s in statuses.values()), statuses
 
@@ -207,7 +197,7 @@ class TestFlexArmTaughtSiteTransit:
     @pytest.mark.slow
     @pytest.mark.asyncio
     async def test_departure_shuttles_back_to_the_arm_taught_site_and_unmaterializes(self) -> None:
-        recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+        recorder = RecordingHandler()
         async with _run(recorder) as (flex, statuses):
             assert all(s == "COMPLETED" for s in statuses.values()), statuses
 
@@ -228,29 +218,51 @@ class TestFlexArmTaughtSiteTransit:
                 f"transit labware still on the deck after departure: {names}"
             )
 
+    @pytest.mark.slow
+    @pytest.mark.asyncio
+    async def test_each_gripper_relay_is_saved_once_in_the_runs_history(self) -> None:
+        recorder = RecordingHandler()
+        build = await build_flex_transit_system(recorder)
+        runtime = await memory_runtime(build.system, event_bus=build.event_bus)
+        await runtime.start()
+        try:
+            record = await runtime.submit_workflow("flex_transit", mode=WorkflowRunMode.CHECK_RUN)
+            await run_to_quiescence(runtime, record.id)
+            hits = await build.system.ops_history.store.search(OpsHistorySearchQuery())
+        finally:
+            await runtime.shutdown()
+
+        # The gripper's move_plate is its place, saved once as the gripper's own place.
+        saved = [
+            (execution_id, op.device_name) for execution_id, tracked in hits for op in tracked.operations
+            if isinstance(op.details, GenericOperationDetails) and op.details.command in ("move_plate", "place_at_coords")
+            and op.device_name.startswith("flex")
+        ]
+        sent = [c for c in recorder.calls if c.method == "move_plate"]
+        assert sent
+        assert saved == [(record.id, "flex/gripper")] * len(sent)
+
 
 class TestArmTeachpointWiring:
     """Which deck sites the arm can reach is stated by its teachpoints, and the
     build refuses any arm point that does not name exactly one real site."""
 
     async def _build(self, arm_teaches: str):
-        stores = InMemoryRuntimeStoreFactory()
-        flex = LiquidHandler(
+        stores = package_stores()
+        flex = with_deck_layouts(LiquidHandler(
             "flex",
-            deck_layout_store=stores.deck_layouts("flex", seed={"default": FLEX_DECK}),
             deck_layout="default",
-        )
+        ), write_deck_layouts(stores, "flex", {"default": FLEX_DECK}))
         pad = PlatePad("pad")
         c = CartesianCoordinates
-        arm = Transporter(
+        arm = with_teachpoints(Transporter(
             "arm",
-            teachpoint_store=stores.teachpoints("arm", seed=[
+        ), write_teachpoints(stores, "arm", [
                 Teachpoint(arm_teaches, c(0, 0, 0, 0, 90, 180), orientation="right"),
                 Teachpoint("pad", c(100, 0, 0, 0, 90, 180), orientation="right"),
-            ]),
-        )
+            ]))
         topology = Topology(locations={"flex": flex, "pad": pad}, transporters=[arm])
-        return await build_system(name="t", topology=topology, stores=stores)
+        return await build_system(name="t", topology=topology, stores=stores, event_bus=EventBus(), ops_history_store=memory_ops_store())
 
     async def test_arm_taught_site_is_an_ordinary_working_site(self) -> None:
         """The arm's entry point is not a reserved drop point: it is a plain deck
@@ -295,30 +307,28 @@ async def build_ot2_system(
 ) -> SystemBuild:
     """OT-2 topology whose arm is taught ``arm_site``. Teaching the working slot
     means direct delivery; teaching any other site forces an internal relay."""
-    stores = InMemoryRuntimeStoreFactory()
+    stores = package_stores()
     sample_plate = PlateTemplate(
         "sample_plate", labware_type="Cor_Falcon_96_wellplate_340ul_Fb_Black",
     )
 
-    with use_device_factory(_LhDeckFactory(recorder)):
-        ot2 = LiquidHandler(
-            "ot2",
-            deck_layout_store=stores.deck_layouts("ot2", seed={"default": OT2_DECK}),
-            deck_layout="default",
-        )
-        stacker = Storage("stacker")
-        waste = Storage("waste")
-        pad = PlatePad("pad")
-        c = CartesianCoordinates
-        arm = Transporter(
-            "arm",
-            teachpoint_store=stores.teachpoints("arm", seed=[
-                Teachpoint("stacker", c(0, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("pad", c(200, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint(f"ot2/{arm_site}", c(400, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("waste", c(600, 200, 300, 0, 90, 180), orientation="right"),
-            ]),
-        )
+    the_real_device_path().simulate_with("ot2", recorder)
+    ot2 = with_deck_layouts(LiquidHandler(
+        "ot2",
+        deck_layout="default",
+    ), write_deck_layouts(stores, "ot2", {"default": OT2_DECK}))
+    stacker = Storage("stacker")
+    waste = Storage("waste")
+    pad = PlatePad("pad")
+    c = CartesianCoordinates
+    arm = with_teachpoints(Transporter(
+        "arm",
+    ), write_teachpoints(stores, "arm", [
+            Teachpoint("stacker", c(0, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("pad", c(200, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint(f"ot2/{arm_site}", c(400, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("waste", c(600, 200, 300, 0, 90, 180), orientation="right"),
+        ]))
 
     @orca.action(
         device=ot2,
@@ -346,16 +356,16 @@ async def build_ot2_system(
         transporters=[arm],
     )
     return await orca.build_system(
-        name="OT-2 Transit", workflow=ot2_wf, topology=topology, stores=stores,
+        name="OT-2 Transit", workflow=ot2_wf, topology=topology, stores=stores, event_bus=EventBus(), ops_history_store=memory_ops_store(),
     )
 
 
 async def _run_ot2(recorder: RecordingLiquidHandlerDriver, arm_site: str):
     build = await build_ot2_system(recorder, arm_site)
-    runtime = SystemRuntime(build.system, event_bus=build.event_bus)
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
     await runtime.start()
     try:
-        record = await runtime.submit_workflow("ot2_transit", mode=WorkflowRunMode.PURE_SIM)
+        record = await runtime.submit_workflow("ot2_transit", mode=WorkflowRunMode.CHECK_RUN)
         return await asyncio.wait_for(runtime.wait(record.id), timeout=60.0)
     finally:
         await runtime.shutdown()
@@ -376,7 +386,7 @@ class TestOT2TransitRefused:
     @pytest.mark.slow
     @pytest.mark.asyncio
     async def test_ot2_relay_off_the_taught_site_is_refused_at_runtime(self) -> None:
-        recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+        recorder = RecordingHandler()
         status = await _run_ot2(recorder, _OT2_ARM_SITE)
 
         assert status.status == ExecutionState.FAILED, (
@@ -412,7 +422,7 @@ class TestOT2DirectDelivery:
     @pytest.mark.slow
     @pytest.mark.asyncio
     async def test_arm_delivers_straight_to_the_taught_working_slot(self) -> None:
-        recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+        recorder = RecordingHandler()
         status = await _run_ot2(recorder, _OT2_PLATE_SLOT)
 
         assert status.status == ExecutionState.COMPLETED, (

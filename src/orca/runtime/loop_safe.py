@@ -7,7 +7,7 @@ callback executor threads). A sink whose ``on_event`` touches loop-bound state
 
 ``deliver_on_loop`` is the shared seam: it runs ``deliver(event)`` inline when
 already on ``loop``, otherwise marshals it via ``call_soon_threadsafe``. Every
-sink that pushes to an ``asyncio.Queue`` (the daemon SSE sink, the runtime
+sink that pushes to an ``asyncio.Queue`` (the daemon event stream, the runtime
 event-stream subscription, a hosted deployment's WS fan-out) routes through this.
 """
 

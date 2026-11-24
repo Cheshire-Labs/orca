@@ -11,13 +11,14 @@ The insert was dropped, and then reported as an anchor whose tag never appeared
 on the stream. The operator is told their tag was wrong.
 """
 
+from orca.config import OrcaConfig
 import asyncio
 
 import orca.orca as orca
 from orca.resource_models.resource_pool import ResourcePool
 from orca.sdk.labware import PlateTemplate
 from orca.runtime.incident_store import IncidentCategory
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from orca.runtime.system_runtime import ExecutionState, SystemRuntime
 from orca.sdk.events import EventBus
 from orca.sdk.system import ResourceRegistry, SystemMap
@@ -37,6 +38,10 @@ from tests.test_mutation_coordinator import (
     _make_method,
     _make_thread,
 )
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 
 async def _paused_on_a_failed_tagged_action(*, with_a_rinse: bool = False) -> tuple[
@@ -78,12 +83,15 @@ async def _paused_on_a_failed_tagged_action(*, with_a_rinse: bool = False) -> tu
     builder = SdkToSystemBuilder(
         name="test_system", description="", labwares=[plate],
         resources_registry=registry, system_map=system_map,
-        workflows=[workflow], event_bus=event_bus,
+        workflows=[workflow], event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
-    runtime = SystemRuntime(builder.get_system(), event_bus=event_bus)
+    runtime = await memory_runtime(builder.get_system(), event_bus=event_bus)
     await runtime.start()
-    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
     paused_id = await wait_for_paused(runtime, record.id)
     device.should_fail_shake = False
     return runtime, device, pool, plate, record.id, paused_id

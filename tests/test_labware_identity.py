@@ -4,7 +4,7 @@ import dataclasses
 
 import pytest
 
-from orca.resource_models.labware import LabwareInstance, PlateInstance
+from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.labware_identity import LabwareRelationship, RelationshipType
 from orca.runtime.labware_store import InMemoryLabwareStore
 
@@ -106,37 +106,10 @@ class TestInMemoryLabwareStore:
         await store.update_location(instance.id, "shaker_1")
         assert store.get_location(instance.id) == "shaker_1"
 
-    async def test_update_location_missing_id_is_noop(self) -> None:
+    async def test_update_location_for_unknown_labware_is_refused(self) -> None:
         store = InMemoryLabwareStore()
-        await store.update_location("nonexistent", "shaker_1")
-        assert store.get_location("nonexistent") is None
-
-    async def test_record_and_get_relationships(self) -> None:
-        store = InMemoryLabwareStore()
-        rel = LabwareRelationship(
-            source_id="plate_1",
-            target_id="plate_2",
-            relationship_type=RelationshipType.DERIVED_FROM,
-        )
-        await store.record_relationship(rel)
-        results = await store.get_relationships("plate_1")
-        assert len(results) == 1
-        assert results[0] is rel
-
-    async def test_get_relationships_returns_both_directions(self) -> None:
-        store = InMemoryLabwareStore()
-        rel = LabwareRelationship(
-            source_id="plate_1",
-            target_id="plate_2",
-            relationship_type=RelationshipType.DERIVED_FROM,
-        )
-        await store.record_relationship(rel)
-        assert len(await store.get_relationships("plate_1")) == 1
-        assert len(await store.get_relationships("plate_2")) == 1
-
-    async def test_get_relationships_empty(self) -> None:
-        store = InMemoryLabwareStore()
-        assert await store.get_relationships("nonexistent") == []
+        with pytest.raises(KeyError, match="nonexistent"):
+            await store.update_location("nonexistent", "shaker_1")
 
 
 class TestTemplateBackreference:

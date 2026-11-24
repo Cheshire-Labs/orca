@@ -214,8 +214,8 @@ class TestOwnedSiteOccupancyEdges:
         owner_a.name = "dev_a"
         owner_b = Mock()
         owner_b.name = "dev_b"
-        site_a = DeckSiteLocation("dev_a/site", owner_a, mutex_position_id="dev_a")
-        site_b = DeckSiteLocation("dev_b/site", owner_b, mutex_position_id="dev_b")
+        site_a = DeckSiteLocation("dev_a/site", owner_a, mutex_position_id="dev_a", site_name="site")
+        site_b = DeckSiteLocation("dev_b/site", owner_b, mutex_position_id="dev_b", site_name="site")
         _place_labware(site_a, plate_x)
         _place_labware(site_b, plate_y)
         src = _make_location("src")

@@ -7,12 +7,14 @@ hosted surface said was present.
 
 Nothing was dropped: the deck projection ran, against the ambient run mode. A
 REST call is never inside an execution, so the ambient mode is the metadata
-fallback (PURE_SIM) and the push landed on the device's sim-world driver. The
+fallback (CHECK_RUN) and the push landed on the device's sim-world driver. The
 device verbs already state their base for exactly this reason; the labware
 verbs did not.
 """
 
 import pytest
+
+from orca.gateway.controller.exceptions import CommandExecutionError
 
 from cheshire_drivers import RecordingLiquidHandlerDriver
 from cheshire_drivers.liquid_handler_models import (
@@ -21,10 +23,9 @@ from cheshire_drivers.liquid_handler_models import (
     ReconcileDeckOccupancyRequest,
     RemoveDeckLabwareRequest,
 )
-from cheshire_drivers.plr import ChatterboxLiquidHandlerDriver
-from orca.runtime.labware_store import InMemoryLabwareStore
-from orca.runtime.system_runtime import SystemRuntime
 from tests.test_labware_state_reconciliation import RESERVOIR_SITE, _build
+from tests.memory_activity import memory_runtime
+from tests.recording_handler import RecordingHandler
 
 
 def _count(recorder: RecordingLiquidHandlerDriver, method: str) -> int:
@@ -32,14 +33,14 @@ def _count(recorder: RecordingLiquidHandlerDriver, method: str) -> int:
 
 
 def _recorder() -> RecordingLiquidHandlerDriver:
-    return RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    return RecordingHandler()
 
 
 async def _runtime(wf_name: str):
     live, sim = _recorder(), _recorder()
     build, _lh = await _build(live, wf_name=wf_name, sim_recorder=sim)
-    runtime = SystemRuntime(
-        build.system, event_bus=build.event_bus, labware_store=InMemoryLabwareStore(),
+    runtime = await memory_runtime(
+        build.system, event_bus=build.event_bus
     )
     await runtime.start()
     return runtime, build, live, sim
@@ -113,7 +114,7 @@ async def test_a_register_the_instrument_refuses_registers_nothing() -> None:
     try:
         _unreachable(live)
 
-        with pytest.raises(ConnectionError):
+        with pytest.raises(CommandExecutionError, match="unreachable"):
             await runtime.labware.register(
                 "reservoir", location=RESERVOIR_SITE, confirm=True,
             )
@@ -136,7 +137,7 @@ async def test_an_edit_the_instrument_refuses_leaves_the_labware_where_it_was() 
         )
         _unreachable(live)
 
-        with pytest.raises(ConnectionError):
+        with pytest.raises(CommandExecutionError, match="unreachable"):
             await runtime.labware.edit_location(
                 snapshot.id, "lh/carrier-7-0", reason="moved it by hand",
                 confirm=True,

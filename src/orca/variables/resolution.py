@@ -1,12 +1,11 @@
 """What a variable resolves to on an execution, and which layer answered."""
 
 from dataclasses import dataclass
-from enum import Enum
-
+from orca.str_enum import StrEnum
 from orca.variables.errors import OptionValue
 
 
-class VariableSource(str, Enum):
+class VariableSource(StrEnum):
     """The layer a resolved value came from.
 
     ``SUBMISSION_DIVERGED`` appears only in the merged per-execution listing,

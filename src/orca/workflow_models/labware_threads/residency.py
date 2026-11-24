@@ -1,5 +1,5 @@
 """Residency: which labware will not exit its device (drain-predicate input)."""
-from orca.system.thread_registry_interface import IThreadRegistry
+from orca.system.reservation_manager.thread_registry_interface import IThreadRegistry
 from orca.workflow_models.actions.location_action import ResidencyCheck
 from orca.workflow_models.status_enums import LabwareThreadStatus
 from orca.workflow_models.status_manager import StatusManager

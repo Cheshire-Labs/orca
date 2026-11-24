@@ -22,6 +22,7 @@ from cheshire_drivers.liquid_handler_models import MovePlateRequest
 from cheshire_drivers.plr import ChatterboxLiquidHandlerDriver
 from cheshire_drivers.sims import RecordedCall
 from cheshire_drivers.teachpoints import Teachpoint
+from orca.resource_models.labware_placement import Arrival
 from orca.devices.devices import LiquidHandler
 from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.labware_location_service import PlacementState
@@ -37,7 +38,10 @@ from tests.test_deck_gripper_hop import (
     WORKING_SLOT,
     build_single_plate_system,
 )
-from tests.test_helpers import create_test_labware_instance, make_labware_placer, no_source_hold
+from tests.test_helpers import create_test_labware_instance, make_command_pipeline, no_source_hold
+from tests.recording_handler import RecordingHandler
+from tests.real_device_path import the_real_device_path
+from orca.gateway.controller.exceptions import CommandExecutionError
 
 
 class RefusingPlateMover(RecordingLiquidHandlerDriver):
@@ -89,6 +93,7 @@ def _thread_context() -> Mock:
     ctx.thread_id = "thread_1"
     ctx.thread_name = "thread1"
     ctx.template_name = "plate_journey"
+    ctx.group_id = None
     return ctx
 
 
@@ -118,7 +123,7 @@ class _Bench:
             _status_manager(),
             _thread_context(),
             self.build.system.labware_location_service,
-            self.build.system.labware_placer,
+            self.build.system.command_pipeline,
             no_source_hold(),
         ).execute()
 
@@ -143,8 +148,13 @@ async def _bench(driver: RecordingLiquidHandlerDriver) -> _Bench:
     labware = await build.system.get_labware_template("sample_plate").create_instance()
     await labware.enter_record(build.system.labware_contents)
     bench = _Bench(build, labware)
-    await build.system.labware_placer.place(labware, bench.source)
+    await build.system.labware_placer.arrived(labware, bench.source, Arrival.PLACED)
     return bench
+
+
+async def _clear_the_fault() -> None:
+    """A driver error faults the device; the operator clears it before the next command."""
+    await the_real_device_path().gateway.controller.clear_fault("lh")
 
 
 def _refusing() -> RefusingPlateMover:
@@ -152,14 +162,14 @@ def _refusing() -> RefusingPlateMover:
 
 
 def _plain() -> RecordingLiquidHandlerDriver:
-    return RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    return RecordingHandler()
 
 
 @pytest.mark.timeout(30)
 async def test_a_refused_move_leaves_the_plate_on_the_slot_it_started_from() -> None:
     bench = await _bench(_refusing())
 
-    with pytest.raises(RuntimeError, match="simulated driver refusal"):
+    with pytest.raises(CommandExecutionError, match="simulated driver refusal"):
         await bench.hop()
 
     assert bench.gripper.labware is None, (
@@ -178,8 +188,9 @@ async def test_a_refused_move_leaves_the_gripper_free_for_the_next_plate() -> No
     """The symptom that reached the operator: a SECOND plate's first hop was
     refused before it reached the driver, because the jaws read full."""
     bench = await _bench(_refusing())
-    with pytest.raises(RuntimeError, match="simulated driver refusal"):
+    with pytest.raises(CommandExecutionError, match="simulated driver refusal"):
         await bench.hop()
+    await _clear_the_fault()
 
     other = await bench.build.system.get_labware_template(
         "sample_plate"
@@ -235,7 +246,7 @@ async def test_an_arm_that_really_lifted_the_plate_goes_on_holding_it() -> None:
     with pytest.raises(RuntimeError, match="would not let go"):
         await move.executable(
             _status_manager(), _thread_context(),
-            service, make_labware_placer(service), no_source_hold(),
+            service, make_command_pipeline(service), no_source_hold(),
         ).execute()
 
     assert arm.labware is labware, "the plate really is in the jaws"
@@ -250,8 +261,9 @@ async def test_the_retry_of_a_refused_move_reissues_it_from_the_same_source() ->
     bench = await _bench(driver)
 
     for _ in range(2):
-        with pytest.raises(RuntimeError, match="simulated driver refusal"):
+        with pytest.raises(CommandExecutionError, match="simulated driver refusal"):
             await bench.hop()
+        await _clear_the_fault()
 
     moves = [c for c in driver.calls if c.method == "move_plate"]
     assert len(moves) == 2, f"both attempts must reach the driver; got {moves}"
@@ -267,8 +279,9 @@ async def test_a_reconcile_after_a_refused_move_still_declares_the_plate() -> No
     to drop."""
     driver = _refusing()
     bench = await _bench(driver)
-    with pytest.raises(RuntimeError, match="simulated driver refusal"):
+    with pytest.raises(CommandExecutionError, match="simulated driver refusal"):
         await bench.hop()
+    await _clear_the_fault()
 
     await bench.build.system.reconcile_lh_deck_occupancy(bench.device_location)
 
@@ -368,7 +381,7 @@ async def test_a_source_that_refilled_keeps_the_hold_and_the_drivers_own_error()
     bench = await _bench(driver)
     holder["bench"] = bench
 
-    with pytest.raises(RuntimeError, match="simulated driver refusal"):
+    with pytest.raises(CommandExecutionError, match="simulated driver refusal"):
         await bench.hop()
 
     assert bench.gripper.labware is bench.labware, (

@@ -3,7 +3,7 @@ create/update/delete verbs.
 
 Validates the verb parses input (typed options for access-configs, a
 DeckLayoutConfig JSON file for deck-layouts) and calls the control-plane
-client with the right value. Wire-shape parity is pinned by
+client with the right value. The wire shape is pinned by
 ``test_calibration_write_clients``.
 """
 
@@ -19,7 +19,7 @@ from cheshire_drivers.liquid_handler_models import DeckLayoutConfig
 from cheshire_drivers.teachpoints import AccessConfig
 
 from orca.cli.app import app
-from orca.daemon.schemas import DeckLayoutDTO
+from orca.operations.wire_models import DeckLayoutDTO
 
 
 runner = CliRunner()
@@ -30,8 +30,7 @@ class _FakeClient:
         self.ac_added: AccessConfig | None = None
         self.ac_updated: AccessConfig | None = None
         self.ac_deleted: str | None = None
-        self.dl_added: tuple[str, str, DeckLayoutConfig] | None = None
-        self.dl_updated: tuple[str, str, DeckLayoutConfig] | None = None
+        self.dl_saved: tuple[str, str, DeckLayoutConfig] | None = None
         self.dl_deleted: tuple[str, str] | None = None
 
     def access_configs_add(self, config: AccessConfig, *, reason: str | None = None) -> AccessConfig:
@@ -45,16 +44,10 @@ class _FakeClient:
     def access_configs_delete(self, name: str, *, reason: str | None = None) -> None:
         self.ac_deleted = name
 
-    def deck_layouts_add(
+    def deck_layouts_save(
         self, device_id: str, name: str, config: DeckLayoutConfig, *, reason: str | None = None,
     ) -> DeckLayoutDTO:
-        self.dl_added = (device_id, name, config)
-        return DeckLayoutDTO(device_id=device_id, name=name, config=config)
-
-    def deck_layouts_update(
-        self, device_id: str, name: str, config: DeckLayoutConfig, *, reason: str | None = None,
-    ) -> DeckLayoutDTO:
-        self.dl_updated = (device_id, name, config)
+        self.dl_saved = (device_id, name, config)
         return DeckLayoutDTO(device_id=device_id, name=name, config=config)
 
     def deck_layouts_delete(self, device_id: str, name: str, *, reason: str | None = None) -> None:
@@ -134,23 +127,23 @@ def test_access_config_delete_invokes_client(fake_client: _FakeClient) -> None:
 # -- deck-layouts ------------------------------------------------------------
 
 
-def test_deck_layout_create_invokes_client(
+def test_deck_layout_save_invokes_client(
     fake_client: _FakeClient, deck_config_file: Path,
 ) -> None:
     result = runner.invoke(
         app,
         [
-            "deck-layouts", "create", "lh1", "primary",
+            "deck-layouts", "save", "lh1", "primary",
             "--config-file", str(deck_config_file),
         ],
     )
     assert result.exit_code == 0, result.output
-    assert fake_client.dl_added is not None
-    device_id, name, config = fake_client.dl_added
+    assert fake_client.dl_saved is not None
+    device_id, name, config = fake_client.dl_saved
     assert device_id == "lh1"
     assert name == "primary"
     assert config.deck_type == "BRAVO_96"
-    assert "created deck_layout" in result.output
+    assert "saved deck_layout" in result.output
 
 
 def test_deck_layout_create_rejects_bad_json(
@@ -160,25 +153,10 @@ def test_deck_layout_create_rejects_bad_json(
     bad.write_text("{ not json", encoding="utf-8")
     result = runner.invoke(
         app,
-        ["deck-layouts", "create", "lh1", "p", "--config-file", str(bad)],
+        ["deck-layouts", "save", "lh1", "p", "--config-file", str(bad)],
     )
     assert result.exit_code != 0
-    assert fake_client.dl_added is None
-
-
-def test_deck_layout_update_invokes_client(
-    fake_client: _FakeClient, deck_config_file: Path,
-) -> None:
-    result = runner.invoke(
-        app,
-        [
-            "deck-layouts", "update", "lh1", "primary",
-            "--config-file", str(deck_config_file),
-        ],
-    )
-    assert result.exit_code == 0, result.output
-    assert fake_client.dl_updated is not None
-    assert fake_client.dl_updated[0] == "lh1"
+    assert fake_client.dl_saved is None
 
 
 def test_deck_layout_delete_invokes_client(fake_client: _FakeClient) -> None:
@@ -228,16 +206,9 @@ _HELP_EXPECTATIONS: tuple[_HelpExpectation, ...] = (
         absent_flags=("--access-type", "--config-file"),
     ),
     _HelpExpectation(
-        "deck-layouts", "create",
-        usage=("orca deck-layouts create", "DEVICE_ID", "NAME"),
-        desc="Register a new deck layout",
-        flags=("--config-file",),
-        absent_flags=("--access-type",),
-    ),
-    _HelpExpectation(
-        "deck-layouts", "update",
-        usage=("orca deck-layouts update", "DEVICE_ID", "NAME"),
-        desc="Update a deck layout",
+        "deck-layouts", "save",
+        usage=("orca deck-layouts save", "DEVICE_ID", "NAME"),
+        desc="Store a deck layout under its name",
         flags=("--config-file",),
         absent_flags=("--access-type",),
     ),

@@ -7,10 +7,9 @@ from cheshire_drivers.move_parameters import (
 )
 from cheshire_drivers.teachpoints import AccessConfig, CartesianCoordinates, Teachpoint
 
-from orca.runtime.db import create_memory_engine
 from orca.runtime.grip_profile_service import GripProfileService
-from orca.runtime.move_parameters import resolve_move_parameters
-from orca.runtime.sqlite_grip_profile_store import SqliteGripProfileStore
+from orca.resource_models.move_parameters import resolve_move_parameters
+from tests.setup_package import fresh_grip_profiles
 
 
 def _teachpoint(clearance: float = 20.0) -> Teachpoint:
@@ -29,7 +28,7 @@ def _teachpoint(clearance: float = 20.0) -> Teachpoint:
 
 
 def _service() -> GripProfileService:
-    return GripProfileService(SqliteGripProfileStore(create_memory_engine()))
+    return GripProfileService(fresh_grip_profiles())
 
 
 class TestTheLabwareNarrowsTheDefaults:
@@ -137,17 +136,6 @@ class TestTheProfilesArePersisted:
 
         assert await service.get("costar_96") == MoveParameterPatch(resource_width=76.0)
         assert list(await service.list()) == ["costar_96"]
-
-    @pytest.mark.asyncio
-    async def test_seeding_never_overwrites_what_an_operator_measured(self) -> None:
-        """A topology re-declaring its starting point on every boot must not undo
-        the width someone corrected on the bench."""
-        service = _service()
-        await service.set("costar_96", MoveParameterPatch(resource_width=76.0))
-
-        await service.seed_if_missing("costar_96", MoveParameterPatch(resource_width=80.0))
-
-        assert await service.get("costar_96") == MoveParameterPatch(resource_width=76.0)
 
     @pytest.mark.asyncio
     async def test_deleting_a_profile_returns_the_type_to_inheriting(self) -> None:

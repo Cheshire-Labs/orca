@@ -21,20 +21,24 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from orca.resource_models.labware_placement import LabwarePlacer
+from tests.test_helpers import command_pipeline_over, no_forgetting
 from orca.resource_models.labware import LabwareInstance
+from tests.placements_for_tests import this_tests_placements
+from tests.thread_builder import build_executing_thread
+from tests.memory_activity import memory_labware_service, memory_unsaved_positions
 from orca.resource_models.labware_location_service import (
     InMemoryLabwareLocationService,
     PlacementState,
 )
-from orca.resource_models.labware_state import InMemoryLabwareRegistry, LabwareState
+from orca.workflow_models.labware_state import InMemoryLabwareRegistry, LabwareState
 from orca.resource_models.location import Location
 from orca.resource_models.plate_pad import PlatePad
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from orca.workflow_models.labware_threads.executing_labware_thread import (
     ExecutingLabwareThread,
 )
 from orca.workflow_models.labware_threads.labware_thread import LabwareThreadInstance
-from orca.workflow_models.status_enums import LabwareThreadStatus
 from orca.workflow_models.spawn_actions import ManualPlaceSpawn
 from orca.workflow_models.status_manager import StatusManager
 
@@ -58,16 +62,35 @@ def _make_thread(
     return thread
 
 
+class _Projection:
+    """The deck projection the placer is given, recording each labware it was asked about and where."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, tuple[Location, ...]]] = []
+
+    async def __call__(self, labware: LabwareInstance, *locations: Location) -> None:
+        self.calls.append((labware.id, locations))
+
+
+async def _no_rebuild(device_location: Location) -> None:
+    return None
+
+
+async def _no_staling() -> None:
+    return None
+
+
 def _make_executing(
     thread: LabwareThreadInstance,
     location_service: InMemoryLabwareLocationService,
     status_manager: StatusManager | None = None,
     acquirer: MagicMock | None = None,
+    projection: _Projection | None = None,
 ) -> ExecutingLabwareThread:
     context = MagicMock()
     context.execution_id = "exec-live-place"
     context.workflow_name = "wf-live-place"
-    return ExecutingLabwareThread(
+    return build_executing_thread(
         thread=thread,
         event_bus=MagicMock(),
         move_handler=acquirer if acquirer is not None else _granting_acquirer(),
@@ -75,6 +98,10 @@ def _make_executing(
         actions_resolver=MagicMock(),
         context=context,
         labware_location_service=location_service,
+        command_pipeline=command_pipeline_over(LabwarePlacer(
+            location_service, memory_labware_service(), memory_unsaved_positions(), projection if projection is not None else _Projection(), _no_staling,
+            _no_staling, _no_rebuild, no_forgetting,
+        )),
     )
 
 
@@ -92,11 +119,11 @@ def _operator_places(
     location: Location,
     labware: LabwareInstance,
     service: InMemoryLabwareLocationService,
-) -> None:
+) -> bool:
     """What `labware_register` does once it has adopted the expectation: write
-    the slot, then record the arrival."""
+    the slot, then record the arrival. True when the placer would save it."""
     location.initialize_labware(labware)
-    service.update(labware, location)
+    return service.update(labware, location)
 
 
 async def test_the_registry_entry_the_thread_registered_is_the_one_it_runs_with() -> None:
@@ -105,7 +132,7 @@ async def test_the_registry_entry_the_thread_registered_is_the_one_it_runs_with(
     location = _make_platepad_location()
     labware = LabwareInstance("plate_x", "96_well")
     thread = _make_thread(labware, location)
-    service = InMemoryLabwareLocationService()
+    service = InMemoryLabwareLocationService(this_tests_placements())
     et = _make_executing(thread, service)
     registry = InMemoryLabwareRegistry()
     et.set_labware_registry(registry)
@@ -120,27 +147,24 @@ async def test_the_registry_entry_the_thread_registered_is_the_one_it_runs_with(
 
 
 async def test_an_expected_labware_reaches_nothing_durable() -> None:
-    """The update listener is what mirrors a position into the labware store,
-    and a stored position IS a real plate. A plate nobody has placed
+    """The placer saves a position only when the ledger records an arrival,
+    and a saved position IS a real plate. A plate nobody has placed
     yet must not be one, or a reboot re-places it and blocks the slot."""
     location = _make_platepad_location()
     labware = LabwareInstance("plate_x", "96_well")
-    service = InMemoryLabwareLocationService()
-    persisted: list[str] = []
-    service.add_update_listener(lambda lw, loc: persisted.append(lw.id))
+    service = InMemoryLabwareLocationService(this_tests_placements())
 
     thread = _make_thread(labware, location)
     et = _make_executing(thread, service)
     et.set_labware_registry(InMemoryLabwareRegistry())
 
     assert service.placement(labware) is PlacementState.EXPECTED
-    assert persisted == []
+    assert len(service.get_history(labware)) == 0
 
-    _operator_places(location, labware, service)
+    assert _operator_places(location, labware, service) is True
     await et.initialize_labware()
 
     assert service.placement(labware) is PlacementState.PRESENT
-    assert persisted == [labware.id]
 
 
 async def test_a_wait_that_never_ends_in_an_arrival_leaves_nothing_behind() -> None:
@@ -149,7 +173,7 @@ async def test_a_wait_that_never_ends_in_an_arrival_leaves_nothing_behind() -> N
     should be shown."""
     location = _make_platepad_location()
     labware = LabwareInstance("plate_x", "96_well")
-    service = InMemoryLabwareLocationService()
+    service = InMemoryLabwareLocationService(this_tests_placements())
     dropped: list[str] = []
     service.add_expectation_dropped_listener(lambda lw: dropped.append(lw.id))
 
@@ -178,7 +202,7 @@ async def test_a_coordinator_that_raises_does_not_end_the_wait() -> None:
     """
     location = _make_platepad_location()
     labware = LabwareInstance("plate_x", "96_well")
-    service = InMemoryLabwareLocationService()
+    service = InMemoryLabwareLocationService(this_tests_placements())
     thread = _make_thread(labware, location)
     acquirer = _granting_acquirer()
     acquirer.try_acquire_placement_reservation = AsyncMock(
@@ -203,7 +227,7 @@ async def test_the_status_key_never_moves() -> None:
     surface filing anything under it had to be told. Nothing moves now."""
     location = _make_platepad_location()
     labware = LabwareInstance("plate_x", "96_well")
-    service = InMemoryLabwareLocationService()
+    service = InMemoryLabwareLocationService(this_tests_placements())
     emitted: list[str] = []
     event_bus = MagicMock()
     event_bus.emit.side_effect = lambda name, context: emitted.append(name)
@@ -218,13 +242,10 @@ async def test_the_status_key_never_moves() -> None:
     await et.initialize_labware()
 
     assert thread.id == started_as
-    assert status_manager.get_status(started_as) == (
-        LabwareThreadStatus.AWAITING_MANUAL_PLACE.name
-    )
-    # AWAITING_MANUAL_PLACE on the bus IS the request for a place; a second one
-    # asks the operator for a plate that is already on the pad.
+    # AWAITING_MANUAL_PLACE on the bus IS the request for a place. The plate is
+    # already on the pad, so the thread uses it there and asks for nothing.
     places = [name for name in emitted if name.endswith(".AWAITING_MANUAL_PLACE")]
-    assert len(places) == 1, emitted
+    assert places == [], emitted
 
 
 async def test_a_spawn_that_places_nothing_fails_the_thread_instead_of_running_on() -> None:
@@ -232,11 +253,11 @@ async def test_a_spawn_that_places_nothing_fails_the_thread_instead_of_running_o
     recording the arrival would leave the driver deck never told about this
     plate. Skipping the projection quietly turns that into an unexplained pick
     minutes later, so the thread fails here, naming the spawn."""
-    from orca.runtime.runtime_interface import SpawnDidNotPlaceError
+    from orca.workflow_models.errors import SpawnDidNotPlaceError
 
     location = _make_platepad_location()
     labware = LabwareInstance("plate_x", "96_well")
-    service = InMemoryLabwareLocationService()
+    service = InMemoryLabwareLocationService(this_tests_placements())
     thread = _make_thread(labware, location)
     et = _make_executing(thread, service, status_manager=StatusManager(MagicMock()))
     et.set_labware_registry(InMemoryLabwareRegistry())
@@ -255,7 +276,7 @@ async def test_a_spawn_that_places_nothing_fails_the_thread_instead_of_running_o
 
 
 @pytest.mark.parametrize(
-    "run_mode", [WorkflowRunMode.PURE_SIM, WorkflowRunMode.DEVICE_SIM],
+    "run_mode", [WorkflowRunMode.CHECK_RUN, WorkflowRunMode.SIM],
 )
 async def test_a_sim_spawn_records_the_arrival_and_projects_the_deck(
     run_mode: WorkflowRunMode,
@@ -265,7 +286,7 @@ async def test_a_sim_spawn_records_the_arrival_and_projects_the_deck(
     sim thread's first action failed resolving its own location."""
     location = _make_platepad_location()
     labware = LabwareInstance("plate_x", "96_well")
-    service = InMemoryLabwareLocationService()
+    service = InMemoryLabwareLocationService(this_tests_placements())
     thread = LabwareThreadInstance(
         labware=labware,
         start_location=location,
@@ -275,15 +296,10 @@ async def test_a_sim_spawn_records_the_arrival_and_projects_the_deck(
     template = MagicMock(name="plate_x")
     template.name = "plate_x"
     thread.set_labware_template(template)
-    et = _make_executing(thread, service, status_manager=StatusManager(MagicMock()))
+    projection = _Projection()
+    et = _make_executing(thread, service, status_manager=StatusManager(MagicMock()), projection=projection)
     et._move_handler = _granting_acquirer()
     et.set_labware_registry(InMemoryLabwareRegistry())
-    projected: list[str] = []
-    placer = MagicMock()
-    placer.project_devices = AsyncMock(
-        side_effect=lambda lw, loc: projected.append(lw.id),
-    )
-    et._labware_placer = placer
 
     assert service.placement(labware) is PlacementState.EXPECTED
     await et.initialize_labware()
@@ -291,7 +307,7 @@ async def test_a_sim_spawn_records_the_arrival_and_projects_the_deck(
     assert location.labware is labware
     assert service.placement(labware) is PlacementState.PRESENT
     assert et.current_location is location
-    assert projected == [labware.id], "the LH deck must learn about the plate"
+    assert [labware_id for labware_id, _ in projection.calls] == [labware.id], "the LH deck must learn about the plate"
 
 
 async def test_an_expected_labware_never_reaches_a_slot_or_a_device() -> None:
@@ -307,12 +323,10 @@ async def test_an_expected_labware_never_reaches_a_slot_or_a_device() -> None:
     """
     location = _make_platepad_location()
     labware = LabwareInstance("plate_x", "96_well")
-    service = InMemoryLabwareLocationService()
+    service = InMemoryLabwareLocationService(this_tests_placements())
     thread = _make_thread(labware, location)
-    et = _make_executing(thread, service, status_manager=StatusManager(MagicMock()))
-    placer = MagicMock()
-    placer.project_devices = AsyncMock()
-    et._labware_placer = placer
+    projection = _Projection()
+    et = _make_executing(thread, service, status_manager=StatusManager(MagicMock()), projection=projection)
     et.set_labware_registry(InMemoryLabwareRegistry())
     et.publish_initial_status()
 
@@ -322,14 +336,14 @@ async def test_an_expected_labware_never_reaches_a_slot_or_a_device() -> None:
     assert service.placement(labware) is PlacementState.EXPECTED
     assert location.labware is None, "an expectation must not claim the slot"
     assert location.loaded_labware == []
-    placer.project_devices.assert_not_awaited()
+    assert projection.calls == []
 
     et.stop()
     await parked
 
 
 @pytest.mark.parametrize(
-    "run_mode", [WorkflowRunMode.PURE_SIM, WorkflowRunMode.DEVICE_SIM],
+    "run_mode", [WorkflowRunMode.CHECK_RUN, WorkflowRunMode.SIM],
 )
 async def test_a_stop_that_lands_after_the_plate_did_still_projects_it(
     run_mode: WorkflowRunMode,
@@ -341,7 +355,7 @@ async def test_a_stop_that_lands_after_the_plate_did_still_projects_it(
     have."""
     location = _make_platepad_location()
     labware = LabwareInstance("plate_x", "96_well")
-    service = InMemoryLabwareLocationService()
+    service = InMemoryLabwareLocationService(this_tests_placements())
     thread = LabwareThreadInstance(
         labware=labware,
         start_location=location,
@@ -351,12 +365,10 @@ async def test_a_stop_that_lands_after_the_plate_did_still_projects_it(
     template = MagicMock(name="plate_x")
     template.name = "plate_x"
     thread.set_labware_template(template)
-    et = _make_executing(thread, service, status_manager=StatusManager(MagicMock()))
+    projection = _Projection()
+    et = _make_executing(thread, service, status_manager=StatusManager(MagicMock()), projection=projection)
     et._move_handler = _granting_acquirer()
     et.set_labware_registry(InMemoryLabwareRegistry())
-    placer = MagicMock()
-    placer.project_devices = AsyncMock()
-    et._labware_placer = placer
     et.publish_initial_status()
 
     et.stop()
@@ -364,4 +376,4 @@ async def test_a_stop_that_lands_after_the_plate_did_still_projects_it(
 
     assert location.labware is labware
     assert service.placement(labware) is PlacementState.PRESENT
-    placer.project_devices.assert_awaited_once_with(labware, location)
+    assert projection.calls == [(labware.id, (location,))]

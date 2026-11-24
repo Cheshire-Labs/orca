@@ -22,10 +22,11 @@ import pytest
 from orca.operations.labware import RegisterLabwareOperation
 from orca.operations.labware_models import RegisterLabwareRequest
 from orca.resource_models.labware_location_service import PlacementState
+from orca.runtime.labware_service import LabwareService
 from orca.runtime.labware_store import InMemoryLabwareStore
-from orca.runtime.registries import NullGatewayRegistry
-from orca.runtime.runtime_interface import SpawnIncompatibleError
-from orca.runtime.run_modes import WorkflowRunMode
+from tests.no_devices import NullGatewayRegistry
+from orca.workflow_models.errors import SpawnIncompatibleError
+from orca.modes.run_modes import WorkflowRunMode
 from orca.workflow_models.status_enums import LabwareThreadStatus
 from orca.runtime.system_runtime import SystemRuntime
 
@@ -34,6 +35,7 @@ from tests.runtime.manual_place_fixtures import (
     _build_manual_place_system,
     _live_connection_source,
 )
+from tests.memory_activity import memory_runtime
 
 
 async def _await_parked_at_manual_place(
@@ -54,11 +56,10 @@ async def _await_parked_at_manual_place(
 
 
 async def _manual_place_runtime(workflow_name: str) -> tuple[SystemRuntime, InMemoryLabwareStore]:
-    system = await _build_manual_place_system(workflow_name)
     store = InMemoryLabwareStore()
-    runtime = SystemRuntime(
+    system = await _build_manual_place_system(workflow_name, labware_service=LabwareService(store))
+    runtime = await memory_runtime(
         system,
-        labware_store=store,
         gateway_registry=NullGatewayRegistry(),
         connection_source=_live_connection_source(),
     )
@@ -139,7 +140,6 @@ async def test_an_expected_labware_is_not_persisted_as_a_plate() -> None:
             "wf_expected_not_persisted", mode=WorkflowRunMode.LIVE,
         )
         awaited_id = await _await_parked_at_manual_place(runtime, submission.id)
-        await runtime.flush_labware_location_writes()
 
         assert await store.list_active_locations() == [], (
             "an unplaced labware reached the store; a reboot would re-place it"
@@ -148,7 +148,6 @@ async def test_an_expected_labware_is_not_persisted_as_a_plate() -> None:
         await runtime.labware.register(
             "plate_wf_expected_not_persisted", location="pad1", confirm=True,
         )
-        await runtime.flush_labware_location_writes()
 
         assert dict(await store.list_active_locations()) == {awaited_id: "pad1"}
     finally:
@@ -249,7 +248,6 @@ async def test_asserting_an_expected_labware_is_where_it_belongs_really_places_i
         await runtime.labware.edit_location(
             awaited_id, "pad1", reason="operator put it down", confirm=True,
         )
-        await runtime.flush_labware_location_writes()
 
         pad1 = runtime.system.system_map.get_location("pad1")
         assert pad1.labware is not None, "the slot must actually be written"

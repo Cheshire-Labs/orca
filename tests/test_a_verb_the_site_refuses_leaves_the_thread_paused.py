@@ -18,6 +18,8 @@ from orca.workflow_models.labware_threads.executing_labware_thread import (
     ExecutingLabwareThread,
 )
 from orca.workflow_models.status_enums import (
+    ESCALATION_ORDER,
+    HONOURED_DECISIONS,
     LabwareThreadStatus,
     PauseSite,
     RecoveryDecision,
@@ -50,6 +52,9 @@ def _paused_at(site: PauseSite, move: MagicMock | None = None) -> MagicMock:
     thread._pause_site = site
     thread._move_action = move
     thread._recovery_decision = None
+    thread._decided_by_group = None
+    thread._group_deciding = lambda site: ExecutingLabwareThread._group_deciding(thread, site)
+    thread._deliver_decision = lambda decision: ExecutingLabwareThread._deliver_decision(thread, decision)
     thread._shared_action_group = MagicMock(return_value=None)
     thread._resume_event = MagicMock()
     thread._following_peer_action = False
@@ -132,12 +137,20 @@ def test_continue_before_binding_is_still_refused(site: PauseSite) -> None:
     assert "no bound action" in message
 
 
-def test_retry_op_is_refused_where_no_device_call_is_suspended() -> None:
+def test_retry_is_refused_where_the_actions_own_code_failed() -> None:
     thread = _paused_at(PauseSite.ACTION_BODY)
 
-    message = _assert_refused(thread, RecoveryDecision.RETRY_OP)
+    message = _assert_refused(thread, RecoveryDecision.RETRY)
 
-    assert "no call is suspended here" in message
+    assert "no command failed" in message
+
+
+def test_retry_action_is_refused_where_there_is_no_action_body_to_rerun() -> None:
+    thread = _paused_at(PauseSite.MOVE, _move_to("flex_1/C1-slot"))
+
+    message = _assert_refused(thread, RecoveryDecision.RETRY_ACTION)
+
+    assert "own Python failed" in message
 
 
 def test_continue_at_a_move_is_refused_until_the_ledger_agrees() -> None:
@@ -167,13 +180,18 @@ def test_continue_at_a_move_is_delivered_once_the_ledger_agrees() -> None:
     thread._resume_event.set.assert_called_once()
 
 
-@pytest.mark.parametrize("verb", list(RecoveryDecision))
-def test_every_verb_is_delivered_at_the_site_that_honours_them_all(
-    verb: RecoveryDecision,
+@pytest.mark.parametrize("site, verb", [
+    (site, verb)
+    for site in (PauseSite.ACTION_BODY, PauseSite.DEVICE_OP)
+    for verb in sorted(HONOURED_DECISIONS[site].honours, key=ESCALATION_ORDER.index)
+])
+def test_every_verb_a_site_honours_is_delivered(
+    site: PauseSite, verb: RecoveryDecision,
 ) -> None:
     """Negative control. A refusal that refused everything would pass every
-    test above; this fails unless the honoured verbs still get through."""
-    thread = _paused_at(PauseSite.DEVICE_OP)
+    test above; this fails unless the honoured verbs still get through. The
+    two action sites between them honour every verb."""
+    thread = _paused_at(site)
 
     ExecutingLabwareThread.resume_with_decision(thread, verb)
 
@@ -197,7 +215,7 @@ class TestAContributorFollowingAPeersAction:
     The owner can fail inside a device call, take a RETRY, and fail again in
     the action body around it. `reset_decision` says so outright: participants
     stay paused across the re-drive. So a stamp taken at the first pause is
-    from a site the group has since left, and offering RETRY_OP off it offers
+    from a site the group has since left, and offering RETRY off it offers
     to re-run a call that is no longer suspended.
 
     `paused_device_command` has always read the group live for this reason.
@@ -209,6 +227,7 @@ class TestAContributorFollowingAPeersAction:
         group = MagicMock()
         group.action_paused.is_set.return_value = True
         group.op_paused_command = op_paused_command
+        group.step_paused_site = PauseSite.DEVICE_OP if op_paused_command is not None else None
         thread = _paused_at(PauseSite.DEVICE_OP)
         thread._following_peer_action = True
         thread._shared_action_group = MagicMock(return_value=group)
@@ -226,6 +245,12 @@ class TestAContributorFollowingAPeersAction:
         thread = self._contributor(op_paused_command="aspirate")
 
         assert _pause_site_of(thread) is PauseSite.DEVICE_OP
+
+    def test_the_site_follows_the_group_onto_a_wait_that_ran_out(self) -> None:
+        thread = self._contributor(op_paused_command=None)
+        thread._shared_action_group.return_value.step_paused_site = PauseSite.ACTION_WAIT
+
+        assert _pause_site_of(thread) is PauseSite.ACTION_WAIT
 
     def test_a_thread_of_its_own_keeps_its_own_site(self) -> None:
         """Negative control: reading the group unconditionally would tell a

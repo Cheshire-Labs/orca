@@ -1,7 +1,7 @@
 """TeachpointFacade: the external CRUD surface over per-transporter
 `ITeachpointStore` instances.
 
-REST/MCP routes through `runtime.teachpoints.<method>(device_id, ...)`
+REST routes through `runtime.teachpoints.<method>(device_id, ...)`
 rather than against any standalone repository class. The facade looks
 up the transporter on the System graph and delegates to its bound
 `teachpoint_store` -- the same store the runtime resolves against at
@@ -16,21 +16,22 @@ safety boundaries the facade does not know about. The facade does not
 add a second layer of validation; the store is the source of truth.
 
 `KeyError` from `get_transporter` (unknown device_id) propagates so
-REST/MCP can translate to 404.
+REST can translate to 404.
 """
 
 from typing import List, Protocol, Sequence, Tuple, runtime_checkable
 
 from cheshire_drivers.move_parameters import MoveParameterField, MoveParameterPatch
 
-from orca.runtime.move_parameters import reject_contradiction
+from orca.resource_models.move_parameters import reject_contradiction
 from cheshire_drivers.teachpoints import Teachpoint
 
 from orca.resource_models.transporter import Transporter
 from orca.system.system_map import SystemMap
-from orca.runtime.danger import DangerLevel, dangerous
-from orca.runtime.interfaces import ITeachpointStore
-from orca.runtime.runtime_interface import ITeachpointFacade
+from orca.runtime.danger import ActionDescriptor, DangerLevel, action_descriptor, dangerous
+from orca.runtime.errors import NotATransporterError
+from orca.resource_models.store_interfaces import ITeachpointStore
+from orca.runtime.facade_interfaces import ITeachpointFacade
 
 
 @runtime_checkable
@@ -231,6 +232,8 @@ class TeachpointFacade(ITeachpointFacade):
                 f"transporter {device_id!r} not found",
             ) from exc
         except ValueError as exc:
-            raise KeyError(
-                f"resource {device_id!r} is not a transporter",
-            ) from exc
+            raise NotATransporterError(device_id) from exc
+
+
+# Audits a delete done on the file while no runtime is built.
+DELETE_TEACHPOINT: ActionDescriptor = action_descriptor(TeachpointFacade.delete)

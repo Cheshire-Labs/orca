@@ -1,160 +1,107 @@
-"""Tests for device-write routes + capabilities introspection.
+"""Tests for device-write routes + introspection.
 
 Covers:
-- GET /devices/{name}/capabilities: lists typed capability methods the
-  device's driver supports (introspected from interface membership).
-- POST /devices/{name}/execute: sends a generic IGenericExecutable command.
-- POST /devices/{name}/invoke: dispatches to a typed capability method.
-- POST /devices/{name}/initialize: brings up + resets. Asks for no motion.
-- POST /devices/{name}/connect, /disconnect: the two ends of holding a device,
-  neither of which moves it.
+- GET /devices/{id}/introspection: what the device can run, with each command's danger level.
+- POST /devices/{id}/commands: sends commands by name through the operator path.
+- POST /devices/{id}/initialize: brings up + resets. Asks for no motion.
+- POST /devices/{id}/connect, /disconnect: the two ends of holding
+  a device, neither of which moves it.
 """
 
+from collections.abc import Iterator
+from contextlib import AbstractContextManager, contextmanager
 from unittest.mock import AsyncMock, patch
 
-from httpx import AsyncClient
+import pytest
 
-from orca.gateway.adhoc import AdhocResult
+from httpx import AsyncClient
+from pydantic import JsonValue
+
+from orca.cli.device import app as device_cli
 from orca.gateway.controller.exceptions import (
     CommandTimeoutError,
     DeviceOfflineError,
 )
 
 
+def _one(command: str, params: dict[str, JsonValue] | None = None) -> dict[str, JsonValue]:
+    return {"commands": [{"command": command, "params": params or {}}]}
+
+
 # -- Gating ------------------------------------------------------------------
 
 
-async def test_device_capabilities_gated(empty_client: AsyncClient) -> None:
-    resp = await empty_client.get("/devices/shaker1/capabilities")
-    assert resp.status_code == 409
+async def test_device_introspection_gated(empty_client: AsyncClient) -> None:
+    resp = await empty_client.get("/api/devices/shaker1/introspection")
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["code"] == "runtime_not_ready"
 
 
-async def test_device_execute_gated(empty_client: AsyncClient) -> None:
-    resp = await empty_client.post(
-        "/devices/shaker1/execute",
-        json={"command": "noop"},
-    )
-    assert resp.status_code == 409
-
-
-async def test_device_invoke_gated(empty_client: AsyncClient) -> None:
-    resp = await empty_client.post(
-        "/devices/shaker1/invoke",
-        json={"capability": "shake", "kwargs": {}},
-    )
-    assert resp.status_code == 409
+async def test_device_execute_with_no_runtime_names_an_unknown_device(empty_client: AsyncClient) -> None:
+    """With nothing built, a device no orca-client has connected is unknown; a known one is refused as not ready."""
+    resp = await empty_client.post("/api/devices/shaker1/commands", json=_one("noop"))
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "device_not_found"
 
 
 async def test_device_initialize_gated(empty_client: AsyncClient) -> None:
-    resp = await empty_client.post("/devices/shaker1/initialize", json={})
-    assert resp.status_code == 409
+    resp = await empty_client.post("/api/devices/shaker1/initialize", json={})
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["code"] == "runtime_not_ready"
 
 
 # -- Unknown device ---------------------------------------------------------
 
 
-async def test_device_capabilities_unknown_returns_404(
-    client: AsyncClient,
-) -> None:
-    resp = await client.get("/devices/no_such_device/capabilities")
+async def test_device_introspection_unknown_returns_404(client: AsyncClient) -> None:
+    resp = await client.get("/api/devices/no_such_device/introspection")
     assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "device_not_found"
 
 
-async def test_device_execute_unknown_returns_404(
-    client: AsyncClient,
-) -> None:
-    resp = await client.post(
-        "/devices/no_such_device/execute",
-        json={"command": "noop"},
-    )
+async def test_device_execute_unknown_returns_404(client: AsyncClient) -> None:
+    resp = await client.post("/api/devices/no_such_device/commands", json=_one("noop"))
     assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "device_not_found"
+    assert resp.json()["detail"]["extras"]["device_id"] == "no_such_device"
 
 
-async def test_device_invoke_unknown_returns_404(client: AsyncClient) -> None:
-    resp = await client.post(
-        "/devices/no_such_device/invoke",
-        json={"capability": "shake"},
-    )
-    assert resp.status_code == 404
-
-
-async def test_device_invoke_accepts_bare_method_name(
-    client: AsyncClient,
+@pytest.mark.parametrize("command", ["shake", "shaker.shake"])
+async def test_device_execute_sends_the_method_through_the_operator_path(
+    client: AsyncClient, command: str,
 ) -> None:
-    resp = await client.post(
-        "/devices/shaker1/invoke",
-        json={"capability": "shake", "kwargs": {"speed": 500, "duration": 1}},
-    )
+    """The bare name and the orca-side namespaced form both reach the device as `shake`, through the runner."""
+    with _connected("shaker1"), _sent_through_the_runner() as sent:
+        resp = await client.post(
+            "/api/devices/shaker1/commands",
+            json=_one(command, {"speed": 500, "duration": 1}),
+        )
     assert resp.status_code == 200, resp.text
-
-
-async def test_device_invoke_legacy_namespaced_form_still_works(
-    client: AsyncClient,
-) -> None:
-    resp = await client.post(
-        "/devices/shaker1/invoke",
-        json={"capability": "shaker.shake", "kwargs": {"speed": 500, "duration": 1}},
-    )
-    assert resp.status_code == 200, resp.text
-
-
-async def test_device_invoke_rejects_audit_gated_initialize(
-    client: AsyncClient,
-) -> None:
-    # `initialize` lives on Device, not on a capability interface, so it
-    # has its own audit-gated verb. `invoke` must not reach it.
-    resp = await client.post(
-        "/devices/shaker1/invoke",
-        json={"capability": "initialize", "kwargs": {}},
-    )
-    assert resp.status_code == 400, resp.text
-    assert "initialize" in resp.text
-
-
-async def test_device_invoke_rejects_private_method(
-    client: AsyncClient,
-) -> None:
-    resp = await client.post(
-        "/devices/shaker1/invoke",
-        json={"capability": "_private", "kwargs": {}},
-    )
-    assert resp.status_code == 400, resp.text
-
-
-async def test_device_invoke_rejects_trailing_dot_capability(
-    client: AsyncClient,
-) -> None:
-    resp = await client.post(
-        "/devices/shaker1/invoke",
-        json={"capability": "shaker.", "kwargs": {}},
-    )
-    assert resp.status_code == 400, resp.text
+    assert sent.await_args_list[-1].args[1:3] == ("shake", {"speed": 500, "duration": 1})
 
 
 async def test_device_initialize_unknown_returns_404(
     client: AsyncClient,
 ) -> None:
-    resp = await client.post("/devices/no_such_device/initialize", json={})
+    resp = await client.post("/api/devices/no_such_device/initialize", json={})
     assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "device_not_found"
+    assert resp.json()["detail"]["extras"]["device_id"] == "no_such_device"
 
 
-# -- Capabilities -----------------------------------------------------------
+# -- Introspection ----------------------------------------------------------
 
 
-async def test_device_capabilities_returns_list(client: AsyncClient) -> None:
-    """The fixture's shaker1 implements UniversalMockDevice which satisfies
-    several capability interfaces; the endpoint returns a list of
-    CommandDescriptor DTOs."""
-    resp = await client.get("/devices/shaker1/capabilities")
+async def test_device_introspection_carries_each_commands_danger_level(client: AsyncClient) -> None:
+    """The fixture's shaker1 implements UniversalMockDevice, which satisfies several capability
+    interfaces; each command it can be sent by name carries the danger level an operator reads before sending."""
+    resp = await client.get("/api/devices/shaker1/introspection")
     assert resp.status_code == 200
-    items = resp.json()
-    assert isinstance(items, list)
-    for item in items:
-        assert "device_name" in item
-        assert "capability" in item
-        assert "danger_level" in item
-        assert "params" in item
-        assert item["device_name"] == "shaker1"
+    body = resp.json()
+    assert body["name"] == "shaker1"
+    # Keyed as `methods` is, so a method's danger is found under its own name.
+    assert body["danger_levels"]["shake"] == "PHYSICAL"
+    assert "shake" in body["methods"]
 
 
 # -- Unified device registry -------------------------------------------------
@@ -163,10 +110,10 @@ async def test_device_capabilities_returns_list(client: AsyncClient) -> None:
 async def test_device_registry_list_returns_wrapped_payload(
     client: AsyncClient,
 ) -> None:
-    """`GET /devices/registry` returns `{"devices": [...]}` shape mirroring
+    """`GET /devices` returns `{"devices": [...]}` shape mirroring
     a hosted deployment's REST surface. Each entry carries the two-card view + live
     state + per-mode eligibility."""
-    resp = await client.get("/devices/registry")
+    resp = await client.get("/api/devices")
     assert resp.status_code == 200
     payload = resp.json()
     assert isinstance(payload, dict)
@@ -184,13 +131,13 @@ async def test_device_registry_list_returns_wrapped_payload(
     assert "device_link_mode" in entry
     assert "mode_eligibility" in entry
     eligibility = entry["mode_eligibility"]
-    assert {"pure_sim", "device_sim", "live"} <= set(eligibility.keys())
+    assert {"check_run", "sim", "live"} <= set(eligibility.keys())
 
 
 async def test_device_registry_show_known_device_returns_entry(
     client: AsyncClient,
 ) -> None:
-    resp = await client.get("/devices/registry/shaker1")
+    resp = await client.get("/api/devices/shaker1")
     assert resp.status_code == 200
     entry = resp.json()
     assert entry["name"] == "shaker1"
@@ -201,104 +148,132 @@ async def test_device_registry_show_known_device_returns_entry(
 async def test_device_registry_show_unknown_device_404s(
     client: AsyncClient,
 ) -> None:
-    resp = await client.get("/devices/registry/no_such_device")
+    resp = await client.get("/api/devices/no_such_device")
     assert resp.status_code == 404
 
 
 # -- Initialize --------------------------------------------------------------
 
 
+def _sent_through_the_runner() -> AbstractContextManager[AsyncMock]:
+    """The runner's send stage, stood in for below its audit row: (device, command, params) per call."""
+    return patch(
+        "orca.gateway.operator_commands.OperatorDeviceCommands._send",
+        new=AsyncMock(return_value=(None, 0.0)),
+    )
+
+
 async def test_device_initialize_succeeds(client: AsyncClient) -> None:
-    resp = await client.post("/devices/shaker1/initialize", json={})
-    assert resp.status_code == 200
+    with _sent_through_the_runner() as sent:
+        resp = await client.post("/api/devices/shaker1/initialize", json={})
+    assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["status"] == "initialized"
+    assert sent.await_args is not None
+    assert sent.await_args.args[:2] == ("shaker1", "initialize")
 
 
 # -- Connect / disconnect ----------------------------------------------------
 
 
 async def test_device_connect_gated(empty_client: AsyncClient) -> None:
-    resp = await empty_client.post("/devices/shaker1/connect", json={})
-    assert resp.status_code == 409
+    resp = await empty_client.post("/api/devices/shaker1/connect", json={})
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["code"] == "runtime_not_ready"
 
 
 async def test_device_disconnect_gated(empty_client: AsyncClient) -> None:
-    resp = await empty_client.post("/devices/shaker1/disconnect", json={})
-    assert resp.status_code == 409
+    resp = await empty_client.post("/api/devices/shaker1/disconnect", json={})
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["code"] == "runtime_not_ready"
 
 
 async def test_device_connect_unknown_returns_404(client: AsyncClient) -> None:
-    resp = await client.post("/devices/no_such_device/connect", json={})
+    resp = await client.post("/api/devices/no_such_device/connect", json={})
     assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "device_not_found"
+    assert resp.json()["detail"]["extras"]["device_id"] == "no_such_device"
 
 
 async def test_device_disconnect_unknown_returns_404(client: AsyncClient) -> None:
-    resp = await client.post("/devices/no_such_device/disconnect", json={})
+    resp = await client.post("/api/devices/no_such_device/disconnect", json={})
     assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "device_not_found"
+    assert resp.json()["detail"]["extras"]["device_id"] == "no_such_device"
 
 
 async def test_device_connect_succeeds(client: AsyncClient) -> None:
-    resp = await client.post("/devices/shaker1/connect", json={})
-    assert resp.status_code == 200
+    with _sent_through_the_runner() as sent:
+        resp = await client.post("/api/devices/shaker1/connect", json={})
+    assert resp.status_code == 200, resp.text
     assert resp.json()["status"] == "connected"
+    assert sent.await_args is not None
+    assert sent.await_args.args[:2] == ("shaker1", "connect")
 
 
 async def test_device_disconnect_succeeds(client: AsyncClient) -> None:
-    resp = await client.post("/devices/shaker1/disconnect", json={})
-    assert resp.status_code == 200
+    with _sent_through_the_runner() as sent:
+        resp = await client.post("/api/devices/shaker1/disconnect", json={})
+    assert resp.status_code == 200, resp.text
     assert resp.json()["status"] == "disconnected"
+    assert sent.await_args is not None
+    assert sent.await_args.args[:2] == ("shaker1", "disconnect")
 
 
-def _connected_card():
-    """A device bridge advertising one vendor command, for a device topology
-    never declared: the only shape that reaches the gateway on this route."""
+def _connected_card(name: str = "flex_remote"):
+    """A device bridge advertising one vendor command. For flex_remote, a device topology never declared."""
     from datetime import datetime
 
     from orca.gateway.registry.snapshot import DeviceSnapshot
 
     return DeviceSnapshot(
-        type="FlexLiquidHandlerDriver", name="flex_remote",
+        type="FlexLiquidHandlerDriver", name=name,
         interfaces=["ILiquidHandler"], capabilities=["gripper.ungrip"],
         provides_state=True, methods={}, site="t", lab="t", workcell=None,
         status="ready", last_seen=datetime.utcnow(),
     )
 
 
-async def test_device_execute_offline_is_503_not_500(client: AsyncClient) -> None:
-    """`adhoc` raises DeviceError subclasses. The route caught only KeyError,
-    TypeError and ValueError, so a device bridge that dropped its socket
-    reached the operator as an unexplained 500."""
-    with patch(
-        "orca.runtime.facades.devices.device_connection_tracker.peek_snapshot",
-        return_value=_connected_card(),
-    ), patch(
-        "orca.runtime.facades.devices.adhoc.execute_adhoc_command",
+@contextmanager
+def _connected(name: str = "flex_remote") -> Iterator[None]:
+    """An orca-client has registered the device, so the operator path can reach it."""
+    card = _connected_card(name)
+    tracker = "orca.gateway.registry.connection_tracker.DeviceConnectionTracker"
+    with patch(f"{tracker}.peek_snapshot", return_value=card), patch(
+        f"{tracker}.get_device", new=AsyncMock(return_value=card),
+    ):
+        yield
+
+
+async def test_device_command_offline_is_a_batch_error_naming_it_not_500(client: AsyncClient) -> None:
+    """The operator path raises DeviceError subclasses. A device bridge that dropped its socket
+    must reach the operator named, never as an unexplained 500."""
+    with _connected(), patch(
+        "orca.gateway.operator_commands.OperatorDeviceCommands.run_named",
         new=AsyncMock(side_effect=DeviceOfflineError("device bridge went away")),
     ):
-        resp = await client.post(
-            "/devices/flex_remote/execute", json={"command": "gripper.ungrip"},
-        )
+        resp = await client.post("/api/devices/flex_remote/commands", json=_one("gripper.ungrip"))
 
-    assert resp.status_code == 503, resp.text
-    assert "device bridge went away" in resp.text
+    assert resp.status_code == 502, resp.text
+    detail = resp.json()["detail"]
+    assert detail["code"] == "batch_error"
+    [result] = detail["extras"]["results"]
+    assert result["error_type"] == "DeviceOfflineError"
+    assert "device bridge went away" in result["error"]
 
 
-async def test_device_invoke_timeout_is_504_not_500(client: AsyncClient) -> None:
+async def test_device_command_timeout_is_named_apart_from_a_refusal(client: AsyncClient) -> None:
     """Same channel, different failure: a command that never came back has its
-    own status, and the operator needs to tell it apart from a refusal."""
-    with patch(
-        "orca.runtime.facades.devices.device_connection_tracker.peek_snapshot",
-        return_value=_connected_card(),
-    ), patch(
-        "orca.runtime.facades.devices.adhoc.execute_adhoc_command",
+    own error type, and the operator needs to tell it apart from a refusal."""
+    with _connected(), patch(
+        "orca.gateway.operator_commands.OperatorDeviceCommands.run_named",
         new=AsyncMock(side_effect=CommandTimeoutError("no answer in 30s")),
     ):
-        resp = await client.post(
-            "/devices/flex_remote/invoke", json={"capability": "gripper.ungrip"},
-        )
+        resp = await client.post("/api/devices/flex_remote/commands", json=_one("gripper.ungrip"))
 
-    assert resp.status_code == 504, resp.text
+    assert resp.status_code == 502, resp.text
+    [result] = resp.json()["detail"]["extras"]["results"]
+    assert result["error_type"] == "CommandTimeoutError"
 
 
 async def test_device_execute_reaches_a_device_only_the_agent_knows(
@@ -306,16 +281,63 @@ async def test_device_execute_reaches_a_device_only_the_agent_knows(
 ) -> None:
     """`orca device list` shows this device. Before this, the route answered
     404 for it because the topology registry had never heard of it."""
-    with patch(
-        "orca.runtime.facades.devices.device_connection_tracker.peek_snapshot",
-        return_value=_connected_card(),
-    ), patch(
-        "orca.runtime.facades.devices.adhoc.execute_adhoc_command",
-        new=AsyncMock(return_value=AdhocResult(raw=None, interfaces=frozenset())),
-    ) as sent:
-        resp = await client.post(
-            "/devices/flex_remote/execute", json={"command": "gripper.ungrip"},
-        )
+    with _connected(), _sent_through_the_runner() as sent:
+        resp = await client.post("/api/devices/flex_remote/commands", json=_one("gripper.ungrip"))
 
     assert resp.status_code == 200, resp.text
-    assert sent.await_args.kwargs["command"] == "gripper.ungrip"
+    assert sent.await_args_list[-1].args[1] == "gripper.ungrip"
+
+
+async def test_a_device_command_body_with_an_unknown_field_is_refused(client: AsyncClient) -> None:
+    with _connected("shaker1"):
+        resp = await client.post(
+            "/api/devices/shaker1/commands", json={"commands": [{"command": "shake", "option": {"speed": 1}}]},
+        )
+
+    assert resp.status_code == 422
+
+
+@pytest.mark.parametrize("command", ["initialize", "connect", "disconnect", "shaker.initialize"])
+async def test_a_command_by_name_refuses_a_lifecycle_command_and_names_its_operation(client: AsyncClient, command: str) -> None:
+    """A lifecycle command by name would skip the deck follow-up its own Operation runs after it."""
+    with _connected("shaker1"), _sent_through_the_runner() as sent:
+        resp = await client.post("/api/devices/shaker1/commands", json=_one(command))
+    assert resp.status_code == 422, resp.text
+    detail = resp.json()["detail"]
+    assert detail["code"] == "validation_error"
+    lifecycle = command.rpartition(".")[2]
+    assert f"/api/devices/shaker1/{lifecycle}" in detail["message"]
+    assert f"orca device {lifecycle} shaker1" in detail["message"]
+    assert detail["extras"]["send_with"] == {
+        "rest": f"POST /api/devices/{{device_id}}/{lifecycle}",
+        "cli": f"orca device {lifecycle} shaker1",
+    }
+    sent.assert_not_awaited()
+
+
+@pytest.mark.parametrize("verb", ["initialize", "connect", "disconnect"])
+def test_the_cli_verb_the_refusal_names_exists(verb: str) -> None:
+    assert verb in {command.name for command in device_cli.registered_commands}
+
+
+async def test_a_batch_refuses_a_lifecycle_command_before_sending_anything(client: AsyncClient) -> None:
+    with _connected("shaker1"), _sent_through_the_runner() as sent:
+        resp = await client.post(
+            "/api/devices/shaker1/commands",
+            json={"commands": [{"command": "initialize"}]},
+        )
+    assert resp.status_code == 422, resp.text
+    detail = resp.json()["detail"]
+    assert detail["code"] == "validation_error"
+    assert "orca device initialize shaker1" in detail["message"]
+    sent.assert_not_awaited()
+
+
+async def test_a_batch_with_a_lifecycle_name_later_on_runs_nothing(client: AsyncClient) -> None:
+    with _connected("shaker1"), _sent_through_the_runner() as sent:
+        resp = await client.post(
+            "/api/devices/shaker1/commands",
+            json={"commands": [{"command": "open"}, {"command": "initialize"}]},
+        )
+    assert resp.status_code == 422, resp.text
+    sent.assert_not_awaited()

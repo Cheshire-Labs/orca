@@ -7,7 +7,7 @@ resolution. Two mechanisms: occupied-pad penalty and per-thread cooldown.
 
 import pytest
 
-from orca.system.reservation_manager.path_scoring import (
+from orca.workflow_models.actions.path_scoring import (
     PathScoringStrategy,
     PathScoringWeights,
 )

@@ -12,8 +12,7 @@ from cheshire_drivers.labware_seed import (
 )
 from pydantic import TypeAdapter
 
-from orca.runtime.db import create_memory_engine
-from orca.runtime.interfaces import (
+from orca.resource_models.labware_catalog_protocol import (
     ILabwareCatalog,
     LabwareDefinition,
     LabwareNotFound,
@@ -23,8 +22,8 @@ from orca.runtime.labware_catalog import (
     StoreBackedLabwareCatalog,
 )
 from orca.runtime.labware_catalog_service import LabwareCatalogService
-from orca.runtime.labware_catalog_store import seed_entry_to_catalog_entry
-from orca.runtime.sqlite_labware_catalog_store import SqliteLabwareCatalogStore
+from orca.runtime.setup_file_stores import LabwareCatalogFileStore
+from tests.setup_package import fresh_root
 
 
 @pytest.fixture(scope="module")
@@ -128,7 +127,7 @@ async def test_labware_definition_alias_is_labware_seed_entry(real_plate: PlateS
 
 
 def _store_backed_catalog() -> tuple[StoreBackedLabwareCatalog, LabwareCatalogService]:
-    service = LabwareCatalogService(SqliteLabwareCatalogStore(create_memory_engine()))
+    service = LabwareCatalogService(LabwareCatalogFileStore(fresh_root() / "labware"))
     return StoreBackedLabwareCatalog(service), service
 
 
@@ -137,14 +136,13 @@ async def test_store_backed_catalog_reads_through_the_service(
 ) -> None:
     """StoreBackedLabwareCatalog projects each row's geometry through the
     Service back to its typed LabwareDefinition (get/list/contains)."""
-    catalog, service = _store_backed_catalog()
-    await service.seed_if_missing([seed_entry_to_catalog_entry(real_plate)])
+    catalog, _ = _store_backed_catalog()
 
     got = await catalog.get(real_plate.labware_type)
     assert got.labware_type == real_plate.labware_type
     assert await catalog.contains(real_plate.labware_type)
     listed = await catalog.list()
-    assert {e.labware_type for e in listed} == {real_plate.labware_type}
+    assert real_plate.labware_type in {e.labware_type for e in listed}
 
 
 async def test_store_backed_catalog_raises_on_unknown() -> None:

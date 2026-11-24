@@ -11,7 +11,7 @@ import pytest
 from typer.testing import CliRunner
 
 from orca.cli.app import app
-from orca.operations.device_models import GetMountedTipsResponse, MountedTipReadDTO
+from orca.operations.device_models import GetMountedTipsResponse, MountedTipDTO, MountedTipReadDTO
 
 
 runner = CliRunner()
@@ -73,3 +73,44 @@ def test_an_empty_head_says_so(fake_client) -> None:
 
     assert result.exit_code == 0, result.output
     assert "no tips recorded" in result.stderr
+
+
+def test_a_tip_on_the_96_head_says_which_head(fake_client) -> None:
+    fake_client.response = GetMountedTipsResponse(
+        device_name="mlstar_1", provenance="known",
+        mounted=[
+            MountedTipReadDTO(channel=0, tip_rack="tips_8", position="A1", head="channels", channel_is_inferred=False),
+            MountedTipReadDTO(channel=0, tip_rack="tips_96", position="A1", head="head96", channel_is_inferred=False),
+        ],
+    )
+
+    result = runner.invoke(app, ["device", "mounted-tips", "mlstar_1"])
+
+    assert result.exit_code == 0, result.output
+    assert "  channel 0: tips_8 A1" in result.stderr
+    assert "  96 head channel 0: tips_96 A1" in result.stderr
+
+
+class _RecordsWhatWasStated:
+    def __init__(self) -> None:
+        self.stated: list[MountedTipDTO] = []
+
+    def device_set_mounted_tips(self, device_name: str, mounted: list[MountedTipDTO], *, reason: str | None) -> None:
+        self.stated = mounted
+
+
+def test_set_mounted_tips_can_state_both_heads(monkeypatch: pytest.MonkeyPatch) -> None:
+    stub = _RecordsWhatWasStated()
+    monkeypatch.setattr("orca.cli.device.get_client", lambda: stub)
+
+    result = runner.invoke(
+        app, ["device", "set-mounted-tips", "mlstar_1", "--tip", "3=tips_8:A1", "--head96", "tips_96"],
+    )
+
+    assert result.exit_code == 0, result.output
+    on_channels = [tip for tip in stub.stated if tip.head == "channels"]
+    on_head96 = [tip for tip in stub.stated if tip.head == "head96"]
+    assert [(tip.channel, tip.tip_rack, tip.position) for tip in on_channels] == [(3, "tips_8", "A1")]
+    assert len(on_head96) == 96
+    assert (on_head96[0].channel, on_head96[0].position) == (0, "A1")
+    assert (on_head96[95].channel, on_head96[95].position, on_head96[95].tip_rack) == (95, "H12", "tips_96")

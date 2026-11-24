@@ -13,7 +13,7 @@ from orca.events.execution_context import (
     OperatorInstructionContext,
     ThreadExecutionContext,
 )
-from orca.events.intervention import (
+from orca.runtime.intervention import (
     InterventionKind,
     classify_intervention,
 )

@@ -10,6 +10,8 @@ class ThreadEvent(str, Enum):
     CREATED = "CREATED"
 
     LIVE_MANUAL_PLACE_AWAITED = "LIVE_MANUAL_PLACE_AWAITED"
+    START_LOCATION_AWAITED = "START_LOCATION_AWAITED"
+    START_LOCATION_CLEARED = "START_LOCATION_CLEARED"
 
     RESERVATION_AWAITED = "RESERVATION_AWAITED"
     RESERVATION_GRANTED = "RESERVATION_GRANTED"
@@ -42,16 +44,8 @@ class ThreadEvent(str, Enum):
     LIVE_MANUAL_REMOVE_AWAITED = "LIVE_MANUAL_REMOVE_AWAITED"
 
 
-_TERMINAL_STATES: FrozenSet[LabwareThreadStatus] = frozenset({
-    LabwareThreadStatus.COMPLETED,
-    LabwareThreadStatus.ABORTED,
-    LabwareThreadStatus.STOPPED,
-    LabwareThreadStatus.FAILED,
-})
-
-
 _NON_TERMINAL: FrozenSet[LabwareThreadStatus] = frozenset(
-    s for s in LabwareThreadStatus if s not in _TERMINAL_STATES
+    s for s in LabwareThreadStatus if not s.is_terminal()
 )
 
 
@@ -70,6 +64,12 @@ def _build_transition_table() -> Dict[Tuple[LabwareThreadStatus, ThreadEvent], L
 
     table[(LabwareThreadStatus.CREATED, ThreadEvent.LIVE_MANUAL_PLACE_AWAITED)] = (
         LabwareThreadStatus.AWAITING_MANUAL_PLACE
+    )
+    table[(LabwareThreadStatus.CREATED, ThreadEvent.START_LOCATION_AWAITED)] = (
+        LabwareThreadStatus.AWAITING_START_LOCATION
+    )
+    table[(LabwareThreadStatus.AWAITING_START_LOCATION, ThreadEvent.START_LOCATION_CLEARED)] = (
+        LabwareThreadStatus.CREATED
     )
 
     # Reservation manager calls back from any state; status-manager publish

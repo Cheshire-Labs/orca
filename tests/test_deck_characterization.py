@@ -13,7 +13,6 @@ existing behavior and must be understood before proceeding.
 """
 
 from collections.abc import AsyncGenerator
-from typing import List
 from unittest.mock import AsyncMock
 
 import pytest
@@ -26,9 +25,7 @@ from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.location import Location
 from orca.resource_models.plate_pad import PlatePad
 from orca.resource_models.resource_pool import ResourcePool
-from orca.system.SdkToSystemBuilder import SdkToSystemBuilder
-from orca.system.executors import StandaloneMethodExecutor
-from orca.system.resource_registry import ResourceRegistry
+from orca.resource_models.resource_registry import ResourceRegistry
 from orca.system.system_map import SystemMap
 from orca.workflow_models.actions.dynamic_resource_action import DynamicResourceActionResolver
 from tests.mock import EXTERNAL_MOVER, UniversalMockDevice
@@ -39,6 +36,8 @@ from tests.test_helpers import (
     create_test_plate_template,
     create_test_transporter,
 )
+from tests.a_method_on_its_own import a_method_run_on_its_own
+from orca.runtime.execution_record import ExecutionState
 
 
 async def _noop_action_body(ctx: ActionContext) -> None:
@@ -295,23 +294,11 @@ class TestMultiLabwareConvergence:
         async def shared_method(ctx: MethodContext) -> AsyncGenerator[ActionTemplate, None]:
             yield shared_action
 
-        builder = SdkToSystemBuilder(
-            name="convergence_test",
-            description="",
-            labwares=[plate_a, plate_b],
-            resources_registry=registry,
-            system_map=system_map,
-        )
-        await builder.bind_labwares()
-        system = builder.get_system()
-
-        executor = StandaloneMethodExecutor(
-            template=shared_method,
-            labware_start_mapping={plate_a: "pad1", plate_b: "pad2"},
-            labware_end_mapping={plate_a: "pad1", plate_b: "pad2"},
-            system=system,
-        )
-        await executor.start()
+        async with a_method_run_on_its_own(
+            registry, system_map, [plate_a, plate_b], "shared_method",
+            start={plate_a.name: "pad1", plate_b.name: "pad2"}, end={plate_a.name: "pad1", plate_b.name: "pad2"},
+        ) as run:
+            assert run.ended.status is ExecutionState.COMPLETED, run.ended
 
         assert executed == ["ran"], "two converging labware share one action execution"
 
@@ -339,27 +326,12 @@ class TestMultiLabwareConvergence:
         async def shared_method(ctx: MethodContext) -> AsyncGenerator[ActionTemplate, None]:
             yield three_way_action
 
-        builder = SdkToSystemBuilder(
-            name="three_way_test",
-            description="",
-            labwares=[plate_a, plate_b, plate_c],
-            resources_registry=registry,
-            system_map=system_map,
-        )
-        await builder.bind_labwares()
-        system = builder.get_system()
-
-        executor = StandaloneMethodExecutor(
-            template=shared_method,
-            labware_start_mapping={
-                plate_a: "pad1", plate_b: "pad2", plate_c: "pad3",
-            },
-            labware_end_mapping={
-                plate_a: "pad1", plate_b: "pad2", plate_c: "pad3",
-            },
-            system=system,
-        )
-        await executor.start()
+        async with a_method_run_on_its_own(
+            registry, system_map, [plate_a, plate_b, plate_c], "shared_method",
+            start={plate_a.name: "pad1", plate_b.name: "pad2", plate_c.name: "pad3"},
+            end={plate_a.name: "pad1", plate_b.name: "pad2", plate_c.name: "pad3"},
+        ) as run:
+            assert run.ended.status is ExecutionState.COMPLETED, run.ended
 
         assert executed == ["ran"], "three converging labware share one action execution"
 
@@ -463,23 +435,11 @@ class TestHoldOverLogic:
             yield action_1
             yield action_2
 
-        builder = SdkToSystemBuilder(
-            name="holdover_test",
-            description="",
-            labwares=[plate],
-            resources_registry=registry,
-            system_map=system_map,
-        )
-        await builder.bind_labwares()
-        system = builder.get_system()
-
-        executor = StandaloneMethodExecutor(
-            template=two_actions,
-            labware_start_mapping={plate: "pad1"},
-            labware_end_mapping={plate: "pad1"},
-            system=system,
-        )
-        await executor.start()
+        async with a_method_run_on_its_own(
+            registry, system_map, [plate], "two_actions",
+            start={plate.name: "pad1"}, end={plate.name: "pad1"},
+        ) as run:
+            assert run.ended.status is ExecutionState.COMPLETED, run.ended
 
 
 class TestMultiHopRouting:
@@ -529,24 +489,12 @@ class TestMultiHopRouting:
         async def method_at_device(ctx: MethodContext) -> AsyncGenerator[ActionTemplate, None]:
             yield action_at_device
 
-        builder = SdkToSystemBuilder(
-            name="multihop_test",
-            description="",
-            labwares=[plate],
-            resources_registry=registry,
-            system_map=system_map,
-        )
-        await builder.bind_labwares()
-        system = builder.get_system()
-
-        executor = StandaloneMethodExecutor(
-            template=method_at_device,
-            labware_start_mapping={plate: "pad1"},
-            labware_end_mapping={plate: "pad1"},
-            system=system,
-        )
         # The labware routes pad1->pad2 (arm1) then pad2->device1 (arm2).
-        await executor.start()
+        async with a_method_run_on_its_own(
+            registry, system_map, [plate], "method_at_device",
+            start={plate.name: "pad1"}, end={plate.name: "pad1"},
+        ) as run:
+            assert run.ended.status is ExecutionState.COMPLETED, run.ended
 
         assert executed == ["ran"], "multi-hop routing must deliver labware so the action runs"
 
@@ -587,23 +535,11 @@ class TestMultiHopRouting:
         async def method_at_device(ctx: MethodContext) -> AsyncGenerator[ActionTemplate, None]:
             yield action_at_device
 
-        builder = SdkToSystemBuilder(
-            name="multihop_return_test",
-            description="",
-            labwares=[plate],
-            resources_registry=registry,
-            system_map=system_map,
-        )
-        await builder.bind_labwares()
-        system = builder.get_system()
-
-        executor = StandaloneMethodExecutor(
-            template=method_at_device,
-            labware_start_mapping={plate: "pad1"},
-            labware_end_mapping={plate: "pad1"},
-            system=system,
-        )
         # Round trip via multi-hop: pad1->pad2->device1->pad2->pad1
-        await executor.start()
+        async with a_method_run_on_its_own(
+            registry, system_map, [plate], "method_at_device",
+            start={plate.name: "pad1"}, end={plate.name: "pad1"},
+        ) as run:
+            assert run.ended.status is ExecutionState.COMPLETED, run.ended
 
         assert executed == ["ran"], "action runs after multi-hop delivery; labware returns via multi-hop"

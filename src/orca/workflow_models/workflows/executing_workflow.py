@@ -1,14 +1,14 @@
 import logging
 from abc import ABC, abstractmethod
-from orca.events.event_bus_interface import IEventBus
+from orca.events.event_bus_interface import EventHandlerType, IEventBus
 from orca.events.event_channel import EventChannelRegistry
 from orca.events.execution_context import GroupLifecycleContext, WorkflowExecutionContext
-from orca.system.reservation_manager.move_handler import MoveHandler
+from orca.workflow_models.actions.move_handler import MoveHandler
 from orca.system.reservation_manager.interfaces import IThreadReservationCoordinator
 from orca.system.reservation_manager.location_reservation import LocationReservation
 from orca.system.system_map import SystemMap
 from orca.system.thread_manager import ThreadManager
-from orca.system.thread_manager_interface import IThreadManager
+from orca.workflow_models.labware_threads.thread_manager_interface import IThreadManager
 from orca.workflow_models.labware_threads.executing_labware_thread import ExecutingLabwareThread
 from orca.workflow_models.labware_threads.labware_thread import LabwareThreadInstance
 from orca.system.reservation_manager.errors import (
@@ -24,31 +24,38 @@ from orca.workflow_models.workflows.workflow import IWorkflow, WorkflowInstance
 
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Coroutine
 from contextlib import asynccontextmanager
 from typing import Awaitable, Callable, Dict, List, Protocol
 
 from orca.resource_models.labware import LabwareInstance
-from orca.resource_models.labware_placement import LabwarePlacer
+from orca.resource_models.labware_placement import Arrival, LabwarePlacer
 from orca.resource_models.location import Location
-from orca.resource_models.labware_state import (
+from orca.resource_models.deck_site_location import DeckSiteLocation
+from orca.resource_models.resources import IModeAware
+from orca.workflow_models.labware_state import (
     ILabwareRegistry,
     IRegisteredThread,
     LabwareSlot,
 )
-from orca.resource_models.sharing import GroupSharing
-from orca.runtime.group_execution_context import GroupExecutionContext
-from orca.resource_models.capacity import OverflowAction
+from orca.resource_models.sharing import GroupSharing, SubmissionBatching
+from orca.workflow_models.group_execution_context import GroupExecutionContext
+from orca.resource_models.capacity import CapacityExceededError, OverflowAction
 from orca.state.contents import LabwareContentsLedger
-from orca.runtime.interfaces import ILabwareStore
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.submission import ResolvedAcquisition
+from orca.resource_models.labware_service_interface import ILabwareService
+from orca.modes.run_modes import WorkflowRunMode
+from orca.workflow_models.submission import ResolvedAcquisition
 from orca.workflow_models.labware_threads.executing_labware_thread import AutoSpawnCallback, CapacityPrecheckCallback
+from orca.resource_models.labware_location_service import ILabwareLocationService
+from orca.state.placement import PlacementState
 from orca.workflow_models.overflow_strategy import (
-    refuse_the_spent_candidate,
+    refuse_the_candidate,
+    refuse_the_spawn,
     select_strategy,
 )
 from orca.workflow_models.workflows.workflow_registry import WorkflowRegistry
+from orca.workflow_models.errors import SpawnContextUnavailableError, SpawnIncompatibleError
+from orca.workflow_models.group_aware_labware_registry import GroupAwareLabwareRegistry
 
 
 class _LabwareAdder(Protocol):
@@ -61,7 +68,10 @@ class _LabwareAdder(Protocol):
     """
 
     def add_labware(self, labware: LabwareInstance) -> None: ...
-    async def reconcile_lh_deck_occupancy(self, device_location: Location) -> None: ...
+    @property
+    def labwares(self) -> List[LabwareInstance]: ...
+    @property
+    def labware_location_service(self) -> ILabwareLocationService: ...
     @property
     def labware_placer(self) -> LabwarePlacer: ...
     @property
@@ -75,6 +85,13 @@ CreateThreadFn = Callable[
 ]
 
 
+async def _mode_at(location: Location, run_mode: WorkflowRunMode | None) -> WorkflowRunMode | None:
+    """A site's device under a sim override is simulated even inside a LIVE run."""
+    if run_mode is not None and isinstance(location, DeckSiteLocation) and isinstance(location.owner, IModeAware):
+        return await location.owner.mode_under(run_mode)
+    return run_mode
+
+
 class ExecutingWorkflow(IWorkflow):
     def __init__(self,
                  workflow: WorkflowInstance,
@@ -86,13 +103,13 @@ class ExecutingWorkflow(IWorkflow):
                  system_map: SystemMap,
                  create_thread_fn: CreateThreadFn | None = None,
                  labware_registry: ILabwareRegistry | None = None,
-                 labware_store: ILabwareStore | None = None,
+                 labware_service: ILabwareService | None = None,
                  system: _LabwareAdder | None = None,
                  ) -> None:
         self._workflow = workflow
         self._event_bus = event_bus
         self._labware_registry = labware_registry
-        self._labware_store = labware_store
+        self._labware_service = labware_service
         self._system = system
         self._thread_reservation_coordinator = thread_reservation_coordinator
         self._thread_manager = system_thread_manager
@@ -103,9 +120,14 @@ class ExecutingWorkflow(IWorkflow):
         self._context = WorkflowExecutionContext(execution_id=self._workflow.id, workflow_name=self._workflow.name)
         self._event_channel_registry = EventChannelRegistry()
         self._entry_threads: List[ExecutingLabwareThread] = []
+        self._waiting_for_a_named_labware: set[asyncio.Task[None]] = set()
+        self._unserved: list[tuple[str, ExecutingMethod, WorkflowRunMode]] = []
+        self._named_partners_of_a_group: dict[tuple[str | None, str | None], dict[str, str]] = {}
+        self._left_out_of_a_group: dict[tuple[str | None, str | None], dict[str, str]] = {}
         auto_spawn_callback = self._make_auto_spawn_callback()
         capacity_precheck_callback = self._make_capacity_precheck_callback()
         for entry_thread in self._workflow.entry_threads:
+            self._remember_what_the_group_named(entry_thread)
             executing_thread = self._thread_manager.create_executing_thread(entry_thread.id, self._context)
             executing_thread.set_event_channel_registry(self._event_channel_registry)
             if auto_spawn_callback is not None:
@@ -298,7 +320,11 @@ class ExecutingWorkflow(IWorkflow):
         ) from errors[0][1]
 
     async def _resolve_reuse_bind(
-        self, template: ThreadTemplate, replaces_spent_labware: bool = False,
+        self,
+        template: ThreadTemplate,
+        replaces_spent_labware: bool = False,
+        *,
+        run_mode: WorkflowRunMode | None = None,
     ) -> ResolvedAcquisition | None:
         """Return a `ResolvedAcquisition` for a reuse-bound thread, or None.
 
@@ -308,9 +334,10 @@ class ExecutingWorkflow(IWorkflow):
         enter the location's `spawn_lock` and either bind to an existing
         matching labware (`created_fresh=False`) or create a fresh
         instance, register it in both `system.labwares` and the labware
-        store, and wrap it (`created_fresh=True`). A wrong-template
+        service, and wrap it (`created_fresh=True`). An empty site on a LIVE
+        device returns None, so the thread's manual-place spawn asks a person. A wrong-template
         occupant raises `SpawnIncompatibleError`; a runtime constructed
-        without `labware_store + system` raises
+        without `labware_service + system` raises
         `SpawnContextUnavailableError`.
 
         Extracted from `_make_auto_spawn_callback` because the inline block
@@ -323,28 +350,17 @@ class ExecutingWorkflow(IWorkflow):
             # receiver's first contribution and overflow straight back into
             # the same stash. A handoff for any OTHER reason still adopts it.
             return None
-        # Local import avoids the runtime_interface cycle through
-        # plugins/events that closes on system_interface.
-        from orca.runtime.runtime_interface import (
-            SpawnContextUnavailableError,
-            SpawnIncompatibleError,
-        )
-        if self._labware_store is None or self._system is None:
+        if self._labware_service is None or self._system is None:
             raise SpawnContextUnavailableError(
                 f"Thread template '{template.name}' uses "
                 f"start_reuse_existing but ExecutingWorkflow was "
-                f"constructed without labware_store and system refs."
+                f"constructed without labware_service and system refs."
             )
         # start_loc is always a concrete site or pad: resolve_journey_location
         # rejects a device-endpoint start before a reuse thread reaches here.
         start_loc = template.start_location
-        # The spawn_lock only needs to span the read-check-claim sequence.
-        # Once `initialize_labware` writes `start_loc._labware = fresh`,
-        # the next contender's `start_loc.labware is not None` check sees
-        # the new labware and binds instead of creating another. Holding
-        # the lock across the slow store I/O serializes every spawn-bind
-        # on a DB-backed store; restructure so the I/O happens after we
-        # release the lock (review item L8).
+        # The rack's opening entry is written before the claim: a reader
+        # that sees the rack on its site always sees its tips.
         async with start_loc.spawn_lock:
             existing = start_loc.labware
             if existing is not None:
@@ -360,7 +376,7 @@ class ExecutingWorkflow(IWorkflow):
                 )
             # Rebind a resident to its stable id (vs minting fresh). The store
             # read is in-lock so read-check-claim is atomic; residents are rare (DB hit ok).
-            persisted = await self._labware_store.get_by_position(start_loc.position_id)
+            persisted = await self._labware_service.get_by_position(start_loc.position_id)
             if persisted is not None:
                 if persisted.template_name != template.labware_template.name:
                     raise SpawnIncompatibleError(
@@ -368,28 +384,26 @@ class ExecutingWorkflow(IWorkflow):
                         expected_template=template.labware_template.name,
                         actual_template=persisted.template_name,
                     )
-                start_loc.initialize_labware(persisted)
+                await persisted.enter_record(self._system.labware_contents)
+                self._system.labware_placer.claim(persisted, start_loc)
                 bound, created_fresh = persisted, False
+            elif await _mode_at(start_loc, run_mode) is WorkflowRunMode.LIVE:
+                # Nothing senses the deck, so only a person can put it there. The
+                # thread's ordinary manual-place spawn asks for it.
+                return None
             else:
                 bound = await template.labware_template.create_instance()
-                # Synchronous slot claim: future contenders take the bind branch.
-                start_loc.initialize_labware(bound)
+                await bound.enter_record(self._system.labware_contents)
+                self._system.labware_placer.claim(bound, start_loc)
                 created_fresh = True
-        # Slot is claimed; bookkeeping outside the lock so other locations /
-        # threads aren't blocked by our DB round-trip.
         self._system.add_labware(bound)
-        # Before anything projects it onto a deck. A rack that reaches the
-        # driver with nothing written about its tips gets the driver's own
-        # default, which is a full rack.
-        await bound.enter_record(self._system.labware_contents)
         if created_fresh:
-            # Persist identity + position: execution_id is teardown-diff metadata;
-            # position lets a restart rehydrate it and the next bind rebind to this id.
-            await self._labware_store.register(bound, execution_id=self._workflow.id)
-            await self._labware_store.update_location(bound.id, start_loc.position_id)
+            # execution_id is teardown-diff metadata. The placer saves the position next, which lets a restart
+            # rehydrate it and the next bind rebind to this id.
+            await self._labware_service.register(bound, execution_id=self._workflow.id)
         # Slot already claimed in-lock; write the remaining holders without
         # re-writing the slot (re-staging a bridge would raise).
-        await self._system.labware_placer.bind_resident(bound, start_loc)
+        await self._system.labware_placer.arrived(bound, start_loc, Arrival.BOUND)
         return ResolvedAcquisition(
             labware_instance=bound, created_fresh=created_fresh,
         )
@@ -432,13 +446,222 @@ class ExecutingWorkflow(IWorkflow):
         where = (
             start_location.position_id if start_location is not None else slot.slot_key
         )
-        refuse_the_spent_candidate(
+        refuse_the_candidate(
             slot, self,
             f"{candidate.name!r} at {where} was already used up when this run "
             f"started, so it has nothing for {contributor_method.name!r}. Take "
             f"it off {where}, put a fresh one there, state what it holds, then "
             f"retry.",
         )
+
+    @staticmethod
+    def _not_the_named_labware(labware_name: str, named: str, found: LabwareInstance | None) -> str:
+        standing = "no labware" if found is None else f"{found.name!r} (barcode {found.barcode!r})"
+        return (
+            f"This step named the {labware_name!r} with barcode {named!r}, and {standing} is the one "
+            f"it would be served by. Put the named labware there, or correct its barcode, then retry."
+        )
+
+    @staticmethod
+    def _the_named_labware_takes_no_more(
+        labware_name: str, named: str, labware: LabwareInstance, can_continue: bool,
+    ) -> str:
+        why = "its thread has taken all the work it accepts" if can_continue else "it is used up"
+        return (
+            f"This step named the {labware_name!r} with barcode {named!r}, and {why}. No other "
+            f"labware can stand in for {labware.name!r}. Retry when its thread has finished"
+            f"{'' if can_continue else ', after stating what it now holds'}."
+        )
+
+    def _thread_still_holding(self, named: str, slot_key: str) -> ExecutingLabwareThread | None:
+        """This slot's own thread, when it is still finishing with the labware ``named`` names."""
+        return next(
+            (
+                thread for thread in self.threads
+                if thread.labware.barcode == named
+                and not thread.has_completed()
+                and thread.my_slot_key() == slot_key
+            ),
+            None,
+        )
+
+    def _remember_what_the_group_named(self, thread: LabwareThreadInstance) -> None:
+        """A submission names partners and leaves out optional threads per group; threads spawned later inherit both."""
+        group = (thread.submission_id, thread.group_id)
+        if thread.named_partners:
+            self._named_partners_of_a_group[group] = thread.named_partners
+        if thread.left_out:
+            self._left_out_of_a_group[group] = thread.left_out
+
+    def _serve_when_free(
+        self,
+        finishing: ExecutingLabwareThread,
+        labware_name: str,
+        method: ExecutingMethod,
+        run_mode: WorkflowRunMode,
+    ) -> None:
+        """Start the named labware's next thread for ``method`` once ``finishing`` has ended."""
+        async def serve() -> None:
+            await finishing.completed.wait()
+            await self._serve_or_leave_unserved(labware_name, method, run_mode)
+
+        self._in_the_background(serve())
+
+    def _in_the_background(self, work: Coroutine[None, None, None]) -> None:
+        task = asyncio.get_running_loop().create_task(work)
+        self._waiting_for_a_named_labware.add(task)
+        task.add_done_callback(self._waiting_for_a_named_labware.discard)
+
+    async def _serve_or_leave_unserved(
+        self, labware_name: str, method: ExecutingMethod, run_mode: WorkflowRunMode,
+    ) -> None:
+        """Run the spawn for a method nobody is at the spawn site for; a refusal is kept and retried on resume."""
+        if (
+            self._tearing_down
+            or method.completed.is_set()
+            or method.exit_signal.is_set()
+            or not self._a_live_thread_owns(method)
+            or self._auto_spawn_callback is None
+        ):
+            return
+        try:
+            await self._auto_spawn_callback(labware_name, method, run_mode)
+        except CapacityExceededError as refusal:
+            self._leave_unserved(labware_name, method, run_mode, refusal)
+        except Exception as error:
+            orca_logger.exception("Spawning %s for method %s failed", labware_name, method.name)
+            self._leave_unserved(
+                labware_name, method, run_mode,
+                CapacityExceededError(f"{type(error).__name__}: {error}"),
+            )
+
+    def _a_live_thread_owns(self, method: ExecutingMethod) -> bool:
+        # Aborting the owner thread ends it without ending its method.
+        return any(
+            thread.assigned_method is method
+            and not thread.has_completed()
+            and not method.shared_coord.is_contributor(thread.id)
+            for thread in self.threads
+        )
+
+    def _leave_a_named_method_unserved(
+        self,
+        labware_name: str,
+        method: ExecutingMethod,
+        run_mode: WorkflowRunMode,
+        refusal: CapacityExceededError,
+    ) -> None:
+        # A resident's one slot also hands off methods that name nothing; those refusals stay with the ending thread.
+        if labware_name not in method.partner_barcodes:
+            raise refusal
+        self._leave_unserved(labware_name, method, run_mode, refusal)
+
+    def _leave_unserved(
+        self,
+        labware_name: str,
+        method: ExecutingMethod,
+        run_mode: WorkflowRunMode,
+        refusal: CapacityExceededError,
+    ) -> None:
+        """Keep a method whose labware was refused away from the spawn site, and pause the run with the reason.
+
+        Resuming the execution runs the spawn again.
+        """
+        orca_logger.error("Method %s cannot be served by its %s: %s", method.name, labware_name, refusal)
+        self._unserved.append((labware_name, method, run_mode))
+        # A thread waiting empty-handed for a join cannot pause there; a request would stay latched on it.
+        waiting_for_a_join = (
+            [waiter for slot in self._labware_registry.all_slots().values() for waiter in slot.awaiting_threads]
+            if self._labware_registry is not None else []
+        )
+        for thread in self.threads:
+            if (
+                not thread.has_completed()
+                and thread.status is not LabwareThreadStatus.STOPPING
+                and not any(thread is waiter for waiter in waiting_for_a_join)
+            ):
+                thread.request_pause(reason="system", message=str(refusal))
+
+    def retry_the_unserved(self) -> None:
+        """Run the spawn again for each method whose labware was refused away from the spawn site."""
+        unserved, self._unserved = self._unserved, []
+        for labware_name, method, run_mode in unserved:
+            self._in_the_background(self._serve_or_leave_unserved(labware_name, method, run_mode))
+
+    async def _find_the_named_partner(
+        self,
+        template: ThreadTemplate,
+        named: str,
+        slot_key: str,
+    ) -> ResolvedAcquisition:
+        """The labware a partner constraint names, and where its thread starts. Binds nothing.
+
+        Refuses, pausing the contributor, when the named labware cannot serve: nobody holds the
+        barcode, it is another kind of labware, it left the system, or another thread has it.
+        """
+        labware_name = template.labware_template.name
+        if self._labware_service is None or self._system is None:
+            raise SpawnContextUnavailableError(
+                f"Thread template '{template.name}' was asked for the labware with barcode "
+                f"{named!r} but ExecutingWorkflow was constructed without labware_service and system refs."
+            )
+        stored = await self._labware_service.get_by_barcode(named)
+        if stored is None:
+            refuse_the_spawn(self, slot_key, (
+                f"This step named the {labware_name!r} with barcode {named!r}, and no labware "
+                f"with that barcode is registered. Register it, then retry."
+            ))
+        live = next((lw for lw in self._system.labwares if lw.id == stored.id), None)
+        if live is None:
+            refuse_the_spawn(self, slot_key, (
+                f"This step named the {labware_name!r} with barcode {named!r}. Labware {stored.id} "
+                f"holds that barcode and is no longer in the running system: it was discharged or "
+                f"cleared. Name a labware that is here, then retry."
+            ))
+        if live.template_name != labware_name:
+            refuse_the_spawn(self, slot_key, (
+                f"This step named the {labware_name!r} with barcode {named!r}, and that barcode "
+                f"belongs to {live.name!r}, which is a {live.template_name!r}. Correct the barcode, then retry."
+            ))
+        holder = next(
+            (
+                thread for thread in self._thread_manager.threads
+                if thread.labware.id == live.id and not thread.has_completed()
+            ),
+            None,
+        )
+        if holder is not None:
+            refuse_the_spawn(self, slot_key, (
+                f"This step named the {labware_name!r} with barcode {named!r}, and {live.name!r} is "
+                f"in use by thread {holder.name!r}. Retry when that thread has finished."
+            ))
+        locations = self._system.labware_location_service
+        try:
+            standing = locations.placement(live) is PlacementState.PRESENT
+        except KeyError:
+            standing = False
+        if standing:
+            return ResolvedAcquisition(labware_instance=live, start_location=locations.get(live))
+        if template.start_dispense:
+            refuse_the_spawn(self, slot_key, (
+                f"This step named the {labware_name!r} with barcode {named!r}. {live.name!r} is not "
+                f"on the deck, and '{template.name}' takes its labware from a dispenser, which cannot "
+                f"be asked for one barcode. Put the labware on the deck and register where it is, then retry."
+            ))
+        return ResolvedAcquisition(labware_instance=live)
+
+    async def _bind_reuse_or_refuse(
+        self, slot: LabwareSlot, template: ThreadTemplate, run_mode: WorkflowRunMode,
+    ) -> ResolvedAcquisition | None:
+        try:
+            return await self._resolve_reuse_bind(
+                template, replaces_spent_labware=slot.receiver_spent, run_mode=run_mode,
+            )
+        except SpawnIncompatibleError as error:
+            refuse_the_candidate(
+                slot, self,
+                f"{error}. Discharge it, put a {template.labware_template.name} there, then retry.",
+            )
 
     def _make_auto_spawn_callback(self) -> AutoSpawnCallback | None:
 
@@ -459,14 +682,16 @@ class ExecutingWorkflow(IWorkflow):
             )
             template = self._workflow.template.require_auto_spawn_template(labware_name)
 
-            # T6: the contributor thread's group/submission context (if any)
+            # The contributor thread's group/submission context (if any)
             # was stashed on shared_method in _auto_spawn_for_action. Pass it
             # to slot_key_for so GroupAwareLabwareRegistry can compose the
             # per-(template, group, submission) key.
             ctx = shared_method.contributor_context
-            slot_key = self._labware_registry.slot_key_for(template, ctx)
+            named = shared_method.partner_barcodes.get(labware_name)
+            slot_key = self._labware_registry.slot_key_for(template, ctx, named)
             slot = self._labware_registry.get_or_create_slot(slot_key, labware_name)
             slot.on_awaiting_join = self._on_receiver_awaiting_join
+            slot.on_refused_handoff = self._leave_a_named_method_unserved
 
             if slot.orphaned:
                 # Quarantined: never bind or mint; the execution-level resume
@@ -480,6 +705,8 @@ class ExecutingWorkflow(IWorkflow):
                     active = slot.active_thread
                     assert active is not None
                     active_lw = active.thread_instance.labware
+                    if named is not None and active_lw.barcode != named:
+                        refuse_the_spawn(self, slot_key, self._not_the_named_labware(labware_name, named, active_lw))
                     demand = shared_method.aggregate_demand(active_lw.template_name)
                     can_continue = await active_lw.can_continue(demand)
                     # Re-validate after the await: can_continue() may have drained
@@ -501,34 +728,64 @@ class ExecutingWorkflow(IWorkflow):
                         # has no other way to hear its labware is used up.
                         if not can_continue:
                             slot.mark_receiver_spent()
+                        if named is not None:
+                            refuse_the_spawn(self, slot_key, self._the_named_labware_takes_no_more(
+                                labware_name, named, active_lw, can_continue,
+                            ))
                         select_strategy(slot).on_overflow(slot, shared_method, self)
                         return
 
                 # Quarantine can land during the awaits above; re-check in-lock
                 # so the fall-through stashes, never mints into the backlog.
-                if slot.orphaned:
+                if slot.orphaned or slot.waits_for_its_handoff():
                     slot.pending.append(shared_method)
                     return
 
                 # No active thread: first contributor mints the receiver, inheriting its
                 # group/submission identity (group_id cleared for SHARED_ACROSS_GROUPS).
                 assert self._create_thread_fn is not None
-                # Runs under slot.spawn_lock, so _resolve_reuse_bind's internal L8
-                # Location.spawn_lock release no longer widens concurrency for same-slot spawns.
-                resolved = await self._resolve_reuse_bind(
-                    template, replaces_spent_labware=slot.receiver_spent,
-                )
+                # Runs under slot.spawn_lock, so _resolve_reuse_bind's internal
+                # Location.spawn_lock release does not widen concurrency for same-slot spawns.
+                if named is not None and not template.start_reuse_existing:
+                    finishing = self._thread_still_holding(named, slot_key)
+                    if finishing is not None:
+                        # One labware has one thread: the next one starts when this one has finished.
+                        if slot.active_thread is None:
+                            self._serve_when_free(finishing, labware_name, shared_method, run_mode)
+                        else:
+                            slot.pending.append(shared_method)
+                        return
+                    resolved: ResolvedAcquisition | None = await self._find_the_named_partner(
+                        template, named, slot_key,
+                    )
+                else:
+                    resolved = await self._bind_reuse_or_refuse(slot, template, run_mode)
+                    adopted = resolved.labware_instance if resolved is not None else None
+                    if named is not None and (adopted is None or adopted.barcode != named):
+                        refuse_the_spawn(self, slot_key, self._not_the_named_labware(labware_name, named, adopted))
                 await self._refuse_an_adopted_spent_labware(
                     slot, template, resolved, shared_method,
                 )
                 thread_instance = await self._create_thread_fn(
                     template, None, resolved, run_mode,
                 )
+                if named is not None:
+                    thread_instance.set_named_barcode(named)
                 if ctx is not None:
                     is_shared = (
                         template.labware_template.group_sharing
                         is GroupSharing.SHARED_ACROSS_GROUPS
                     )
+                    # A thread every group or submission uses serves them all, so it carries no one group's partners.
+                    serves_one_group = not (
+                        is_shared
+                        or template.start_reuse_existing
+                        or template.labware_template.submission_batching is SubmissionBatching.BATCHABLE
+                    )
+                    if serves_one_group:
+                        group = (ctx.submission_id, ctx.group_id)
+                        thread_instance.set_named_partners(self._named_partners_of_a_group.get(group, {}))
+                        thread_instance.set_left_out(self._left_out_of_a_group.get(group, {}))
                     thread_instance.set_group_id(None if is_shared else ctx.group_id)
                     thread_instance.set_submission_id(ctx.submission_id)
                     thread_instance.set_batch_mode(ctx.batch_mode)
@@ -561,27 +818,36 @@ class ExecutingWorkflow(IWorkflow):
         contributions_to_active increment, no slot.pending mutation. It does
         record depleted labware on the slot, which is a fact about the
         receiver rather than a routing decision. If the spawn would overflow
-        with OverflowAction.RECOVERABLE_REJECT, invokes the slot's strategy
-        (which emits AWAITING_DECISION and raises) so the action-loop wrapper
+        with OverflowAction.REJECT, invokes the slot's strategy
+        (which emits REJECTED and raises) so the action-loop wrapper
         can pause the contributor before any partial multi-input commit.
         """
         if self._workflow.template is None or self._labware_registry is None:
             return None
 
-        async def precheck(labware_name: str, ctx: object | None,
+        async def precheck(labware_name: str, ctx: GroupExecutionContext | None,
                            contributor_method: ExecutingMethod) -> None:
             assert self._workflow.template is not None
             assert self._labware_registry is not None
             template = self._workflow.template.get_auto_spawn_template(labware_name)
             if template is None:
                 return
-            slot_key = self._labware_registry.slot_key_for(template, ctx)
+            named = contributor_method.partner_barcodes.get(labware_name)
+            slot_key = self._labware_registry.slot_key_for(template, ctx, named)
             slot = self._labware_registry.get_slot(slot_key)
             if slot is None or not slot.has_active_thread():
+                if (
+                    named is not None
+                    and not template.start_reuse_existing
+                    and self._thread_still_holding(named, slot_key) is None
+                ):
+                    await self._find_the_named_partner(template, named, slot_key)
                 return
             active = slot.active_thread
             assert active is not None
             active_lw = active.thread_instance.labware
+            if named is not None and active_lw.barcode != named:
+                refuse_the_spawn(self, slot_key, self._not_the_named_labware(labware_name, named, active_lw))
             demand = contributor_method.aggregate_demand(active_lw.template_name)
             can_continue = await active_lw.can_continue(demand)
             # Re-validate after the await: the receiver may have exhausted
@@ -592,26 +858,40 @@ class ExecutingWorkflow(IWorkflow):
                 return
             if can_continue and slot.has_room():
                 return
+            if named is not None:
+                refuse_the_spawn(self, slot_key, self._the_named_labware_takes_no_more(
+                    labware_name, named, active_lw, can_continue,
+                ))
             if not can_continue:
                 # Not a commitment about this contribution: a statement about
-                # the receiver. Under RECOVERABLE_REJECT the strategy below
+                # the receiver. Under REJECT the strategy below
                 # raises, so the commit callback never runs and this is the
                 # only place a depleted receiver would ever hear about it.
                 slot.mark_receiver_spent()
             if slot.policy is None:
                 return
-            if slot.policy.overflow_action is not OverflowAction.RECOVERABLE_REJECT:
+            if slot.policy.overflow_action is not OverflowAction.REJECT:
                 return
             select_strategy(slot).on_overflow(slot, contributor_method, self)
 
         return precheck
 
     def _subscribe_events(self) -> None:
-        for event in self._workflow.event_hooks:
-            self._event_bus.subscribe(event.event_name, event.handler)
+        # The bus is shared by every run, so each handler hears only this run, and only until it ends.
+        self._event_subscriptions: list[tuple[str, EventHandlerType]] = [
+            (event.event_name, self._event_bus.subscribe_to_one_execution(event.event_name, self.id, event.handler))
+            for event in self._workflow.event_hooks
+        ]
+
+    def stop_hearing_events(self) -> None:
+        """Remove this run's `wf.on` handlers from the bus."""
+        for event_name, handler in self._event_subscriptions:
+            self._event_bus.unsubscribe(event_name, handler)
+        self._event_subscriptions = []
 
     def add_thread(self, thread: LabwareThreadInstance) -> ExecutingLabwareThread:
         """Create executing thread, track it, and fire THREAD.CREATED."""
+        self._remember_what_the_group_named(thread)
         executing_thread = self._thread_manager.create_executing_thread(thread.id, self._context)
         executing_thread.set_event_channel_registry(self._event_channel_registry)
         if self._auto_spawn_callback is not None:
@@ -1163,7 +1443,7 @@ class ExecutingWorkflow(IWorkflow):
         the thread sits in ``CREATED`` forever).
 
         ``honor_pause_hold`` (default True) makes the thread start paused while
-        a pause is in force. Operator spawn-recovery passes False: injecting a
+        a pause is in force. An operator's spawn passes False: injecting a
         thread into a paused run is exactly what that call is for.
         """
         if honor_pause_hold:
@@ -1193,8 +1473,9 @@ class ExecutingWorkflow(IWorkflow):
     ) -> None:
         """Done-callback paired with :meth:`start_thread`.
 
-        A crash reaching here escaped the thread's own error handling, so
-        nothing paused for a recovery decision and nothing will move this
+        A crash reaching here ended the thread: an error under the author's
+        failure_policy=ABORT. Any other crash pauses the
+        thread at UNHANDLED_ERROR and never reaches here. Nothing will move this
         thread's labware again. The rest of the run is not torn down over it:
         threads that do not depend on this one have work to finish, and the
         rollup reports the run FAILED once they do. What the operator gets
@@ -1251,10 +1532,10 @@ class ExecutingWorkflow(IWorkflow):
     ) -> ExecutingLabwareThread:
         """Compose thread creation, registration, and start into one call.
 
-        Operator-facing entry point for recovery from AUTO_SPAWN_FAILED and for
-        UIs that want to inject a thread into a running workflow. Mirrors the
-        auto-spawn path but without a shared method or group/submission
-        tagging.
+        Operator-facing entry point for injecting a thread into a running
+        workflow. Mirrors the auto-spawn path but without a shared method or
+        group/submission tagging, so the thread never joins another thread's
+        action and does not recover AUTO_SPAWN_FAILED.
 
         `labware_instance`: when supplied, the factory attaches this existing
         labware (BarcodeAcquisition semantics). When None, the factory mints a
@@ -1419,7 +1700,7 @@ class ExecutingWorkflowFactory:
                 status_manager: StatusManager,
                 system_map: SystemMap,
                 create_thread_fn: CreateThreadFn | None = None,
-                labware_store: ILabwareStore | None = None,
+                labware_service: ILabwareService | None = None,
                 system: _LabwareAdder | None = None,
                 ) -> None:
         self._thread_reservation_coordinator = thread_reservation_coordinator
@@ -1429,24 +1710,18 @@ class ExecutingWorkflowFactory:
         self._status_manager = status_manager
         self._system_map = system_map
         self._create_thread_fn = create_thread_fn
-        self._labware_store = labware_store
+        self._labware_service = labware_service
         self._system = system
 
     def set_runtime_refs(
-        self, labware_store: ILabwareStore, system: _LabwareAdder,
+        self, labware_service: ILabwareService, system: _LabwareAdder,
     ) -> None:
-        """Inject labware_store + system after construction.
-
-        SdkToSystemBuilder builds the factory BEFORE the SystemRuntime
-        exists, so these refs are wired in post-hoc when SystemRuntime is
-        constructed. Reuse-bind threads need both to materialize fresh
-        labware into the dual stores (system.labwares + ILabwareStore).
-        """
-        self._labware_store = labware_store
+        """The System sets these once it exists, since it is built after this factory. Reuse-bind threads need
+        both to register fresh labware in system.labwares and the labware service."""
+        self._labware_service = labware_service
         self._system = system
 
     def create_instance(self, workflow: WorkflowInstance) -> ExecutingWorkflow:
-        from orca.runtime.group_aware_labware_registry import GroupAwareLabwareRegistry
         return ExecutingWorkflow(workflow,
                                 self._thread_reservation_coordinator,
                                 self._system_thread_manager,
@@ -1456,7 +1731,7 @@ class ExecutingWorkflowFactory:
                                 self._system_map,
                                 create_thread_fn=self._create_thread_fn,
                                 labware_registry=GroupAwareLabwareRegistry(),
-                                labware_store=self._labware_store,
+                                labware_service=self._labware_service,
                                 system=self._system)
     
 class IExecutingWorkflowRegistry(ABC):
@@ -1466,16 +1741,10 @@ class IExecutingWorkflowRegistry(ABC):
         raise NotImplementedError
 
     def set_runtime_refs(
-        self, labware_store: ILabwareStore, system: _LabwareAdder,
+        self, labware_service: ILabwareService, system: _LabwareAdder,
     ) -> None:
-        """Inject the runtime's labware_store + system refs into the
-        underlying factory so reuse-bind threads can dual-register fresh
-        labware (system.labwares + labware_store) when their auto-spawn
-        fires.
-
-        Default no-op so subclasses that don't use reuse-bind (System's
-        composition-style adapters) keep working without implementing it.
-        """
+        """The System's labware service and the System itself, for reuse-bind threads. A registry with no
+        reuse-bind keeps this no-op."""
         return None
 
 
@@ -1486,9 +1755,9 @@ class ExecutingWorkflowRegistry(IExecutingWorkflowRegistry):
         self._executing_registry: Dict[str, ExecutingWorkflow] = {}
 
     def set_runtime_refs(
-        self, labware_store: ILabwareStore, system: _LabwareAdder,
+        self, labware_service: ILabwareService, system: _LabwareAdder,
     ) -> None:
-        self._factory.set_runtime_refs(labware_store, system)
+        self._factory.set_runtime_refs(labware_service, system)
 
     def get_executing_workflow(self, execution_id: str) -> ExecutingWorkflow:
         if execution_id in self._executing_registry.keys():

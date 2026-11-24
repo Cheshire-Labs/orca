@@ -1,18 +1,16 @@
 """What is at one position, answered from the one ledger.
 
-Every holder used to keep this itself, in a `_labware` field or a staged/loaded
-pair, and the refusal to double-book was written out four times. A holder now
-composes this and keeps only its driver hooks.
+A holder composes this and keeps only its driver hooks. The system build binds the
+ledger of the system the position belongs to.
 """
 
 from typing import List, Optional
 
 from orca.resource_models.device_error import SlotOccupiedError
 from orca.resource_models.labware import LabwareInstance
-from orca.resource_models.labware_directory import labware_directory
-from orca.state.current import placement_ledger
+from orca.resource_models.labware_directory import LabwareDirectory, LabwarePlacements
 from orca.state.identity import PositionRef
-from orca.state.placement import PlacementConflict, Reach
+from orca.state.placement import PlacementConflict, PlacementLedger, Reach
 
 
 class PositionOccupancy:
@@ -21,6 +19,24 @@ class PositionOccupancy:
     def __init__(self, position_id: str, *, single_occupant: bool = True) -> None:
         self._position = PositionRef(id=position_id)
         self._single = single_occupant
+        self._bound: LabwarePlacements | None = None
+
+    def bind_placements(self, placements: LabwarePlacements) -> None:
+        self._bound = placements
+
+    def _world(self) -> LabwarePlacements:
+        if self._bound is None:
+            raise RuntimeError(
+                f"position {self._position.id!r} is in no built system; "
+                "the system build binds its placements",
+            )
+        return self._bound
+
+    def _placements(self) -> PlacementLedger:
+        return self._world().ledger
+
+    def _labware_directory(self) -> LabwareDirectory:
+        return self._world().directory
 
     @property
     def labware(self) -> Optional[LabwareInstance]:
@@ -33,8 +49,8 @@ class PositionOccupancy:
     def accessible_labware(self) -> Optional[LabwareInstance]:
         """What an arm could take from here right now. A loaded plate is inside
         the device until something stages it back out."""
-        directory = labware_directory()
-        reachable = placement_ledger().accessible_at(self._position)
+        directory = self._labware_directory()
+        reachable = self._placements().accessible_at(self._position)
         return directory.resolve(reachable[0]) if reachable else None
 
     @property
@@ -44,9 +60,9 @@ class PositionOccupancy:
     @property
     def inside_labware(self) -> List[LabwareInstance]:
         """The occupants clamped in the device rather than at its approach
-        point. The staged/loaded pair a bridge used to keep is this reach."""
-        ledger = placement_ledger()
-        directory = labware_directory()
+        point."""
+        ledger = self._placements()
+        directory = self._labware_directory()
         inside = []
         for ref in ledger.occupants_of(self._position):
             held = ledger.placement_of(ref)
@@ -56,9 +72,9 @@ class PositionOccupancy:
 
     def arrive(self, labware: LabwareInstance, *, reach: Reach = Reach.AT_HAND) -> None:
         """Record the labware here, refusing a position another one holds."""
-        labware_directory().remember(labware)
+        self._labware_directory().remember(labware)
         try:
-            placement_ledger().arrived(
+            self._placements().arrived(
                 labware.ref, self._position,
                 reach=reach, single_occupant=self._single,
             )
@@ -73,7 +89,7 @@ class PositionOccupancy:
     def reached(self, labware: LabwareInstance, reach: Reach) -> None:
         """The same labware here, now clamped in or released to the approach
         point. Not a second record."""
-        placement_ledger().reached(labware.ref, reach)
+        self._placements().reached(labware.ref, reach)
 
     def leave(self, labware: LabwareInstance) -> None:
         """It is gone from here. Silent when it was never recorded, because a
@@ -84,14 +100,14 @@ class PositionOccupancy:
         plate already retired when its thread ended, so nothing cleared it from
         the durable store and the next boot put it back on the slot.
         """
-        ledger = placement_ledger()
+        ledger = self._placements()
         held = ledger.placement_of(labware.ref)
         if held is None or held.position.id != self._position.id:
             return
         ledger.vacate(labware.ref)
 
     def holds(self, labware: LabwareInstance) -> bool:
-        held = placement_ledger().placement_of(labware.ref)
+        held = self._placements().placement_of(labware.ref)
         return (
             held is not None
             and held.is_occupying
@@ -99,8 +115,8 @@ class PositionOccupancy:
         )
 
     def _occupants(self) -> List[LabwareInstance]:
-        directory = labware_directory()
+        directory = self._labware_directory()
         return [
             directory.resolve(ref)
-            for ref in placement_ledger().occupants_of(self._position)
+            for ref in self._placements().occupants_of(self._position)
         ]

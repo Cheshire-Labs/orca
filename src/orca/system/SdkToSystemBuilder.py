@@ -1,20 +1,25 @@
 from typing import List, Sequence
 
 from orca.resource_models.labware import LabwareTemplate
+from orca.resource_models.labware_placement import IUnsavedPositions
+from orca.resource_models.labware_service_interface import ILabwareService
+from orca.resource_models.labware_directory import LabwareDirectory, LabwarePlacements
+from orca.state.contents import LabwareContentsLedger
+from orca.state.mounted import MountedTipsLedger
 from orca.state.ops_history import OpsHistory
 from orca.resource_models.tracking_context import TrackingContext
-from orca.runtime.interfaces import ILabwareCatalog
-from orca.runtime.labware_catalog import InMemoryLabwareCatalog
+from orca.resource_models.labware_catalog_protocol import ILabwareCatalog
 from orca.state.ops_store import IOpsHistoryStore
-from orca.events.event_bus import EventBus, SystemBoundEventBus
+from orca.state.placement import PlacementLedger
+from orca.events.event_bus import SystemBoundEventBus
 from orca.events.event_bus_interface import IEventBus
 from orca.config import OrcaConfig
 from orca.system.system_info import SystemInfo
-from orca.system.thread_manager_interface import IThreadManager
-from orca.system.reservation_manager.move_handler import MoveHandler
+from orca.workflow_models.labware_threads.thread_manager_interface import IThreadManager
+from orca.workflow_models.actions.move_handler import MoveHandler
 from orca.system.registries import LabwareRegistry, TemplateRegistry
 from orca.system.reservation_manager.reservation_manager import ThreadReservationCoordinator
-from orca.system.resource_registry import ResourceRegistry
+from orca.resource_models.resource_registry import ResourceRegistry
 from orca.system.system import System
 from orca.system.system_map import SystemMap
 from orca.system.thread_manager import ThreadManager
@@ -27,9 +32,9 @@ from orca.workflow_models.workflows.workflow_factories import ThreadFactory
 from orca.workflow_models.workflows.executing_workflow import ExecutingWorkflowFactory, ExecutingWorkflowRegistry
 from orca.workflow_models.workflows.workflow_registry import ExecutingMethodFactory, ExecutingMethodRegistry, MethodRegistry, ThreadRegistry, WorkflowRegistry
 from orca.workflow_models.workflows.workflow_factories import MethodFactory, WorkflowFactory
-from orca.variables.variable_store import VariableService, VariableStore
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.submission import ResolvedAcquisition
+from orca.variables.variable_store import IVariableService
+from orca.modes.run_modes import WorkflowRunMode
+from orca.workflow_models.submission import ResolvedAcquisition
 from orca.workflow_models.labware_threads.labware_thread import LabwareThreadInstance
 from orca.workflow_models.method import ExecutingMethod
 from orca.workflow_models.method_template import (
@@ -41,6 +46,7 @@ from orca.workflow_models.thread_template import (
     drain_pending_thread_templates,
 )
 from orca.workflow_models.workflow_templates import WorkflowTemplate
+from orca.plugins.declared_tracking_observer import DeclaredTrackingObserver
 
 
 class SdkToSystemBuilder:
@@ -52,34 +58,34 @@ class SdkToSystemBuilder:
                  name: str,
                  description: str,
                  labwares: Sequence[LabwareTemplate] | None = None,
-                 resources_registry: ResourceRegistry | None = None,
-                 system_map: SystemMap | None = None,
+                 *,
+                 resources_registry: ResourceRegistry,
+                 system_map: SystemMap,
                  workflows: List[WorkflowTemplate] | None = None,
-                 event_bus: IEventBus | None = None,
-                 config: OrcaConfig | None = None,
-                 ops_history_store: IOpsHistoryStore | None = None,
-                 labware_catalog: ILabwareCatalog | None = None,
-                 variable_store: VariableService | None = None,
+                 event_bus: IEventBus,
+                 config: OrcaConfig,
+                 ops_history_store: IOpsHistoryStore,
+                 variable_store: IVariableService,
+                 labware_catalog: ILabwareCatalog,
+                 labware_service: ILabwareService,
+                 unsaved_positions: IUnsavedPositions,
                  ) -> None:
         workflows = workflows or []
         derived_labwares = self._derive_labwares(labwares, workflows)
         self._derived_labwares = derived_labwares
-        self._labware_catalog: ILabwareCatalog = (
-            labware_catalog if labware_catalog is not None else self._default_catalog()
-        )
+        self._labware_catalog = labware_catalog
+        self._labware_service = labware_service
+        self._unsaved_positions = unsaved_positions
 
-        self._config = config or OrcaConfig()
+        self._config = config
         self._system_info: SystemInfo = SystemInfo(name, description=description, version="1.0.0", model_extra={})
-        self._resource_reg: ResourceRegistry = resources_registry or ResourceRegistry()
+        self._resource_reg: ResourceRegistry = resources_registry
         self._labware_registry: LabwareRegistry = self._get_labware_registry(derived_labwares)
-        self._system_map: SystemMap = system_map or SystemMap(self._resource_reg)
-        self._event_bus = SystemBoundEventBus(event_bus or EventBus())
+        self._system_map: SystemMap = system_map
+        self._event_bus = SystemBoundEventBus(event_bus)
 
         self._template_registry: TemplateRegistry = self._get_template_registry(workflows)
-        self._variable_store: VariableService = (
-            variable_store if variable_store is not None
-            else VariableService(VariableStore())
-        )
+        self._variable_store = variable_store
         for workflow in workflows:
             if workflow.variable_definitions:
                 self._variable_store.register_workflow_definitions(
@@ -87,7 +93,10 @@ class SdkToSystemBuilder:
                 )
         self._method_factory = MethodFactory()
         self._ops_history = OpsHistory(store=ops_history_store)
-        self._thread_factory = ThreadFactory(self._method_factory, self._ops_history)
+        # Both fold the operation record on every read, so one of each serves the whole system.
+        self._labware_contents = LabwareContentsLedger(self._ops_history)
+        self._mounted_tips = MountedTipsLedger(self._ops_history)
+        self._thread_factory = ThreadFactory(self._method_factory, self._labware_contents)
         self._method_registry = MethodRegistry(self._method_factory)
         self._thread_registry = ThreadRegistry(self._thread_factory, 
                                                self._method_registry, 
@@ -109,26 +118,25 @@ class SdkToSystemBuilder:
             self._thread_reservation_coordinator.starvation_registry,
             self._config.reservation,
         )
-        # Lazy import: orca.plugins.__init__ imports trackers that pull in
-        # entity_resolver -> sdk.build, creating a cycle if imported at module level.
-        from orca.plugins.declared_tracking_observer import DeclaredTrackingObserver
         tracking_context = TrackingContext(observer=DeclaredTrackingObserver(), ops_history=self._ops_history)
         self._tracking_context = tracking_context
         method_factory = ExecutingMethodFactory(self._event_bus, self._status_manager, self._variable_store, tracking_context)
         self._executing_method_registry = ExecutingMethodRegistry(self._method_registry, method_factory)
         self._action_resolver = DynamicResourceActionResolver(self._thread_reservation_coordinator, self._system_map, self._config.reservation)
-        self._labware_location_service = InMemoryLabwareLocationService()
+        # One ledger per build, so a rebuilt runtime never inherits a dead build's plates.
+        self._labware_location_service = InMemoryLabwareLocationService(
+            LabwarePlacements(PlacementLedger(), LabwareDirectory()),
+        )
+        for position in self._system_map.every_position():
+            self._labware_location_service.bind_placements(position)
         residency_check = build_residency_check(self._thread_registry, self._status_manager)
         self._executing_thread_factory = ExecutingThreadFactory(self._event_bus,
                                                                 self._move_hander,
                                                                 self._status_manager,
-                                                                self._thread_reservation_coordinator,
                                                                 self._action_resolver,
                                                                 self._executing_method_registry,
-                                                                self._system_map,
                                                                 self._labware_location_service,
                                                                 self._config.coordination,
-                                                                method_factory=self._method_factory,
                                                                 method_registry=self._method_registry,
                                                                 variable_store=self._variable_store,
                                                                 register_method_template=self._template_registry.add_method_template,
@@ -188,9 +196,8 @@ class SdkToSystemBuilder:
         # execution. This build-time check moves the diagnosis up front.
         #
         # The check applies only when the workflow execution model is in
-        # play (some thread exists). `StandaloneMethodExecutor` binds
-        # labware via labware_start_mapping directly and legitimately
-        # passes `labwares=[...]` with no workflow threads.
+        # play (some thread exists). Workflows that only hold methods for
+        # standalone runs declare no threads and pass `labwares=[...]`.
         threaded_names: set[str] = {
             thread.labware_template.name
             for wf in workflows
@@ -219,16 +226,6 @@ class SdkToSystemBuilder:
                     seen[lt.name] = lt
         return list(seen.values())
 
-    @staticmethod
-    def _default_catalog() -> ILabwareCatalog:
-        """Construct the bundled PLR-seeded catalog.
-
-        Used when the caller does not pass `labware_catalog` -- e.g. the
-        source-available/sim path, examples, and tests that exercise the SDK directly.
-        A hosted production deployment passes its `DbLabwareCatalog`.
-        """
-        from cheshire_drivers.labware_seed import load_labware_seed
-        return InMemoryLabwareCatalog(load_labware_seed())
 
     def _get_labware_registry(self, labwares: List[LabwareTemplate]) -> LabwareRegistry:
         reg = LabwareRegistry()
@@ -299,6 +296,10 @@ class SdkToSystemBuilder:
                 self._labware_location_service,
                 self._labware_catalog,
                 self._variable_store,
+                self._labware_contents,
+                self._mounted_tips,
+                self._labware_service,
+                self._unsaved_positions,
                 )
         self._event_bus.bind_system(system)
 

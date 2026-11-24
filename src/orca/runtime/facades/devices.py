@@ -1,11 +1,6 @@
-"""DeviceFacade: operator-facing device command invocation.
+"""DeviceFacade: operator-facing device reads, and the checks an operator command by name passes first.
 
-`execute` and `invoke` both dispatch one command by name, discovered via
-`get_supported_commands`. A command the orca-side resource implements is
-called on it; anything else goes to the connected device through the gateway,
-which is how a driver's vendor commands are reached.
-
-Capability introspection has two sources. Interface methods come from the
+The commands themselves go through the server's operator runner. Capability introspection has two sources. Interface methods come from the
 device's bound LIVE driver's `interfaces` ClassVar, mapped through
 `_INTERFACE_BRIDGE` to the orca-side interface that declares them, with param
 types read off the annotations. Vendor commands exist on no orca-side
@@ -17,8 +12,6 @@ param is a non-JSON-primitive.
 from dataclasses import replace
 
 import inspect
-import json
-import time
 from typing import Any, Callable
 
 from pydantic import JsonValue
@@ -32,7 +25,6 @@ from cheshire_drivers.driver_introspection import (
 from orca.devices.device_interfaces import (
     ICentrifuge,
     IDelidder,
-    IGenericExecutable,
     ILiquidHandler,
     IPlateWasher,
     IProtocolRunner,
@@ -43,8 +35,7 @@ from orca.devices.device_interfaces import (
     ITempSettable,
     IThermocycler,
 )
-from orca.gateway import adhoc
-from orca.gateway.registry import device_connection_tracker
+from orca.gateway.device_gateway import DeviceGateway
 from orca.gateway.registry.snapshot import DeviceSnapshot as ConnectionSnapshot
 from orca.devices.devices import LiquidHandler as DeviceLiquidHandler
 from orca.resource_models.device_error import DeviceUnderExternalControlError
@@ -56,29 +47,21 @@ from orca.runtime.registries.device_link import (
     DeviceLinkReader,
     forget_driver_session as _forget_driver_session,
 )
-from orca.runtime.run_modes import (
-    OPERATOR_DEVICE_WRITE_BASE,
-    WorkflowRunMode,
-    mode_scope,
-)
 from orca.runtime.runtime_interface import (
-    DeviceInvocationResult,
     ISystemRuntime,
-    IDeviceConnectionSource,
-    IDeviceFacade,
-    IDeviceFaultSource,
-    IGatewayRegistry,
-    ITopologyRegistry,
 )
-from orca.gateway.device_fault import FAULTED_STATUS
+from orca.runtime.registry_protocols import (
+    IDeviceConnectionSource,
+    IDeviceFaultSource,
+)
+from orca.runtime.facade_interfaces import (
+    IDeviceFacade,
+)
 from orca.runtime.status_models import (
     CommandDescriptor,
     DeviceFaultSummary,
     DeviceIntrospection,
     DeviceSnapshot,
-    DeviceUnionEntry,
-    GatewayDeviceEntry,
-    TopologyDeviceEntry,
 )
 from orca.system.system_interface import DeckComparison, ISystem
 
@@ -89,14 +72,10 @@ from orca.system.system_interface import DeckComparison, ISystem
 # that declares the invokable methods plus its operator namespace. The driver
 # is the single source of truth for which capabilities a device exposes:
 # `get_supported_commands` / `_allowed_invoke_methods` read
-# `resource.live_driver.interfaces` and map each name through here, exactly
+# `resource.driver.interfaces` and map each name through here, exactly
 # like `get_device_introspection` and the topology registry. A liquid handler
 # is no different from any other device -- its surface is whatever its bound
 # driver advertises (protocol-only, plr-only, or both).
-#
-# `IGenericExecutable` / `generic.execute` is intentionally NOT in this bridge:
-# it is an orca-device concept (the `execute` verb) not advertised in any
-# driver `interfaces` ClassVar, so it stays a class-side check on `Device`.
 _INTERFACE_BRIDGE: dict[str, tuple[type, str]] = {
     "ITempSettable": (ITempSettable, "temperature"),
     "ITempGettable": (ITempGettable, "temperature"),
@@ -119,7 +98,7 @@ _PRIMITIVE_TYPES: frozenset[type] = frozenset({bool, int, float, str, bytes, typ
 # quietly send the command to a different object.
 _ORCA_NAMESPACES: frozenset[str] = frozenset(
     ns for _iface, ns in _INTERFACE_BRIDGE.values()
-) | {"generic"}
+)
 
 
 class DeviceFacade(IDeviceFacade):
@@ -128,39 +107,24 @@ class DeviceFacade(IDeviceFacade):
     def __init__(
         self,
         system: ISystem,
-        topology: ITopologyRegistry,
-        gateway: IGatewayRegistry,
         connections: IDeviceConnectionSource,
         runtime: ISystemRuntime,
-        faults: IDeviceFaultSource,
+        device_gateway: DeviceGateway,
     ) -> None:
         self._system = system
-        self._topology = topology
-        self._gateway = gateway
-        self._links = DeviceLinkReader(connections, system)
+        self._links = DeviceLinkReader(connections, system, runtime.operator_base_mode)
         self._runtime = runtime
-        self._faults = faults
+        self._device_gateway = device_gateway
+        self._faults: IDeviceFaultSource = device_gateway.controller
+
+    def _connection_card(self, device_name: str) -> ConnectionSnapshot | None:
+        """What the device advertised when its orca-client connected, if it did."""
+        return self._device_gateway.tracker.peek_snapshot(device_name)
 
     # -- Reads ---------------------------------------------------------------
 
-    async def list_devices(self) -> list[DeviceUnionEntry]:
-        """Union view across topology declarations and live gateway connections.
-
-        Async because `IGatewayRegistry.list_connected` is async (a hosted deployment's
-        DB-backed impl issues a Postgres query). The topology side is
-        in-process and cheap. The source-available default `NullGatewayRegistry` returns
-        empty, so a local run with no gateway shows only topology-declared
-        devices with `gateway_connected=False`.
-        """
-        topology_entries = self._topology.list_devices()
-        gateway_entries = await self._gateway.list_connected()
-        return _merge_union_view(
-            topology_entries, gateway_entries,
-            lambda name: self._faults.fault(name) is not None,
-        )
-
-    def get_device_status(self, device_name: str) -> DeviceSnapshot:
-        return self._snapshot(self._resolve(device_name))
+    async def get_device_status(self, device_name: str) -> DeviceSnapshot:
+        return await self._snapshot(self._resolve(device_name))
 
     def _dispatch_target(self, device_name: str) -> Device | Transporter | None:
         """The topology resource for this device, or None if only a device
@@ -173,7 +137,7 @@ class DeviceFacade(IDeviceFacade):
             return self._resolve(device_name)
         except (KeyError, ValueError):
             pass
-        if _connection_card(device_name) is None:
+        if self._connection_card(device_name) is None:
             raise KeyError(
                 f"Device '{device_name}' is not declared in the topology and no "
                 f"device bridge has connected it."
@@ -184,7 +148,7 @@ class DeviceFacade(IDeviceFacade):
         # Interface commands come from the topology resource, vendor commands
         # from the device bridge's card; an undeclared device has only the card.
         resource = self._dispatch_target(device_name)
-        vendor = _vendor_descriptors(device_name)
+        vendor = _vendor_descriptors(device_name, self._connection_card(device_name))
         if resource is None:
             return vendor
         return _capabilities_for_device(resource) + vendor
@@ -194,7 +158,7 @@ class DeviceFacade(IDeviceFacade):
         # A gateway device's local driver is the remote proxy, and describing
         # it describes the proxy: none of the vendor surface, and none of the
         # signatures the driver on the bench sent at its handshake.
-        card = _connection_card(device_name)
+        card = self._connection_card(device_name)
         if card is not None:
             return DeviceIntrospection(
                 type=card.type,
@@ -207,13 +171,10 @@ class DeviceFacade(IDeviceFacade):
                     for name, info in card.methods.items()
                 },
             )
-        # The live driver is the production contract; the sim driver may
-        # diverge. Reading through `resource.driver` would leak the sim surface
-        # under an unseeded `current_run_mode`.
         resource = self._resolve(device_name)
-        driver = resource.live_driver
+        driver = resource.driver
         driver_cls = type(driver)
-        interfaces_attr = getattr(driver_cls, "interfaces", frozenset())
+        interfaces_attr: frozenset[str] = getattr(driver_cls, "interfaces", frozenset())
         interfaces: tuple[str, ...] = tuple(sorted(interfaces_attr))
         capabilities = tuple(sorted(_derive_capabilities(driver_cls)))
         provides_state = bool(getattr(driver_cls, "provides_state", False))
@@ -240,18 +201,20 @@ class DeviceFacade(IDeviceFacade):
     @dangerous(
         name="device.set_mounted_tips",
         level=DangerLevel.OPERATOR,
-        message="State that device '{device_name}' is carrying {by_channel}. "
+        message="State that device '{device_name}' is carrying {by_channel} on its "
+                "channels and {head96} on its 96 head. "
                 "Absolute: channels you leave out are recorded as carrying "
-                "nothing. This is what the head is seeded from after a restart, "
-                "so a wrong answer here makes the next pick wrong.",
+                "nothing. This writes Orca's record only; nothing sends it to "
+                "the driver. A vendor protocol runs only when the record says "
+                "the head is empty.",
     )
     async def set_mounted_tips(
         self, device_name: str, by_channel: dict[int, tuple[str, str]],
-        *, reason: str | None = None, confirm: bool = False,
+        *, head96: dict[int, tuple[str, str]] | None = None, reason: str | None = None, confirm: bool = False,
     ) -> None:
         del confirm, reason  # consumed by @dangerous audit
         self._system.get_device(device_name)
-        await self._system.mounted_tips.assert_mounted(device_name, by_channel)
+        await self._system.mounted_tips.assert_mounted(device_name, by_channel, head96)
 
     @dangerous(
         name="device.confirm_mounted_tips",
@@ -267,175 +230,31 @@ class DeviceFacade(IDeviceFacade):
         self._system.get_device(device_name)
         await self._system.mounted_tips.confirm(device_name)
 
-    @dangerous(
-        name="device.execute",
-        level=DangerLevel.PHYSICAL,
-        message="Send generic command '{command}' to device '{device_name}'. "
-                "Bypasses workflow coordination; concurrent actions may contend on "
-                "the device lock and leave hardware in an unexpected state.",
-    )
-    async def execute(
-        self, device_name: str, command: str,
-        options: dict[str, JsonValue] | None = None,
-        *, mode: WorkflowRunMode | None = None,
-        vendor_confirm: bool = False,
-        reason: str | None = None,
-    ) -> DeviceInvocationResult:
-        del reason  # consumed by @dangerous audit
+    def command_name(self, device_name: str, name: str) -> str:
+        """The command `name` sends. An orca-side namespace (`shaker.shake`) is dropped; a vendor prefix is kept."""
+        namespace, _, member = name.rpartition(".")
+        if namespace not in _ORCA_NAMESPACES or not member:
+            return name
         device = self._dispatch_target(device_name)
-        if device is not None and device.under_external_control:
-            raise DeviceUnderExternalControlError(device_name)
-        start = time.monotonic()
-        with mode_scope(mode if mode is not None else OPERATOR_DEVICE_WRITE_BASE):
-            # IGenericExecutable is a locally-driven device's own command verb.
-            # Everything else is reached over the gateway, where the advertised
-            # set is the gate.
-            if isinstance(device, IGenericExecutable):
-                await device.execute(command, options or {})
-                value: JsonValue = None
-            else:
-                value = (await adhoc.execute_adhoc_command(
-                    self._runtime,
-                    device_id=device_name,
-                    command=command,
-                    params=options or {},
-                    confirm=vendor_confirm,
-                )).raw
-        return _wrap_result(
-            value=value,
-            duration=time.monotonic() - start,
-            device_name=device_name,
-            command=command,
-        )
-
-    @dangerous(
-        name="device.invoke",
-        level=DangerLevel.PHYSICAL,
-        message="Invoke method '{capability}' on device '{device_name}' with "
-                "args {kwargs}. Bypasses workflow coordination.",
-    )
-    async def invoke(
-        self, device_name: str, capability: str, kwargs: dict[str, JsonValue],
-        *, mode: WorkflowRunMode | None = None,
-        vendor_confirm: bool = False,
-        reason: str | None = None,
-    ) -> DeviceInvocationResult:
-        del reason  # consumed by @dangerous audit
-        device = self._dispatch_target(device_name)
-        if device is not None and device.under_external_control:
-            raise DeviceUnderExternalControlError(device_name)
-        # A vendor command's prefix is part of its name (`gripper.ungrip`); an
-        # orca-side namespace is not (`shaker.shake`) and is dropped.
-        # `execute` is a Venus vendor extra as well as the orca-side verb, and
-        # it has its own entry point; the union must not hand it back here.
-        allowed = _advertised_capabilities(device_name) - {"execute"}
+        card = self._connection_card(device_name)
+        advertised = _advertised_capabilities(card) | _advertised_methods(card)
         if device is not None:
-            allowed |= _allowed_invoke_methods(device)
+            advertised |= _allowed_invoke_methods(device)
+        return name if name in advertised else member
+
+    async def after_lifecycle(self, device_name: str, command: str) -> None:
+        """A liquid handler's deck after a bring-up is pushed again from the ledger; after a disconnect it is forgotten."""
+        try:
+            resource = self._resolve(device_name)
+        except (KeyError, ValueError):
+            return
+        if not isinstance(resource, DeviceLiquidHandler):
+            return
+        if command == "disconnect":
+            # The re-seed happens before its next command, once the device is back.
+            await self._forget_the_deck(resource)
         else:
-            # With no orca-side resource there is nothing to read interface
-            # methods off, so the card's catalog is the allow-list. It is the
-            # same set `device capabilities` prints, which is what stops the
-            # catalog listing a command this refuses.
-            allowed |= _advertised_methods(device_name) - {"execute"}
-        namespace, _, member = capability.rpartition(".")
-        if capability in allowed:
-            method_name = capability
-        elif namespace in _ORCA_NAMESPACES and member:
-            method_name = member
-        else:
-            method_name = capability
-        if method_name not in allowed:
-            raise ValueError(
-                f"Device '{device_name}' has no invokable capability method "
-                f"'{method_name}'. See `orca device capabilities {device_name}` "
-                f"for the list."
-            )
-        method: Callable[..., object] | None = (
-            getattr(device, method_name, None) if device is not None else None
-        )
-
-        start = time.monotonic()
-        with mode_scope(mode if mode is not None else OPERATOR_DEVICE_WRITE_BASE):
-            if callable(method):
-                result = method(**kwargs)
-                if inspect.isawaitable(result):
-                    result = await result
-            else:
-                # A forwarded vendor command exists on the driver behind the
-                # wire, never on the orca-side resource.
-                result = (await adhoc.execute_adhoc_command(
-                    self._runtime,
-                    device_id=device_name,
-                    command=method_name,
-                    params=kwargs,
-                    confirm=vendor_confirm,
-                )).raw
-        return _wrap_result(
-            value=result,
-            duration=time.monotonic() - start,
-            device_name=device_name,
-            command=capability,
-        )
-
-    @dangerous(
-        name="device.initialize",
-        level=DangerLevel.PHYSICAL,
-        message="Initialize device '{device_name}'. Brings it up and resets driver "
-                "state -- can drop the labware it was tracking, reset calibration, "
-                "and interrupt an action currently holding the device lock. It asks "
-                "for no motion: ask for `home` when you want the device moved. Check "
-                "`orca device info {device_name}` first.",
-    )
-    async def initialize(
-        self, device_name: str, *, mode: WorkflowRunMode | None = None,
-        reason: str | None = None,
-    ) -> None:
-        del reason  # consumed by @dangerous audit
-        # Resolves through `_resolve` so this verb accepts Transporters
-        # too (`ResourceRegistry.get_device` rejects them).
-        #
-        # Does not gate on `under_external_control`: the gateway holds the
-        # flag during `device.initialize()`, so gating here would self-block.
-        resource = self._resolve(device_name)
-        with mode_scope(mode if mode is not None else OPERATOR_DEVICE_WRITE_BASE):
-            await resource.initialize()
-            await self._reseed_lh_deck_if_lh(resource)
-
-    @dangerous(
-        name="device.connect",
-        level=DangerLevel.OPERATOR,
-        message="Connect device '{device_name}': open its link and take its "
-                "session. Moves nothing.",
-    )
-    async def connect(
-        self, device_name: str, *, mode: WorkflowRunMode | None = None,
-        reason: str | None = None,
-    ) -> None:
-        del reason  # consumed by @dangerous audit
-        resource = self._resolve(device_name)
-        with mode_scope(mode if mode is not None else OPERATOR_DEVICE_WRITE_BASE):
-            await resource.connect()
-            await self._reseed_lh_deck_if_lh(resource)
-
-    @dangerous(
-        name="device.disconnect",
-        level=DangerLevel.OPERATOR,
-        message="Disconnect device '{device_name}'. Ends the session and drops "
-                "motor power on hardware that holds it, so anything mid-action "
-                "on this device fails.",
-    )
-    async def disconnect(
-        self, device_name: str, *, mode: WorkflowRunMode | None = None,
-        reason: str | None = None,
-    ) -> None:
-        del reason  # consumed by @dangerous audit
-        resource = self._resolve(device_name)
-        with mode_scope(mode if mode is not None else OPERATOR_DEVICE_WRITE_BASE):
-            await resource.disconnect()
-            # Invalidate only: the device just went away, so the re-seed
-            # happens on the next reconcile (connect / initialize / below).
-            if isinstance(resource, DeviceLiquidHandler):
-                await resource.invalidate_deck_world()
+            await self._deck_goes_stale(resource)
 
     @dangerous(
         name="device.reconcile_deck",
@@ -448,13 +267,14 @@ class DeviceFacade(IDeviceFacade):
                 "so a RETRY can find its labware again.",
     )
     async def reconcile_deck(
-        self, device_name: str, *, mode: WorkflowRunMode | None = None,
+        self, device_name: str, *,
         reason: str | None = None,
     ) -> DeckComparison | None:
         """Force the deck reconcile pass for one liquid handler NOW.
 
         Lifecycle verbs dispatched through orca re-seed automatically; this is
-        the operator's lever for the rebuilds orca never saw.
+        the operator's lever for the rebuilds orca never saw. Only the world in
+        force is pushed; the device's other worlds are left as they were.
 
         The comparison runs FIRST and its result comes back, because the push
         that follows overwrites the driver's answer: whatever the two disagreed
@@ -462,9 +282,11 @@ class DeviceFacade(IDeviceFacade):
         """
         del reason  # consumed by @dangerous audit
         resource = self._require_liquid_handler(device_name, "reconcile")
-        with mode_scope(mode if mode is not None else OPERATOR_DEVICE_WRITE_BASE):
-            comparison = await self._compare_and_report(resource)
-            await self._reseed_lh_deck(resource)
+        comparison = await self._compare_and_report(resource)
+        await self._forget_the_deck(resource)
+        location = self._system.system_map.get_resource_location(resource.name)
+        async with self._system.device_worlds.rebuilding(resource.name):
+            await self._system.labware_placer.deck_rebuilt(location)
         return comparison
 
     @dangerous(
@@ -480,10 +302,10 @@ class DeviceFacade(IDeviceFacade):
     ) -> None:
         """Claim a device for hands-on work until it is released.
 
-        The gateway already takes external control around each ad-hoc command
-        and gives it straight back, which says nothing about the gap between
-        two of them. A workflow can start a move into the device in that gap.
-        This is the standing claim: it lasts until someone releases it.
+        The gateway takes external control only while an operator's commands
+        are open, and gives it back when the last one ends. A workflow can start
+        a move into the device between two of them. This is the standing claim:
+        it lasts until someone releases it.
         """
         self._resolve(device_name).hold_external_control(reason)
 
@@ -498,19 +320,17 @@ class DeviceFacade(IDeviceFacade):
         del reason  # consumed by @dangerous audit
         self._resolve(device_name).release_external_control_hold()
 
-    async def compare_deck(
-        self, device_name: str, *, mode: WorkflowRunMode | None = None,
-    ) -> DeckComparison:
+    async def compare_deck(self, device_name: str) -> DeckComparison:
         """What this liquid handler's driver says its deck holds, against the ledger.
 
-        Reads only, and changes neither side. Files nothing either: an
+        Changes neither side, except to rebuild a driver world that is only
+        behind the record, as its next command would. Files nothing either: an
         assistant is told to run this routinely, so filing per call would put
         three copies of every conflict on the queue for three checks. The
         reconcile is what files, because that is the call that acts.
         """
         resource = self._require_liquid_handler(device_name, "compare")
-        with mode_scope(mode if mode is not None else OPERATOR_DEVICE_WRITE_BASE):
-            comparison = await self._compare_and_report(resource, report=False)
+        comparison = await self._compare_and_report(resource, report=False)
         if comparison is None:
             raise ValueError(
                 f"liquid handler '{device_name}' has no deck layout configured, "
@@ -553,20 +373,16 @@ class DeviceFacade(IDeviceFacade):
         return comparison
 
     async def reseed_deck_if_liquid_handler(self, device_name: str) -> bool:
-        """Reconnect-triggered re-seed: a returning device bridge may hold a
-        rebuilt driver session with an empty deck. A state push with no motion,
-        so no confirmation gate; unknown and non-LH names are skipped rather
-        than errors because every device reconnect routes through here. The
-        device bridge IS the wire, so the push resolves against the live base
-        (the device's own sim ratchet still applies)."""
+        """A reconnected liquid handler may hold a new driver session: its deck layout is forgotten and its world in
+        force rebuilt now, or at its next command if another task holds it. Other names are skipped."""
         try:
             resource = self._resolve(device_name)
         except KeyError:
             return False
         if not isinstance(resource, DeviceLiquidHandler):
             return False
-        with mode_scope(OPERATOR_DEVICE_WRITE_BASE):
-            await self._reseed_lh_deck(resource)
+        await self._forget_every_deck(resource)
+        await self._system.device_worlds.bring_up_to_date(resource.name)
         return True
 
     def forget_driver_session(self, device_name: str) -> None:
@@ -580,26 +396,31 @@ class DeviceFacade(IDeviceFacade):
             resource = self._resolve(device_name)
         except KeyError:
             return
-        _forget_driver_session(resource.live_driver)
+        _forget_driver_session(resource.driver)
 
-    async def _reseed_lh_deck_if_lh(self, resource: Device | Transporter) -> None:
-        if isinstance(resource, DeviceLiquidHandler):
-            await self._reseed_lh_deck(resource)
+    async def _forget_the_deck(self, resource: DeviceLiquidHandler) -> None:
+        """The driver in force may have been rebuilt with an empty deck: its layout is forgotten and its world
+        marked, so it is laid out and rebuilt from the ledger before its next command. Other modes' drivers were
+        not sent the command, so their worlds are left as they were."""
+        await resource.invalidate_deck_world_in_force()
+        self._system.device_worlds.mark(resource.name, await resource.effective_mode())
 
-    async def _reseed_lh_deck(self, resource: DeviceLiquidHandler) -> None:
-        """Invalidate the deck world, then reconcile: the driver session may
-        have been rebuilt, and a rebuilt session holds an empty deck the world
-        model has to re-declare before any command can name its labware."""
+    async def _forget_every_deck(self, resource: DeviceLiquidHandler) -> None:
+        """The client may have rebuilt every driver it holds for this device: every world is forgotten and marked."""
         await resource.invalidate_deck_world()
-        location = self._system.system_map.get_resource_location(resource.name)
-        await self._system.reconcile_lh_deck_occupancy(location)
+        self._system.device_worlds.mark_every_world(resource.name)
+
+    async def _deck_goes_stale(self, resource: DeviceLiquidHandler) -> None:
+        """As `_forget_the_deck`, and the world in force is rebuilt now."""
+        await self._forget_the_deck(resource)
+        await self._system.device_worlds.bring_up_to_date(resource.name)
 
     # -- Resolution + snapshots ---------------------------------------------
 
     def _resolve(self, name: str) -> Device | Transporter:
         """Per-name resolver that accepts either runtime device kind.
 
-        ``runtime_device_list`` returns Devices and Transporters in one union
+        ``list_devices`` returns Devices and Transporters in one union
         view, so per-name reads must accept either. ``ResourceRegistry.
         get_device`` is Equipment-only (raises ValueError for Transporter)
         and ``get_transporter`` is the inverse, so try Device first and fall
@@ -625,7 +446,7 @@ class DeviceFacade(IDeviceFacade):
         message="Say that '{device_name}' has been looked at and is fit to drive. "
                 "The workflow starts using it again, so put the machine right "
                 "first: nothing here checks it. Often not needed: recovering a "
-                "thread paused on this fault with RETRY, RETRY_OP or CONTINUE "
+                "thread paused on this fault with RETRY, RETRY_ACTION or CONTINUE "
                 "says the same thing, and so does a clean initialize or home.",
     )
     async def clear_fault(self, device_name: str, *, reason: str | None = None) -> DeviceFaultSummary | None:
@@ -640,13 +461,14 @@ class DeviceFacade(IDeviceFacade):
         await self._faults.clear_fault(device_name)
         return summary
 
-    def _snapshot(self, resource: Device | Transporter) -> DeviceSnapshot:
+    async def _snapshot(self, resource: Device | Transporter) -> DeviceSnapshot:
         # One world per snapshot: the same base the link flags beside it resolve.
-        effective_mode = resource.mode_under(OPERATOR_DEVICE_WRITE_BASE)
+        effective_mode = await resource.mode_under(self._runtime.operator_base_mode())
+        setting = await resource.setting()
         # Not `resource.is_initialized`: on the cloud path that reads a proxy
         # cache the typed device routes never touch, so it can sit False
         # through a full bring-up while the registry route says True.
-        is_initialized = self._links.is_initialized(resource.name)
+        is_initialized = await self._links.is_initialized(resource.name)
         if isinstance(resource, Transporter):
             held = resource.labware
             return DeviceSnapshot(
@@ -655,6 +477,7 @@ class DeviceFacade(IDeviceFacade):
                 is_initialized=is_initialized,
                 is_busy=resource.in_use,
                 effective_mode=effective_mode,
+                setting=setting,
                 position_ids=(),
                 loaded_labware_ids=(held.id,) if held is not None else (),
                 under_external_control=resource.under_external_control,
@@ -667,73 +490,13 @@ class DeviceFacade(IDeviceFacade):
             is_initialized=is_initialized,
             is_busy=resource.in_use,
             effective_mode=effective_mode,
+            setting=setting,
             position_ids=tuple(loc.name for loc in resource.locations),
             loaded_labware_ids=resource.all_loaded_labware_ids,
             under_external_control=resource.under_external_control,
             external_control_hold=resource.external_control_hold,
             fault=self._fault_summary(resource.name),
         )
-
-
-def _merge_union_view(
-    topology: list[TopologyDeviceEntry],
-    gateway: list[GatewayDeviceEntry],
-    is_faulted: Callable[[str], bool],
-) -> list[DeviceUnionEntry]:
-    """Merge topology + gateway entries by name into a stable union list.
-
-    Output order is deterministic: topology-declared names first (in their
-    topology order), then gateway-only names sorted alphabetically. Status is
-    the gateway entry's when present, except on a faulted device, where the
-    device bridge reports "ready" for an idle driver behind a machine nobody
-    should drive.
-    """
-    gateway_by_name: dict[str, GatewayDeviceEntry] = {g.name: g for g in gateway}
-    result: list[DeviceUnionEntry] = []
-    seen: set[str] = set()
-    for topo in topology:
-        gw = gateway_by_name.get(topo.name)
-        result.append(DeviceUnionEntry(
-            name=topo.name,
-            in_topology=True,
-            gateway_connected=gw is not None,
-            last_heartbeat=gw.last_heartbeat if gw else None,
-            topology_kind=topo.kind,
-            gateway_kind=gw.driver_class_observed if gw else None,
-            interfaces=topo.interfaces,
-            position_ids=topo.position_ids,
-            status=_status_of(topo.name, gw.status if gw else None, is_faulted),
-            faulted=is_faulted(topo.name),
-        ))
-        seen.add(topo.name)
-    for name in sorted(n for n in gateway_by_name if n not in seen):
-        gw = gateway_by_name[name]
-        result.append(DeviceUnionEntry(
-            name=gw.name,
-            in_topology=False,
-            gateway_connected=True,
-            last_heartbeat=gw.last_heartbeat,
-            topology_kind=None,
-            gateway_kind=gw.driver_class_observed,
-            interfaces=gw.interfaces,
-            position_ids=(),
-            status=_status_of(gw.name, gw.status, is_faulted),
-            faulted=is_faulted(gw.name),
-        ))
-    return result
-
-
-def _status_of(
-    name: str, reported: str | None, is_faulted: Callable[[str], bool],
-) -> str | None:
-    """What this device is, not what its device bridge last said it was.
-
-    The device bridge answers "ready" for a faulted device: the driver behind
-    it is idle and waiting, which is exactly what makes a fault easy to miss.
-    Every other device list already folds the fault into the status, so folding
-    it here too stops two lists describing the same device differently.
-    """
-    return FAULTED_STATUS if is_faulted(name) else reported
 
 
 def _iface_methods(iface: type) -> list[str]:
@@ -745,14 +508,8 @@ def _iface_methods(iface: type) -> list[str]:
 
 
 def _driver_interface_names(resource: Device | Transporter) -> frozenset[str]:
-    """Capability interface names the resource's LIVE driver advertises.
-
-    The live driver is the deployment's capability contract; reading through
-    the dispatch `driver` property would leak the sim surface under an
-    unseeded run mode (matches `get_device_introspection` and the topology
-    registry). Resources without a live driver contribute nothing.
-    """
-    driver = getattr(resource, "live_driver", None)
+    """Capability interface names the resource's driver advertises; nothing for a resource without one."""
+    driver = getattr(resource, "driver", None)
     if driver is None:
         return frozenset()
     return frozenset(getattr(type(driver), "interfaces", frozenset()))
@@ -765,9 +522,7 @@ def _capability_members(
 
     Each advertised interface name is mapped through `_INTERFACE_BRIDGE` to its
     orca-side interface + namespace; methods come from the interface contract.
-    Deterministic order (namespace, method). The class-side `execute` verb
-    (`generic.execute`) is appended when the device implements
-    `IGenericExecutable`, since that verb is not driver-advertised.
+    Deterministic order (namespace, method).
     """
     members: list[tuple[str, type, str]] = []
     for iface_name in _driver_interface_names(resource):
@@ -777,8 +532,6 @@ def _capability_members(
         iface, ns = bridged
         for method_name in _iface_methods(iface):
             members.append((ns, iface, method_name))
-    if isinstance(resource, IGenericExecutable):
-        members.append(("generic", IGenericExecutable, "execute"))
     return sorted(set(members), key=lambda m: (m[0], m[2]))
 
 
@@ -792,29 +545,22 @@ def _capabilities_for_device(
     ]
 
 
-def _connection_card(device_name: str) -> ConnectionSnapshot | None:
-    """What the device advertised when its orca-client connected, if it did."""
-    return device_connection_tracker.peek_snapshot(device_name)
-
-
-def _advertised_methods(device_name: str) -> frozenset[str]:
+def _advertised_methods(card: ConnectionSnapshot | None) -> frozenset[str]:
     """Every method name the connected driver put in its handshake catalog.
 
     Wider than `_advertised_capabilities`: it also holds the @external
     interface methods, which is what `device capabilities` lists.
     """
-    card = _connection_card(device_name)
     return frozenset(card.methods) if card is not None else frozenset()
 
 
-def _advertised_capabilities(device_name: str) -> frozenset[str]:
+def _advertised_capabilities(card: ConnectionSnapshot | None) -> frozenset[str]:
     """Vendor commands the connected driver advertised at the handshake.
 
     These exist on no orca-side interface: they are whatever the driver
     forwards to its vendor objects, and the handshake is the only place this
     side of the wire learns them.
     """
-    card = _connection_card(device_name)
     return frozenset(card.capabilities) if card is not None else frozenset()
 
 
@@ -848,9 +594,10 @@ def _catalog_params(info: MethodInfo | None) -> tuple[ParamSpec, ...]:
     return tuple(specs)
 
 
-def _vendor_descriptors(device_name: str) -> list[CommandDescriptor]:
+def _vendor_descriptors(
+    device_name: str, card: ConnectionSnapshot | None,
+) -> list[CommandDescriptor]:
     """Descriptors for the vendor commands a connected device advertises."""
-    card = _connection_card(device_name)
     if card is None:
         return []
     out: list[CommandDescriptor] = []
@@ -943,34 +690,3 @@ def _is_primitive(param: ParamSpec) -> bool:
         inner = name.split("[", 1)[1].rstrip("]")
         return inner in primitive_names
     return False
-
-
-def _wrap_result(
-    value: Any,
-    duration: float,
-    device_name: str,
-    command: str,
-) -> DeviceInvocationResult:
-    """Coerce an arbitrary return value into a JSON-friendly DeviceInvocationResult."""
-    if value is None:
-        return DeviceInvocationResult(
-            success=True,
-            value_type="None",
-            value=None,
-            duration_seconds=duration,
-            device_name=device_name,
-            command_or_capability=command,
-        )
-    if isinstance(value, bool):
-        return DeviceInvocationResult(True, "bool", str(value).lower(), duration, device_name, command)
-    if isinstance(value, int):
-        return DeviceInvocationResult(True, "int", str(value), duration, device_name, command)
-    if isinstance(value, float):
-        return DeviceInvocationResult(True, "float", repr(value), duration, device_name, command)
-    if isinstance(value, str):
-        return DeviceInvocationResult(True, "str", value, duration, device_name, command)
-    try:
-        encoded = json.dumps(value, default=str)
-        return DeviceInvocationResult(True, "json", encoded, duration, device_name, command)
-    except (TypeError, ValueError):
-        return DeviceInvocationResult(True, "json", repr(value), duration, device_name, command)

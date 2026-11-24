@@ -17,31 +17,41 @@ button.
 
 import asyncio
 from collections.abc import Iterator, Sequence
+from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
 import pytest
+
+from tests.real_device_path import the_real_device_path
+
+from orca.modes.device_modes import DeviceMode
+from orca.modes.run_modes import WorkflowRunMode
 
 from cheshire_drivers.liquid_handler_models import (
     LabwareStateResponse, ResetDeckLabwareRequest,
 )
 
-from cheshire_drivers.interfaces import ITransporterDriver
 from cheshire_drivers.transporter_models import ResetWorldRequest
 from orca.devices.devices import LiquidHandler
 from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.resources import ILabwareStateHolder
-from orca.runtime.deck_layout_service import seeded_deck_layout_service
 from orca.runtime.execution import Execution, ExecutionPhase
 from orca.runtime.facades.labware import LabwareFacade
+from orca.runtime.labware_service import AnnouncedLabwareService, LabwareService
+from orca.runtime.server_events import ServerEvents
+from orca.runtime.sinks import CollectorSink
 from orca.runtime.labware_store import InMemoryLabwareStore
-from orca.runtime.runtime_interface import (
+from orca.runtime.errors import (
     ActiveExecutionRefusedError, LabwareNotFoundError,
 )
-from orca.runtime.system_runtime import SystemRuntime
 from orca.system.system_interface import ISystem
 from orca.workflow_models.status_enums import LabwareThreadStatus
-from tests.test_helpers import create_test_device, create_test_transporter
+from orca.workflow_models.submission import ResolvedAcquisition, Submission
+from orca.workflow_models.submission_modes import BatchMode
+from tests.test_helpers import create_test_device, create_test_transporter, kept_engine_commands
 from tests.test_system_runtime import _build_simple_system
+from tests.setup_package import deck_layout_file, with_deck_layouts
+from tests.memory_activity import memory_runtime
 
 
 class _StubExecutionIterator:
@@ -56,6 +66,9 @@ class _StubExecutionIterator:
 
     def iter_executions(self) -> Iterator[Execution]:
         return iter(self._executions)
+
+    def operator_base_mode(self) -> WorkflowRunMode:
+        return WorkflowRunMode.LIVE
 
 
 def _make_pending_task() -> asyncio.Task[None]:
@@ -94,7 +107,7 @@ def _make_thread_stub(
     submission_id: str, labware: LabwareInstance | None,
     *, end_leave_in_place: bool = False,
     thread_template: object | None = None,
-    status: LabwareThreadStatus | None = None,
+    status: LabwareThreadStatus = LabwareThreadStatus.AWAITING_ACTION_RESERVATION,
 ):
     """Stub thread shape consumed by LabwareFacade._has_active_thread_for
     and clear_submission_labware (reads `thread.thread_instance`)."""
@@ -109,8 +122,7 @@ def _make_thread_stub(
         ti.thread_template = thread_template
     thread = MagicMock()
     thread.thread_instance = ti
-    if status is not None:
-        thread.status = status
+    thread.status = status
     return thread
 
 
@@ -118,7 +130,7 @@ class TestClearAllLabware:
 
     async def test_clear_all_removes_from_system_and_store(self) -> None:
         system, _ = await _build_simple_system()
-        runtime = SystemRuntime(system, labware_store=InMemoryLabwareStore())
+        runtime = await memory_runtime(system)
         await runtime.start()
         try:
             snap = await runtime.labware.register(
@@ -126,15 +138,15 @@ class TestClearAllLabware:
             )
             # Sanity: registered in both system.labwares and the store.
             assert any(lw.id == snap.id for lw in system.labwares)
-            assert await runtime.labware._store.get_by_id(snap.id) is not None
+            assert await runtime.labware._labware_service.get_by_id(snap.id) is not None
 
             cleared = await runtime.labware.clear_all_labware(force=True, confirm=True)
             assert snap.id in cleared
             assert not [lw for lw in system.labwares if lw.id == snap.id]
             # A lifecycle end is not a retraction: identity survives, only
             # the active position is dropped.
-            assert await runtime.labware._store.get_by_id(snap.id) is not None
-            assert await runtime.labware._store.list_active_locations() == []
+            assert await runtime.labware._labware_service.get_by_id(snap.id) is not None
+            assert await runtime.labware._labware_service.list_active_locations() == []
         finally:
             await runtime.shutdown()
 
@@ -142,7 +154,7 @@ class TestClearAllLabware:
         """When labware sits at a Location.labware slot (the canonical
         case after `initialize_labware`), clear_all must wipe that too."""
         system, _ = await _build_simple_system()
-        runtime = SystemRuntime(system, labware_store=InMemoryLabwareStore())
+        runtime = await memory_runtime(system)
         await runtime.start()
         try:
             instance = LabwareInstance("plate_96", "96_well")
@@ -164,17 +176,16 @@ class TestClearAllHolderContract:
     and an offline/erroring holder cannot block the panic button."""
 
     def _add_liquid_handler(self, system: ISystem) -> LiquidHandler:
-        lh = LiquidHandler(
+        lh = with_deck_layouts(LiquidHandler(
             name="lh1", sim=True,
-            deck_layout_store=seeded_deck_layout_service(),
-        )
+        ), deck_layout_file())
         system.add_resource(lh)
         return lh
 
     async def test_clear_all_resets_every_holder(self) -> None:
         system, _ = await _build_simple_system()
         self._add_liquid_handler(system)
-        runtime = SystemRuntime(system, labware_store=InMemoryLabwareStore())
+        runtime = await memory_runtime(system)
         await runtime.start()
         try:
             reset: list[str] = []
@@ -198,12 +209,12 @@ class TestClearAllHolderContract:
 
     async def test_offline_holder_does_not_block_panic_button(self) -> None:
         system, _ = await _build_simple_system()
-        runtime = SystemRuntime(system, labware_store=InMemoryLabwareStore())
+        runtime = await memory_runtime(system)
         await runtime.start()
         try:
             instance = LabwareInstance("plate_96", "96_well")
             system.add_labware(instance)
-            await runtime.labware._store.register(instance)
+            await runtime.labware._labware_service.register(instance)
 
             async def _boom() -> None:
                 raise RuntimeError("transporter offline")
@@ -214,8 +225,8 @@ class TestClearAllHolderContract:
             cleared = await runtime.labware.clear_all_labware(force=True, confirm=True)
 
             assert instance.id in cleared
-            assert await runtime.labware._store.get_by_id(instance.id) is not None
-            assert await runtime.labware._store.list_active_locations() == []
+            assert await runtime.labware._labware_service.get_by_id(instance.id) is not None
+            assert await runtime.labware._labware_service.list_active_locations() == []
         finally:
             await runtime.shutdown()
 
@@ -236,30 +247,42 @@ class TestClearAllHolderContract:
 
     async def test_a_mover_clears_both_of_its_worlds(self) -> None:
         """The narrow reset means the world the caller dispatches in. Clear-all
-        means both, because the seeds a sim run left are in the sim driver's
-        world while an operator's clear-all resolves to LIVE."""
-        transporter = create_test_transporter("robot1", ["pad1"])
-        cleared: list[int] = []
+        means the simulator's world and the real driver's, because the seeds a
+        sim run left are in the simulator's world while an operator's clear-all
+        resolves to LIVE."""
+        transporter = create_test_transporter("robot1", ["pad1"], setting=DeviceMode.LIVE)
+        saved = kept_engine_commands(transporter)
+        cleared: list[WorkflowRunMode] = []
 
-        def _spy_on(driver: ITransporterDriver) -> None:
-            async def _reset(_request: ResetWorldRequest) -> None:
-                cleared.append(id(driver))
-            setattr(driver, "reset_world", _reset)
+        async def _reset(_request: ResetWorldRequest) -> None:
+            cleared.append(await transporter.effective_mode())
 
-        for each in transporter._sim_manager.all_drivers:
-            _spy_on(each)
+        setattr(transporter.driver, "reset_world", _reset)
 
         await transporter.reset_labware_state_everywhere()
 
-        assert len(set(cleared)) == 2, (
-            f"clear-all reached {len(set(cleared))} of the mover's two worlds"
-        )
+        assert cleared == [WorkflowRunMode.SIM, WorkflowRunMode.LIVE]
+        assert saved == ["reset_world", "reset_world"]
+
+    async def test_a_mover_set_to_sim_clears_its_one_world_once(self) -> None:
+        transporter = create_test_transporter("robot1", ["pad1"], setting=DeviceMode.SIM)
+        kept_engine_commands(transporter)
+        cleared: list[WorkflowRunMode] = []
+
+        async def _reset(_request: ResetWorldRequest) -> None:
+            cleared.append(await transporter.effective_mode())
+
+        setattr(transporter.driver, "reset_world", _reset)
+
+        await transporter.reset_labware_state_everywhere()
+
+        assert cleared == [WorkflowRunMode.SIM]
 
     async def test_liquid_handler_reset_labware_state_calls_driver(self) -> None:
-        lh = LiquidHandler(
+        lh = with_deck_layouts(LiquidHandler(
             name="lh1", sim=True,
-            deck_layout_store=seeded_deck_layout_service(),
-        )
+        ), deck_layout_file())
+        saved = kept_engine_commands(lh)
         requests: list[ResetDeckLabwareRequest] = []
 
         async def _reset_deck(request: ResetDeckLabwareRequest) -> LabwareStateResponse:
@@ -270,6 +293,7 @@ class TestClearAllHolderContract:
         await lh.reset_labware_state()
         assert len(requests) == 1
         assert isinstance(requests[0], ResetDeckLabwareRequest)
+        assert saved == ["reset_deck_labware"]
 
 
 class _StatusUnreadableThread:
@@ -290,13 +314,13 @@ class TestDischargeLabware:
 
     async def test_discharge_removes_from_three_stores(self) -> None:
         system, _ = await _build_simple_system()
-        runtime = SystemRuntime(system, labware_store=InMemoryLabwareStore())
+        runtime = await memory_runtime(system)
         await runtime.start()
         try:
             instance = LabwareInstance("plate_96", "96_well")
             instance.barcode = "BC-2"
             system.add_labware(instance)
-            await runtime.labware._store.register(instance)
+            await runtime.labware._labware_service.register(instance)
             pad1 = system.system_map.get_location("pad1")
             pad1.initialize_labware(instance)
 
@@ -305,8 +329,8 @@ class TestDischargeLabware:
             assert not [lw for lw in system.labwares if lw.id == instance.id]
             assert pad1.labware is None
             # Discharge closes the labware out; its record stays queryable.
-            assert await runtime.labware._store.get_by_id(instance.id) is not None
-            assert await runtime.labware._store.list_active_locations() == []
+            assert await runtime.labware._labware_service.get_by_id(instance.id) is not None
+            assert await runtime.labware._labware_service.list_active_locations() == []
         finally:
             await runtime.shutdown()
 
@@ -315,8 +339,8 @@ class TestDischargeLabware:
         place swaps that id, so the read can miss while the bind is in flight.
         "Cannot tell" has to mean "still holding it": the raise escaped this
         facade as a 404 telling the operator the plate was never registered."""
-        system, _ = await _build_simple_system()
         store = InMemoryLabwareStore()
+        system, _ = await _build_simple_system(labware_service=LabwareService(store))
         instance = LabwareInstance("plate_96", "96_well")
         system.add_labware(instance)
         await store.register(instance)
@@ -326,14 +350,14 @@ class TestDischargeLabware:
                 system, threads_view=[_StatusUnreadableThread(instance)],
             )],
         )
-        facade = LabwareFacade(system, store, exec_iter)
+        facade = LabwareFacade(system, system.labware_service, exec_iter)
 
         with pytest.raises(ActiveExecutionRefusedError):
             await facade.discharge_labware(instance.id, confirm=True)
 
     async def test_discharge_unknown_id_raises(self) -> None:
         system, _ = await _build_simple_system()
-        runtime = SystemRuntime(system, labware_store=InMemoryLabwareStore())
+        runtime = await memory_runtime(system)
         await runtime.start()
         try:
             with pytest.raises(KeyError):
@@ -357,8 +381,8 @@ class TestClearSubmissionLabware:
 
     async def test_walks_threads_keyed_by_submission_id(self) -> None:
         """Only labware on threads matching submission_id are cleared."""
-        system, _ = await _build_simple_system()
         store = InMemoryLabwareStore()
+        system, _ = await _build_simple_system(labware_service=LabwareService(store))
 
         target_lw = LabwareInstance("plate_96", "96_well")
         other_lw = LabwareInstance("plate_96", "96_well")
@@ -375,7 +399,7 @@ class TestClearSubmissionLabware:
         exec_iter = _StubExecutionIterator(
             [_make_active_execution(system, threads_view=threads)],
         )
-        facade = LabwareFacade(system, store, exec_iter)
+        facade = LabwareFacade(system, system.labware_service, exec_iter)
 
         result = await facade.clear_submission_labware(
             "sub-target", force=True,
@@ -394,12 +418,34 @@ class TestClearSubmissionLabware:
             t.thread_instance.thread_template = None  # quiet pending warning
         exec_iter._executions[0].task.cancel()
 
+    async def test_clearing_a_submission_announces_each_plate_it_cleared(self) -> None:
+        store = InMemoryLabwareStore()
+        seen = CollectorSink()
+        events = ServerEvents()
+        events.add_sink(seen)
+        system, _ = await _build_simple_system(labware_service=AnnouncedLabwareService(LabwareService(store), events))
+        target_lw = LabwareInstance("plate_96", "96_well")
+        other_lw = LabwareInstance("plate_96", "96_well")
+        for lw in (target_lw, other_lw):
+            system.add_labware(lw)
+            await store.register(lw)
+        threads = [_make_thread_stub("sub-target", target_lw), _make_thread_stub("sub-other", other_lw)]
+        exec_iter = _StubExecutionIterator([_make_active_execution(system, threads_view=threads)])
+        facade = LabwareFacade(system, system.labware_service, exec_iter)
+
+        await facade.clear_submission_labware("sub-target", force=True, confirm=True)
+
+        assert [(e.entity_id, e.status) for e in seen.events] == [(target_lw.id, "CLEARED")]
+        for t in threads:
+            t.thread_instance.thread_template = None
+        exec_iter._executions[0].task.cancel()
+
     async def test_reuse_bound_labware_is_preserved(self) -> None:
         """Threads whose template declared `end_leave_in_place=True`
         are SKIPPED -- the shared reagent survives a clear that targets
         the submission using it."""
-        system, _ = await _build_simple_system()
         store = InMemoryLabwareStore()
+        system, _ = await _build_simple_system(labware_service=LabwareService(store))
         reagent = LabwareInstance("reagent_plate", "trough")
         consumable = LabwareInstance("plate_96", "96_well")
         for lw in (reagent, consumable):
@@ -413,7 +459,7 @@ class TestClearSubmissionLabware:
         exec_iter = _StubExecutionIterator(
             [_make_active_execution(system, threads_view=threads)],
         )
-        facade = LabwareFacade(system, store, exec_iter)
+        facade = LabwareFacade(system, system.labware_service, exec_iter)
 
         result = await facade.clear_submission_labware("sub-1", force=True, confirm=True)
 
@@ -430,8 +476,8 @@ class TestClearSubmissionLabware:
         """C3: with an active execution AND force=False, the refusal
         branch must fire. The pre-fix code returned [] because the
         getattr trick made `_iter_active_executions` always empty."""
-        system, _ = await _build_simple_system()
         store = InMemoryLabwareStore()
+        system, _ = await _build_simple_system(labware_service=LabwareService(store))
         lw = LabwareInstance("plate_96", "96_well")
         system.add_labware(lw)
         await store.register(lw)
@@ -440,7 +486,7 @@ class TestClearSubmissionLabware:
         exec_iter = _StubExecutionIterator(
             [_make_active_execution(system, threads_view=threads)],
         )
-        facade = LabwareFacade(system, store, exec_iter)
+        facade = LabwareFacade(system, system.labware_service, exec_iter)
 
         with pytest.raises(RuntimeError, match="active execution"):
             await facade.clear_submission_labware("sub-1", force=False, confirm=True)
@@ -451,8 +497,8 @@ class TestClearSubmissionLabware:
         exec_iter._executions[0].task.cancel()
 
     async def test_force_true_bypasses_active_execution(self) -> None:
-        system, _ = await _build_simple_system()
         store = InMemoryLabwareStore()
+        system, _ = await _build_simple_system(labware_service=LabwareService(store))
         lw = LabwareInstance("plate_96", "96_well")
         system.add_labware(lw)
         await store.register(lw)
@@ -461,7 +507,7 @@ class TestClearSubmissionLabware:
         exec_iter = _StubExecutionIterator(
             [_make_active_execution(system, threads_view=threads)],
         )
-        facade = LabwareFacade(system, store, exec_iter)
+        facade = LabwareFacade(system, system.labware_service, exec_iter)
 
         result = await facade.clear_submission_labware("sub-1", force=True, confirm=True)
 
@@ -471,6 +517,95 @@ class TestClearSubmissionLabware:
         assert store.get_location(lw.id) is None
 
         exec_iter._executions[0].task.cancel()
+
+
+    async def test_a_plate_another_running_execution_uses_is_not_cleared_with_a_finished_submission(
+        self,
+    ) -> None:
+        """A later run named the plate by barcode and is using it. Clearing the first run's submission must not wipe it."""
+        system, _ = await _build_simple_system()
+        store = InMemoryLabwareStore()
+        lw = LabwareInstance("plate_96", "96_well")
+        system.add_labware(lw)
+        await store.register(lw)
+        await store.update_location(lw.id, "pad1")
+
+        finished = _make_active_execution(system, threads_view=[
+            _make_thread_stub("sub-old", lw, status=LabwareThreadStatus.COMPLETED),
+        ])
+        finished.task.cancel()
+        await asyncio.gather(finished.task, return_exceptions=True)
+        running = _make_active_execution(system, submission_id="sub-new", threads_view=[
+            _make_thread_stub("sub-new", lw, status=LabwareThreadStatus.EXECUTING_ACTION),
+        ])
+        facade = LabwareFacade(system, LabwareService(store), _StubExecutionIterator([finished, running]))
+
+        with pytest.raises(ActiveExecutionRefusedError) as refused:
+            await facade.clear_submission_labware("sub-old", force=False, confirm=True)
+
+        assert refused.value.scope == "labware" and refused.value.labware_id == lw.id
+        assert store.get_location(lw.id) == "pad1"
+        running.task.cancel()
+
+    async def test_a_plate_whose_thread_in_the_running_execution_finished_can_be_cleared(self) -> None:
+        """A batched run stays open after one submission's plate is done; that finished claim does not hold the plate."""
+        system, _ = await _build_simple_system()
+        store = InMemoryLabwareStore()
+        lw = LabwareInstance("plate_96", "96_well")
+        system.add_labware(lw)
+        await store.register(lw)
+        await store.update_location(lw.id, "pad1")
+
+        finished = _make_active_execution(system, threads_view=[
+            _make_thread_stub("sub-old", lw, status=LabwareThreadStatus.COMPLETED),
+        ])
+        finished.task.cancel()
+        await asyncio.gather(finished.task, return_exceptions=True)
+        still_open = _make_active_execution(system, submission_id="sub-new", threads_view=[
+            _make_thread_stub("sub-new", lw, status=LabwareThreadStatus.COMPLETED),
+        ])
+        still_open.submissions.append(Submission(
+            id="sub-new", execution_id=still_open.id, workflow_name="wf", groups=(), variables={},
+            batch_mode=BatchMode.JOIN_EXISTING, submitted_at=datetime.now(timezone.utc),
+            run_mode=WorkflowRunMode.SIM,
+            resolved_acquisitions={("g1", "plate_thread"): ResolvedAcquisition(labware_instance=lw)},
+        ))
+        facade = LabwareFacade(system, LabwareService(store), _StubExecutionIterator([finished, still_open]))
+
+        result = await facade.clear_submission_labware("sub-old", force=False, confirm=True)
+
+        assert result.cleared == [lw.id]
+        still_open.task.cancel()
+
+    async def test_a_plate_a_starting_execution_names_is_not_cleared_before_its_threads_exist(self) -> None:
+        """A later run named the plate by barcode but has not built its threads yet. Its claim still counts."""
+        system, _ = await _build_simple_system()
+        store = InMemoryLabwareStore()
+        lw = LabwareInstance("plate_96", "96_well")
+        system.add_labware(lw)
+        await store.register(lw)
+        await store.update_location(lw.id, "pad1")
+
+        finished = _make_active_execution(system, threads_view=[
+            _make_thread_stub("sub-old", lw, status=LabwareThreadStatus.COMPLETED),
+        ])
+        finished.task.cancel()
+        await asyncio.gather(finished.task, return_exceptions=True)
+        starting = _make_active_execution(system, submission_id="sub-new")
+        starting.submissions.append(Submission(
+            id="sub-new", execution_id=starting.id, workflow_name="wf", groups=(), variables={},
+            batch_mode=BatchMode.STANDALONE, submitted_at=datetime.now(timezone.utc),
+            run_mode=WorkflowRunMode.SIM,
+            resolved_acquisitions={("g1", "plate_thread"): ResolvedAcquisition(labware_instance=lw)},
+        ))
+        facade = LabwareFacade(system, LabwareService(store), _StubExecutionIterator([finished, starting]))
+
+        with pytest.raises(ActiveExecutionRefusedError) as refused:
+            await facade.clear_submission_labware("sub-old", force=False, confirm=True)
+
+        assert refused.value.scope == "labware" and refused.value.labware_id == lw.id
+        assert store.get_location(lw.id) == "pad1"
+        starting.task.cancel()
 
 
 # -- C3: active-execution refusal pin for discharge + clear_all ------------
@@ -485,8 +620,8 @@ class TestActiveExecutionRefusal:
     """
 
     async def test_discharge_refuses_when_thread_holds_labware(self) -> None:
-        system, _ = await _build_simple_system()
         store = InMemoryLabwareStore()
+        system, _ = await _build_simple_system(labware_service=LabwareService(store))
         lw = LabwareInstance("plate_96", "96_well")
         system.add_labware(lw)
         await store.register(lw)
@@ -495,7 +630,7 @@ class TestActiveExecutionRefusal:
         exec_iter = _StubExecutionIterator(
             [_make_active_execution(system, threads_view=threads)],
         )
-        facade = LabwareFacade(system, store, exec_iter)
+        facade = LabwareFacade(system, system.labware_service, exec_iter)
 
         with pytest.raises(RuntimeError, match="active thread"):
             await facade.discharge_labware(lw.id, force=False, confirm=True)
@@ -509,8 +644,8 @@ class TestActiveExecutionRefusal:
         take this labware off, so it must not be the reason the take-off is
         refused. Forcing past the check would have skipped it for every other
         thread too."""
-        system, _ = await _build_simple_system()
         store = InMemoryLabwareStore()
+        system, _ = await _build_simple_system(labware_service=LabwareService(store))
         lw = LabwareInstance("plate_96", "96_well")
         system.add_labware(lw)
         await store.register(lw)
@@ -521,7 +656,7 @@ class TestActiveExecutionRefusal:
         exec_iter = _StubExecutionIterator(
             [_make_active_execution(system, threads_view=threads)],
         )
-        facade = LabwareFacade(system, store, exec_iter)
+        facade = LabwareFacade(system, system.labware_service, exec_iter)
 
         await facade.discharge_labware(lw.id, force=False, confirm=True)
 
@@ -533,8 +668,8 @@ class TestActiveExecutionRefusal:
     async def test_discharge_still_refuses_when_another_thread_holds_it(self) -> None:
         """The exemption is per-thread: a second thread using the same labware
         for real still blocks the discharge."""
-        system, _ = await _build_simple_system()
         store = InMemoryLabwareStore()
+        system, _ = await _build_simple_system(labware_service=LabwareService(store))
         lw = LabwareInstance("plate_96", "96_well")
         system.add_labware(lw)
         await store.register(lw)
@@ -548,7 +683,7 @@ class TestActiveExecutionRefusal:
         exec_iter = _StubExecutionIterator(
             [_make_active_execution(system, threads_view=threads)],
         )
-        facade = LabwareFacade(system, store, exec_iter)
+        facade = LabwareFacade(system, system.labware_service, exec_iter)
 
         with pytest.raises(RuntimeError, match="active thread"):
             await facade.discharge_labware(lw.id, force=False, confirm=True)
@@ -557,9 +692,30 @@ class TestActiveExecutionRefusal:
 
         exec_iter._executions[0].task.cancel()
 
-    async def test_clear_all_refuses_when_any_execution_active(self) -> None:
+    async def test_discharge_refuses_a_plate_a_starting_execution_named_before_its_thread_exists(self) -> None:
         system, _ = await _build_simple_system()
         store = InMemoryLabwareStore()
+        lw = LabwareInstance("plate_96", "96_well")
+        system.add_labware(lw)
+        await store.register(lw)
+        starting = _make_active_execution(system, submission_id="sub-new")
+        starting.submissions.append(Submission(
+            id="sub-new", execution_id=starting.id, workflow_name="wf", groups=(), variables={},
+            batch_mode=BatchMode.STANDALONE, submitted_at=datetime.now(timezone.utc),
+            run_mode=WorkflowRunMode.SIM,
+            resolved_acquisitions={("g1", "plate_thread"): ResolvedAcquisition(labware_instance=lw)},
+        ))
+        facade = LabwareFacade(system, LabwareService(store), _StubExecutionIterator([starting]))
+
+        with pytest.raises(ActiveExecutionRefusedError):
+            await facade.discharge_labware(lw.id, force=False, confirm=True)
+
+        assert await store.get_by_id(lw.id) is not None
+        starting.task.cancel()
+
+    async def test_clear_all_refuses_when_any_execution_active(self) -> None:
+        store = InMemoryLabwareStore()
+        system, _ = await _build_simple_system(labware_service=LabwareService(store))
         lw = LabwareInstance("plate_96", "96_well")
         system.add_labware(lw)
         await store.register(lw)
@@ -567,7 +723,7 @@ class TestActiveExecutionRefusal:
         exec_iter = _StubExecutionIterator(
             [_make_active_execution(system, threads_view=[])],
         )
-        facade = LabwareFacade(system, store, exec_iter)
+        facade = LabwareFacade(system, system.labware_service, exec_iter)
 
         with pytest.raises(RuntimeError, match="active execution"):
             await facade.clear_all_labware(force=False, confirm=True)
@@ -578,14 +734,14 @@ class TestActiveExecutionRefusal:
 
     async def test_discharge_allows_when_no_active_executions(self) -> None:
         """No active execution -> force=False discharge succeeds."""
-        system, _ = await _build_simple_system()
         store = InMemoryLabwareStore()
+        system, _ = await _build_simple_system(labware_service=LabwareService(store))
         lw = LabwareInstance("plate_96", "96_well")
         system.add_labware(lw)
         await store.register(lw)
 
         exec_iter = _StubExecutionIterator([])  # zero active executions
-        facade = LabwareFacade(system, store, exec_iter)
+        facade = LabwareFacade(system, system.labware_service, exec_iter)
 
         await facade.discharge_labware(lw.id, force=False, confirm=True)
 
@@ -593,14 +749,14 @@ class TestActiveExecutionRefusal:
         assert store.get_location(lw.id) is None
 
     async def test_clear_all_allows_when_no_active_executions(self) -> None:
-        system, _ = await _build_simple_system()
         store = InMemoryLabwareStore()
+        system, _ = await _build_simple_system(labware_service=LabwareService(store))
         lw = LabwareInstance("plate_96", "96_well")
         system.add_labware(lw)
         await store.register(lw)
 
         exec_iter = _StubExecutionIterator([])
-        facade = LabwareFacade(system, store, exec_iter)
+        facade = LabwareFacade(system, system.labware_service, exec_iter)
 
         cleared = await facade.clear_all_labware(force=False, confirm=True)
 
@@ -620,12 +776,12 @@ class TestActiveExecutionRefusalEndToEnd:
 
     async def test_force_false_refusal_fires_through_runtime_wiring(self) -> None:
         system, _ = await _build_simple_system()
-        runtime = SystemRuntime(system, labware_store=InMemoryLabwareStore())
+        runtime = await memory_runtime(system)
         await runtime.start()
         try:
             lw = LabwareInstance("plate_96", "96_well")
             system.add_labware(lw)
-            await runtime.labware._store.register(lw)
+            await runtime.labware._labware_service.register(lw)
 
             # Inject an Execution into the runtime's execution map. The
             # facade obtained via `runtime.labware` must see it through
@@ -667,8 +823,8 @@ class TestTypedExceptions:
     """
 
     async def test_clear_submission_raises_active_execution_refused(self) -> None:
-        system, _ = await _build_simple_system()
         store = InMemoryLabwareStore()
+        system, _ = await _build_simple_system(labware_service=LabwareService(store))
         lw = LabwareInstance("plate_96", "96_well")
         system.add_labware(lw)
         await store.register(lw)
@@ -676,7 +832,7 @@ class TestTypedExceptions:
         exec_iter = _StubExecutionIterator(
             [_make_active_execution(system, threads_view=threads)],
         )
-        facade = LabwareFacade(system, store, exec_iter)
+        facade = LabwareFacade(system, system.labware_service, exec_iter)
 
         with pytest.raises(ActiveExecutionRefusedError) as excinfo:
             await facade.clear_submission_labware("sub-x", force=False, confirm=True)
@@ -686,8 +842,8 @@ class TestTypedExceptions:
         exec_iter._executions[0].task.cancel()
 
     async def test_discharge_raises_active_execution_refused(self) -> None:
-        system, _ = await _build_simple_system()
         store = InMemoryLabwareStore()
+        system, _ = await _build_simple_system(labware_service=LabwareService(store))
         lw = LabwareInstance("plate_96", "96_well")
         system.add_labware(lw)
         await store.register(lw)
@@ -695,7 +851,7 @@ class TestTypedExceptions:
         exec_iter = _StubExecutionIterator(
             [_make_active_execution(system, threads_view=threads)],
         )
-        facade = LabwareFacade(system, store, exec_iter)
+        facade = LabwareFacade(system, system.labware_service, exec_iter)
 
         with pytest.raises(ActiveExecutionRefusedError) as excinfo:
             await facade.discharge_labware(lw.id, force=False, confirm=True)
@@ -705,12 +861,12 @@ class TestTypedExceptions:
         exec_iter._executions[0].task.cancel()
 
     async def test_clear_all_raises_active_execution_refused(self) -> None:
-        system, _ = await _build_simple_system()
         store = InMemoryLabwareStore()
+        system, _ = await _build_simple_system(labware_service=LabwareService(store))
         exec_iter = _StubExecutionIterator(
             [_make_active_execution(system, threads_view=[])],
         )
-        facade = LabwareFacade(system, store, exec_iter)
+        facade = LabwareFacade(system, system.labware_service, exec_iter)
 
         with pytest.raises(ActiveExecutionRefusedError) as excinfo:
             await facade.clear_all_labware(force=False, confirm=True)
@@ -721,10 +877,10 @@ class TestTypedExceptions:
         exec_iter._executions[0].task.cancel()
 
     async def test_discharge_unknown_id_raises_labware_not_found(self) -> None:
-        system, _ = await _build_simple_system()
         store = InMemoryLabwareStore()
+        system, _ = await _build_simple_system(labware_service=LabwareService(store))
         exec_iter = _StubExecutionIterator([])
-        facade = LabwareFacade(system, store, exec_iter)
+        facade = LabwareFacade(system, system.labware_service, exec_iter)
 
         with pytest.raises(LabwareNotFoundError) as excinfo:
             await facade.discharge_labware("does-not-exist", force=False, confirm=True)
@@ -754,8 +910,8 @@ class TestClearSubmissionTerminalExecution:
     """
 
     async def test_a_finished_run_is_the_ordinary_case_to_clear(self) -> None:
-        system, _ = await _build_simple_system()
         store = InMemoryLabwareStore()
+        system, _ = await _build_simple_system(labware_service=LabwareService(store))
         lw = LabwareInstance("plate_96", "96_well")
         system.add_labware(lw)
         await store.register(lw)
@@ -781,7 +937,7 @@ class TestClearSubmissionTerminalExecution:
             executing_workflow=ew,
         )
         exec_iter = _StubExecutionIterator([execution])
-        facade = LabwareFacade(system, store, exec_iter)
+        facade = LabwareFacade(system, system.labware_service, exec_iter)
 
         # No refusal: nothing is still carrying the plate.
         result = await facade.clear_submission_labware("sub-x", force=False, confirm=True)
@@ -799,8 +955,8 @@ class TestClearSubmissionTerminalExecution:
         """The refusal is about the submission's own run, not about the lab
         being busy. A second workflow running elsewhere must not stop an
         operator clearing the bench a finished run left behind."""
-        system, _ = await _build_simple_system()
         store = InMemoryLabwareStore()
+        system, _ = await _build_simple_system(labware_service=LabwareService(store))
         finished_lw = LabwareInstance("plate_96", "96_well")
         busy_lw = LabwareInstance("plate_96", "96_well")
         for lw in (finished_lw, busy_lw):
@@ -828,7 +984,7 @@ class TestClearSubmissionTerminalExecution:
             system, threads_view=[_make_thread_stub("sub-busy", busy_lw)],
         )
         exec_iter = _StubExecutionIterator([finished, still_running])
-        facade = LabwareFacade(system, store, exec_iter)
+        facade = LabwareFacade(system, system.labware_service, exec_iter)
 
         try:
             result = await facade.clear_submission_labware(
@@ -846,8 +1002,8 @@ class TestClearSubmissionTerminalExecution:
     async def test_terminal_execution_does_not_block_clear_all(self) -> None:
         """A terminal execution must not block clear_all (force=False)
         since `_has_any_active_thread` walks the same iterator."""
-        system, _ = await _build_simple_system()
         store = InMemoryLabwareStore()
+        system, _ = await _build_simple_system(labware_service=LabwareService(store))
         lw = LabwareInstance("plate_96", "96_well")
         system.add_labware(lw)
         await store.register(lw)
@@ -867,7 +1023,7 @@ class TestClearSubmissionTerminalExecution:
             phase=ExecutionPhase.COMPLETED,
         )
         exec_iter = _StubExecutionIterator([execution])
-        facade = LabwareFacade(system, store, exec_iter)
+        facade = LabwareFacade(system, system.labware_service, exec_iter)
 
         cleared = await facade.clear_all_labware(force=False, confirm=True)
 
@@ -888,15 +1044,15 @@ class TestClearAllAuthoritative:
         (an orphan a failed/aborted execution left behind) must lose its
         active position, else it rehydrates and re-seeds projections on the
         next boot. Its identity row survives: clears are not retractions."""
-        system, _ = await _build_simple_system()
         store = InMemoryLabwareStore()
+        system, _ = await _build_simple_system(labware_service=LabwareService(store))
         phantom = LabwareInstance("plate_96", "96_well")
         await store.register(phantom)
         await store.update_location(phantom.id, "pad1")
         assert (phantom.id, "pad1") in await store.list_active_locations()
         assert not [lw for lw in system.labwares if lw.id == phantom.id]
 
-        facade = LabwareFacade(system, store, _StubExecutionIterator([]))
+        facade = LabwareFacade(system, system.labware_service, _StubExecutionIterator([]))
         cleared = await facade.clear_all_labware(force=True, confirm=True)
 
         assert phantom.id in cleared
@@ -904,8 +1060,8 @@ class TestClearAllAuthoritative:
         assert await store.get_by_id(phantom.id) is not None
 
     async def test_wipes_location_service_ledger(self) -> None:
-        system, _ = await _build_simple_system()
         store = InMemoryLabwareStore()
+        system, _ = await _build_simple_system(labware_service=LabwareService(store))
         instance = LabwareInstance("plate_96", "96_well")
         system.add_labware(instance)
         await store.register(instance)
@@ -913,7 +1069,7 @@ class TestClearAllAuthoritative:
         system.labware_location_service.update(instance, pad1)
         assert system.labware_location_service.get_all()
 
-        facade = LabwareFacade(system, store, _StubExecutionIterator([]))
+        facade = LabwareFacade(system, system.labware_service, _StubExecutionIterator([]))
         await facade.clear_all_labware(force=True, confirm=True)
 
         assert system.labware_location_service.get_all() == {}
@@ -926,8 +1082,8 @@ class TestClearAllAuthoritative:
         from cheshire_drivers.labware_models import LabwareIdentity
         from cheshire_drivers.transporter_models import SeedPositionRequest
 
-        system, _ = await _build_simple_system()
         store = InMemoryLabwareStore()
+        system, _ = await _build_simple_system(labware_service=LabwareService(store))
         transporter = system.transporters[0]
         await transporter.driver.seed_position(
             SeedPositionRequest(
@@ -937,13 +1093,13 @@ class TestClearAllAuthoritative:
                 ),
             )
         )
-        assert transporter.driver._resource_at("pad1") is not None
+        assert the_real_device_path().simulator(transporter.name)._resource_at("pad1") is not None
 
-        facade = LabwareFacade(system, store, _StubExecutionIterator([]))
+        facade = LabwareFacade(system, system.labware_service, _StubExecutionIterator([]))
         await facade.clear_all_labware(force=True, confirm=True)
 
-        assert transporter.driver._resource_at("pad1") is None
-        assert transporter.driver._resources_by_id == {}
+        assert the_real_device_path().simulator(transporter.name)._resource_at("pad1") is None
+        assert the_real_device_path().simulator(transporter.name)._resources_by_id == {}
         # Operator-visible proof: the position is reusable, no stale veto.
         await transporter.driver.seed_position(
             SeedPositionRequest(
@@ -957,8 +1113,8 @@ class TestClearAllAuthoritative:
     async def test_panic_button_survives_transporter_reset_failure(self) -> None:
         """An offline/erroring transporter must not block the panic button:
         the rest of the clear still completes."""
-        system, _ = await _build_simple_system()
         store = InMemoryLabwareStore()
+        system, _ = await _build_simple_system(labware_service=LabwareService(store))
         phantom = LabwareInstance("plate_96", "96_well")
         await store.register(phantom)
         await store.update_location(phantom.id, "pad1")
@@ -967,7 +1123,7 @@ class TestClearAllAuthoritative:
             raise RuntimeError("transporter offline")
         system.transporters[0].reset_world = _boom
 
-        facade = LabwareFacade(system, store, _StubExecutionIterator([]))
+        facade = LabwareFacade(system, system.labware_service, _StubExecutionIterator([]))
         cleared = await facade.clear_all_labware(force=True, confirm=True)
 
         assert phantom.id in cleared
@@ -1003,8 +1159,8 @@ class TestDischargeAgainstARehydratingStore:
     """
 
     async def test_discharge_clears_the_slot(self) -> None:
-        system, _ = await _build_simple_system()
-        runtime = SystemRuntime(system, labware_store=_RehydratingLabwareStore())
+        system, _ = await _build_simple_system(labware_service=LabwareService(_RehydratingLabwareStore()))
+        runtime = await memory_runtime(system)
         await runtime.start()
         try:
             snap = await runtime.labware.register(
@@ -1025,20 +1181,20 @@ class TestDischargeAgainstARehydratingStore:
         """Same defect, a different operator verb: the edit landed on a copy
         built for the call, so the store recorded the new barcode while every
         in-memory read (join-by-barcode, snapshots) kept the old one."""
-        system, _ = await _build_simple_system()
         store = _RehydratingLabwareStore()
+        system, _ = await _build_simple_system(labware_service=LabwareService(store))
         instance = LabwareInstance("plate_96", "96_well", barcode="BC-OLD")
         system.add_labware(instance)
         await store.register(instance)
-        facade = LabwareFacade(system, store, _StubExecutionIterator([]))
+        facade = LabwareFacade(system, system.labware_service, _StubExecutionIterator([]))
 
         await facade.edit_barcode(instance.id, "BC-NEW", confirm=True)
 
         assert instance.barcode == "BC-NEW"
 
     async def test_a_thread_still_holding_the_plate_still_refuses(self) -> None:
-        system, _ = await _build_simple_system()
         store = _RehydratingLabwareStore()
+        system, _ = await _build_simple_system(labware_service=LabwareService(store))
         held = LabwareInstance("plate_96", "96_well")
         system.add_labware(held)
         await store.register(held)
@@ -1051,7 +1207,7 @@ class TestDischargeAgainstARehydratingStore:
                 ),
             ]),
         ])
-        facade = LabwareFacade(system, store, exec_iter)
+        facade = LabwareFacade(system, system.labware_service, exec_iter)
 
         with pytest.raises(ActiveExecutionRefusedError):
             await facade.discharge_labware(held.id, confirm=True)

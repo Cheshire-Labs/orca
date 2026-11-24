@@ -3,7 +3,7 @@
 import pytest
 
 from orca.resource_models.labware import LabwareInstance
-from orca.resource_models.labware_state import (
+from orca.workflow_models.labware_state import (
     Found,
     InMemoryLabwareRegistry,
     LabwareState,

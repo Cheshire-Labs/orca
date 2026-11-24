@@ -5,11 +5,12 @@ owner AND every joined contributor -- because an action is one device and all la
 converged on it is physically stuck. The owner records the ONE incident (root cause)
 and drives the single authoritative recovery; contributors record nothing and fan out
 to the owner's one outcome. Recovering ANY participant feeds that one decision (first
-wins), so no thread half-resumes; RETRY/RETRY_OP re-drive on the owner and every
+wins), so no thread half-resumes; RETRY/RETRY_ACTION re-drive on the owner and every
 participant rides along. (A pre-binding resolution failure places no labware at the
 device, so only the owner pauses there.)
 """
 
+from orca.config import OrcaConfig
 import asyncio
 from collections.abc import AsyncGenerator
 
@@ -18,7 +19,7 @@ import pytest
 import orca.orca as orca
 from orca.events.event_bus import EventBus
 from orca.resource_models.resource_pool import ResourcePool
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from orca.runtime.system_runtime import ExecutionState, SystemRuntime
 from orca.sdk.system import ResourceRegistry, SystemMap
 from orca.sdk.workflow import WorkflowTemplate
@@ -44,6 +45,10 @@ from tests.test_stop_cancel_and_cascade import (
     _build_join_system,
     _wait_for_shared_rendezvous,
 )
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 
 def _statuses(runtime, eid: str) -> list[str]:
@@ -122,10 +127,13 @@ async def _build_multi_contributor_join_system() -> tuple[
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=event_bus,
+        event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
-    runtime = SystemRuntime(builder.get_system(), event_bus=event_bus)
+    runtime = await memory_runtime(builder.get_system(), event_bus=event_bus)
     return runtime, workflow, device
 
 
@@ -141,7 +149,7 @@ async def _wait_until(predicate, timeout: float = 12.0) -> None:
 async def test_shared_device_failure_pauses_every_participant() -> None:
     runtime, workflow, _ = await _build_join_system()
     await runtime.start()
-    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
     try:
         await _wait_for_shared_rendezvous(runtime, record.id)
         paused = runtime.get_paused_threads(record.id)
@@ -155,7 +163,7 @@ async def test_shared_device_failure_pauses_every_participant() -> None:
             "the owner stopped inside the shake, and a contributor drives no "
             "call at all -- but the group takes ONE decision judged against the "
             "OWNER's site, so both have to report it. A blank on the "
-            "contributor is a client with no way to know RETRY_OP is legal "
+            "contributor is a client with no way to know RETRY is legal "
             f"from there; got {sites}"
         )
     finally:
@@ -166,7 +174,7 @@ async def test_shared_device_failure_pauses_every_participant() -> None:
 async def test_abort_thread_on_owner_aborts_every_participant() -> None:
     runtime, workflow, _ = await _build_join_system()
     await runtime.start()
-    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
     try:
         await _wait_for_shared_rendezvous(runtime, record.id)
         owner = runtime.get_paused_threads(record.id)[0]
@@ -189,7 +197,7 @@ async def test_abort_thread_on_owner_aborts_every_participant() -> None:
 async def test_abort_method_on_owner_continues_every_participant() -> None:
     runtime, workflow, _ = await _build_join_system()
     await runtime.start()
-    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
     try:
         await _wait_for_shared_rendezvous(runtime, record.id)
         owner = runtime.get_paused_threads(record.id)[0]
@@ -206,7 +214,7 @@ async def test_abort_method_on_owner_continues_every_participant() -> None:
 async def test_retry_on_owner_redrives_and_every_participant_completes() -> None:
     runtime, workflow, device = await _build_join_system()
     await runtime.start()
-    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
     try:
         await _wait_for_shared_rendezvous(runtime, record.id)
         device.should_fail = False
@@ -224,7 +232,7 @@ async def test_retry_on_owner_redrives_and_every_participant_completes() -> None
 async def test_shared_failure_records_exactly_one_incident() -> None:
     runtime, workflow, _ = await _build_join_system()
     await runtime.start()
-    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
     try:
         await _wait_for_shared_rendezvous(runtime, record.id)
         incidents = await runtime.incidents.list(execution_id=record.id)
@@ -240,7 +248,7 @@ async def test_shared_failure_records_exactly_one_incident() -> None:
 async def test_abort_action_advances_to_next_shared_action() -> None:
     runtime, workflow, device = await _build_two_action_join_system()
     await runtime.start()
-    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
     try:
         await _wait_for_shared_rendezvous(runtime, record.id)
         assert device.shake_count == 1 and device.seal_count == 0
@@ -259,7 +267,7 @@ async def test_abort_action_advances_to_next_shared_action() -> None:
 async def test_multi_contributor_shared_failure_one_incident_and_abort_fans_out() -> None:
     runtime, workflow, _ = await _build_multi_contributor_join_system()
     await runtime.start()
-    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
     try:
         await _wait_for_shared_rendezvous(runtime, record.id, contributors=2)
         paused = runtime.get_paused_threads(record.id)
@@ -333,7 +341,7 @@ async def test_pre_binding_abort_decision_tears_group_down_cleanly(
     monkeypatch.setattr(ExecutingMethod, "resolve_current_action", _fail_resolution)
 
     await runtime.start()
-    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
     try:
         paused = await wait_for_paused_threads(runtime, record.id)
         assert len(paused) == 1, (
@@ -397,7 +405,7 @@ async def test_a_consume_failure_aborts_rather_than_fails_the_thread(
     )
 
     await runtime.start()
-    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
     try:
         paused = await wait_for_paused_threads(runtime, record.id)
         assert paused, f"nothing paused; got {_statuses(runtime, record.id)}"
@@ -433,7 +441,7 @@ async def test_recovering_the_contributor_propagates_to_the_whole_action() -> No
     device op on the owner and every participant fans out to completion."""
     runtime, workflow, device = await _build_join_system()
     await runtime.start()
-    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
     try:
         paused = await _wait_for_shared_rendezvous(runtime, record.id)
         device.should_fail = False
@@ -456,7 +464,7 @@ async def test_recovering_the_contributor_aborts_the_whole_action() -> None:
     ABORTED, with no owner left stranded."""
     runtime, workflow, _ = await _build_join_system()
     await runtime.start()
-    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
     try:
         paused = await _wait_for_shared_rendezvous(runtime, record.id)
         runtime.recover_thread(
@@ -493,7 +501,7 @@ async def test_each_action_pauses_its_own_group_afresh() -> None:
         device=_FailSealDevice("shaker1", site_names=["site-1", "site-2"])
     )
     await runtime.start()
-    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
     try:
         await _wait_for_shared_rendezvous(runtime, record.id)
         # The shake already resolved; the SEAL (second action) is the one paused now.
@@ -507,23 +515,23 @@ async def test_each_action_pauses_its_own_group_afresh() -> None:
         await runtime.shutdown()
 
 
-async def test_recovering_the_contributor_with_retry_op_redrives_the_action() -> None:
-    """RETRY_OP fed via the CONTRIBUTOR is valid on the whole paused group: only the owner
+async def test_recovering_the_contributor_with_retry_redrives_the_failed_call() -> None:
+    """RETRY fed via the CONTRIBUTOR is valid on the whole paused group: only the owner
     physically drives the device op, but the group carries the op-pause context, so an
     operator can re-drive the failed op by recovering ANY participant. The owner re-runs
     just the failed call and every participant fans out to completion."""
     runtime, workflow, device = await _build_join_system()
     await runtime.start()
-    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
     try:
         paused = await _wait_for_shared_rendezvous(runtime, record.id)
         device.should_fail = False
         runtime.recover_thread(
-            record.id, _contributor(paused).id, RecoveryDecision.RETRY_OP
+            record.id, _contributor(paused).id, RecoveryDecision.RETRY
         )
         final = await asyncio.wait_for(runtime.wait(record.id), timeout=15.0)
         assert final.status == ExecutionState.COMPLETED, (
-            f"RETRY_OP fed via the contributor must re-drive the op on the owner and "
+            f"RETRY fed via the contributor must re-drive the op on the owner and "
             f"complete the whole group. got {_statuses(runtime, record.id)}"
         )
         assert device.shake_count == 2

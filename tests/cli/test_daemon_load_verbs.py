@@ -1,10 +1,8 @@
-"""CLI dispatch tests for the split verbs `orca topology mount`
-and `orca workflow load`.
+"""CLI dispatch tests for `orca topology mount` and `orca workflow load`.
 
-The route + resolver layers are covered by tests/daemon/test_routes_mount.py
-and tests/daemon/test_system_builder.py. These tests cover the CLI layer the
-operator actually types: backend selection (local factory spec vs cloud source
-file) and the cloud-branch usage guards (missing --name / --message).
+The route is covered by tests/daemon/test_routes_mount.py. These tests cover
+the CLI layer the operator types: backend selection (the local daemon builds
+its own folder; cloud takes a source file) and the cloud usage guards.
 """
 
 from unittest.mock import patch
@@ -22,20 +20,26 @@ runner = CliRunner()
 # -- topology mount ----------------------------------------------------------
 
 
-def test_topology_mount_local_calls_mount_topology() -> None:
-    """Local backend forwards the factory spec to the daemon's mount endpoint."""
+def test_topology_mount_local_mounts_the_package_folder() -> None:
     with patch("orca.cli.topology.active_backend", return_value="local"), patch(
-        "orca.cli.client.LocalDaemonClient"
+        "orca.cli.topology.daemon_client"
     ) as mock_client:
-        mock_client.return_value.mount_topology.return_value = RuntimeState.RUNNING
-        result = runner.invoke(
-            app, ["topology", "mount", "pkg.mod:build_topology", "--sim"],
-        )
+        mock_client.return_value.mount_package.return_value = RuntimeState.RUNNING
+        result = runner.invoke(app, ["topology", "mount"])
     assert result.exit_code == 0, result.output
-    mock_client.return_value.mount_topology.assert_called_once_with(
-        "pkg.mod:build_topology", sim=True,
-    )
-    assert "mounted topology" in result.output
+    mock_client.return_value.mount_package.assert_called_once_with()
+    assert "mounted the package folder" in result.output
+
+
+def test_topology_mount_local_refuses_an_argument() -> None:
+    """The daemon builds its own folder, so a named file would be ignored."""
+    with patch("orca.cli.topology.active_backend", return_value="local"), patch(
+        "orca.cli.topology.daemon_client"
+    ) as mock_client:
+        result = runner.invoke(app, ["topology", "mount", "topology.py"])
+    assert result.exit_code == EXIT_USAGE, result.output
+    assert "no argument" in result.output
+    mock_client.return_value.mount_package.assert_not_called()
 
 
 def test_topology_mount_cloud_requires_existing_source_file() -> None:
@@ -76,20 +80,12 @@ def test_topology_mount_cloud_submits_source(tmp_path) -> None:
 # -- workflow load -----------------------------------------------------------
 
 
-def test_workflow_load_local_calls_load_workflow() -> None:
-    """Local backend forwards the factory spec to the daemon's workflow endpoint."""
-    with patch("orca.cli.backend.active_backend", return_value="local"), patch(
-        "orca.cli.client.LocalDaemonClient"
-    ) as mock_client:
-        mock_client.return_value.load_workflow.return_value = "simple_workflow"
-        result = runner.invoke(
-            app, ["workflow", "load", "pkg.mod:build_workflow"],
-        )
-    assert result.exit_code == 0, result.output
-    mock_client.return_value.load_workflow.assert_called_once_with(
-        "pkg.mod:build_workflow", reason=None,
-    )
-    assert "simple_workflow" in result.output
+def test_workflow_load_local_points_at_the_package_folder() -> None:
+    """The local daemon builds workflows/ on mount; it has no route to load one."""
+    with patch("orca.cli.backend.active_backend", return_value="local"):
+        result = runner.invoke(app, ["workflow", "load", "wf.py"])
+    assert result.exit_code == EXIT_USAGE, result.output
+    assert "workflows/" in result.output
 
 
 def test_workflow_load_cloud_requires_existing_source_file() -> None:

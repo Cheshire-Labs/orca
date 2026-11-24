@@ -6,10 +6,14 @@ memory-only for moves, so rehydration after a crash re-placed every plate at
 its registration-time position, hours stale on a long campaign.
 """
 
+import pytest
+from orca.config import OrcaConfig
 from collections.abc import AsyncGenerator
 
 from orca.resource_models.labware import LabwareInstance
+from orca.resource_models.labware_placement import Arrival, Relocation
 from orca.resource_models.resource_pool import ResourcePool
+from orca.runtime.labware_service import LabwareService
 from orca.runtime.labware_store import InMemoryLabwareStore
 from orca.runtime.system_runtime import SystemRuntime
 from orca.sdk.events import EventBus
@@ -29,9 +33,17 @@ from tests.test_helpers import (
     create_test_transporter,
     wire_system_map,
 )
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from orca.resource_models.labware_service_interface import ILabwareService
+from tests.memory_activity import memory_labware_service
 
 
-async def _build_system() -> ISystem:
+# The system build must reach every position these runs touch.
+pytestmark = pytest.mark.positions_bound_by_the_build
+
+async def _build_system(*, labware_service: ILabwareService | None = None) -> ISystem:
     """One device, one transporter, two pads, one shake workflow."""
     device = create_test_device("shaker1")
     transporter = create_test_transporter("robot1", ["shaker1", "pad1", "pad2"])
@@ -70,17 +82,25 @@ async def _build_system() -> ISystem:
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=EventBus(),
+        event_bus=EventBus(), config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=labware_service or memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     return builder.get_system()
 
 
 async def _started_runtime(store: InMemoryLabwareStore) -> tuple[ISystem, SystemRuntime]:
-    system = await _build_system()
-    runtime = SystemRuntime(system, labware_store=store)
+    system = await _build_system(labware_service=LabwareService(store))
+    runtime = await memory_runtime(system)
     await runtime.start()
     return system, runtime
+
+
+def _held(system: ISystem, plate: LabwareInstance) -> LabwareInstance:
+    """The system's own instance of a stored plate: the slots hold that one, not the stored copy."""
+    return next(instance for instance in system.labwares if instance.id == plate.id)
 
 
 class TestMovePersistsToStore:
@@ -92,10 +112,10 @@ class TestMovePersistsToStore:
         await store.update_location(plate.id, "pad1")
         system, runtime = await _started_runtime(store)
 
-        system.labware_location_service.update(
-            plate, system.system_map.get_location("pad2")
+        await system.labware_placer.relocate(
+            _held(system, plate), system.system_map.get_location("pad1"), system.system_map.get_location("pad2"),
+            Relocation.BY_THE_DEVICE,
         )
-        await runtime.flush_labware_location_writes()
 
         assert store.get_location(plate.id) == "pad2"
         await runtime.shutdown()
@@ -109,10 +129,10 @@ class TestMovePersistsToStore:
         await store.update_location(plate.id, "pad1")
 
         system_a, runtime_a = await _started_runtime(store)
-        system_a.labware_location_service.update(
-            plate, system_a.system_map.get_location("pad2")
+        await system_a.labware_placer.relocate(
+            _held(system_a, plate), system_a.system_map.get_location("pad1"), system_a.system_map.get_location("pad2"),
+            Relocation.BY_THE_DEVICE,
         )
-        await runtime_a.flush_labware_location_writes()
         await runtime_a.shutdown()
 
         system_b, runtime_b = await _started_runtime(store)
@@ -131,8 +151,7 @@ class TestMovePersistsToStore:
         system, runtime = await _started_runtime(store)
 
         transporter = system.transporters[0]
-        system.labware_location_service.update(plate, transporter.gripper_location)
-        await runtime.flush_labware_location_writes()
+        await system.labware_placer.picked_up(_held(system, plate), transporter.gripper_location)
 
         assert store.get_location(plate.id) == transporter.gripper_location.position_id
         await runtime.shutdown()
@@ -147,8 +166,7 @@ class TestMovePersistsToStore:
 
         system_a, runtime_a = await _started_runtime(store)
         transporter_a = system_a.transporters[0]
-        system_a.labware_location_service.update(plate, transporter_a.gripper_location)
-        await runtime_a.flush_labware_location_writes()
+        await system_a.labware_placer.picked_up(_held(system_a, plate), transporter_a.gripper_location)
         await runtime_a.shutdown()
 
         system_b, runtime_b = await _started_runtime(store)
@@ -164,10 +182,7 @@ class TestMovePersistsToStore:
         system, runtime = await _started_runtime(store)
 
         spawned = LabwareInstance("spawned_plate", "96_well")
-        system.labware_location_service.update(
-            spawned, system.system_map.get_location("pad1")
-        )
-        await runtime.flush_labware_location_writes()
+        await system.labware_placer.arrived(spawned, system.system_map.get_location("pad1"), Arrival.SPAWNED)
 
         assert await store.get_by_id(spawned.id) is not None
         assert store.get_location(spawned.id) == "pad1"
@@ -185,11 +200,12 @@ class TestMovePersistsToStore:
         await store.update_location(plate.id, "pad1")
         system_a, runtime_a = await _started_runtime(store)
 
-        system_a.labware_location_service.update(
-            plate, system_a.system_map.get_location("pad2")
+        pad2 = system_a.system_map.get_location("pad2")
+        held = _held(system_a, plate)
+        await system_a.labware_placer.relocate(
+            held, system_a.system_map.get_location("pad1"), pad2, Relocation.BY_THE_DEVICE,
         )
-        system_a.labware_location_service.retire(plate)
-        await runtime_a.flush_labware_location_writes()
+        await system_a.labware_placer.left(held, pad2)
         assert await store.get_by_id(plate.id) is not None
         assert store.get_location(plate.id) is None
         assert len(await store.get_location_history(plate.id)) == 2
@@ -211,17 +227,16 @@ class TestMovePersistsToStore:
         system, runtime = await _started_runtime(store)
 
         pad1 = system.system_map.get_location("pad1")
-        system.labware_location_service.update(plate, pad1)
-        system.labware_location_service.retire(plate)
-        system.labware_location_service.update(plate, pad1)
-        await runtime.flush_labware_location_writes()
+        held = _held(system, plate)
+        await system.labware_placer.left(held, pad1)
+        await system.labware_placer.arrived(held, pad1, Arrival.SPAWNED)
 
         assert store.get_location(plate.id) == "pad1"
         await runtime.shutdown()
 
     async def test_facade_register_with_location_writes_one_history_row(self) -> None:
         """Operator register-at-location must land exactly one location-history
-        row: the chokepoint listener is the only persistence path, so a direct
+        row: the placer is the only writer of the saved position, so a direct
         facade store write would double it."""
         store = InMemoryLabwareStore()
         system, runtime = await _started_runtime(store)
@@ -229,7 +244,6 @@ class TestMovePersistsToStore:
         snap = await runtime.labware.register(
             "plate_96", location="pad1", confirm=True,
         )
-        await runtime.flush_labware_location_writes()
 
         history = await store.get_location_history(snap.id)
         assert len(history) == 1
@@ -243,12 +257,10 @@ class TestMovePersistsToStore:
         snap = await runtime.labware.register(
             "plate_96", location="pad1", confirm=True,
         )
-        await runtime.flush_labware_location_writes()
 
         await runtime.labware.reset_location(
             snap.id, "pad2", confirm=True, reason="test",
         )
-        await runtime.flush_labware_location_writes()
 
         history = await store.get_location_history(snap.id)
         assert [row[0] for row in history] == ["pad1", "pad2"]
@@ -256,25 +268,23 @@ class TestMovePersistsToStore:
         await runtime.shutdown()
 
     async def test_facade_edit_location_writes_one_history_row(self) -> None:
-        """Operator edit_location lands one history row via the listener."""
+        """Operator edit_location lands one history row, saved by the placer."""
         store = InMemoryLabwareStore()
         system, runtime = await _started_runtime(store)
         snap = await runtime.labware.register(
             "plate_96", location="pad1", confirm=True,
         )
-        await runtime.flush_labware_location_writes()
 
         await runtime.labware.edit_location(
             snap.id, "pad2", confirm=True, reason="test",
         )
-        await runtime.flush_labware_location_writes()
 
         history = await store.get_location_history(snap.id)
         assert [row[0] for row in history] == ["pad1", "pad2"]
         await runtime.shutdown()
 
     async def test_unchanged_position_writes_no_duplicate_history(self) -> None:
-        """Re-recording the same position (boot re-place, idempotent updates)
+        """Re-recording the same position (a reuse-bind of a plate already there)
         must not spam the store's location history."""
         store = InMemoryLabwareStore()
         plate = LabwareInstance("plate_1", "96_well")
@@ -283,9 +293,9 @@ class TestMovePersistsToStore:
         system, runtime = await _started_runtime(store)
 
         pad1 = system.system_map.get_location("pad1")
-        system.labware_location_service.update(plate, pad1)
-        system.labware_location_service.update(plate, pad1)
-        await runtime.flush_labware_location_writes()
+        held = _held(system, plate)
+        await system.labware_placer.arrived(held, pad1, Arrival.BOUND)
+        await system.labware_placer.arrived(held, pad1, Arrival.BOUND)
 
         history = await store.get_location_history(plate.id)
         assert len(history) == 1

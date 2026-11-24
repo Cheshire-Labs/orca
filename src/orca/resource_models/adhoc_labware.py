@@ -22,8 +22,8 @@ from orca.resource_models.labware import (
     TroughTemplate,
     TubeRackTemplate,
 )
-from orca.runtime.labware_factory_resolver import resolve_plr_factory
-from orca.runtime.labware_catalog_protocol import ILabwareCatalog, LabwareDefinition
+from orca.resource_models.labware_factory_resolver import resolve_plr_factory
+from orca.resource_models.labware_catalog_protocol import ILabwareCatalog, LabwareDefinition
 
 ADHOC_TEMPLATE_PREFIX = "adhoc__"
 """Marks a template as derived rather than declared. Plain identifier

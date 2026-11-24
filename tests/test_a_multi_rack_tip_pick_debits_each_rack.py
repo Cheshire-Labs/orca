@@ -29,6 +29,10 @@ class _FakeTipSpot:
     def __init__(self, parent_name: str, identifier: str) -> None:
         self.parent_name = parent_name
         self.identifier = identifier
+        self.has_tip = True
+
+    def set_tip(self, has_tip: bool) -> None:
+        self.has_tip = has_tip
 
 
 _IDS = {"rack_a": "id-of-rack-a", "rack_b": "id-of-rack-b", "tips_96": "id-of-tips-96"}

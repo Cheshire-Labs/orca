@@ -24,7 +24,7 @@ from orca.workflow_models.actions.move_action import (
 from orca.workflow_models.status_enums import ActionStatus
 from tests.test_helpers import (
     no_source_hold,
-    make_labware_placer,
+    make_command_pipeline,
     create_test_labware_instance,
     create_test_transporter,
 )
@@ -43,6 +43,7 @@ def _thread_context() -> Mock:
     ctx.thread_id = "thread_1"
     ctx.thread_name = "thread1"
     ctx.template_name = "tmpl_1"
+    ctx.group_id = None
     return ctx
 
 
@@ -63,7 +64,7 @@ async def _build_move(
         context=_thread_context(),
         action=move,
         labware_location_service=labware_location_service,
-        labware_placer=make_labware_placer(labware_location_service),
+        command_pipeline=make_command_pipeline(labware_location_service),
         slot_holder=no_source_hold(),
     )
     return executing, labware

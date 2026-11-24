@@ -1,6 +1,6 @@
 """CLI tests for ``orca runtime status`` (cloud-only).
 
-Validates dispatch + rendering. Wire-shape parity with a hosted deployment's
+Validates dispatch + rendering. The wire shape of a hosted deployment's
 ``GET /api/runtime/status`` is pinned by the cloud backend's typed
 mirror.
 """
@@ -11,20 +11,22 @@ import pytest
 from typer.testing import CliRunner
 
 from orca.cli.app import app
-from orca.cli.control_plane import RuntimeStatusResponseDTO
+from orca.operations.wire_models import (
+    RuntimeStatusResponse,
+)
 
 
 runner = CliRunner()
 
 
 class _FakeCloudClient:
-    """Records calls + returns a canned RuntimeStatusResponseDTO."""
+    """Records calls + returns a canned RuntimeStatusResponse."""
 
-    def __init__(self, payload: RuntimeStatusResponseDTO) -> None:
+    def __init__(self, payload: RuntimeStatusResponse) -> None:
         self.runtime_status_called: int = 0
         self._payload = payload
 
-    def runtime_status(self) -> RuntimeStatusResponseDTO:
+    def runtime_status(self) -> RuntimeStatusResponse:
         self.runtime_status_called += 1
         return self._payload
 
@@ -32,7 +34,7 @@ class _FakeCloudClient:
 @pytest.fixture
 def fake_built_true(monkeypatch: pytest.MonkeyPatch) -> Iterator[_FakeCloudClient]:
     stub = _FakeCloudClient(
-        RuntimeStatusResponseDTO(built=True, last_build_error=None),
+        RuntimeStatusResponse(built=True, last_build_error=None),
     )
     monkeypatch.setattr("orca.cli.runtime.get_client", lambda: stub)
     yield stub
@@ -41,7 +43,7 @@ def fake_built_true(monkeypatch: pytest.MonkeyPatch) -> Iterator[_FakeCloudClien
 @pytest.fixture
 def fake_built_false(monkeypatch: pytest.MonkeyPatch) -> Iterator[_FakeCloudClient]:
     stub = _FakeCloudClient(
-        RuntimeStatusResponseDTO(
+        RuntimeStatusResponse(
             built=False,
             last_build_error={
                 "type": "ModuleNotFoundError",

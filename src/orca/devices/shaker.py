@@ -1,13 +1,11 @@
-from typing import ClassVar, Optional
+from typing import ClassVar
 
 from cheshire_drivers.interfaces import IShakerDriver
 from cheshire_drivers.shaker_models import ShakeRequest
-from cheshire_drivers.sims import SimShakerDriver
 
 from orca.devices.device_interfaces import IShaker
 from orca.resource_models.devices import Device
-from orca.runtime.device_factory_context import resolve_drivers
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.driver_management.device_factory_context import resolve_driver
 
 
 class Shaker(Device[IShakerDriver], IShaker):
@@ -18,12 +16,11 @@ class Shaker(Device[IShakerDriver], IShaker):
     def __init__(
         self,
         name: str,
-        sim_override: WorkflowRunMode | None = None,
     ) -> None:
-        live, sim_drv = resolve_drivers(
-            self.KIND, name, SimShakerDriver,
+        driver = resolve_driver(
+            self.KIND, name, IShakerDriver,
         )
-        super().__init__(name, live, sim_drv, sim_override=sim_override)
+        super().__init__(name, driver)
 
     async def shake(self, duration: int, speed: int) -> None:
         await self.driver.shake(ShakeRequest(speed=float(speed), duration=float(duration)))

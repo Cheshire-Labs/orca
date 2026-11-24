@@ -16,18 +16,18 @@ failed device call answer the same way.
 """
 
 from typing import List
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 from orca.gateway.controller.controller import DeviceController
+from tests.gateway_parts import gateway_parts
 from orca.gateway.controller.exceptions import (
     CommandExecutionError,
     DeviceFaultedError,
 )
 from orca.gateway.device_fault import DeviceFault, DeviceFaultOutcome
 from orca.runtime.facades.threads import ThreadFacade
-from orca.runtime import system_runtime
 from orca.runtime.system_runtime import SystemRuntime, _fault_named_by_pause
 from orca.workflow_models.status_enums import RecoveryDecision
 
@@ -73,7 +73,7 @@ def _facade(fault: DeviceFault | None) -> tuple[ThreadFacade, _Runtime]:
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "decision",
-    [RecoveryDecision.RETRY, RecoveryDecision.RETRY_OP, RecoveryDecision.CONTINUE],
+    [RecoveryDecision.RETRY, RecoveryDecision.RETRY_ACTION, RecoveryDecision.CONTINUE],
 )
 async def test_a_decision_that_carries_on_clears_the_fault_it_names(
     decision: RecoveryDecision,
@@ -191,20 +191,21 @@ class TestWhichFaultAPauseIsAbout:
 @pytest.mark.asyncio
 class TestOnlyTheFaultThePauseNamesIsCleared:
     """`clear_fault_if_current` runs for real here, against a controller this
-    test owns rather than the module singleton it normally reads."""
+    test owns."""
 
     async def _clear(
         self, controller: DeviceController, fault: DeviceFault,
     ) -> None:
-        with patch.object(system_runtime, "device_controller", controller):
-            await SystemRuntime.clear_fault_if_current(MagicMock(), fault)
+        runtime = MagicMock()
+        runtime._device_controller = controller
+        await SystemRuntime.clear_fault_if_current(runtime, fault)
 
     async def test_a_different_fault_standing_on_the_device_is_left_alone(
         self,
     ) -> None:
         """One thread can pause on a device without faulting it while another
         thread's earlier failure is still standing there, unlooked-at."""
-        controller = DeviceController()
+        controller = gateway_parts().controller
         standing = _fault(device_id="flex_1", command="move_plate")
         controller._faults["flex_1"] = standing
 
@@ -213,7 +214,7 @@ class TestOnlyTheFaultThePauseNamesIsCleared:
         assert controller.fault("flex_1") is standing
 
     async def test_the_named_fault_is_cleared(self) -> None:
-        controller = DeviceController()
+        controller = gateway_parts().controller
         standing = _fault(device_id="flex_1", command="move_plate")
         controller._faults["flex_1"] = standing
 

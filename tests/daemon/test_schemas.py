@@ -22,32 +22,26 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from orca.daemon.schemas import (
-    ActionSnapshotDTO,
-    DeviceDTO,
-    ExecutionDetailDTO,
-    ExecutionRecordDTO,
-    LabwareDTO,
+from orca.operations.execution_models import ExecutionRecordModel, GetExecutionDetailResponse
+from orca.operations.labware_models import LabwareSnapshotModel
+from orca.operations.system_models import GetSystemInfoResponse
+from orca.operations.thread_models import ActionSnapshotModel, MethodSnapshotModel
+from orca.operations.wire_models import (
     LabwareTemplateDTO,
     LocationDTO,
-    LocationEventDTO,
-    MethodSnapshotDTO,
     MethodTemplateDTO,
     ReservationSnapshotDTO,
     ResourcePoolDTO,
-    SystemInfoDTO,
-    ThreadSnapshotDTO,
+    ThreadSnapshotResponse,
     TransporterDTO,
     WorkflowTemplateDTO,
 )
 from orca.runtime.execution_record import ExecutionRecord, ExecutionState
 from orca.runtime.status_models import (
     ActionSnapshot,
-    DeviceSnapshot,
     ExecutionDetail,
     LabwareSnapshot,
     LabwareTemplateSnapshot,
-    LocationEvent,
     LocationSnapshot,
     MethodSnapshot,
     MethodTemplateSnapshot,
@@ -61,26 +55,28 @@ from orca.runtime.status_models import (
 
 
 _DC_DTO_PAIRS = [
-    (ActionSnapshot, ActionSnapshotDTO),
-    (MethodSnapshot, MethodSnapshotDTO),
-    (ThreadSnapshot, ThreadSnapshotDTO),
+    (ActionSnapshot, ActionSnapshotModel),
+    (MethodSnapshot, MethodSnapshotModel),
+    (ThreadSnapshot, ThreadSnapshotResponse),
     (ReservationSnapshot, ReservationSnapshotDTO),
-    (ExecutionDetail, ExecutionDetailDTO),
-    (ExecutionRecord, ExecutionRecordDTO),
+    (ExecutionDetail, GetExecutionDetailResponse),
+    (ExecutionRecord, ExecutionRecordModel),
     # Registry DTOs
-    (SystemInfoSnapshot, SystemInfoDTO),
+    (SystemInfoSnapshot, GetSystemInfoResponse),
     (WorkflowTemplateSnapshot, WorkflowTemplateDTO),
     (MethodTemplateSnapshot, MethodTemplateDTO),
     (LocationSnapshot, LocationDTO),
-    (DeviceSnapshot, DeviceDTO),
     # Topology projection DTOs (C3 widening)
     (TransporterSnapshot, TransporterDTO),
     (ResourcePoolSnapshot, ResourcePoolDTO),
     (LabwareTemplateSnapshot, LabwareTemplateDTO),
     # Labware DTOs
-    (LabwareSnapshot, LabwareDTO),
-    (LocationEvent, LocationEventDTO),
+    (LabwareSnapshot, LabwareSnapshotModel),
 ]
+
+
+# check_run is read from the execution's record, not from ExecutionDetail.
+_FIELDS_NOT_ON_THE_DATACLASS = {GetExecutionDetailResponse: {"check_run"}}
 
 
 @pytest.mark.parametrize(("dc_cls", "dto_cls"), _DC_DTO_PAIRS)
@@ -91,7 +87,7 @@ def test_dto_fields_match_dataclass_fields(
     dc_fields = {f.name for f in dataclasses.fields(dc_cls)}
     dto_fields = set(dto_cls.model_fields)
     missing_in_dto = dc_fields - dto_fields
-    extra_in_dto = dto_fields - dc_fields
+    extra_in_dto = dto_fields - dc_fields - _FIELDS_NOT_ON_THE_DATACLASS.get(dto_cls, set())
     assert not missing_in_dto, (
         f"{dto_cls.__name__} is missing fields from {dc_cls.__name__}: {missing_in_dto}"
     )
@@ -127,7 +123,7 @@ def test_execution_state_serializes_to_value_string() -> None:
         id="exec-2", workflow_name="smc",
         status=ExecutionState.RUNNING, error=None,
     )
-    dto = ExecutionRecordDTO.from_dc(rec)
+    dto = ExecutionRecordModel.from_record(rec)
     assert dto.status == "running"
     payload = json.loads(dto.model_dump_json())
     assert payload["status"] == "running"
@@ -149,14 +145,14 @@ def test_execution_detail_wire_format() -> None:
         id="t1", name="plate_thread", status="RUNNING",
         current_location="shaker1", current_method=method,
         completed_method_count=0, last_error=None, pause_reason=None,
-        completed_methods=(),
+        completed_methods=(), group_id="g1",
     )
     detail = ExecutionDetail(
         id="exec-1", workflow_name="smc", status="running", error=None,
         threads=[thread],
         total_thread_count=1, completed_thread_count=0, active_thread_count=1,
     )
-    dto = ExecutionDetailDTO.from_dc(detail)
+    dto = GetExecutionDetailResponse.from_detail(detail)
 
     expected = {
         "id": "exec-1",
@@ -190,6 +186,7 @@ def test_execution_detail_wire_format() -> None:
                 "labware_template_name": None,
                 "labware_id": None,
                 "labware_name": None,
+                "group_id": "g1",
                 "paused_device_command": None,
                 "pause_message": None,
                 "pause_site": None,
@@ -203,7 +200,9 @@ def test_execution_detail_wire_format() -> None:
         "paused": False,
         "pause_reason": None,
         "abort_armed": False,
-        "sim_time_scale": None,
+        "simulated": False,
+        "sim_speedup": None,
+        "check_run": False,
     }
     actual = json.loads(dto.model_dump_json())
     assert actual == expected
@@ -310,7 +309,7 @@ def test_teachpoint_dto_emits_flat_coords() -> None:
         JointCoordinates,
         Teachpoint,
     )
-    from orca.daemon.schemas import TeachpointDTO
+    from orca.operations.wire_models import TeachpointDTO
 
     cartesian = Teachpoint(
         position_id="home",
@@ -343,9 +342,9 @@ def test_teachpoint_dto_emits_flat_coords() -> None:
 
 
 def test_cli_thread_snapshot_dto_stays_field_equal_to_the_daemon_one() -> None:
-    """``orca.cli.control_plane.ThreadSnapshotDTO`` claims field-equality with
+    """``orca.cli.control_plane.ThreadSnapshotResponse`` claims field-equality with
     the daemon schema. It is ``extra="ignore"``, so drift is silent: a field
     added on the daemon side simply never reaches the CLI."""
-    from orca.cli.control_plane import ThreadSnapshotDTO as CliThreadSnapshotDTO
+    from orca.cli.control_plane import ThreadSnapshotResponse as CliThreadSnapshotDTO
 
-    assert set(CliThreadSnapshotDTO.model_fields) == set(ThreadSnapshotDTO.model_fields)
+    assert set(CliThreadSnapshotDTO.model_fields) == set(ThreadSnapshotResponse.model_fields)

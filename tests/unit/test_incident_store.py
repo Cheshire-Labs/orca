@@ -6,12 +6,13 @@
 
 import pytest
 
+from orca.system.reservation_manager.errors import AutoSpawnFailedDetail
 from orca.runtime.db import create_memory_engine
 from orca.runtime.incident_service import IncidentService
+from orca.resource_models.unheld_command import StoredMotion, StoredSiteNotice, UnheldCommand
+from orca.system.reservation_manager.errors import CoLabwareTimeoutDetail
 from orca.runtime.incident_store import (
-    AutoSpawnFailedDetail,
     BarcodeMismatchDetail,
-    CoLabwareTimeoutDetail,
     DeadlockDetail,
     DeviceBusyExhaustedDetail,
     DeviceInitFailedDetail,
@@ -207,10 +208,12 @@ async def test_typed_details_are_retained_without_serialization_loss() -> None:
         (IncidentCategory.AUTO_SPAWN_FAILED, AutoSpawnFailedDetail(requested_labware_name="tips", requesting_thread_id="t1")),
         (IncidentCategory.BARCODE_MISMATCH, BarcodeMismatchDetail(expected_barcode="ABC", scanned_barcode=None, context="join")),
         (IncidentCategory.RESERVATION_DEADLOCK, DeadlockDetail(cycling_thread_ids=("t1", "t2"), yielding_thread_id="t1", reroute_applied=True)),
-        (IncidentCategory.RECOVERABLE_TIMEOUT, RecoverableTimeoutContext(device_id="shaker_1", command="shake", command_id="cmd-abc", elapsed_seconds=7300.0, max_seconds=7200.0)),
+        (IncidentCategory.RECOVERABLE_TIMEOUT, RecoverableTimeoutContext(device_id="shaker_1", command="shake", command_id="cmd-abc", elapsed_seconds=7300.0, max_seconds=7200.0, unheld=None)),
+        (IncidentCategory.RECOVERABLE_TIMEOUT, RecoverableTimeoutContext(device_id="arm_1", command="place", command_id="cmd-def", elapsed_seconds=40.0, max_seconds=30.0, unheld=UnheldCommand(device_name="arm_1", motion=StoredMotion(labware_id="lw-1", source_position_id="pad_a", target_position_id="pad_b", carried="set_down"), site=StoredSiteNotice(position_id="pad_b", labware_id="lw-1", mover_name="arm_1", event="placed")))),
+        (IncidentCategory.RECOVERABLE_TIMEOUT, RecoverableTimeoutContext(device_id="arm_1", command="pick", command_id="cmd-ghi", elapsed_seconds=40.0, max_seconds=30.0, unheld=UnheldCommand(device_name="arm_1", motion=None, site=StoredSiteNotice(position_id="pad_a", labware_id=None, mover_name="arm_1", event="picked")))),
         (IncidentCategory.DEVICE_INIT_FAILED, DeviceInitFailedDetail(device_name="shaker-1", driver_error="timeout")),
         (IncidentCategory.DEVICE_BUSY_EXHAUSTED, DeviceBusyExhaustedDetail(device_name="shaker-1", retry_count=5, last_error="busy")),
-        (IncidentCategory.PLUGIN_HANDLER_EXCEPTION, PluginHandlerExceptionDetail(plugin_type_name="MethodTracker", event_name="METHOD.COMPLETED", exception_type="RuntimeError", exception_message="boom")),
+        (IncidentCategory.PLUGIN_HANDLER_EXCEPTION, PluginHandlerExceptionDetail(plugin_type_name="WebhookPlugin", event_name="METHOD.COMPLETED", exception_type="RuntimeError", exception_message="boom")),
         (IncidentCategory.EVENT_HANDLER_EXCEPTION, EventHandlerExceptionDetail(handler_name="h1", event_name="THREAD.PAUSED", exception_type="ValueError", exception_message="bad")),
         (IncidentCategory.UNRESOLVED_ANCHOR_INSERT, UnresolvedAnchorInsertDetail(anchor_name="seal", direction="before", target_type="method", item_name="custom_wash", anchor_reached=True)),
         (IncidentCategory.OTHER, OtherIncidentDetail(message_extra="misc")),
@@ -280,8 +283,8 @@ def test_incident_enum_lookup_by_name_still_works() -> None:
 
 
 def test_incident_dto_wire_shape_unchanged_after_str_enum() -> None:
-    """G1c characterization: IncidentDTO carries enum names as strings on the wire."""
-    from orca.daemon.schemas import IncidentDTO
+    """G1c characterization: IncidentResponse carries enum names as strings on the wire."""
+    from orca.operations.wire_models import IncidentResponse
 
     inc = SystemIncident(
         id="abc",
@@ -295,7 +298,7 @@ def test_incident_dto_wire_shape_unchanged_after_str_enum() -> None:
         recovery_action=RecoveryAction.THREAD_RECOVER_RETRY,
         acknowledged=False,
     )
-    dto = IncidentDTO.from_incident(inc)
+    dto = IncidentResponse.from_incident(inc)
     dumped = dto.model_dump()
     assert dumped["category"] == "CO_LABWARE_TIMEOUT"
     assert dumped["severity"] == "WARNING"
@@ -307,11 +310,11 @@ def test_incident_dto_wire_shape_unchanged_after_str_enum() -> None:
 
 def test_incident_dto_tuple_detail_field_serializes_as_json_list() -> None:
     """Regression: detail dataclasses with ``tuple[str, ...]`` fields must
-    convert to JSON lists in IncidentDTO. ``detail`` is typed
+    convert to JSON lists in IncidentResponse. ``detail`` is typed
     ``dict[str, JsonValue]`` (no tuple type), so ``from_incident`` must
     normalize the ``dataclasses.asdict`` tuples to lists or construction
     raises a pydantic ValidationError (invalid-json-value)."""
-    from orca.daemon.schemas import IncidentDTO
+    from orca.operations.wire_models import IncidentResponse
 
     inc = SystemIncident(
         id="abc",
@@ -329,7 +332,7 @@ def test_incident_dto_tuple_detail_field_serializes_as_json_list() -> None:
         recovery_action=RecoveryAction.THREAD_RECOVER_RETRY,
         acknowledged=False,
     )
-    dto = IncidentDTO.from_incident(inc)
+    dto = IncidentResponse.from_incident(inc)
     assert dto.detail["missing_labware_names"] == ["tips_96", "plate_1"]
     # mode="json" is the actual wire form; it must round-trip cleanly.
     assert dto.model_dump(mode="json")["detail"]["missing_labware_names"] == [

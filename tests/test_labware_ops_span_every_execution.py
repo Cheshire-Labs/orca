@@ -23,7 +23,7 @@ from orca.state.records import (
     TrackingRecord,
     TrackingSource,
 )
-from orca.state.jsonl_store import JsonlOpsHistoryStore
+from tests.ephemeral_ops_store import EphemeralOpsHistoryStore
 
 
 def _record(name: str, ts: float, seq: int | None = None) -> OperationRecord:
@@ -58,7 +58,7 @@ def _bound_instance(history: OpsHistory) -> LabwareInstance:
 
 class TestOpsReadEveryExecution:
     async def test_ops_from_several_executions_read_as_one_history(self) -> None:
-        history = OpsHistory(store=JsonlOpsHistoryStore.ephemeral())
+        history = OpsHistory(store=EphemeralOpsHistoryStore())
         instance = _bound_instance(history)
         t0 = time.time()
         await _write(history, "run_1", _record(instance.name, t0))
@@ -69,7 +69,7 @@ class TestOpsReadEveryExecution:
 
     async def test_a_rebuilt_instance_reads_what_the_first_one_did(self) -> None:
         """The restart shape: nothing re-binds, and nothing is lost."""
-        history = OpsHistory(store=JsonlOpsHistoryStore.ephemeral())
+        history = OpsHistory(store=EphemeralOpsHistoryStore())
         first = _bound_instance(history)
         await _write(history, "run_1", _record(first.name, time.time()))
 
@@ -88,7 +88,7 @@ class TestOpsOrdering:
     with a near-simultaneous aspirate. Creation order settles them."""
 
     async def test_equal_timestamps_order_by_creation_sequence(self) -> None:
-        history = OpsHistory(store=JsonlOpsHistoryStore.ephemeral())
+        history = OpsHistory(store=EphemeralOpsHistoryStore())
         instance = _bound_instance(history)
         ts = time.time()
         # Written in the opposite order to their creation: a timestamp-only

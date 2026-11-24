@@ -7,6 +7,7 @@ Bug 4: Tick loop orphaned after workflow completion, never cancelled
 Bug 5: Spawn handler fires duplicate child threads on method retry/skip
 """
 
+from orca.config import OrcaConfig
 import asyncio
 import logging
 from collections.abc import AsyncGenerator
@@ -24,8 +25,8 @@ from orca.events.execution_context import (
 )
 from orca.resource_models.resource_pool import ResourcePool
 from orca.resource_models.transporter import Transporter
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.system_runtime import ExecutionState, SystemRuntime
+from orca.modes.run_modes import WorkflowRunMode
+from orca.runtime.system_runtime import ExecutionState
 from orca.system.SdkToSystemBuilder import SdkToSystemBuilder
 from orca.sdk.system import ResourceRegistry, SystemMap
 from orca.sdk.workflow import MethodTemplate, ThreadTemplate, WorkflowTemplate
@@ -52,6 +53,10 @@ from tests.test_helpers import (
     wait_until,
     wire_system_map,
 )
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 
 # ---------------------------------------------------------------------------
@@ -127,13 +132,16 @@ async def _build_single_action_system(
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=event_bus,
+        event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     system = builder.get_system()
     coordinator = builder._thread_reservation_coordinator
     res_mgr = coordinator._reservation_manager
-    runtime = SystemRuntime(system, event_bus=event_bus)
+    runtime = await memory_runtime(system, event_bus=event_bus)
     return runtime, workflow, dev, event_bus, res_mgr, coordinator
 
 
@@ -198,11 +206,14 @@ async def _build_two_action_system_with_auto_spawn(
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=event_bus,
+        event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     system = builder.get_system()
-    runtime = SystemRuntime(system, event_bus=event_bus)
+    runtime = await memory_runtime(system, event_bus=event_bus)
     return runtime, workflow, device, event_bus
 
 
@@ -343,7 +354,7 @@ class TestBug2ReservationLeakOnMoveFailure:
         )
         await runtime.start()
 
-        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         paused = await wait_for_paused_thread(runtime, record.id)
 
         assert fail_transporter.place_call_count >= 1, (
@@ -426,22 +437,25 @@ class TestBug2ReservationLeakOnMoveFailure:
             labwares=[plate], resources_registry=registry,
             system_map=system_map,
             workflows=[workflow], event_bus=event_bus,
-            config=test_config,
+            config=test_config, ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+            labware_catalog=bundled_labware_catalog(),
+            labware_service=memory_labware_service(),
+            unsaved_positions=memory_unsaved_positions(),
         )
         await builder.bind_labwares()
         system = builder.get_system()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
         await runtime.start()
 
         # --- Workflow 1: place to shaker1 fails, plate in gripper, PAUSES ---
-        record1 = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record1 = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         paused1 = await wait_for_paused_thread(runtime, record1.id)
         assert fail_transporter.labware is not None, (
             "Plate should be in the gripper after place failure"
         )
 
         # --- Workflow 2: starts at pad2, blocked on reservation, PAUSES ---
-        record2 = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record2 = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         paused2 = await wait_for_paused_thread(runtime, record2.id, timeout=40.0)
 
         # --- Operator fixes the transporter ---
@@ -512,13 +526,16 @@ class TestBug2ReservationLeakOnMoveFailure:
             name="test_system", description="",
             labwares=[plate], resources_registry=registry,
             system_map=system_map, workflows=[workflow], event_bus=event_bus,
-            config=test_config,
+            config=test_config, ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+            labware_catalog=bundled_labware_catalog(),
+            labware_service=memory_labware_service(),
+            unsaved_positions=memory_unsaved_positions(),
         )
         await builder.bind_labwares()
-        runtime = SystemRuntime(builder.get_system(), event_bus=event_bus)
+        runtime = await memory_runtime(builder.get_system(), event_bus=event_bus)
         await runtime.start()
         try:
-            record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+            record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
             paused = await wait_for_paused_thread(runtime, record.id)
 
             incidents = await runtime.incidents.list(category=IncidentCategory.MOVE_FAILED)
@@ -585,10 +602,13 @@ class TestBug2ReservationLeakOnMoveFailure:
         builder = SdkToSystemBuilder(
             name="test_system", description="", labwares=[plate],
             resources_registry=registry, system_map=system_map,
-            workflows=[workflow], event_bus=event_bus, config=cfg,
+            workflows=[workflow], event_bus=event_bus, config=cfg, ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+            labware_catalog=bundled_labware_catalog(),
+            labware_service=memory_labware_service(),
+            unsaved_positions=memory_unsaved_positions(),
         )
         await builder.bind_labwares()
-        runtime = SystemRuntime(builder.get_system(), event_bus=event_bus)
+        runtime = await memory_runtime(builder.get_system(), event_bus=event_bus)
         return runtime, workflow, fail_transporter
 
     async def test_external_control_preemption_records_no_move_incident(self) -> None:
@@ -602,7 +622,7 @@ class TestBug2ReservationLeakOnMoveFailure:
         transporter.take_external_control()
         await runtime.start()
         try:
-            record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+            record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
             paused = await wait_for_paused_thread(runtime, record.id)
 
             incidents = await runtime.incidents.list(category=IncidentCategory.MOVE_FAILED)
@@ -626,7 +646,7 @@ class TestBug2ReservationLeakOnMoveFailure:
         runtime, workflow, _ = await self._build_move_system(FailurePolicy.ABORT)
         await runtime.start()
         try:
-            record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+            record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
             try:
                 await asyncio.wait_for(runtime.wait(record.id), timeout=15.0)
             except Exception:
@@ -653,9 +673,8 @@ class TestBug3CoLabwareTimeout:
     """Waiting for co-labware must time out, not hang indefinitely."""
 
     async def test_co_labware_wait_times_out(self) -> None:
-        """Set CO_LABWARE_TIMEOUT to 1 second and create a system where
-        the all_labware_is_present event will never fire. The thread must
-        raise a TimeoutError and the workflow must fail gracefully."""
+        """With a 1 s co_labware_timeout and co-labware that never arrives, the thread
+        pauses at CO_LABWARE_WAIT and ABORT_THREAD ends it ABORTED."""
         device = UniversalMockDevice("shaker1")
         transporter = create_test_transporter("robot1", ["shaker1", "pad1"])
         plate = create_test_plate_template("plate_96")
@@ -702,11 +721,14 @@ class TestBug3CoLabwareTimeout:
             system_map=system_map,
             workflows=[workflow],
             event_bus=event_bus,
-            config=test_config,
+            config=test_config, ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+            labware_catalog=bundled_labware_catalog(),
+            labware_service=memory_labware_service(),
+            unsaved_positions=memory_unsaved_positions(),
         )
         await builder.bind_labwares()
         system = builder.get_system()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
 
         # Monkeypatch the action so all_labware_is_present never fires.
         # Replace the internal _all_labware_is_present Event with a fresh
@@ -731,7 +753,7 @@ class TestBug3CoLabwareTimeout:
             return False
 
         await runtime.start()
-        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
 
         # Poll until the action is resolved and we can patch it
         for _ in range(50):
@@ -740,18 +762,19 @@ class TestBug3CoLabwareTimeout:
             await asyncio.sleep(0.1)
         assert patched, "Failed to patch action -- it was never resolved"
 
-        # With the fix: thread times out after 1s, workflow fails.
-        # Without the fix: hangs forever, test-level wait_for fires at 10s.
-        status = await asyncio.wait_for(runtime.wait(record.id), timeout=10.0)
+        # The thread times out after 1s and pauses for the operator; without the
+        # timeout it would hang forever and the wait below would fail at 10s.
+        await wait_until(
+            lambda: any(t.status == "PAUSED" for t in runtime.list_threads(record.id)), timeout=10.0,
+        )
+        [paused] = [t for t in runtime.get_execution_detail(record.id).threads if t.status == "PAUSED"]
+        assert "timed out" in (paused.last_error or "").lower(), (
+            f"Error should mention timeout, got: {paused.last_error}"
+        )
 
-        assert status.status == ExecutionState.FAILED, (
-            "Workflow should fail with a co-labware timeout error, "
-            "not hang indefinitely or complete successfully"
-        )
-        assert status.error is not None
-        assert "timed out" in status.error.lower(), (
-            f"Error should mention timeout, got: {status.error}"
-        )
+        runtime.recover_thread(record.id, paused.id, RecoveryDecision.ABORT_THREAD)
+        status = await asyncio.wait_for(runtime.wait(record.id), timeout=10.0)
+        assert status.status == ExecutionState.ABORTED
         await runtime.shutdown()
 
     async def test_timeout_error_identifies_missing_labware(self) -> None:
@@ -796,7 +819,7 @@ class TestBug4TickLoopLifetime:
         )
         await runtime.start()
 
-        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         await asyncio.wait_for(runtime.wait(record.id), timeout=15.0)
         await runtime.shutdown()
 
@@ -944,7 +967,7 @@ class TestBug5AutoSpawnDedupOnRetry:
         runtime, workflow, device, event_bus = await _build_two_action_system_with_auto_spawn()
         await runtime.start()
 
-        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         paused = await wait_for_paused_thread(runtime, record.id)
 
         threads_before = runtime.list_threads(record.id)
@@ -969,7 +992,7 @@ class TestBug5AutoSpawnDedupOnRetry:
         runtime, workflow, device, event_bus = await _build_two_action_system_with_auto_spawn()
         await runtime.start()
 
-        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         paused = await wait_for_paused_thread(runtime, record.id)
 
         threads_before = runtime.list_threads(record.id)

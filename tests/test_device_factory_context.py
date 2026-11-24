@@ -4,10 +4,9 @@ Verifies the contract that lets deployment-package authors write
 `Shaker(name="x")` with no driver argument:
 
 - When a factory is bound via `use_device_factory(...)`, Device subclasses
-  consult `factory.build_drivers(device_type, name)` to obtain
-  (live_driver, sim_driver) and wire them in.
-- When no factory is bound, a fresh sim driver is created directly for
-  both slots (pure-sim fallback for standalone users with no hosted deployment).
+  consult `factory.build_driver(device_type, name)` for their one driver.
+- With no factory bound, building a device is refused.
+- A factory that builds the wrong kind of driver is refused.
 - Nested `use_device_factory` contexts stack and restore correctly.
 - The contextvar is per-async-task so concurrent builds don't interfere.
 
@@ -17,17 +16,15 @@ every subclass.
 """
 
 import asyncio
+import contextvars
 from collections.abc import Callable
 
 import pytest
 
 from cheshire_drivers.interfaces import BaseDriver
-from cheshire_drivers.sims import SimShakerDriver
+from cheshire_drivers.sims import SimShakerDriver, SimStorageDriver
 from orca.devices.shaker import Shaker
-from orca.runtime.device_factory import SimDeviceFactory
-from orca.runtime.device_factory_context import (
-    use_device_factory,
-)
+from orca.driver_management.device_factory_context import NoDeviceFactoryError, use_device_factory
 
 
 def _open_constructor(ctor: Callable[..., Shaker]) -> Callable[..., Shaker]:
@@ -38,46 +35,59 @@ def _open_constructor(ctor: Callable[..., Shaker]) -> Callable[..., Shaker]:
 class _RecordingFactory:
     """IDeviceDriverProvider test double that records calls and returns prebuilt drivers.
 
-    `build_drivers` returns the (live, sim) pair stored under the given
-    device_type. Tests pre-load the map and assert (a) the right key was
+    `build_driver` returns the driver stored under the given device_type. Tests pre-load the map and assert (a) the right key was
     asked for and (b) the device received those exact instances.
     """
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
-        self._drivers: dict[str, tuple[BaseDriver, BaseDriver]] = {}
+        self._drivers: dict[str, BaseDriver] = {}
 
-    def preload(self, device_type: str, live: BaseDriver, sim: BaseDriver) -> None:
-        self._drivers[device_type] = (live, sim)
+    def preload(self, device_type: str, driver: BaseDriver) -> None:
+        self._drivers[device_type] = driver
 
-    def build_drivers(
+    def build_driver(
         self, device_type: str, name: str, *, deck_modeling: bool = False,
-    ) -> tuple[BaseDriver, BaseDriver]:
+    ) -> BaseDriver:
         self.calls.append((device_type, name))
         return self._drivers[device_type]
 
 
-def test_no_factory_bound_defaults_to_sim_driver() -> None:
-    shaker = Shaker(name="shaker_1")
+def test_a_device_built_with_no_factory_bound_is_refused() -> None:
+    with pytest.raises(NoDeviceFactoryError, match="shaker_1"):
+        contextvars.Context().run(Shaker, "shaker_1")
 
-    assert isinstance(shaker.driver, SimShakerDriver)
-    # Sim and live slots both point at sim drivers in pure-sim default.
-    assert isinstance(shaker._sim_manager._sim_driver, SimShakerDriver)
+
+def test_the_refusal_says_how_to_run_a_device_and_names_no_internal_helper() -> None:
+    with pytest.raises(NoDeviceFactoryError) as refused:
+        contextvars.Context().run(Shaker, "shaker_1")
+
+    message = str(refused.value)
+    assert "topology.py" in message
+    assert "orca topology mount" in message
+    assert "README" in message
+    assert "use_device_factory" not in message
+    assert "factory" not in message
+
+
+def test_a_factory_that_builds_the_wrong_kind_of_driver_is_refused() -> None:
+    factory = _RecordingFactory()
+    factory.preload("shaker", SimStorageDriver("shaker_1"))
+
+    with use_device_factory(factory), pytest.raises(TypeError, match="IShakerDriver"):
+        Shaker(name="shaker_1")
 
 
 def test_factory_supplies_drivers_when_bound() -> None:
     factory = _RecordingFactory()
-    live = SimShakerDriver("shaker_1_live")  # any concrete driver works as a stand-in
-    sim = SimShakerDriver("shaker_1_sim")
-    factory.preload("shaker", live, sim)
+    driver = SimShakerDriver("shaker_1")  # any concrete driver works as a stand-in
+    factory.preload("shaker", driver)
 
     with use_device_factory(factory):
         shaker = Shaker(name="shaker_1")
 
     assert factory.calls == [("shaker", "shaker_1")]
-    # The live slot is _live_driver; the sim slot is _sim_driver.
-    assert shaker._sim_manager._live_driver is live
-    assert shaker._sim_manager._sim_driver is sim
+    assert shaker.driver is driver
 
 
 def test_explicit_driver_kwarg_raises() -> None:
@@ -100,8 +110,8 @@ def test_explicit_sim_driver_kwarg_raises() -> None:
 def test_nested_factory_contexts_stack_and_restore() -> None:
     outer = _RecordingFactory()
     inner = _RecordingFactory()
-    outer.preload("shaker", SimShakerDriver("outer_live"), SimShakerDriver("outer_sim"))
-    inner.preload("shaker", SimShakerDriver("inner_live"), SimShakerDriver("inner_sim"))
+    outer.preload("shaker", SimShakerDriver("outer"))
+    inner.preload("shaker", SimShakerDriver("inner"))
 
     with use_device_factory(outer):
         Shaker(name="outer_a")
@@ -117,8 +127,8 @@ def test_factory_context_is_per_async_task() -> None:
     """Two concurrent tasks each binding a different factory must not interleave."""
     factory_a = _RecordingFactory()
     factory_b = _RecordingFactory()
-    factory_a.preload("shaker", SimShakerDriver("a_live"), SimShakerDriver("a_sim"))
-    factory_b.preload("shaker", SimShakerDriver("b_live"), SimShakerDriver("b_sim"))
+    factory_a.preload("shaker", SimShakerDriver("a"))
+    factory_b.preload("shaker", SimShakerDriver("b"))
 
     async def build_a() -> None:
         with use_device_factory(factory_a):
@@ -137,23 +147,3 @@ def test_factory_context_is_per_async_task() -> None:
 
     assert factory_a.calls == [("shaker", "device_a")]
     assert factory_b.calls == [("shaker", "device_b")]
-
-
-def test_sim_device_factory_implements_build_drivers() -> None:
-    """The source-available SimDeviceFactory must satisfy the build_drivers contract."""
-    factory = SimDeviceFactory()
-
-    live, sim = factory.build_drivers("shaker", "shaker_1")
-
-    assert isinstance(live, SimShakerDriver)
-    assert isinstance(sim, SimShakerDriver)
-    # Source-available sim factory uses the same class for both slots: there is no live
-    # driver in pure-sim, just two sim instances feeding the SimulationManager.
-    assert live is not sim
-
-
-def test_sim_device_factory_rejects_unknown_device_type() -> None:
-    factory = SimDeviceFactory()
-
-    with pytest.raises(ValueError, match="Unknown device type"):
-        factory.build_drivers("not_a_device_type", "foo")

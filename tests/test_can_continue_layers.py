@@ -28,6 +28,7 @@ from orca.state.records import (
     OperationRecord,
     TipPickUpDetails,
 )
+from tests.memory_activity import memory_ops_store
 
 
 def _make_fake_rack(num_tips: int = 96, name: str = "rack"):
@@ -48,7 +49,7 @@ def _make_fake_rack(num_tips: int = 96, name: str = "rack"):
 class TestTipRackCanContinue:
     @pytest.mark.asyncio
     async def test_fresh_seeded_rack_reports_true(self) -> None:
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         inst = TipRackInstance(_make_fake_rack(num_tips=2), template_name="rack", labware_type="rack")
         await history.append_initial_state(inst.name, InitialStateDetails(labware=inst.name, tip_positions_present=["A1", "A2"]))
         bind_ledger(inst, history)
@@ -56,7 +57,7 @@ class TestTipRackCanContinue:
 
     @pytest.mark.asyncio
     async def test_depleted_rack_reports_false(self) -> None:
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         inst = TipRackInstance(_make_fake_rack(num_tips=2), template_name="rack", labware_type="rack")
         await history.append_initial_state(inst.name, InitialStateDetails(labware=inst.name, tip_positions_present=["A1", "A2"]))
         import time as _time
@@ -82,7 +83,7 @@ class TestTipRackCanContinue:
 
     @pytest.mark.asyncio
     async def test_demand_precheck_fails_when_positions_missing(self) -> None:
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         inst = TipRackInstance(_make_fake_rack(num_tips=96), template_name="rack", labware_type="rack")
         await history.append_initial_state(inst.name, InitialStateDetails(labware=inst.name, tip_positions_present=["A1", "A2", "A3"]))
         bind_ledger(inst, history)
@@ -91,7 +92,7 @@ class TestTipRackCanContinue:
 
     @pytest.mark.asyncio
     async def test_demand_precheck_passes_when_all_positions_present(self) -> None:
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         inst = TipRackInstance(_make_fake_rack(num_tips=96), template_name="rack", labware_type="rack")
         await history.append_initial_state(inst.name, InitialStateDetails(labware=inst.name, tip_positions_present=["A1", "A2", "A3"]))
         bind_ledger(inst, history)
@@ -103,7 +104,7 @@ class TestTemplateCanContinueFnPriority:
     @pytest.mark.asyncio
     async def test_user_fn_overrides_subclass_default(self) -> None:
         # Subclass default would say True (seeded with positions); user fn forces False.
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
 
         async def always_false(lw: LabwareInstance, demand: DeclaredTracking | None) -> bool:
             return False
@@ -122,10 +123,10 @@ class TestTemplateCanContinueFnPriority:
         async def full_after_4_contributions(lw: LabwareInstance, demand: DeclaredTracking | None) -> bool:
             return op_count(await lw.ops(), lw.name, (DeviceOperation.DISPENSE,)) < 4
 
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         template = PlateTemplate(
             "final",
-            lambda name, with_lid=None: _make_fake_plate(name),
+            lambda name: _make_fake_plate(name),
             can_continue_fn=full_after_4_contributions,
         )
         inst = PlateInstance(_make_fake_plate("final"), template_name="final", labware_type="final")

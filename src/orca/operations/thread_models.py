@@ -1,3 +1,5 @@
+from orca.operations.binding import RestBinding, Route
+from orca.operations.route_tags import RouteTag
 """Wire models for the thread operations.
 
 Apart from `thread.py` because the Operation classes there take
@@ -8,7 +10,7 @@ ever wanting the engine.
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import Self
-from orca.operations._scope import Scope
+from orca.operations.scope import Scope
 from orca.runtime.status_models import ThreadSnapshot
 from orca.workflow_models.status_enums import RecoveryDecision
 
@@ -59,7 +61,7 @@ class ResumeRequest(BaseModel):
     reason: str | None = None
 
 
-class _ResumeExecutionResult(BaseModel):
+class ResumeExecutionResult(BaseModel):
     """Mirrors ``SystemRuntime.resume_all_threads`` 4-counter contract.
 
     See orca.runtime.system_runtime.SystemRuntime.resume_all_threads for
@@ -82,7 +84,7 @@ class _ResumeThreadResult(BaseModel):
     status: Literal["resumed"] = "resumed"
 
 
-ResumeResult = _ResumeExecutionResult | _ResumeThreadResult
+ResumeResult = ResumeExecutionResult | _ResumeThreadResult
 
 
 class ResumeResponse(BaseModel):
@@ -91,10 +93,7 @@ class ResumeResponse(BaseModel):
 
 
 class SpawnThreadRequest(BaseModel):
-    """Spawn a new thread from a template into a running execution.
-
-    Primary use case is AUTO_SPAWN_FAILED incident recovery.
-    """
+    """Spawn a new thread from a template into a running execution."""
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     execution_id: str
@@ -102,8 +101,7 @@ class SpawnThreadRequest(BaseModel):
         ...,
         description=(
             "Thread template name as registered on the runtime "
-            "(GET /catalog/threads on the daemon or "
-            "GET /api/workflows on a hosted deployment for entry-thread templates)."
+            "(the list-thread-templates operation lists them)."
         ),
     )
     labware_id: str | None = Field(
@@ -117,7 +115,7 @@ class SpawnThreadRequest(BaseModel):
     reason: str | None = None
 
 
-class _ActionSnapshotProjection(BaseModel):
+class ActionSnapshotModel(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     id: str
     command: str
@@ -127,19 +125,19 @@ class _ActionSnapshotProjection(BaseModel):
     description: str | None = None
 
 
-class _MethodSnapshotProjection(BaseModel):
+class MethodSnapshotModel(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     id: str
     name: str
     status: str
-    current_action: _ActionSnapshotProjection | None
+    current_action: ActionSnapshotModel | None
     completed_action_count: int
 
 
 class SpawnThreadResponse(BaseModel):
     """Full projection of the spawned `ThreadSnapshot`.
 
-    Mirrors `orca.daemon.schemas.ThreadSnapshotDTO`. Callers depend on
+    Mirrors `orca.operations.wire_models.ThreadSnapshotResponse`. Callers depend on
     the full snapshot to show the freshly-spawned thread's location,
     current method, and completed-method context without a follow-up
     round-trip. `id` is the thread id; status / current_location /
@@ -150,8 +148,8 @@ class SpawnThreadResponse(BaseModel):
     id: str
     name: str
     status: str
-    current_location: str
-    current_method: _MethodSnapshotProjection | None
+    current_location: str | None
+    current_method: MethodSnapshotModel | None
     completed_method_count: int
     last_error: str | None
     pause_reason: str | None
@@ -169,13 +167,13 @@ class SpawnThreadResponse(BaseModel):
 
     @classmethod
     def from_snapshot(cls, snap: ThreadSnapshot) -> Self:
-        current_method: _MethodSnapshotProjection | None = None
+        current_method: MethodSnapshotModel | None = None
         if snap.current_method is not None:
             m = snap.current_method
-            current_action: _ActionSnapshotProjection | None = None
+            current_action: ActionSnapshotModel | None = None
             if m.current_action is not None:
                 a = m.current_action
-                current_action = _ActionSnapshotProjection(
+                current_action = ActionSnapshotModel(
                     id=a.id,
                     command=a.command,
                     status=str(a.status),
@@ -183,7 +181,7 @@ class SpawnThreadResponse(BaseModel):
                     resource_name=a.resource_name,
                     description=a.description,
                 )
-            current_method = _MethodSnapshotProjection(
+            current_method = MethodSnapshotModel(
                 id=m.id,
                 name=m.name,
                 status=str(m.status),
@@ -212,18 +210,19 @@ class SpawnThreadResponse(BaseModel):
 class RecoverThreadRequest(BaseModel):
     """Apply a RecoveryDecision to an error-paused thread.
 
-    `decision` is one of RETRY / RETRY_OP / CONTINUE / ABORT_ACTION /
-    ABORT_METHOD / ABORT_THREAD (case-insensitive on the wire). RETRY_OP re-runs
-    only the failed device call and is valid only while a device op is paused; on
-    a device that supports it the engine re-reads hardware state before
+    `decision` is one of RETRY / RETRY_ACTION / CONTINUE / ABORT_ACTION /
+    ABORT_METHOD / ABORT_THREAD (case-insensitive on the wire). RETRY repeats
+    only the step that failed. Inside an action that is the failed device call;
+    on a device that supports it the engine re-reads hardware state before
     re-issuing, and refuses the retry when only a human can resolve what it
-    finds. CONTINUE says the work is done and the run may carry on: valid while
+    finds. RETRY_ACTION re-runs the whole action, and is valid only where the
+    action's own code failed, since no command failed there. CONTINUE says the work is done and the run may carry on: valid while
     an action is error-paused, and at a failed move once the labware's recorded
     location is the move's target, which is the operator saying they carried it
     there. It needs something to call finished and a known position, so it is
     refused at a resolution or spawn pause.
 
-    RETRY, RETRY_OP and CONTINUE all say the instrument has been looked at and
+    RETRY, RETRY_ACTION and CONTINUE all say the instrument has been looked at and
     is fit to drive, so each clears the device fault this pause is about before
     the thread resumes. Recovering is enough on its own; a separate
     clear-device-fault is not needed and the first RETRY is not refused by the
@@ -232,15 +231,18 @@ class RecoverThreadRequest(BaseModel):
     work is exactly when a plate can still be in the jaws.
 
     Manually-paused threads use Resume instead; this endpoint targets
-    threads in error pause (`pause_reason="error"`).
+    threads in error pause (`pause_reason="error"`). ABORT_METHOD is the one
+    decision that also takes a manually paused thread: it aborts the method in
+    progress there, and then `reason` is required.
 
-    Takes no `reason`: a recovery is audited without one.
+    `reason` lands on the audit record.
     """
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     execution_id: str
     thread_id: str
     decision: str
+    reason: str | None = None
 
 
 class RecoverThreadResponse(BaseModel):
@@ -255,31 +257,15 @@ class SkipMethodRequest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     execution_id: str
     thread_id: str
-    method_id: str | None = None
-    method_name: str | None = None
+    method_name: str
     reason: str
 
 
-class _ThreadMutationResult(BaseModel):
+class ThreadMutationResult(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     status: Literal["mutated"] = "mutated"
     execution_id: str
     thread_id: str
-
-
-class AbortMethodRequest(BaseModel):
-    """Abort the in-progress method on a paused thread.
-
-    Targets the currently-assigned IN_PROGRESS method (the one method
-    that has started and cannot simply be skipped). For pending
-    methods use SkipMethod instead.
-    """
-    model_config = ConfigDict(frozen=True, extra="forbid")
-    execution_id: str
-    thread_id: str
-    method_id: str | None = None
-    method_name: str | None = None
-    reason: str
 
 
 class SkipActionRequest(BaseModel):
@@ -412,3 +398,102 @@ class ReplaceActionRequest(BaseModel):
     target_command: str
     action_code: str
     reason: str
+
+
+PAUSE_ROUTE = Route(
+    PauseRequest,
+    PauseResponse,
+    RestBinding(
+        method="POST", path="/pause", tag=RouteTag.THREADS,
+        carries_blockers=True,
+    ),
+)
+
+
+RESUME_ROUTE = Route(
+    ResumeRequest,
+    ResumeResponse,
+    RestBinding(
+        method="POST", path="/resume", tag=RouteTag.THREADS,
+        carries_blockers=True,
+    ),
+)
+
+
+SPAWN_THREAD_ROUTE = Route(
+    SpawnThreadRequest,
+    SpawnThreadResponse,
+    RestBinding(
+        method="POST", path="/executions/{execution_id}/threads", tag=RouteTag.THREADS,
+    ),
+)
+
+
+RECOVER_THREAD_ROUTE = Route(
+    RecoverThreadRequest,
+    RecoverThreadResponse,
+    RestBinding(
+        method="POST", path="/executions/{execution_id}/threads/{thread_id}/recover", tag=RouteTag.THREADS,
+        carries_blockers=True,
+    ),
+)
+
+
+SKIP_METHOD_ROUTE = Route(
+    SkipMethodRequest,
+    ThreadMutationResult,
+    RestBinding(
+        method="POST", path="/executions/{execution_id}/threads/{thread_id}/skip-method", tag=RouteTag.THREADS,
+        carries_blockers=True,
+    ),
+)
+
+
+SKIP_ACTION_ROUTE = Route(
+    SkipActionRequest,
+    ThreadMutationResult,
+    RestBinding(
+        method="POST", path="/executions/{execution_id}/threads/{thread_id}/skip-action", tag=RouteTag.THREADS,
+        carries_blockers=True,
+    ),
+)
+
+
+INSERT_METHOD_ROUTE = Route(
+    InsertMethodRequest,
+    ThreadMutationResult,
+    RestBinding(
+        method="POST", path="/executions/{execution_id}/threads/{thread_id}/insert-method", tag=RouteTag.THREADS,
+        carries_blockers=True,
+    ),
+)
+
+
+REPLACE_METHOD_ROUTE = Route(
+    ReplaceMethodRequest,
+    ReplaceResult,
+    RestBinding(
+        method="POST", path="/executions/{execution_id}/threads/{thread_id}/replace-method", tag=RouteTag.THREADS,
+        carries_blockers=True,
+    ),
+)
+
+
+INSERT_ACTION_ROUTE = Route(
+    InsertActionRequest,
+    ThreadMutationResult,
+    RestBinding(
+        method="POST", path="/executions/{execution_id}/threads/{thread_id}/insert-action", tag=RouteTag.THREADS,
+        carries_blockers=True,
+    ),
+)
+
+
+REPLACE_ACTION_ROUTE = Route(
+    ReplaceActionRequest,
+    ReplaceResult,
+    RestBinding(
+        method="POST", path="/executions/{execution_id}/threads/{thread_id}/replace-action", tag=RouteTag.THREADS,
+        carries_blockers=True,
+    ),
+)

@@ -18,29 +18,39 @@ from cheshire_drivers import (
     AccessConfig,
     Teachpoint,
     CartesianCoordinates,
-    RecordingLiquidHandlerDriver,
-    SimDriver,
-    SimTranslatorDriver,
 )
+from orca.resource_models.resources import IModeAware
 from orca.resource_models.transporter import Transporter
-from orca.runtime.device_factory import SimDeviceFactory
-from orca.runtime.device_factory_protocol import DriverPairElement
+from orca.resource_models.translator import Translator
+from orca.driver_management.device_factory_protocol import DeviceDriver
 from orca.events.runtime_event import RuntimeEvent
 from orca.runtime.execution import ExecutionPhase
 from orca.runtime.status_models import ExecutionStatus, ThreadSnapshot
-from orca.runtime.submission import Submission
+from orca.workflow_models.submission import Submission
 from orca.runtime.system_runtime import SystemRuntime
-from orca.runtime.interfaces import ITeachpointStore
-from orca.runtime.run_modes import WorkflowRunMode, current_run_mode
-from orca.runtime.teachpoint_service import seeded_teachpoint_service
+from orca.modes.device_modes import DeviceMode
+from tests.device_modes import set_to
+from orca.modes.run_modes import WorkflowRunMode, current_run_mode
 from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.labware_location_service import ILabwareLocationService
+from orca.resource_models.labware_service_interface import ILabwareService
 from orca.resource_models.labware_placement import LabwarePlacer
+from orca.resource_models.labware_placeable_interface import IPlateMover
+from orca.resource_models.command_effects import CommandStatement, LabwareMotion, SystemCommandPipeline
+from orca.resource_models.device_error import SlotOccupiedError
+from orca.resource_models.vendor_protocol_head import VendorProtocolHeadCheck
+from orca.devices.device_interfaces import ILiquidHandler
+from orca.state.mounted import MountedTips
+from orca.state.provenance import Provenance
+from orca.gateway.controller.command_pipeline import DeviceCommandPipeline
 from orca.resource_models.location import Location
 from orca.resource_models.devices import Device
 from orca.resource_models.plate_pad import PlatePad
 from orca.state.contents import LabwareContentsLedger
 from orca.state.ops_history import OpsHistory
+from orca.state.records import OperationRecord
+from orca.resource_models.tracking_interpreter import DefaultInterpreter, IOperationInterpreter
+from orca.workflow_models.actions.device_call_dispatcher import CommandRecorder
 from orca.resource_models.labware import (
     LabwareInstance,
     PlateInstance,
@@ -50,10 +60,13 @@ from orca.resource_models.labware import (
     TroughInstance,
     TroughTemplate,
 )
-from orca.runtime.labware_catalog_protocol import ILabwareCatalog
-from orca.system.resource_registry import ResourceRegistry
+from orca.resource_models.labware_catalog_protocol import ILabwareCatalog
+from orca.resource_models.resource_registry import ResourceRegistry
 from orca.system.system_map import SystemMap
-from tests.mock import UniversalMockDevice
+from tests.mock import UniversalMockDevice, outside_any_system
+from tests.setup_package import package_stores, with_teachpoints, write_teachpoints
+from tests.real_device_path import the_real_device_path
+from tests.memory_activity import memory_labware_service, memory_unsaved_positions
 
 
 def create_test_teachpoints(names: List[str]) -> List[Teachpoint]:
@@ -91,7 +104,7 @@ def create_test_teachpoints(names: List[str]) -> List[Teachpoint]:
 def create_test_transporter(
     name: str,
     position_ids: List[str],
-    sim_override: WorkflowRunMode | None = None,
+    setting: DeviceMode | None = None,
     single_carriage: bool = False,
 ) -> Transporter:
     """
@@ -100,28 +113,18 @@ def create_test_transporter(
     Args:
         name: Transporter name
         position_ids: Names of locations this transporter can reach
-        sim_override: Per-device topology sim_override declared at construction
-            time. Mirror of Device.sim_override; surfaced on the topology card.
-        single_carriage: Bind a ``SimTranslatorDriver`` so the transporter
-            declares one-carriage semantics the way production does: the
-            DRIVER owns the physical truth (TransporterBase.single_carriage).
+        setting: The transporter's sim or live setting; sim when omitted.
+        single_carriage: Build a ``Translator``, whose driver declares one carriage.
 
     Returns:
         Configured Transporter instance
     """
-    from orca.runtime.device_factory_context import use_device_factory
-
     teachpoints = create_test_teachpoints(position_ids)
-    store = seeded_teachpoint_service(teachpoints)
-    if single_carriage:
-        with use_device_factory(_SingleDriverFactory(SimTranslatorDriver(name))):
-            return Transporter(
-                name, teachpoint_store=store, sim_override=sim_override,
-            )
-    return Transporter(
-        name, teachpoint_store=store,
-        sim_override=sim_override,
-    )
+    store = write_teachpoints(package_stores(), name, teachpoints)
+    transporter = with_teachpoints(Translator(name) if single_carriage else Transporter(name), store)
+    if setting is not None:
+        set_to(transporter, name, setting)
+    return outside_any_system(transporter)
 
 
 class FailOnPlaceTransporter(Transporter):
@@ -133,8 +136,10 @@ class FailOnPlaceTransporter(Transporter):
 
     def __init__(self, name: str, position_ids: List[str]) -> None:
         teachpoints = create_test_teachpoints(position_ids)
-        store = seeded_teachpoint_service(teachpoints)
-        super().__init__(name, teachpoint_store=store)
+        store = write_teachpoints(package_stores(), name, teachpoints)
+        super().__init__(name)
+        self.bind_teachpoints(store)
+        outside_any_system(self)
         self.should_fail_place = True
         self.place_call_count = 0
         self.place_targets: List[str] = []
@@ -145,23 +150,6 @@ class FailOnPlaceTransporter(Transporter):
         if self.should_fail_place:
             raise RuntimeError("Simulated place failure: arm jammed")
         await super().place(location)
-
-
-class _SingleDriverFactory:
-    """Factory that returns the same driver for both slots.
-
-    Used by tests that need to inject a specific Sim* / mock driver instance
-    into a Device built via the no-driver SDK ctor. Bind via
-    ``use_device_factory(...)`` for the duration of the topology build.
-    """
-
-    def __init__(self, driver: DriverPairElement) -> None:
-        self._driver = driver
-
-    def build_drivers(
-        self, device_type: str, name: str, *, deck_modeling: bool = False,
-    ) -> tuple[DriverPairElement, DriverPairElement]:
-        return self._driver, self._driver
 
 
 def named_for_template(name: str, template: str) -> bool:
@@ -194,26 +182,17 @@ def assert_translator_carriage_pairs(system_map: SystemMap) -> None:
 
 def make_transporter_with_driver(
     name: str,
-    driver: DriverPairElement,
-    teachpoint_store: ITeachpointStore,
+    driver: DeviceDriver,
 ) -> Transporter:
-    """Build a Transporter wired with a specific test driver instance.
-
-    Tests subclass SimTransporterDriver to record dispatches or raise on
-    demand; this helper threads that instance through the no-driver Device
-    ctor via the factory contextvar.
-    """
-    from orca.runtime.device_factory_context import use_device_factory
-    with use_device_factory(_SingleDriverFactory(driver)):
-        return Transporter(
-            name, teachpoint_store=teachpoint_store,
-        )
+    """A Transporter whose commands the in-process orca-client runs on `driver`."""
+    the_real_device_path().simulate_with(name, driver)
+    return outside_any_system(Transporter(name))
 
 
 def create_test_device(
     name: str,
     device_type: str = "device",
-    sim_override: WorkflowRunMode | None = None,
+    setting: DeviceMode | None = None,
     site_names: list[str] | None = None,
 ) -> UniversalMockDevice:
     """
@@ -222,15 +201,16 @@ def create_test_device(
     Args:
         name: Device name
         device_type: Type of device for simulation (deprecated, kept for compatibility)
-        sim_override: Per-device topology sim_override declared at construction
-            time. Surfaced on `TopologyCard.topology_sim_override` and consulted
-            by the mode resolver.
+        setting: The device's sim or live setting; sim when omitted.
 
     Returns:
         UniversalMockDevice instance supporting all action types
     """
     del device_type
-    return UniversalMockDevice(name, sim_override=sim_override, site_names=site_names)
+    device = UniversalMockDevice(name, site_names=site_names)
+    if setting is not None:
+        set_to(device, name, setting)
+    return device
 
 
 def create_test_plate_template(name: str = "test_plate") -> PlateTemplate:
@@ -247,13 +227,13 @@ def create_test_plate_template(name: str = "test_plate") -> PlateTemplate:
     # `template.create_instance()` outside SdkToSystemBuilder do not bind
     # one, and the staging-bridge / template-backref tests that consume
     # this helper do not depend on real PLR geometry.
-    from orca.runtime.sim_labware import SimPlateTemplate
+    from orca.resource_models.sim_labware import SimPlateTemplate
     return SimPlateTemplate(name)
 
 
 async def create_test_labware_instance(name: str = "test_plate") -> PlateInstance:
     """Create a test labware instance via the sim path (no catalog needed)."""
-    from orca.runtime.sim_labware import SimPlateTemplate
+    from orca.resource_models.sim_labware import SimPlateTemplate
     return await SimPlateTemplate(name).create_instance()
 
 
@@ -274,20 +254,16 @@ class FactoryPlateTemplate(PlateTemplate):
         self,
         name: str,
         labware_factory,
-        with_lid: bool = False,
         **kwargs,
     ) -> None:
-        super().__init__(name, labware_type="_test_factory_plate", with_lid=with_lid, **kwargs)
+        super().__init__(name, labware_type="_test_factory_plate", **kwargs)
         self._test_factory = labware_factory
 
     async def bind_catalog(self, catalog: ILabwareCatalog) -> None:
         return
 
     async def _build_instance(self, instance_id: str, instance_name: str) -> PlateInstance:
-        try:
-            plate = self._test_factory(instance_name, self._with_lid if self._with_lid else None)
-        except TypeError:
-            plate = self._test_factory(instance_name)
+        plate = self._test_factory(instance_name)
         instance = PlateInstance(plate, template_name=self.name, labware_type=self.labware_type, instance_id=instance_id)
         instance._template = self
         return instance
@@ -367,6 +343,7 @@ async def create_simple_system_map(
     for name, device in devices.items():
         await _assign_device(system_map, name, device)
     await system_map.initialize_transporters()
+    await the_real_device_path().connect_built()
 
     return registry, system_map
 
@@ -394,6 +371,7 @@ async def wire_system_map(
     for name, device in (devices or {}).items():
         await _assign_device(system_map, name, device)
     await system_map.initialize_transporters()
+    await the_real_device_path().connect_built()
 
 
 @contextmanager
@@ -404,25 +382,6 @@ def seeded(mode: WorkflowRunMode) -> Iterator[None]:
         yield
     finally:
         current_run_mode.reset(token)
-
-
-class PairDriverFactory:
-    """Device factory that hands out a fixed (live, sim) driver pair, so a
-    test can observe which world a dispatch landed in."""
-
-    def __init__(self, live: DriverPairElement, sim: DriverPairElement) -> None:
-        self._live = live
-        self._sim = sim
-        self._fallback = SimDeviceFactory()
-
-    def build_drivers(
-        self, device_type: str, name: str, *, deck_modeling: bool = False,
-    ) -> tuple[DriverPairElement, DriverPairElement]:
-        if device_type == "liquid_handler":
-            return self._live, self._sim
-        return self._fallback.build_drivers(
-            device_type, name, deck_modeling=deck_modeling,
-        )
 
 
 class _ConditionSink:
@@ -564,7 +523,7 @@ async def execution_outcome(
             f"pending task stacks:\n{_task_stacks()}"
         )
     if status.status in (
-        ExecutionPhase.COMPLETED, ExecutionPhase.FAILED, ExecutionPhase.ABORTED,
+        ExecutionPhase.COMPLETED, ExecutionPhase.PARTIAL_COMPLETED, ExecutionPhase.FAILED, ExecutionPhase.ABORTED,
     ):
         return status
     pytest.fail(
@@ -600,20 +559,6 @@ async def wait_until(
         raise TimeoutError(message or f"condition not met within {timeout}s")
 
 
-class RecordingLhDeckFactory:
-    """Device factory that returns a recording liquid-handler driver for the
-    liquid_handler device and the default sim drivers for everything else."""
-
-    def __init__(self, lh: RecordingLiquidHandlerDriver) -> None:
-        self._lh = lh
-        self._fallback = SimDeviceFactory()
-
-    def build_drivers(self, device_type: str, name: str, *, deck_modeling: bool = False):
-        if device_type == "liquid_handler":
-            return self._lh, self._lh
-        return self._fallback.build_drivers(device_type, name)
-
-
 def bind_ledger(
     instance: LabwareInstance, history: OpsHistory,
 ) -> LabwareContentsLedger:
@@ -631,11 +576,79 @@ async def _no_projection(
     return None
 
 
+async def _no_rebuild(device_location: Location) -> None:
+    return None
+
+
+async def _no_staling() -> None:
+    return None
+
+
+def no_forgetting(labware: LabwareInstance) -> None:
+    """For a placer with no system behind it: nothing lists the labware, so nothing forgets it."""
+
+
 def make_labware_placer(
-    location_service: ILabwareLocationService,
+    location_service: ILabwareLocationService, labware_service: ILabwareService | None = None,
 ) -> LabwarePlacer:
-    """The placement chokepoint without the deck projection."""
-    return LabwarePlacer(location_service, _no_projection)
+    """The placement chokepoint without the deck projection, saving to ``labware_service`` or a fresh one."""
+    return LabwarePlacer(
+        location_service, labware_service or memory_labware_service(), memory_unsaved_positions(), _no_projection, _no_staling, _no_staling,
+        _no_rebuild, no_forgetting,
+    )
+
+
+async def _save_by_name_nowhere(device_name: str, command: str, args_repr: str) -> None:
+    return None
+
+
+def _no_conflict_report(device_name: str, motion: LabwareMotion, occupied: SlotOccupiedError) -> None:
+    raise occupied
+
+
+class _FindsNothing:
+    """A statement lookup for a pipeline with no system behind it."""
+
+    def labware_with_id(self, labware_id: str) -> LabwareInstance | None:
+        return None
+
+    def location_at(self, position_id: str) -> Location | None:
+        return None
+
+    def mover_named(self, name: str) -> IPlateMover | None:
+        return None
+
+
+def _no_labware(device_name: str) -> list[LabwareInstance]:
+    return []
+
+
+def make_command_pipeline(location_service: ILabwareLocationService) -> SystemCommandPipeline:
+    """The system pipeline over a placer without the deck projection, saving engine commands nowhere."""
+    return command_pipeline_over(make_labware_placer(location_service))
+
+
+class _NoHeads:
+    """A head record for a pipeline with no liquid handler behind it."""
+
+    async def of(self, device_name: str) -> MountedTips:
+        return MountedTips({}, Provenance.UNKNOWN)
+
+
+def _no_liquid_handler(device_name: str) -> bool:
+    return False
+
+
+def command_pipeline_over(placer: LabwarePlacer) -> SystemCommandPipeline:
+    return SystemCommandPipeline(
+        placer, _save_by_name_nowhere, _no_conflict_report, _no_labware, _FindsNothing(),
+        VendorProtocolHeadCheck(_NoHeads(), _no_liquid_handler),
+    )
+
+
+def engine_pipeline() -> DeviceCommandPipeline[CommandStatement]:
+    """A pipeline with no labware effects, for a device outside any system."""
+    return DeviceCommandPipeline(())
 
 
 class _NoSourceHold:
@@ -653,3 +666,43 @@ class _NoSourceHold:
 
 def no_source_hold() -> _NoSourceHold:
     return _NoSourceHold()
+
+
+def kept_engine_commands(resource: IModeAware) -> list[str]:
+    """A device outside any system, whose engine pushes are kept in the returned list instead of a history."""
+    kept: list[str] = []
+
+    async def keep(command: str) -> None:
+        kept.append(command)
+
+    resource.engine_commands.save_with(keep, engine_pipeline())
+    return kept
+
+
+def command_recorder(
+    interpreter: IOperationInterpreter | None = None,
+    into: list[OperationRecord] | None = None,
+    device_name: str = "dev",
+    action_id: str = "a1",
+    thread_id: str = "t1",
+) -> CommandRecorder:
+    """A recorder that saves into a list, for tests of the dispatcher alone."""
+    saved = into if into is not None else []
+
+    async def save(operations: list[OperationRecord]) -> None:
+        saved.extend(operations)
+
+    return CommandRecorder(interpreter or DefaultInterpreter(), save, device_name, action_id, thread_id)
+
+
+async def let_the_loop_run(turns: int = 50) -> None:
+    """Give every ready task this many scheduler turns, to show something did NOT happen without a wall-clock guess."""
+    for _ in range(turns):
+        await asyncio.sleep(0)
+
+
+async def state_every_liquid_handler_head_empty(runtime: SystemRuntime) -> None:
+    """What an operator does before a vendor protocol: state that each liquid handler's head carries nothing."""
+    for resource in runtime.system.resources:
+        if isinstance(resource, ILiquidHandler):
+            await runtime.system.mounted_tips.assert_mounted(resource.name, {})

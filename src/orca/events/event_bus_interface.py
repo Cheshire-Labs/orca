@@ -28,6 +28,13 @@ class IEventBus(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def subscribe_to_one_execution(
+        self, event_name: str, execution_id: str, handler: EventHandlerType,
+    ) -> EventHandlerType:
+        """Subscribe `handler` to `event_name` for one execution only; unsubscribe what this returns."""
+        raise NotImplementedError
+
+    @abstractmethod
     def subscribe_all(self, handler: EventHandlerType) -> None:
         """Subscribe to every event regardless of name."""
         raise NotImplementedError

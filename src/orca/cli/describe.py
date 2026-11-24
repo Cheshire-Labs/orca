@@ -14,11 +14,7 @@ and stay separate, but the ``info``/``overview`` verbs were uniformly
 ``orca describe system`` takes no name and folds the old ``system info``
 and ``system overview`` into one block.
 
-``describe method/thread/location`` resolve via ``get_client()`` and work
-against either backend (their methods return one DTO type on both). ``describe
-device`` and ``describe system/workflow`` stay on ``local_client()`` pending
-DTO/dispatch-parity reconciliation (device_info and list_workflows return
-different DTO classes per backend); tracked separately.
+Every ``describe`` verb works against either backend.
 
 Each command builds its own client. That is intentional: every ``orca <verb>``
 invocation is a separate OS process, so one client per verb is one client per
@@ -30,8 +26,9 @@ from pydantic import BaseModel
 import typer
 
 from orca.cli import output
-from orca.cli.backend import get_client, local_client
-from orca.daemon.schemas import SystemInfoDTO
+from orca.cli.backend import get_client
+from orca.cli.device import device_entry_rows
+from orca.operations.system_models import GetSystemInfoResponse
 
 
 app = typer.Typer(
@@ -51,17 +48,17 @@ class _SystemOverview(BaseModel):
 
 class _SystemDescribePayload(BaseModel):
     """Combined info + counts payload for `orca describe system --json`."""
-    info: SystemInfoDTO
+    info: GetSystemInfoResponse
     overview: _SystemOverview
 
 
 @app.command("system")
 def describe_system() -> None:
     """System topology summary + overview counts in one view."""
-    client = local_client()
+    client = get_client()
     info = client.system_info()
     overview = _SystemOverview(
-        devices=len(client.list_devices()),
+        devices=len(client.device_registry_list()),
         locations=len(client.list_locations()),
         workflows=len(client.list_workflows()),
         methods=len(client.methods_list()),
@@ -82,7 +79,7 @@ def describe_system() -> None:
 @app.command("workflow")
 def describe_workflow(name: str = typer.Argument(..., help="Workflow name.")) -> None:
     """Show details for one workflow template."""
-    client = local_client()
+    client = get_client()
     items = client.list_workflows()
     match = next((w for w in items if w.name == name), None)
     if match is None:
@@ -103,7 +100,7 @@ def describe_method(name: str = typer.Argument(..., help="Method name.")) -> Non
         output.not_found("method", name)
     output.emit_json(match.model_dump(mode="json"))
     output.emit_kv(f"method {match.name}", [
-        ("failure_policy", match.failure_policy),
+        ("failure_policy", match.failure_policy.value),
     ])
 
 
@@ -120,6 +117,8 @@ def describe_thread(name: str = typer.Argument(..., help="Thread template name."
         ("labware", match.labware_template_name),
         ("start", match.start_position_id),
         ("end", ", ".join(match.end_position_ids)),
+        ("put down before the run", "yes" if match.placed_before_run else "no"),
+        ("starts holding", "not declared" if match.initial_state is None else match.initial_state.model_dump_json(exclude_defaults=True)),
     ])
 
 
@@ -140,16 +139,7 @@ def describe_location(name: str = typer.Argument(..., help="Location name.")) ->
 
 @app.command("device")
 def describe_device(name: str = typer.Argument(..., help="Device name.")) -> None:
-    """Show one device's snapshot (type, busy/init flags, loaded labware)."""
-    client = local_client()
-    snap = client.device_info(name)
-    output.emit_json(snap.model_dump(mode="json"))
-    output.emit_kv(f"device {snap.name}", [
-        ("type", snap.type_name),
-        ("initialized", str(snap.is_initialized)),
-        ("busy", str(snap.is_busy)),
-        ("mode", snap.effective_mode.value),
-        ("locations", ", ".join(snap.position_ids) or "(none)"),
-        ("loaded_labware", ", ".join(snap.loaded_labware_ids) or "(none)"),
-        ("under_external_control", str(snap.under_external_control)),
-    ])
+    """Show one device's registry entry (type, busy/init flags, loaded labware)."""
+    entry = get_client().device_registry_show(name)
+    output.emit_json(entry.model_dump(mode="json"))
+    output.emit_kv(f"device {entry.name}", device_entry_rows(entry))

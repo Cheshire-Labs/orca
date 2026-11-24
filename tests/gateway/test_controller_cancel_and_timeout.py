@@ -9,32 +9,34 @@ incidents or holds operator decisions. What the controller DOES own:
 * workflow (execution_id set) commands arm NO gateway timer -- the engine
   coordinator bounds them -- and on engine abort/mark-complete the awaiting
   ``execute_command`` is cancelled, which sends a ``CancelMessage``;
-* the disconnect/reconnect resend re-arms the fail-fast timer only for
-  ad-hoc commands;
+* a reconnect fails the command in flight and arms no timer;
 * remote drivers tag every outbound command with the thread's execution id.
 """
 
 import asyncio
 from datetime import datetime
 from typing import Any, Dict
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
 from cheshire_drivers.command_timings import collect_command_timings
 from cheshire_drivers.gateway_protocol import CancelMessage, MessageEnvelope
-from orca.runtime.run_modes import WorkflowRunMode, current_execution_id
+from orca.modes.run_modes import WorkflowRunMode, current_execution_id
 
 from orca.gateway.controller.controller import DeviceController, _PendingCommand
 from orca.gateway.controller.disconnect_grace import DisconnectGrace
-from orca.gateway.controller.exceptions import CommandTimeoutError
+from orca.gateway.controller.exceptions import CommandTimeoutError, DeviceOfflineError
 from orca.gateway.registry.snapshot import DeviceSnapshot
 from tests.test_helpers import wait_until
+from unittest.mock import MagicMock
+from tests.gateway_parts import gateway_parts, new_controller
+from tests.gateway.mode_doubles import fixed_mode
 
 
 @pytest.fixture
 def controller() -> DeviceController:
-    return DeviceController()
+    return gateway_parts().controller
 
 
 def _snapshot(device_id: str = "shaker_1") -> DeviceSnapshot:
@@ -49,20 +51,10 @@ def _make_pending(
     *, execution_id: str | None = None, timeout_seconds: float = 30.0,
 ) -> _PendingCommand:
     return _PendingCommand(
-        command_id="cmd_1", device_id="shaker_1", command="shake", params={},
-        effective_mode=WorkflowRunMode.LIVE, timeout_seconds=timeout_seconds,
+        command_id="cmd_1", device_id="shaker_1", command="shake",
+        timeout_seconds=timeout_seconds,
         future=asyncio.Future(), execution_id=execution_id,
     )
-
-
-def _grace_with_resolver(seconds: float) -> DisconnectGrace:
-    grace = DisconnectGrace()
-
-    async def resolver(_device_id: str) -> float | None:
-        return seconds
-
-    grace.set_topology_resolver(resolver)
-    return grace
 
 
 def _decode_cancel(payload: str) -> CancelMessage:
@@ -73,11 +65,10 @@ def _decode_cancel(payload: str) -> CancelMessage:
 
 @pytest.mark.asyncio
 class TestSendCancel:
-    @patch("orca.gateway.controller.controller.connection_manager")
-    @patch("orca.gateway.controller.controller.device_connection_tracker")
-    async def test_send_cancel_emits_cancel_message(
-        self, mock_tracker: Mock, mock_mgr: Mock, controller: DeviceController,
-    ) -> None:
+    async def test_send_cancel_emits_cancel_message(self) -> None:
+        mock_tracker = MagicMock()
+        mock_mgr = MagicMock()
+        controller = new_controller(mock_tracker, mock_mgr)
         mock_tracker.get_client_for_device = AsyncMock(return_value="client_1")
         sent: list[tuple[str, str]] = []
 
@@ -94,11 +85,10 @@ class TestSendCancel:
         assert client_id == "client_1"
         assert _decode_cancel(payload).command_id == "cmd_42"
 
-    @patch("orca.gateway.controller.controller.connection_manager")
-    @patch("orca.gateway.controller.controller.device_connection_tracker")
-    async def test_send_cancel_no_client_is_noop(
-        self, mock_tracker: Mock, mock_mgr: Mock, controller: DeviceController,
-    ) -> None:
+    async def test_send_cancel_no_client_is_noop(self) -> None:
+        mock_tracker = MagicMock()
+        mock_mgr = MagicMock()
+        controller = new_controller(mock_tracker, mock_mgr)
         mock_tracker.get_client_for_device = AsyncMock(return_value=None)
         mock_mgr.send_to_client = AsyncMock(return_value=True)
 
@@ -109,11 +99,10 @@ class TestSendCancel:
 
 @pytest.mark.asyncio
 class TestAdHocCommandTimer:
-    @patch("orca.gateway.controller.controller.connection_manager")
-    @patch("orca.gateway.controller.controller.device_connection_tracker")
-    async def test_adhoc_timeout_fails_future_and_sends_cancel(
-        self, mock_tracker: Mock, mock_mgr: Mock, controller: DeviceController,
-    ) -> None:
+    async def test_adhoc_timeout_fails_future_and_sends_cancel(self) -> None:
+        mock_tracker = MagicMock()
+        mock_mgr = MagicMock()
+        controller = new_controller(mock_tracker, mock_mgr)
         mock_tracker.get_client_for_device = AsyncMock(return_value="client_1")
         sent: list[str] = []
 
@@ -147,11 +136,10 @@ class TestAdHocCommandTimer:
 
 @pytest.mark.asyncio
 class TestExecuteCommandCancel:
-    @patch("orca.gateway.controller.controller.connection_manager")
-    @patch("orca.gateway.controller.controller.device_connection_tracker")
-    async def test_cancel_during_await_emits_wire_cancel_and_reraises(
-        self, mock_tracker: Mock, mock_mgr: Mock, controller: DeviceController,
-    ) -> None:
+    async def test_cancel_during_await_emits_wire_cancel_and_reraises(self) -> None:
+        mock_tracker = MagicMock()
+        mock_mgr = MagicMock()
+        controller = new_controller(mock_tracker, mock_mgr)
         mock_tracker.get_client_for_device = AsyncMock(return_value="client_1")
         sent: list[str] = []
 
@@ -191,14 +179,13 @@ class TestExecuteCommandCancel:
         assert _decode_cancel(sent[0]).command_id == dispatched["command_id"]
 
 
-    @patch("orca.gateway.controller.controller.connection_manager")
-    @patch("orca.gateway.controller.controller.device_connection_tracker")
-    async def test_the_scheduled_cancel_is_something_a_caller_can_wait_for(
-        self, mock_tracker: Mock, mock_mgr: Mock, controller: DeviceController,
-    ) -> None:
+    async def test_the_scheduled_cancel_is_something_a_caller_can_wait_for(self) -> None:
         """The cancel is scheduled, not awaited, so the unwind does not block on
         the wire. Nothing held that task: it could be collected mid-send, and
         shutdown had no way to wait for it before closing the connection."""
+        mock_tracker = MagicMock()
+        mock_mgr = MagicMock()
+        controller = new_controller(mock_tracker, mock_mgr)
         mock_tracker.get_client_for_device = AsyncMock(return_value="client_1")
         sent: list[str] = []
         release = asyncio.Event()
@@ -276,10 +263,10 @@ class TestExecuteCommandCancel:
 
 
 def test_a_cancel_left_behind_by_a_closed_loop_does_not_break_the_next_drain() -> None:
-    """The controller is a module singleton, so its sends outlive the loop that
+    """The controller lives as long as its server, so its sends outlive the loop that
     made them. Waiting on another loop's task raises, and a shutdown that raises
     here never gets to close anything."""
-    controller = DeviceController()
+    controller = gateway_parts().controller
 
     async def never_returns(device_id: str, command_id: str) -> None:
         await asyncio.Event().wait()
@@ -341,14 +328,12 @@ class TestTimerArmingDiscriminator:
 
 @pytest.mark.asyncio
 class TestReconnectReArmGate:
-    @patch("orca.gateway.controller.controller.connection_manager")
-    @patch("orca.gateway.controller.controller.device_connection_tracker")
-    async def test_workflow_reconnect_does_not_rearm_command_timer(
-        self, mock_tracker: Mock, mock_mgr: Mock, controller: DeviceController,
-    ) -> None:
+    async def test_a_workflow_command_fails_on_reconnect_with_no_timer_and_nothing_sent(self) -> None:
+        mock_tracker = MagicMock()
+        mock_mgr = MagicMock()
+        controller = new_controller(mock_tracker, mock_mgr, disconnect_grace=DisconnectGrace(seconds=60.0))
         pending = _make_pending(execution_id="exec-1")
         controller._pending["shaker_1"] = pending
-        controller.set_disconnect_grace(_grace_with_resolver(60.0))
         await controller.on_device_disconnected("shaker_1")
 
         mock_tracker.get_client_for_device = AsyncMock(return_value="client_2")
@@ -357,12 +342,10 @@ class TestReconnectReArmGate:
         await controller.on_device_reconnected("shaker_1")
         await asyncio.sleep(0)
 
-        # Engine bounds the workflow command; no gateway timer re-armed...
         assert pending.command_timer is None
-        # ...but the resend still happens.
-        mock_mgr.send_to_client.assert_awaited_once()
-        if pending.disconnect_timer is not None:
-            pending.disconnect_timer.cancel()
+        assert pending.disconnect_timer is None
+        mock_mgr.send_to_client.assert_not_called()
+        assert isinstance(pending.future.exception(), DeviceOfflineError)
 
 
 @pytest.mark.asyncio
@@ -372,13 +355,13 @@ class TestRemoteDriverExecutionIdTagging:
 
         recorded: Dict[str, Any] = {}
 
-        class _FakeController(DeviceController):
+        class _FakeController:
             async def execute_command(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
                 recorded.update(kwargs)
                 return {}
 
         driver = RemoteShakerDriver(
-            "shaker_1", _FakeController(), lambda name: WorkflowRunMode.LIVE,
+            "shaker_1", _FakeController(), fixed_mode(WorkflowRunMode.LIVE),
         )
         token = current_execution_id.set("exec-77")
         try:
@@ -394,13 +377,13 @@ class TestRemoteDriverExecutionIdTagging:
 
         recorded: Dict[str, Any] = {}
 
-        class _FakeController(DeviceController):
+        class _FakeController:
             async def execute_command(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
                 recorded.update(kwargs)
                 return {}
 
         driver = RemoteShakerDriver(
-            "shaker_1", _FakeController(), lambda name: WorkflowRunMode.LIVE,
+            "shaker_1", _FakeController(), fixed_mode(WorkflowRunMode.LIVE),
         )
         await driver.stop()
 

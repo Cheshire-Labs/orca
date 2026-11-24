@@ -10,8 +10,8 @@ import pytest
 from cheshire_drivers.teachpoints import AccessConfig
 
 from orca.runtime.access_config_service import AccessConfigService
-from orca.runtime.db import create_memory_engine
-from orca.runtime.sqlite_access_config_store import SqliteAccessConfigStore
+from tests.setup_package import fresh_access_configs
+from orca.runtime.setup_file_stores import AccessConfigFileStore
 
 
 def _vertical(name: str = "v") -> AccessConfig:
@@ -34,15 +34,15 @@ def _horizontal(name: str = "h") -> AccessConfig:
     )
 
 
-def _store() -> SqliteAccessConfigStore:
-    return SqliteAccessConfigStore(create_memory_engine())
+def _store() -> AccessConfigFileStore:
+    return fresh_access_configs()
 
 
 def _service() -> AccessConfigService:
-    return AccessConfigService(SqliteAccessConfigStore(create_memory_engine()))
+    return AccessConfigService(fresh_access_configs())
 
 
-class TestSqliteAccessConfigStore:
+class TestAccessConfigFileStore:
 
     async def test_get_returns_none_for_unknown(self) -> None:
         assert await _store().get("missing") is None
@@ -124,11 +124,3 @@ class TestAccessConfigService:
         await service.add(_vertical("v"))
         assert await service.delete("v") is True
         assert await service.get("v") is None
-
-    async def test_seed_if_missing_preserves_existing(self) -> None:
-        service = _service()
-        await service.add(_vertical("keep"))
-        await service.seed_if_missing([_horizontal("keep"), _vertical("new")])
-        keep = await service.get("keep")
-        assert keep is not None and keep.access_type == "vertical"  # not overwritten
-        assert await service.get("new") is not None

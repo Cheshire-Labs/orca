@@ -6,7 +6,7 @@ dataclass form, then again after the Pydantic conversion; both runs MUST
 produce byte-identical JSON.
 
 The "wire" is the JSON serialization that flows through LogSink (logger),
-daemon SSE/poll routes (FastAPI JSON), and a hosted deployment's WsFanoutSink. Test
+the daemon's poll route (FastAPI JSON), and both servers' /ws/events feed. Test
 asserts JSON-byte-identity rather than in-memory dict identity because
 the dict carries a tuple in participating_thread_ids that json.dumps
 collapses to a JSON array; the wire never sees the tuple distinction.
@@ -65,14 +65,14 @@ def test_workflow_context_wire_shape() -> None:
 def test_thread_context_wire_shape() -> None:
     ctx = ThreadExecutionContext(
         execution_id="exec-1", workflow_name="wf",
-        thread_id="t1", thread_name="tn", template_name="tt",
+        thread_id="t1", thread_name="tn", template_name="tt", group_id="g1",
     )
     got = _json(_event(ctx))
     expected = json.dumps(
         {
             "context": {
                 "execution_id": "exec-1", "workflow_name": "wf",
-                "thread_id": "t1", "thread_name": "tn", "template_name": "tt",
+                "thread_id": "t1", "thread_name": "tn", "template_name": "tt", "group_id": "g1",
                 "pause_reason": None, "last_error": None,
             },
             "entity_id": "id",
@@ -184,7 +184,7 @@ def test_move_action_context_wire_shape() -> None:
         {
             "context": {
                 "execution_id": "exec-1", "workflow_name": "wf",
-                "thread_id": "t1", "thread_name": "tn", "template_name": "tt",
+                "thread_id": "t1", "thread_name": "tn", "template_name": "tt", "group_id": None,
                 "pause_reason": None, "last_error": None,
                 "action_id": "a1", "action_status": "RUNNING",
                 "action_name": None,

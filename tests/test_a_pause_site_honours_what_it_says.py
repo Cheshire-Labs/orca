@@ -49,40 +49,60 @@ def test_every_pause_site_says_what_it_honours() -> None:
     assert set(HONOURED_DECISIONS) == set(PauseSite)
 
 
-def test_every_site_honours_a_way_to_try_again_and_a_way_out() -> None:
-    """No site may strand a thread with nothing an operator can send it."""
+def test_every_site_honours_a_way_out_and_all_but_an_unhandled_error_a_way_to_try_again() -> None:
+    """No site may strand a thread with nothing an operator can send it. After an unhandled error the step that
+    failed is unknown, so ending the thread is the only choice there. At CO_LABWARE_LOST the labware will not come,
+    so trying again cannot end; skipping the action is the way on."""
+    retries = {RecoveryDecision.RETRY, RecoveryDecision.RETRY_ACTION}
     for site, recovery in HONOURED_DECISIONS.items():
-        assert RecoveryDecision.RETRY in recovery.honours, site
         assert RecoveryDecision.ABORT_THREAD in recovery.honours, site
+        if site is PauseSite.UNHANDLED_ERROR:
+            assert recovery.honours == {RecoveryDecision.ABORT_THREAD}
+        elif site is PauseSite.CO_LABWARE_LOST:
+            assert recovery.honours == {RecoveryDecision.ABORT_ACTION, RecoveryDecision.ABORT_THREAD}
+        else:
+            assert recovery.honours & retries, site
 
 
-def test_retry_op_is_honoured_only_where_a_device_call_is_suspended() -> None:
-    """RETRY_OP re-runs the suspended call, so it needs one to be suspended."""
+def test_retry_action_is_honoured_only_where_an_actions_own_code_failed() -> None:
+    """No step failed there, so the action is the only thing to repeat."""
     honours_it = {
         site for site, r in HONOURED_DECISIONS.items()
-        if RecoveryDecision.RETRY_OP in r.honours
+        if RecoveryDecision.RETRY_ACTION in r.honours
     }
-    assert honours_it == {PauseSite.DEVICE_OP}
+    assert honours_it == {PauseSite.ACTION_BODY}
+
+
+def test_retry_is_honoured_wherever_a_step_failed() -> None:
+    """Every site but ACTION_BODY, UNHANDLED_ERROR and CO_LABWARE_LOST stopped on a step that can run again."""
+    honours_it = {
+        site for site, r in HONOURED_DECISIONS.items()
+        if RecoveryDecision.RETRY in r.honours
+    }
+    assert honours_it == set(PauseSite) - {PauseSite.ACTION_BODY, PauseSite.UNHANDLED_ERROR, PauseSite.CO_LABWARE_LOST}
 
 
 def test_the_action_level_verbs_are_honoured_where_something_acts_on_them() -> None:
     """Two shapes, and they are not the same shape.
 
-    At ACTION_BODY and DEVICE_OP the verbs mean what they say: an action is
-    bound and `ExecutingMethod.handle_recovery` discards it. At the two
+    At ACTION_BODY, DEVICE_OP, COMMAND_SAVE and ACTION_WAIT the verbs mean what they say: an action is
+    bound and `ExecutingMethod.handle_recovery` discards it. CO_LABWARE_LOST has a bound action
+    too and honours ABORT_ACTION, which skips it; it does not offer ABORT_METHOD. At the two
     pre-binding sites there is no action, and they end the thread instead --
     deliberately, because the alternative was the owner and its contributors
     parked at PAUSED forever. Every other site fails the thread on them, which
     nobody chose, so those refuse.
     """
-    for verb in (RecoveryDecision.ABORT_ACTION, RecoveryDecision.ABORT_METHOD):
+    both = {
+        PauseSite.ACTION_BODY, PauseSite.DEVICE_OP, PauseSite.COMMAND_SAVE, PauseSite.ACTION_WAIT,
+        PauseSite.ACTION_RESOLUTION, PauseSite.DEADLOCK,
+    }
+    for verb, sites in ((RecoveryDecision.ABORT_ACTION, both | {PauseSite.CO_LABWARE_LOST}),
+                        (RecoveryDecision.ABORT_METHOD, both)):
         honours_it = {
             site for site, r in HONOURED_DECISIONS.items() if verb in r.honours
         }
-        assert honours_it == {
-            PauseSite.ACTION_BODY, PauseSite.DEVICE_OP,
-            PauseSite.ACTION_RESOLUTION, PauseSite.DEADLOCK,
-        }, verb
+        assert honours_it == sites, verb
 
 
 def test_continue_is_honoured_only_where_there_is_work_to_carry_on_from() -> None:
@@ -94,7 +114,7 @@ def test_continue_is_honoured_only_where_there_is_work_to_carry_on_from() -> Non
     }
 
     assert honours_it == {
-        PauseSite.ACTION_BODY, PauseSite.DEVICE_OP, PauseSite.MOVE,
+        PauseSite.ACTION_BODY, PauseSite.DEVICE_OP, PauseSite.COMMAND_SAVE, PauseSite.ACTION_WAIT, PauseSite.MOVE,
     }
 
 

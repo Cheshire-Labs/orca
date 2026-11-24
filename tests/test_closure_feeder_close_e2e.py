@@ -22,9 +22,8 @@ from collections.abc import AsyncGenerator
 import pytest
 
 import orca.orca as orca
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.submission import BatchMode
-from orca.runtime.system_runtime import SystemRuntime
+from orca.modes.run_modes import WorkflowRunMode
+from orca.workflow_models.submission import BatchMode
 from orca.sdk.events import EventBus
 from orca.sdk.workflow import MethodTemplate, ThreadTemplate, WorkflowTemplate
 from orca.system.system_interface import ISystem
@@ -40,6 +39,7 @@ from tests.closure_e2e_scaffold import (
     finish_closure_system,
 )
 from tests.test_helpers import wait_until
+from tests.memory_activity import memory_runtime
 
 
 class _Recorder:
@@ -129,7 +129,7 @@ async def test_feeder_dead_close_finalizes_on_full_fill(
     caplog.set_level(logging.INFO, logger="orca")
     recorder = _Recorder()
     system, workflow, event_bus = await _build_system(recorder)
-    runtime = SystemRuntime(system, event_bus=event_bus)
+    runtime = await memory_runtime(system, event_bus=event_bus)
     await runtime.start()
     try:
         sub = await runtime.submit(
@@ -139,7 +139,7 @@ async def test_feeder_dead_close_finalizes_on_full_fill(
                 feeder_group("grp-2"),
             ],
             batch_mode=BatchMode.STANDALONE,
-            mode=WorkflowRunMode.PURE_SIM,
+            mode=WorkflowRunMode.CHECK_RUN,
         )
         eid = sub.execution_id
 

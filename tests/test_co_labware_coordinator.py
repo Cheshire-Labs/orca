@@ -74,6 +74,7 @@ class TestFastPathPriority:
             exit_event=exit_event,
             pause_event=pause_event,
             co_labware_event=co_event,
+            labware_lost_event=asyncio.Event(),
             timeout=0.05,
         )
         assert outcome is expected
@@ -131,6 +132,7 @@ class TestPostRacePriority:
                 exit_event=exit_event,
                 pause_event=pause_event,
                 co_labware_event=co_event,
+                labware_lost_event=asyncio.Event(),
                 timeout=1.0,
             )
             assert outcome is expected
@@ -147,6 +149,7 @@ class TestTimeout:
             exit_event=exit_event,
             pause_event=pause_event,
             co_labware_event=co_event,
+            labware_lost_event=asyncio.Event(),
             timeout=0.05,
         )
         assert outcome is CoLabwareWaitOutcome.TIMEOUT
@@ -171,6 +174,7 @@ class TestTimeout:
                 exit_event=exit_event,
                 pause_event=pause_event,
                 co_labware_event=co_event,
+                labware_lost_event=asyncio.Event(),
                 timeout=None,
             )
             assert outcome is CoLabwareWaitOutcome.CO_LABWARE_PRESENT
@@ -195,6 +199,7 @@ class TestTimeout:
                 exit_event=exit_event,
                 pause_event=pause_event,
                 co_labware_event=co_event,
+                labware_lost_event=asyncio.Event(),
                 timeout=None,
             )
             assert outcome is CoLabwareWaitOutcome.STOP_REQUESTED
@@ -227,6 +232,7 @@ class TestNoOrphanTasks:
                 exit_event=exit_event,
                 pause_event=pause_event,
                 co_labware_event=co_event,
+                labware_lost_event=asyncio.Event(),
                 timeout=1.0,
             )
             assert outcome is CoLabwareWaitOutcome.CO_LABWARE_PRESENT
@@ -338,3 +344,37 @@ class TestEmitTipEvents:
 
         await CoLabwareCoordinator.emit_tip_events(action, ctx, bus)
         bus.emit.assert_not_called()
+
+
+class TestCoLabwareLost:
+    """A lost partner ends the wait, but labware that is already present wins over it."""
+
+    @pytest.mark.parametrize("co, expected", [
+        (False, CoLabwareWaitOutcome.CO_LABWARE_LOST),
+        (True, CoLabwareWaitOutcome.CO_LABWARE_PRESENT),
+    ])
+    async def test_lost_labware_ends_the_wait_unless_the_labware_is_present(
+        self, co: bool, expected: CoLabwareWaitOutcome,
+    ) -> None:
+        stop_event, exit_event, pause_event, co_event = _events()
+        lost = asyncio.Event()
+        lost.set()
+        if co:
+            co_event.set()
+
+        outcome = await CoLabwareCoordinator.wait(
+            stop_event=stop_event, exit_event=exit_event, pause_event=pause_event,
+            co_labware_event=co_event, labware_lost_event=lost, timeout=0.05,
+        )
+        assert outcome is expected
+
+    async def test_labware_lost_during_the_wait_ends_it(self) -> None:
+        stop_event, exit_event, pause_event, co_event = _events()
+        lost = asyncio.Event()
+        asyncio.get_running_loop().call_later(0.01, lost.set)
+
+        outcome = await CoLabwareCoordinator.wait(
+            stop_event=stop_event, exit_event=exit_event, pause_event=pause_event,
+            co_labware_event=co_event, labware_lost_event=lost, timeout=5.0,
+        )
+        assert outcome is CoLabwareWaitOutcome.CO_LABWARE_LOST

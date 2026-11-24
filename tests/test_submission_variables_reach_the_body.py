@@ -9,12 +9,12 @@ through to the workflow default. A run branching on `ctx.param` silently takes t
 default branch.
 """
 
+from orca.config import OrcaConfig
 from typing import AsyncGenerator, Dict, List, Tuple
 
 import orca.orca as orca
 from orca.resource_models.resource_pool import ResourcePool
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.system_runtime import SystemRuntime
+from orca.modes.run_modes import WorkflowRunMode
 from orca.sdk.events import EventBus
 from orca.sdk.system import ResourceRegistry, SystemMap
 from orca.sdk.workflow import WorkflowTemplate
@@ -34,6 +34,10 @@ from tests.test_helpers import (
     execution_outcome,
     wire_system_map,
 )
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 _DEFAULT_SHAKE_SECONDS = 60
 _SUBMITTED_SHAKE_SECONDS = 120
@@ -84,7 +88,10 @@ async def _system_reading_shake_time(seen: ReadLog) -> Tuple[ISystem, WorkflowTe
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=EventBus(),
+        event_bus=EventBus(), config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     system = builder.get_system()
@@ -101,13 +108,13 @@ async def test_every_context_reads_the_submitted_value_not_the_default() -> None
     workflow default, which is a wrong number that looks like a right one."""
     seen: ReadLog = {"thread": [], "method": [], "action": []}
     system, workflow = await _system_reading_shake_time(seen)
-    runtime = SystemRuntime(system)
+    runtime = await memory_runtime(system)
     await runtime.start()
     try:
         submission = await runtime.submit(
             workflow,
             variables={"shake_time": _SUBMITTED_SHAKE_SECONDS},
-            mode=WorkflowRunMode.PURE_SIM,
+            mode=WorkflowRunMode.CHECK_RUN,
         )
         status = await execution_outcome(runtime, submission, timeout=30.0)
     finally:
@@ -126,10 +133,10 @@ async def test_a_submission_that_overrides_nothing_still_reads_the_default() -> 
     a name it does not carry has to fall through rather than go missing."""
     seen: ReadLog = {"thread": [], "method": [], "action": []}
     system, workflow = await _system_reading_shake_time(seen)
-    runtime = SystemRuntime(system)
+    runtime = await memory_runtime(system)
     await runtime.start()
     try:
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
         status = await execution_outcome(runtime, submission, timeout=30.0)
     finally:
         await runtime.shutdown()

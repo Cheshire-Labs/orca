@@ -1,4 +1,4 @@
-"""Tests for cli/client.py LocalDaemonClient. Focuses on my code's branches.
+"""Tests for cli/client.py OrcaClient and the PID-file lookup. Focuses on my code's branches.
 
 What these catch:
 - The clean "no daemon running" failure when the PID file is absent.
@@ -18,27 +18,28 @@ NOT covered here (would be tautologies):
 
 import httpx
 import pytest
-import typer
 
-from orca.cli.client import LocalDaemonClient
+from orca.cli.backend import _local_daemon_url
+from orca.cli.client import OrcaClient
+from orca.cli.control_plane import ControlPlaneError
 from orca.cli import output as cli_output
-from orca.runtime.run_modes import WorkflowRunMode
 
 
 def test_daemon_client_fails_with_not_connected_when_pid_file_absent(
-    tmp_path,
+    tmp_path, monkeypatch,
 ) -> None:
     """Construction must fail cleanly with the exact exit code shells
     depend on for 'no daemon' detection (10, EXIT_NOT_CONNECTED)."""
     pid_file = tmp_path / "daemon.json"
     assert not pid_file.exists()
-    with pytest.raises(typer.Exit) as exc_info:
-        LocalDaemonClient(pid_file_path=pid_file)
+    monkeypatch.setenv("ORCA_DAEMON_HOME", str(tmp_path))
+    with pytest.raises(ControlPlaneError) as exc_info:
+        _local_daemon_url()
     assert exc_info.value.exit_code == cli_output.EXIT_NOT_CONNECTED
 
 
 def test_daemon_client_fails_with_not_connected_on_stale_pid_file(
-    tmp_path,
+    tmp_path, monkeypatch,
 ) -> None:
     """A stale PID file (process no longer running) is equivalent to no daemon.
 
@@ -52,8 +53,9 @@ def test_daemon_client_fails_with_not_connected_on_stale_pid_file(
         DaemonInfo(pid=99999999, port=12345, started_at=0.0),
         pid_file,
     )
-    with pytest.raises(typer.Exit) as exc_info:
-        LocalDaemonClient(pid_file_path=pid_file)
+    monkeypatch.setenv("ORCA_DAEMON_HOME", str(tmp_path))
+    with pytest.raises(ControlPlaneError) as exc_info:
+        _local_daemon_url()
     assert exc_info.value.exit_code == cli_output.EXIT_NOT_CONNECTED
     # Stale file got cleaned up by detect_live_daemon.
     assert not pid_file.exists()
@@ -83,7 +85,7 @@ def test_daemon_client_maps_404_response_to_not_found_exit(
     EXIT_GENERIC or a raw httpx status. Tests the _check() branch."""
     from orca.daemon.lifecycle import DaemonInfo, write_pid_file
     import os
-    # Point LocalDaemonClient at this test process (alive) and a fake port that
+    # Point OrcaClient at this test process (alive) and a fake port that
     # we intercept via httpx.MockTransport.
     pid_file = tmp_path / "daemon.json"
     write_pid_file(
@@ -103,10 +105,11 @@ def test_daemon_client_maps_404_response_to_not_found_exit(
 
     monkeypatch.setattr(httpx.Client, "__init__", patched_init)
 
-    client = LocalDaemonClient(pid_file_path=pid_file)
-    with pytest.raises(typer.Exit) as exc_info:
+    monkeypatch.setenv("ORCA_DAEMON_HOME", str(tmp_path))
+    client = OrcaClient(_local_daemon_url())
+    with pytest.raises(ControlPlaneError) as exc_info:
         client.get_execution("whatever-id")
-    assert exc_info.value.exit_code == cli_output.EXIT_NOT_FOUND
+    assert cli_output.exit_code_for_status(exc_info.value.http_status) == cli_output.EXIT_NOT_FOUND
 
 
 def test_daemon_client_parses_successful_response_into_dto(
@@ -114,14 +117,12 @@ def test_daemon_client_parses_successful_response_into_dto(
 ) -> None:
     """On 200, the client must return a typed DTO instance, not a raw dict.
 
-    `LocalDaemonClient.submit_workflow` returns the Protocol DTO
-    `orca.cli.control_plane.ExecutionRecordDTO` (status: str), not
-    the daemon-side `orca.daemon.schemas.ExecutionRecordDTO` (status: enum).
-    The intent of this test is unchanged -- "on 200 the caller gets a typed
-    DTO, not a raw dict" -- but the asserted class moved.
+    `OrcaClient.submit_workflow` returns `ExecutionRecordModel` (status: str).
     """
     from orca.daemon.lifecycle import DaemonInfo, write_pid_file
-    from orca.cli.control_plane import ExecutionRecordDTO
+    from orca.operations.execution_models import (
+    ExecutionRecordModel,
+)
     import os
 
     pid_file = tmp_path / "daemon.json"
@@ -134,8 +135,10 @@ def test_daemon_client_parses_successful_response_into_dto(
         return httpx.Response(
             200,
             json={
-                "id": "exec-1", "workflow_name": "wf",
-                "status": "running", "error": None,
+                "id": "sub-1", "execution_id": "exec-1", "workflow_name": "wf",
+                "group_count": 0, "status": "running", "batch_mode": "STANDALONE",
+                "submitted_at": "2026-05-12T00:00:00Z", "run_mode": "CHECK_RUN",
+                "operator_id": None, "deployment_profile": None,
             },
         )
 
@@ -147,8 +150,9 @@ def test_daemon_client_parses_successful_response_into_dto(
 
     monkeypatch.setattr(httpx.Client, "__init__", patched_init)
 
-    client = LocalDaemonClient(pid_file_path=pid_file)
-    record = client.submit_workflow("wf", run_mode="PURE_SIM")
-    assert isinstance(record, ExecutionRecordDTO)
+    monkeypatch.setenv("ORCA_DAEMON_HOME", str(tmp_path))
+    client = OrcaClient(_local_daemon_url())
+    record = client.submit_workflow("wf", run_mode="CHECK_RUN")
+    assert isinstance(record, ExecutionRecordModel)
     assert record.id == "exec-1"
     assert record.status == "running"  # D7: str on the Protocol DTO

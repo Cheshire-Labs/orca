@@ -5,6 +5,7 @@ startup). The safety contract is interface superset, enforced when the
 runtime composes topology + connection cards via ``DeviceRegistryImpl``.
 """
 
+from orca.config import OrcaConfig
 from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 
@@ -12,10 +13,9 @@ import pytest
 
 import orca.orca as orca
 from orca.resource_models.resource_pool import ResourcePool
-from orca.runtime.registries import NullGatewayRegistry
-from orca.runtime.runtime_interface import IGatewayRegistry
+from tests.no_devices import NullGatewayRegistry
+from orca.runtime.registry_protocols import IGatewayRegistry
 from orca.runtime.status_models import GatewayDeviceEntry
-from orca.runtime.system_runtime import SystemRuntime
 from orca.sdk.events import EventBus
 from orca.sdk.system import ResourceRegistry, SystemMap
 from orca.sdk.workflow import MethodTemplate, WorkflowTemplate
@@ -27,6 +27,10 @@ from tests.test_helpers import (
     create_test_transporter,
     wire_system_map,
 )
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 
 class _StubGateway(IGatewayRegistry):
@@ -81,7 +85,10 @@ async def _build_system() -> ISystem:
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=EventBus(),
+        event_bus=EventBus(), config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     return builder.get_system()
@@ -90,7 +97,7 @@ async def _build_system() -> ISystem:
 async def test_start_succeeds_when_gateway_matches_topology() -> None:
     system = await _build_system()
     # Read the topology-declared kind first via a discardable runtime.
-    probe = SystemRuntime(system, gateway_registry=NullGatewayRegistry())
+    probe = await memory_runtime(system, gateway_registry=NullGatewayRegistry())
     expected = probe.topology.get_device("shaker1")
     assert expected is not None
 
@@ -104,7 +111,7 @@ async def test_start_succeeds_when_gateway_matches_topology() -> None:
             status="ready",
         ),
     ])
-    runtime = SystemRuntime(system, gateway_registry=gateway)
+    runtime = await memory_runtime(system, gateway_registry=gateway)
 
     await runtime.start()
     await runtime.shutdown()
@@ -121,7 +128,7 @@ async def test_start_logs_warning_on_kind_drift_but_does_not_raise(
     level.
     """
     system = await _build_system()
-    probe = SystemRuntime(system, gateway_registry=NullGatewayRegistry())
+    probe = await memory_runtime(system, gateway_registry=NullGatewayRegistry())
     expected = probe.topology.get_device("shaker1")
     assert expected is not None
 
@@ -135,7 +142,7 @@ async def test_start_logs_warning_on_kind_drift_but_does_not_raise(
             status="ready",
         ),
     ])
-    runtime = SystemRuntime(system, gateway_registry=gateway)
+    runtime = await memory_runtime(system, gateway_registry=gateway)
 
     with caplog.at_level("WARNING", logger="orca.runtime.system_runtime"):
         await runtime.start()
@@ -161,7 +168,7 @@ async def test_start_accepts_gateway_only_device_without_collision() -> None:
             status="ready",
         ),
     ])
-    runtime = SystemRuntime(system, gateway_registry=gateway)
+    runtime = await memory_runtime(system, gateway_registry=gateway)
 
     await runtime.start()
     await runtime.shutdown()
@@ -169,7 +176,7 @@ async def test_start_accepts_gateway_only_device_without_collision() -> None:
 
 async def test_null_gateway_start_succeeds_with_no_connections() -> None:
     system = await _build_system()
-    runtime = SystemRuntime(system, gateway_registry=NullGatewayRegistry())
+    runtime = await memory_runtime(system, gateway_registry=NullGatewayRegistry())
 
     await runtime.start()
     await runtime.shutdown()

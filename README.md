@@ -1,8 +1,5 @@
 # Orca: Lab Automation Scheduler
 
-> [!CAUTION]
-> **Do not use this release.** v2.3.0 has been withdrawn because of a significant bug. A fixed release is in progress.
-
 Orca is a laboratory automation scheduler for workflows that run in parallel. It coordinates devices (liquid handlers, shakers, centrifuges, sealers, plate readers) and moves labware between them. Workflows are plain Python, so they live in your repo and diff like any other source file.
 
 ## Features
@@ -56,21 +53,58 @@ def workflow(wf: WorkflowContext):
     wf.start(plate_1_journey)
 ```
 
-Run the full assay in simulation with `python -m examples.hamilton_smc.hamilton_smc_example`.
+Orca runs as a service. You write the topology, workflows, methods and event handlers with the SDK, put them in a package folder, and run them on a running server. The commands below run this assay in simulation.
 
 ## Command line
 
-The `orca` command drives a local daemon over REST. Run these from the repo root. The daemon imports the topology and workflow modules you name, from the directory `orca start` ran in:
+The `orca` command drives a local daemon over REST. The daemon builds its package folder: `ORCA_PACKAGE_DIR`, or the folder `orca start` ran in. A package folder holds `topology.py`, one `workflows/<name>.py` per workflow, and the setup files (teachpoints, deck layouts, settings). The daemon keeps plates, runs, incidents, events, audit rows and the record of device operations, which volumes and tips come from, in `<package>/.orca/state.db`. Run these from the repo root:
 
 ```bash
-orca start
-orca topology mount examples.hamilton_smc.topology:build_topology --sim
-orca workflow load examples.hamilton_smc.workflows.hamilton_smc_assay:build_workflow
-orca run hamilton_smc_assay --run-mode PURE_SIM --wait
+# bash
+ORCA_PACKAGE_DIR=examples/hamilton_smc orca start
+```
+
+```powershell
+# PowerShell
+$env:ORCA_PACKAGE_DIR = "examples/hamilton_smc"; orca start
+```
+
+Then, in either shell:
+
+```bash
+orca topology mount
+orca run hamilton_smc_assay --run-mode CHECK_RUN --wait
 orca shutdown
 ```
 
-Every `orca run` needs `--run-mode`. `PURE_SIM` runs every device in simulation. `orca --help` lists the other commands.
+`orca topology mount` builds `topology.py` and every workflow in `workflows/`. To pick up an edited file, run `orca runtime reload`. Every `orca run` needs `--run-mode`. `CHECK_RUN` runs every device in simulation and needs nothing else running. `orca --help` lists the other commands.
+
+`--run-mode SIM` and `--run-mode LIVE` send every device command through an [orca-client](https://github.com/Cheshire-Labs/orca-client), so one must be running and connected first. Without one the run is refused with `devices_not_ready`. Install orca-client into its own virtual environment, write a `config.json` whose `platform.url` is the daemon's address (`ws://127.0.0.1:8765/ws/devices` after `orca start --port 8765`), and start it in a second shell:
+
+```bash
+python -m orca_client --config config.json
+```
+
+The orca-client README shows the config file.
+
+## Python client
+
+A lab script talks to a running server with `OrcaClient`, the same client the `orca` command uses. `DaemonLoadingClient` adds mounting, which only the local daemon has. Start the daemon on a fixed port (`orca start --port 8765`) so the script knows where it is:
+
+```python
+import time
+
+from orca.sdk.client import DaemonLoadingClient
+
+client = DaemonLoadingClient("http://127.0.0.1:8765")
+client.mount_package()
+run = client.submit_workflow("hamilton_smc_assay", run_mode="CHECK_RUN")
+while (detail := client.get_execution(run.id)).status not in ("completed", "partial_completed", "failed", "aborted"):
+    time.sleep(1)
+print(detail.status, detail.error)
+```
+
+For a hosted server, build `OrcaClient(url, api_key)` from `orca.sdk.client`. Both serve the same routes under `/api`. A failed request raises `ControlPlaneError` with the server's error code and message.
 
 ## Documentation
 
@@ -78,17 +112,16 @@ Every `orca run` needs `--run-mode`. `PURE_SIM` runs every device in simulation.
 
 ## Examples
 
-None of these need hardware. Each runs to completion on its own. Run them from the repo root:
+None of these need hardware. Each example folder is a package the daemon builds, and CI runs every one to completion on the daemon. [examples/README.md](./examples/README.md) shows how to run one, by CLI and from Python.
 
-| Example | Command |
-|---|---|
-| [Hamilton SMC assay](./examples/hamilton_smc/hamilton_smc_example.py): immunoassay with inline PyLabRobot pipetting on an ML STAR pair | `python -m examples.hamilton_smc.hamilton_smc_example` |
-| [Opentrons Flex SMC assay](./examples/opentrons_flex_smc/opentrons_flex_smc_example.py): the same assay on an Opentrons Flex | `python -m examples.opentrons_flex_smc.opentrons_flex_smc_example` |
-| [SMC assay](./examples/smc_assay/run_pure_sim.py): the same assay driven by protocol files | `python -m examples.smc_assay.run_pure_sim` |
-| [PyLabRobot walkthrough](./examples/pylabrobot_example/pylabrobot_example.py): most SDK features in one workflow, with a cherry pick from a CSV worklist and a serial dilution | `python -m examples.pylabrobot_example.pylabrobot_example` |
-| [Multi-lineage](./examples/multi_lineage/multi_lineage_example.py): several sample plates feeding one shared reservoir, with the group count set at submission | `python -m examples.multi_lineage.multi_lineage_example` |
-| [Hamilton VENUS](./examples/simple_venus_example/simple_venus_example.py): runs VENUS methods, with a person moving the plates | `python -m examples.simple_venus_example.simple_venus_example` |
-| [Volume tracking](./examples/volume_tracking_example.py): how dispensed volume is recorded per well, with no workflow | `python -m examples.volume_tracking_example` |
+| Example | Folder | Workflow |
+|---|---|---|
+| Hamilton SMC assay: immunoassay with inline PyLabRobot pipetting on an ML STAR pair | [examples/hamilton_smc](./examples/hamilton_smc) | `hamilton_smc_assay` |
+| Opentrons Flex SMC assay: the same assay on an Opentrons Flex | [examples/opentrons_flex_smc](./examples/opentrons_flex_smc) | `opentrons_flex_smc_assay` |
+| SMC assay: the same assay driven by protocol files | [examples/smc_assay](./examples/smc_assay) | `smc_assay` |
+| PyLabRobot walkthrough: most SDK features in one workflow, with a cherry pick from a CSV worklist and a serial dilution | [examples/pylabrobot_example](./examples/pylabrobot_example) | `learn_orca` |
+| Multi-lineage: several sample plates feeding one shared reservoir, with the group count set at submission | [examples/multi_lineage](./examples/multi_lineage) | `multi_lineage_example` |
+| Hamilton VENUS: runs VENUS methods, with a person moving the plates | [examples/simple_venus_example](./examples/simple_venus_example) | `example_workflow` |
 
 ## Acknowledgements
 

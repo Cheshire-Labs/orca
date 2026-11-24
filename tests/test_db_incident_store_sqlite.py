@@ -14,12 +14,12 @@ from pathlib import Path
 
 import pytest
 
+from orca.system.reservation_manager.errors import AutoSpawnFailedDetail
 from orca.runtime.db import create_sqlite_engine
 from orca.runtime.db.base import utc_now
 from orca.runtime.incident_store import (
     ActionContinuedContext,
     ActionFailedContext,
-    AutoSpawnFailedDetail,
     DeckReconcileConflictDetail,
     IncidentCategory,
     IncidentSeverity,
@@ -47,7 +47,7 @@ async def test_incidents_persist_across_fresh_instance_and_reopen(tmp_path: Path
         detail=AutoSpawnFailedDetail(
             requested_labware_name="plate_1", requesting_thread_id="t-1"
         ),
-        recovery_action=RecoveryAction.MANUAL_SPAWN,
+        recovery_action=RecoveryAction.THREAD_RECOVER_RETRY,
         execution_id="exec-1",
         thread_id="t-1",
     )
@@ -62,7 +62,7 @@ async def test_incidents_persist_across_fresh_instance_and_reopen(tmp_path: Path
             error_message="boom",
             device_command="start_shake",
         ),
-        recovery_action=RecoveryAction.THREAD_RECOVER_RETRY_OP,
+        recovery_action=RecoveryAction.THREAD_RECOVER_RETRY_ACTION,
         execution_id="exec-1",
         thread_id="t-2",
     )
@@ -96,7 +96,7 @@ async def test_incidents_persist_across_fresh_instance_and_reopen(tmp_path: Path
     assert got_action.detail.action_command == "shake"
     assert got_action.detail.error_message == "boom"
     assert got_action.detail.device_command == "start_shake"
-    assert got_action.recovery_action is RecoveryAction.THREAD_RECOVER_RETRY_OP
+    assert got_action.recovery_action is RecoveryAction.THREAD_RECOVER_RETRY_ACTION
     assert got_action.severity is IncidentSeverity.CRITICAL
 
     all_for_exec1 = await reopened.fetch(execution_id="exec-1")

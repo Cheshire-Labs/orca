@@ -17,7 +17,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from orca.resource_models.labware_state import LabwareSlot
+from orca.workflow_models.labware_state import LabwareSlot
 from orca.workflow_models.method import ExecutingMethod
 
 

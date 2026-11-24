@@ -4,15 +4,14 @@ import pytest
 from cheshire_drivers.move_parameters import SEED_MOVE_PARAMETERS, MoveParameterPatch
 
 from orca.runtime.danger import ConfirmationRequired
-from orca.runtime.db import create_memory_engine
 from orca.runtime.facades.move_defaults import MoveDefaultsFacade
 from orca.runtime.move_defaults_service import MoveDefaultsService
-from orca.runtime.sqlite_move_defaults_store import SqliteMoveDefaultsStore
+from tests.setup_package import fresh_move_defaults
 
 
 def _facade() -> MoveDefaultsFacade:
     return MoveDefaultsFacade(
-        MoveDefaultsService(SqliteMoveDefaultsStore(create_memory_engine())),
+        MoveDefaultsService(fresh_move_defaults()),
     )
 
 
@@ -28,7 +27,7 @@ async def test_an_arm_nobody_tuned_reads_as_the_seed_and_says_so() -> None:
 async def test_reading_does_not_create_a_row() -> None:
     """Seeding on read would make "nobody has tuned this arm" and "somebody set it
     to exactly the seed" the same answer, and only one of them is safe to change."""
-    service = MoveDefaultsService(SqliteMoveDefaultsStore(create_memory_engine()))
+    service = MoveDefaultsService(fresh_move_defaults())
     facade = MoveDefaultsFacade(service)
 
     await facade.get("pf400")
@@ -85,7 +84,7 @@ async def test_clearing_a_field_puts_it_back_on_the_seed() -> None:
 async def test_clearing_the_last_tuned_field_leaves_no_row_behind() -> None:
     """An empty row and no row mean the same thing, and keeping both around makes
     the tuned-arm list report arms nobody has tuned."""
-    service = MoveDefaultsService(SqliteMoveDefaultsStore(create_memory_engine()))
+    service = MoveDefaultsService(fresh_move_defaults())
     facade = MoveDefaultsFacade(service)
     await facade.apply("pf400", MoveParameterPatch(travel_margin=25.0), confirm=True)
 
@@ -149,7 +148,7 @@ async def test_clearing_a_number_the_position_decides_is_refused_too() -> None:
 
 @pytest.mark.asyncio
 async def test_a_refused_edit_stores_nothing() -> None:
-    service = MoveDefaultsService(SqliteMoveDefaultsStore(create_memory_engine()))
+    service = MoveDefaultsService(fresh_move_defaults())
     facade = MoveDefaultsFacade(service)
 
     with pytest.raises(ValueError):

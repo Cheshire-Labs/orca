@@ -1,7 +1,9 @@
 """The transporter resolves a move's scalars and sends them with the request."""
 
+import json
+from pathlib import Path
+
 import pytest
-from pydantic import ValidationError
 
 from cheshire_drivers.move_parameters import (
     SEED_MOVE_PARAMETERS,
@@ -11,20 +13,27 @@ from cheshire_drivers.teachpoints import AccessConfig, CartesianCoordinates, Tea
 
 from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.transporter import Transporter
-from orca.runtime.move_parameters import move_defaults_for_device
-from orca.runtime.db import create_memory_engine
+from orca.resource_models.move_parameters import move_defaults_for_device
 from orca.runtime.move_defaults_service import MoveDefaultsService
-from orca.runtime.sqlite_move_defaults_store import SqliteMoveDefaultsStore
-from orca.runtime.sqlite_teachpoint_store import SqliteTeachpointStore
 from orca.runtime.teachpoint_service import TeachpointService
+from tests.setup_package import with_teachpoints
+from tests.setup_package import fresh_move_defaults, fresh_teachpoints
+from orca.runtime.setup_file_stores import MoveDefaultsFileStore
+from orca.runtime.setup_files import SetupFileError
+from tests.memory_activity import memory_runtime
+from cheshire_drivers.device_setup import BUILTIN_CLIENT
+from tests.mock import outside_any_system
+
+
+_DEFAULT_VERTICAL = AccessConfig(
+    name="default_vertical", access_type="vertical",
+    gripper_offset=20.0, vertical_clearance=20.0, horizontal_clearance=100.0,
+)
 
 
 def _teachpoint(access: AccessConfig | None = None) -> Teachpoint:
     if access is None:
-        access = AccessConfig(
-            name="default_vertical", access_type="vertical",
-            gripper_offset=20.0, vertical_clearance=20.0, horizontal_clearance=100.0,
-        )
+        access = _DEFAULT_VERTICAL
     return Teachpoint(
         position_id="pad_1",
         coordinates=CartesianCoordinates(x=1.0, y=2.0, z=3.0, yaw=0.0, pitch=90.0, roll=-180.0),
@@ -34,11 +43,11 @@ def _teachpoint(access: AccessConfig | None = None) -> Teachpoint:
 
 
 async def _transporter(defaults: MoveParameterPatch | None = None) -> Transporter:
-    teachpoints = TeachpointService(SqliteTeachpointStore(create_memory_engine()))
-    move_defaults = MoveDefaultsService(SqliteMoveDefaultsStore(create_memory_engine()))
+    teachpoints = TeachpointService(fresh_teachpoints([_DEFAULT_VERTICAL]))
+    move_defaults = MoveDefaultsService(fresh_move_defaults())
     if defaults is not None:
         await move_defaults.set("pf400", defaults)
-    transporter = Transporter("pf400", teachpoint_store=teachpoints)
+    transporter = outside_any_system(with_teachpoints(Transporter("pf400"), teachpoints))
     transporter.bind_move_defaults(move_defaults)
     return transporter
 
@@ -79,12 +88,11 @@ async def test_a_field_nobody_tuned_says_it_came_from_the_seed() -> None:
 @pytest.mark.asyncio
 async def test_the_defaults_are_per_transporter_not_per_deployment() -> None:
     """A second arm has its own safe margins; one shared row would be wrong."""
-    move_defaults = MoveDefaultsService(SqliteMoveDefaultsStore(create_memory_engine()))
+    move_defaults = MoveDefaultsService(fresh_move_defaults())
     await move_defaults.set("some_other_arm", MoveParameterPatch(travel_margin=25.0))
-    transporter = Transporter(
+    transporter = outside_any_system(with_teachpoints(Transporter(
         "pf400",
-        teachpoint_store=TeachpointService(SqliteTeachpointStore(create_memory_engine())),
-    )
+    ), TeachpointService(fresh_teachpoints([_DEFAULT_VERTICAL]))))
     transporter.bind_move_defaults(move_defaults)
 
     resolved = await transporter.resolve_handling(_teachpoint())
@@ -107,8 +115,8 @@ async def test_the_site_narrows_the_stored_defaults() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_stored_row_survives_a_round_trip_through_the_database() -> None:
-    store = SqliteMoveDefaultsStore(create_memory_engine())
+async def test_a_stored_row_survives_a_round_trip_through_the_file() -> None:
+    store = fresh_move_defaults()
     tuned = MoveParameterPatch(jaw_opening=18.0, speed=20.0)
 
     await store.set("pf400", tuned)
@@ -117,27 +125,15 @@ async def test_a_stored_row_survives_a_round_trip_through_the_database() -> None
 
 
 @pytest.mark.asyncio
-async def test_a_row_naming_a_field_the_model_lost_fails_on_read() -> None:
+async def test_an_entry_naming_a_field_the_model_lost_fails_on_read(tmp_path: Path) -> None:
     """Half a record must not reach an arm: a field removed from the model makes
-    every row that names it unreadable rather than silently dropping it."""
-    from sqlalchemy import update
-
-    from orca.runtime.db import make_session_factory
-    from orca.runtime.db.models import MoveDefaultsRow
-
-    engine = create_memory_engine()
-    store = SqliteMoveDefaultsStore(engine)
+    every entry that names it unreadable rather than silently dropping it."""
+    path = tmp_path / "move_defaults.json"
+    store = MoveDefaultsFileStore(path)
     await store.set("pf400", MoveParameterPatch(jaw_opening=18.0))
-    session_factory = make_session_factory(engine)
-    async with session_factory() as session:
-        await session.execute(
-            update(MoveDefaultsRow)
-            .where(MoveDefaultsRow.transporter_name == "pf400")
-            .values(patch={"grip_height": 4.0}),
-        )
-        await session.commit()
+    path.write_text(json.dumps({"pf400": {"grip_height": 4.0}}), encoding="utf-8")
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(SetupFileError, match="grip_height"):
         await store.get("pf400")
 
 
@@ -146,7 +142,7 @@ async def test_the_row_stores_only_the_fields_somebody_set() -> None:
     """A total record would freeze the untouched fields at whatever the seed said
     the day the row was written, so a later seed correction would never reach the
     arms that never disagreed with it."""
-    store = SqliteMoveDefaultsStore(create_memory_engine())
+    store = fresh_move_defaults()
 
     await store.set("pf400", MoveParameterPatch(jaw_opening=18.0))
 
@@ -163,15 +159,14 @@ async def test_a_started_runtime_binds_every_transporter_to_the_stored_defaults(
     Leaving the wiring to the topology author is how a deployment ends up quietly
     running on the seed while an operator edits a row nothing ever consults.
     """
-    from orca.runtime.system_runtime import SystemRuntime
 
     from tests.test_system_runtime import _build_simple_system
 
     system, _ = await _build_simple_system()
-    service = MoveDefaultsService(SqliteMoveDefaultsStore(create_memory_engine()))
+    service = MoveDefaultsService(fresh_move_defaults())
     await service.set("robot1", MoveParameterPatch(travel_margin=25.0))
 
-    runtime = SystemRuntime(system, move_defaults_service=service)
+    runtime = await memory_runtime(system, move_defaults_service=service)
     await runtime.start()
     try:
         transporter = system.transporters[0]
@@ -189,9 +184,11 @@ async def test_the_daemon_runtime_reads_the_store_the_operator_writes() -> None:
     own store instead would read an empty table and silently use the seed, which
     looks exactly like the feature working.
     """
-    from orca.runtime.deployment_registries import build_in_memory_deployment_layer
+    from orca.runtime.startup import PackageSetupStoreFactory, deployment_registries_over
+    from orca.runtime.store_factory import default_package_root
 
-    factory, registries = build_in_memory_deployment_layer()
+    factory = PackageSetupStoreFactory(default_package_root(), default_client=BUILTIN_CLIENT)
+    registries = deployment_registries_over(factory)
 
     await registries.move_defaults.apply(
         "robot1", MoveParameterPatch(travel_margin=25.0), confirm=True,
@@ -206,7 +203,7 @@ async def test_the_daemon_runtime_reads_the_store_the_operator_writes() -> None:
 async def test_an_operator_edit_replaces_the_row_rather_than_adding_one() -> None:
     """The update branch IS the operator edit path; a second row would make which
     one wins a matter of query order."""
-    store = SqliteMoveDefaultsStore(create_memory_engine())
+    store = fresh_move_defaults()
     await store.set("pf400", MoveParameterPatch(jaw_opening=14.0))
     tuned = MoveParameterPatch(jaw_opening=18.0)
 
@@ -218,7 +215,7 @@ async def test_an_operator_edit_replaces_the_row_rather_than_adding_one() -> Non
 
 @pytest.mark.asyncio
 async def test_deleting_a_row_puts_the_transporter_back_on_the_seed() -> None:
-    store = SqliteMoveDefaultsStore(create_memory_engine())
+    store = fresh_move_defaults()
     await store.set("pf400", MoveParameterPatch(speed=20.0))
 
     assert await store.delete("pf400") is True
@@ -233,11 +230,11 @@ async def test_a_pick_sends_the_resolved_record_to_the_driver() -> None:
 
     from orca.resource_models.location import Location
 
-    teachpoints = TeachpointService(SqliteTeachpointStore(create_memory_engine()))
+    teachpoints = TeachpointService(fresh_teachpoints([_DEFAULT_VERTICAL]))
     await teachpoints.add(_teachpoint())
-    move_defaults = MoveDefaultsService(SqliteMoveDefaultsStore(create_memory_engine()))
+    move_defaults = MoveDefaultsService(fresh_move_defaults())
     await move_defaults.set("pf400", MoveParameterPatch(jaw_opening=18.0))
-    transporter = Transporter("pf400", teachpoint_store=teachpoints)
+    transporter = outside_any_system(with_teachpoints(Transporter("pf400"), teachpoints))
     transporter.bind_move_defaults(move_defaults)
 
     location = Location("pad_1")
@@ -245,10 +242,9 @@ async def test_a_pick_sends_the_resolved_record_to_the_driver() -> None:
     # moment a pick reads one more field off the labware.
     plate = LabwareInstance("plate_tmpl", "Cor_96_wellplate_360ul_Fb")
 
-    with patch.object(type(location), "labware", property(lambda _self: plate)),             patch.object(transporter, "_sim_manager") as manager:
-        manager.driver = AsyncMock()
+    with patch.object(type(location), "labware", property(lambda _self: plate)),             patch.object(transporter, "_driver", AsyncMock()) as driver:
         await transporter._do_pick(location)
-        request = manager.driver.pick_at_coords.call_args.args[0]
+        request = driver.pick_at_coords.call_args.args[0]
 
     assert request.handling.jaw_opening == 18.0
     assert request.handling.clearance == 20.0
@@ -262,21 +258,20 @@ async def test_a_pick_sends_what_this_one_plate_asked_to_be_carried_with() -> No
 
     from orca.resource_models.location import Location
 
-    teachpoints = TeachpointService(SqliteTeachpointStore(create_memory_engine()))
+    teachpoints = TeachpointService(fresh_teachpoints([_DEFAULT_VERTICAL]))
     await teachpoints.add(_teachpoint())
-    move_defaults = MoveDefaultsService(SqliteMoveDefaultsStore(create_memory_engine()))
+    move_defaults = MoveDefaultsService(fresh_move_defaults())
     await move_defaults.set("pf400", MoveParameterPatch(jaw_opening=18.0))
-    transporter = Transporter("pf400", teachpoint_store=teachpoints)
+    transporter = outside_any_system(with_teachpoints(Transporter("pf400"), teachpoints))
     transporter.bind_move_defaults(move_defaults)
 
     location = Location("pad_1")
     plate = LabwareInstance("plate_tmpl", "Cor_96_wellplate_360ul_Fb")
     plate.carry_with(jaw_opening=25.0, speed=30.0)
 
-    with patch.object(type(location), "labware", property(lambda _self: plate)),             patch.object(transporter, "_sim_manager") as manager:
-        manager.driver = AsyncMock()
+    with patch.object(type(location), "labware", property(lambda _self: plate)),             patch.object(transporter, "_driver", AsyncMock()) as driver:
         await transporter._do_pick(location)
-        request = manager.driver.pick_at_coords.call_args.args[0]
+        request = driver.pick_at_coords.call_args.args[0]
 
     assert request.handling.jaw_opening == 25.0
     assert request.handling.speed == 30.0

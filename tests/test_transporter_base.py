@@ -12,7 +12,7 @@ from orca.resource_models.location import Location
 from orca.resource_models.transporter import Transporter
 from orca.resource_models.transporter_base import TransporterBase
 from orca.resource_models.transporter_interface import ITransporter
-from orca.workflow_models.error_policy_overrides import OverrideWithPauseError
+from orca.resource_models.error_policy_overrides import OverrideWithPauseError
 
 
 class _FakeMover(TransporterBase):
@@ -86,6 +86,19 @@ async def test_pick_guards_double_load_and_empty_source() -> None:
     assert mover.actuations == ["pick:site_a"], "refused before actuating"
     with pytest.raises(ValueError, match="does not contain labware"):
         await _FakeMover("gripper_2").pick(Location("empty_site"))
+
+
+async def test_a_refused_pick_names_the_held_labware_by_the_id_edit_location_looks_up() -> None:
+    mover = _FakeMover("gripper_1")
+    source = _occupied_location("site_a", "plate_1")
+    held = source.labware
+    assert held is not None
+    await mover.pick(source)
+
+    with pytest.raises(MoverAlreadyHoldingError) as refused:
+        await mover.pick(_occupied_location("site_b", "plate_2"))
+
+    assert f"`orca labware edit-location {held.id} <position>" in str(refused.value)
 
 
 async def test_a_refused_pick_pauses_rather_than_aborting_the_run() -> None:

@@ -1,3 +1,5 @@
+from orca.operations.binding import RestBinding, Route
+from orca.operations.route_tags import RouteTag
 """Wire models for the labware operations.
 
 Apart from `labware.py` because the Operation classes there take
@@ -19,7 +21,7 @@ from pydantic import (
 from orca.state.placement import PlacementState
 from orca.state.records import OperationDetails
 from orca.state.provenance import Provenance, Source
-from orca.runtime.status_models import LabwareSnapshot, LocationEvent
+from orca.runtime.status_models import LabwareSnapshot
 
 
 class LabwareSnapshotModel(BaseModel):
@@ -30,7 +32,7 @@ class LabwareSnapshotModel(BaseModel):
     name: str
     template_name: str
     labware_type: str = Field(description=(
-        "The catalog key, the one `GET /api/labware/{labware_type}` takes. A sim "
+        "The catalog key, the one `GET /api/labware-catalog/{labware_type}` takes. A sim "
         "template's placeholder, such as `_sim_plate`, and `unknown` are not in the catalog."
     ))
     barcode: str | None = None
@@ -62,24 +64,6 @@ class LabwareSnapshotModel(BaseModel):
         return patch.model_dump(exclude_none=True)
 
 
-class LocationEventModel(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-    sequence: int
-    position_id: str
-    timestamp: float
-
-    @classmethod
-    def from_dc(cls, evt: LocationEvent) -> Self:
-        return cls(
-            sequence=evt.sequence,
-            position_id=evt.position_id,
-            timestamp=evt.timestamp,
-        )
-
-
-# -- GetLabware* (by id, by barcode) ----------------------------------------
-
-
 class GetLabwareByIdRequest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     labware_id: str
@@ -104,17 +88,6 @@ class ListLabwareResponse(BaseModel):
     labware: list[LabwareSnapshotModel]
 
 
-class GetLabwareHistoryRequest(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-    labware_id: str
-
-
-class GetLabwareHistoryResponse(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-    labware_id: str
-    history: list[LocationEventModel]
-
-
 class EditLabwareLocationRequest(BaseModel):
     model_config = ConfigDict(
         frozen=True, extra="forbid", str_strip_whitespace=True,
@@ -129,7 +102,7 @@ class EditLabwareLocationRequest(BaseModel):
     )
 
 
-class _MutationResponse(BaseModel):
+class LabwareMutationResponse(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     status: Literal["ok"] = "ok"
     labware_id: str
@@ -200,7 +173,7 @@ class RegisterLabwareRequest(BaseModel):
     reason: str | None = None
 
     @model_validator(mode="after")
-    def _named_exactly_one_way(self) -> "RegisterLabwareRequest":
+    def _named_exactly_one_way(self) -> Self:
         # Blank counts as unset: a client that always sends every field says
         # "unset" with "" as readily as with null, and a blank name would
         # otherwise pass here and 404 later on a name nobody wrote.
@@ -227,22 +200,6 @@ class RegisterLabwareResponse(BaseModel):
     adopted_thread_id: str | None = None
     """The thread that was waiting for this labware and took it, or None when
     nothing was waiting and a new labware was made."""
-
-
-class GetWellVolumesRequest(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-    labware_id: str
-
-
-class GetWellVolumesResponse(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-    labware_id: str
-    well_volumes: dict[str, float]
-    provenance: Provenance
-    """How well the record knows these volumes. `unknown` means nobody has ever
-    said what is in this labware, which is not the same as empty; `stale` means
-    a stretch went unobserved, or an unfinished action has done things the
-    record has not been told about yet."""
 
 
 class SetWellVolumesRequest(BaseModel):
@@ -279,12 +236,11 @@ class ContentsLayerModel(BaseModel):
 
 
 class ResolveContentsResponse(BaseModel):
-    """What a labware holds. The canonical read: ask this, not the layers.
+    """What a labware holds: the one read of its contents, for any labware.
 
-    ``get-tip-state`` and a liquid handler's own deck state are the raw layers
-    feeding this one, kept for diagnosis. They are not rival answers, and
-    ``layers`` shows what each of them says so nothing has to go and compare
-    them by hand.
+    The record's own tip and volume layers and a liquid handler's deck state
+    feed this answer. ``layers`` shows what each of them says, kept for
+    diagnosis, so nothing has to go and compare them by hand.
     """
     model_config = ConfigDict(frozen=True, extra="forbid")
     labware_id: str
@@ -324,21 +280,6 @@ class MarkTipsUsedResponse(BaseModel):
     labware_id: str
     tip_positions_present: list[str]
     """What the rack still holds after the subtraction."""
-
-
-class GetTipStateRequest(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-    labware_id: str
-
-
-class GetTipStateResponse(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-    labware_id: str
-    tip_positions_present: list[str]
-    provenance: Provenance
-    """How well the record knows this layout. `unknown` means nobody has ever
-    said what the rack holds, which is not the same as an empty rack;
-    `stale` means a stretch went unobserved since anyone last knew."""
 
 
 class SetTipStateRequest(BaseModel):
@@ -417,8 +358,7 @@ JourneyEntry = Annotated[
 
 
 class GetLabwareJourneyRequest(BaseModel):
-    """Optional ``kinds`` filter accepts the same vocabulary as the legacy
-    ``?kind=move&kind=action`` query parameter; omit to include both."""
+    """Optional ``kinds`` filter: ``move``, ``action``, or both; omit to include both."""
     model_config = ConfigDict(frozen=True, extra="forbid")
     labware_id: str
     kinds: list[Literal["move", "action"]] | None = None
@@ -439,7 +379,7 @@ class GetLabwareJourneyResponse(BaseModel):
 
 
 class ClearSubmissionLabwareRequest(BaseModel):
-    """Wire shape for ``operations_clear_submission_labware``.
+    """Wire shape for ``POST /api/submissions/{submission_id}/clear-labware``.
 
     ``force=True`` overrides the safety check that refuses when the
     submission's execution is non-terminal.
@@ -466,7 +406,7 @@ class ClearSubmissionLabwareResponse(BaseModel):
 
 
 class ReleaseMoverHoldRequest(BaseModel):
-    """Wire shape for ``operations_release_mover_hold``.
+    """Wire shape for ``POST /api/movers/{device_id}/release-hold``.
 
     Addressed by MOVER, because the mover is what the refusal names: a pick
     onto a mover the record says is already holding fails with the mover's own
@@ -479,7 +419,7 @@ class ReleaseMoverHoldRequest(BaseModel):
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
-    mover_name: str
+    device_id: str
     to_location: str | None = None
     force: bool = False
     reason: str
@@ -495,7 +435,7 @@ class ReleaseMoverHoldResponse(BaseModel):
 
 
 class DischargeLabwareRequest(BaseModel):
-    """Wire shape for ``operations_discharge_labware``.
+    """Wire shape for ``POST /api/labware-instances/{labware_id}/discharge``.
 
     Operator-initiated single-labware removal: "I picked it up
     physically." ``force=True`` overrides the safety check that refuses
@@ -518,7 +458,7 @@ class DischargeLabwareResponse(BaseModel):
 
 
 class ClearAllLabwareRequest(BaseModel):
-    """Wire shape for ``operations_clear_all_labware``.
+    """Wire shape for ``POST /api/labware-instances/clear-all``.
 
     Panic button. ``force=True`` overrides the safety check that
     refuses when any active execution exists.
@@ -532,3 +472,201 @@ class ClearAllLabwareRequest(BaseModel):
 class ClearAllLabwareResponse(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     cleared: list[str]
+
+
+GET_LABWARE_BY_ID_ROUTE = Route(
+    GetLabwareByIdRequest,
+    GetLabwareResponse,
+    RestBinding(
+        method="GET", path="/labware-instances/{labware_id}", tag=RouteTag.LABWARE,
+    ),
+)
+
+
+GET_LABWARE_BY_BARCODE_ROUTE = Route(
+    GetLabwareByBarcodeRequest,
+    GetLabwareResponse,
+    RestBinding(
+        method="GET", path="/labware-barcodes/{barcode}", tag=RouteTag.LABWARE,
+    ),
+)
+
+
+LIST_LABWARE_ROUTE = Route(
+    ListLabwareRequest,
+    ListLabwareResponse,
+    RestBinding(
+        method="GET", path="/labware-instances", tag=RouteTag.LABWARE,
+    ),
+)
+
+
+EDIT_LABWARE_LOCATION_ROUTE = Route(
+    EditLabwareLocationRequest,
+    LabwareMutationResponse,
+    RestBinding(
+        method="POST", path="/labware-instances/{labware_id}/edit-location", tag=RouteTag.LABWARE,
+        carries_blockers=True,
+        drives_device=True,
+    ),
+)
+
+
+EDIT_LABWARE_BARCODE_ROUTE = Route(
+    EditLabwareBarcodeRequest,
+    LabwareMutationResponse,
+    RestBinding(
+        method="PUT", path="/labware-instances/{labware_id}/barcode", tag=RouteTag.LABWARE,
+    ),
+)
+
+
+SET_LABWARE_CARRY_OVERRIDE_ROUTE = Route(
+    SetLabwareCarryOverrideRequest,
+    CarryOverrideResponse,
+    RestBinding(
+        method="PUT", path="/labware-instances/{labware_id}/carry-override", tag=RouteTag.LABWARE,
+    ),
+)
+
+
+CLEAR_LABWARE_CARRY_OVERRIDE_ROUTE = Route(
+    ClearLabwareCarryOverrideRequest,
+    CarryOverrideResponse,
+    RestBinding(
+        method="DELETE", path="/labware-instances/{labware_id}/carry-override", tag=RouteTag.LABWARE,
+    ),
+)
+
+
+RESET_LABWARE_LOCATION_ROUTE = Route(
+    ResetLabwareLocationRequest,
+    LabwareMutationResponse,
+    RestBinding(
+        method="POST", path="/labware-instances/{labware_id}/reset-location", tag=RouteTag.LABWARE,
+        drives_device=True,
+    ),
+)
+
+
+REGISTER_LABWARE_ROUTE = Route(
+    RegisterLabwareRequest,
+    RegisterLabwareResponse,
+    RestBinding(
+        method="POST", path="/labware-instances", tag=RouteTag.LABWARE,
+        carries_blockers=True,
+        drives_device=True,
+    ),
+)
+
+
+SET_WELL_VOLUMES_ROUTE = Route(
+    SetWellVolumesRequest,
+    LabwareMutationResponse,
+    RestBinding(
+        method="PUT", path="/labware-instances/{labware_id}/well-volumes", tag=RouteTag.LABWARE,
+        carries_blockers=True,
+        drives_device=True,
+    ),
+)
+
+
+RESOLVE_CONTENTS_ROUTE = Route(
+    ResolveContentsRequest,
+    ResolveContentsResponse,
+    RestBinding(
+        method="GET", path="/labware-instances/{labware_id}/contents", tag=RouteTag.LABWARE,
+    ),
+)
+
+
+MARK_TIPS_USED_ROUTE = Route(
+    MarkTipsUsedRequest,
+    MarkTipsUsedResponse,
+    RestBinding(
+        method="POST", path="/labware-instances/{labware_id}/tips/mark-used", tag=RouteTag.LABWARE,
+        carries_blockers=True,
+        drives_device=True,
+    ),
+)
+
+
+SET_TIP_STATE_ROUTE = Route(
+    SetTipStateRequest,
+    LabwareMutationResponse,
+    RestBinding(
+        method="PUT", path="/labware-instances/{labware_id}/tips", tag=RouteTag.LABWARE,
+        carries_blockers=True,
+        drives_device=True,
+    ),
+)
+
+
+CONFIRM_WELL_VOLUMES_ROUTE = Route(
+    ConfirmWellVolumesRequest,
+    LabwareMutationResponse,
+    RestBinding(
+        method="POST", path="/labware-instances/{labware_id}/well-volumes/confirm", tag=RouteTag.LABWARE,
+    ),
+)
+
+
+CONFIRM_TIP_STATE_ROUTE = Route(
+    ConfirmTipStateRequest,
+    LabwareMutationResponse,
+    RestBinding(
+        method="POST", path="/labware-instances/{labware_id}/tips/confirm", tag=RouteTag.LABWARE,
+        carries_blockers=True,
+    ),
+)
+
+
+GET_LABWARE_JOURNEY_ROUTE = Route(
+    GetLabwareJourneyRequest,
+    GetLabwareJourneyResponse,
+    RestBinding(
+        method="GET", path="/labware-instances/{labware_id}/journey", tag=RouteTag.LABWARE,
+    ),
+)
+
+
+CLEAR_SUBMISSION_LABWARE_ROUTE = Route(
+    ClearSubmissionLabwareRequest,
+    ClearSubmissionLabwareResponse,
+    RestBinding(
+        method="POST", path="/submissions/{submission_id}/clear-labware", tag=RouteTag.LABWARE,
+        drives_device=True,
+    ),
+)
+
+
+RELEASE_MOVER_HOLD_ROUTE = Route(
+    ReleaseMoverHoldRequest,
+    ReleaseMoverHoldResponse,
+    RestBinding(
+        method="POST", path="/movers/{device_id}/release-hold", tag=RouteTag.LABWARE,
+        carries_blockers=True,
+        drives_device=True,
+    ),
+)
+
+
+DISCHARGE_LABWARE_ROUTE = Route(
+    DischargeLabwareRequest,
+    DischargeLabwareResponse,
+    RestBinding(
+        method="POST", path="/labware-instances/{labware_id}/discharge", tag=RouteTag.LABWARE,
+        carries_blockers=True,
+        drives_device=True,
+    ),
+)
+
+
+CLEAR_ALL_LABWARE_ROUTE = Route(
+    ClearAllLabwareRequest,
+    ClearAllLabwareResponse,
+    RestBinding(
+        method="POST", path="/labware-instances/clear-all", tag=RouteTag.LABWARE,
+        drives_device=True,
+    ),
+)

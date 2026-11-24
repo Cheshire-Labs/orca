@@ -1,6 +1,6 @@
 """`orca submission ...` noun sub-app.
 
-Expose T6 LabwareGroup/Submission API over the daemon:
+Expose the LabwareGroup/Submission API over the daemon:
     submit  : submit one or more groups against a workflow.
     list    : list known submissions (optionally per-execution).
     detail  : show one submission by id.
@@ -23,8 +23,7 @@ Group JSON format (for `submit --groups-file` or `--groups-json`):
           "thread_template_name": "tip_rack",
           "acquisition": {
             "kind": "location",
-            "source_location": "stack_1",
-            "verify_barcode": "ABC123"
+            "source_location": "stack_1"
           }
         }
       ]
@@ -33,6 +32,7 @@ Group JSON format (for `submit --groups-file` or `--groups-json`):
 Multiple groups in one submit: supply a JSON list instead of an object.
 """
 
+from orca.modes.sim_pacing import SIM_SPEEDUP_RANGE
 import json
 from pathlib import Path
 
@@ -42,9 +42,11 @@ from pydantic import JsonValue
 from orca.cli import output, resolve
 from orca.cli.app import STATE
 from orca.cli.backend import get_client
-from orca.daemon.schemas import (
-    LabwareGroupDTO, OptionValueJson, SubmissionSubmitRequest,
+from orca.operations.wire_models import (
+    LabwareGroupDTO, OptionValueJson,
 )
+from orca.operations.submission_models import SubmitExecutionRequest
+
 
 
 app = typer.Typer(
@@ -110,51 +112,39 @@ def submit(
         help="STANDALONE | JOIN_EXISTING. JOIN_EXISTING merges into live batch receivers.",
     ),
     operator_id: str | None = typer.Option(None, "--operator-id"),
-    profile: str = typer.Option("", "--profile", help="Deployment profile name (audit)."),
+    profile: str = typer.Option("", "--profile", help="Name of a saved deployment profile to load into the new execution."),
     vars_: str = typer.Option("", "--vars", help="KEY=VAL,KEY2=VAL2 submission-scope overrides."),
     run_mode: str = typer.Option(
         "", "--run-mode",
-        help="PURE_SIM | DEVICE_SIM | LIVE. REQUIRED per submission: there "
+        help="CHECK_RUN | SIM | LIVE. REQUIRED per submission: there "
              "is no deployment-level fallback.",
     ),
-    confirm: bool = typer.Option(
-        False, "--confirm",
-        help="Acknowledge a LIVE submission against devices whose topology "
-             "declares a sim-direction sim_override.",
-    ),
-    time_scale: float | None = typer.Option(
-        None, "--time-scale", min=0.0,
-        help="Simulated time scale: 1 is real time, 0.1 ten times faster, 0 no "
-             "pacing. Omit for the deployment default. Not for LIVE.",
-    ),
-    reason: str | None = typer.Option(
-        None, "--reason", help="Why, for the audit trail.",
+    speedup: float | None = typer.Option(
+        None, "--sim-speedup", min=SIM_SPEEDUP_RANGE[0], max=SIM_SPEEDUP_RANGE[1],
+        help="How many times faster than real time, 0.1 to 1000: 1 is real time. "
+             "Omit for the deployment default. Sim runs only.",
     ),
 ) -> None:
     """Submit a workflow with zero or more labware groups.
 
-    Zero groups: legacy one-shot submission path (same as `orca run`).
-    One-plus groups: T6 multi-group batch. JOIN_EXISTING may merge into a
+    Zero groups: one-shot submission (same as `orca run`).
+    One-plus groups: multi-group batch. JOIN_EXISTING may merge into a
     live receiver when the workflow already has an active execution.
 
-    `--run-mode`: required PURE_SIM / DEVICE_SIM / LIVE selector. The 12-row
-    v3.4 resolver combines this with each device's topology sim_override at
-    dispatch time.
-
-    `--confirm`: required when submitting LIVE with any device whose topology
-    declares a sim-direction sim_override.
+    `--run-mode`: required CHECK_RUN / SIM / LIVE selector. Under LIVE each
+    device runs as its own sim or live setting (`orca device mode`).
     """
     if batch_mode not in ("STANDALONE", "JOIN_EXISTING"):
         output.fail(
             f"--batch-mode must be STANDALONE or JOIN_EXISTING, got {batch_mode!r}",
             code=output.EXIT_USAGE,
         )
-    from orca.daemon.schemas import RunModeStr, is_run_mode_str
+    from orca.operations.wire_models import RunModeStr, is_run_mode_str
     run_mode_value: RunModeStr
     if not run_mode:
         output.fail(
             "--run-mode is required; pass one of "
-            "PURE_SIM, DEVICE_SIM, or LIVE.",
+            "CHECK_RUN, SIM, or LIVE.",
             code=output.EXIT_USAGE,
         )
         return
@@ -162,7 +152,7 @@ def submit(
         run_mode_value = run_mode
     else:
         output.fail(
-            f"--run-mode must be PURE_SIM, DEVICE_SIM, or LIVE; got {run_mode!r}",
+            f"--run-mode must be CHECK_RUN, SIM, or LIVE; got {run_mode!r}",
             code=output.EXIT_USAGE,
         )
         return
@@ -201,7 +191,7 @@ def submit(
             output.confirmation_denied()
 
     client = get_client()
-    request = SubmissionSubmitRequest(
+    request = SubmitExecutionRequest(
         workflow_name=workflow,
         groups=[LabwareGroupDTO.model_validate(g) for g in groups_spec],
         variables=variables or None,
@@ -209,9 +199,7 @@ def submit(
         operator_id=operator_id,
         deployment_profile=profile or None,
         run_mode=run_mode_value,
-        acknowledge_warnings=confirm,
-        sim_time_scale=time_scale,
-        reason=reason,
+        sim_speedup=speedup,
     )
     snap = client.submission_submit(request)
     resolve.record_last_execution(snap.execution_id)
@@ -231,8 +219,7 @@ def submit(
         )
         for subject in snap.unsettled:
             output.info(f"  {subject.subject}: {subject.detail}")
-            if subject.settle_with is not None:
-                output.info(f"    settle with: {subject.settle_with}")
+            output.info(f"    settle with: {subject.settle_with}")
 
 
 @app.command("list")
@@ -272,9 +259,7 @@ def detail(
 ) -> None:
     """Show one submission.
 
-    Resolves prefix against `submissions_list`. `SubmissionFacade.get_submission`
-    and `list_submissions` both walk `iter_executions()` -- single source --
-    so a labware-style pass-through is not needed.
+    Resolves prefix against `submissions_list`.
     """
     client = get_client()
     ids = [s.id for s in client.submissions_list()]

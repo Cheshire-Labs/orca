@@ -27,7 +27,7 @@ from orca.system.reservation_manager.reservation_manager import (
     ThreadReservationCoordinator,
 )
 from orca.system.system_map import ILocationRegistry
-from orca.system.thread_registry_interface import IThreadRegistry
+from orca.system.reservation_manager.thread_registry_interface import IThreadRegistry
 from tests.test_action_reservation_status_surface import (
     _build_resolver_world,
     _drive_outcomes,
@@ -67,6 +67,32 @@ class TestWaitForLocationRelease:
         coord._reservation_manager.release_reservation("pad1")
 
         await asyncio.wait_for(waiter, timeout=1.0)
+
+    @pytest.mark.asyncio
+    async def test_a_cancel_in_the_same_turn_as_a_release_still_cancels(self) -> None:
+        """An abort releases a thread's reservations and cancels its task in one loop turn.
+
+        The waiter must end cancelled. On Python 3.10 and 3.11 `asyncio.wait_for` returns
+        normally in that case, which left an aborted thread waiting for a reservation forever.
+        """
+        locs = {"pad1": _make_location("pad1")}
+        coord = _make_coordinator(locs)
+        coord._reservation_manager._reserve(
+            "pad1", LocationReservation(locs["pad1"]), thread_id="holder",
+        )
+        snapshot = coord.release_snapshot(["pad1"])
+        waiter = asyncio.create_task(
+            coord.wait_for_location_release(snapshot, timeout=30.0)
+        )
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert not waiter.done(), "waiter must park while pad1 is held"
+
+        coord._reservation_manager.release_reservation("pad1")
+        waiter.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
 
     @pytest.mark.asyncio
     async def test_times_out_to_a_normal_return_without_release(self) -> None:

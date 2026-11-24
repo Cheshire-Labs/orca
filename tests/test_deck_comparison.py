@@ -17,15 +17,18 @@ from cheshire_drivers.liquid_handler_models import (
     DeckResourceState,
     DeckStateResponse,
     GetDeckStateRequest,
+    InterruptedMove,
     MovePlateRequest,
     ResetDeckLabwareRequest,
 )
-from cheshire_drivers.plr import ChatterboxLiquidHandlerDriver
+from orca.operations.device import CompareDeckOperation
+from orca.operations.device_models import CompareDeckRequest
 from orca.runtime.incident_store import IncidentCategory
-from orca.runtime.labware_store import InMemoryLabwareStore
 from orca.runtime.system_runtime import SystemRuntime
 from orca.system.system_interface import DeckConflictReason
 from tests.test_labware_state_reconciliation import RESERVOIR_SITE, _build
+from tests.memory_activity import memory_runtime
+from tests.recording_handler import RecordingHandler
 
 WORKING_SITE = "carrier-7-0"
 
@@ -55,10 +58,10 @@ class _Bench:
 
 @pytest_asyncio.fixture
 async def bench() -> AsyncIterator[_Bench]:
-    recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    recorder = RecordingHandler()
     build, lh = await _build(recorder, wf_name="deck_comparison")
-    runtime = SystemRuntime(
-        build.system, event_bus=build.event_bus, labware_store=InMemoryLabwareStore(),
+    runtime = await memory_runtime(
+        build.system, event_bus=build.event_bus
     )
     await runtime.start()
     snapshot = await runtime.labware.register(
@@ -161,6 +164,29 @@ async def test_a_rebuilt_session_is_not_a_pile_of_conflicts(bench: _Bench) -> No
 
 
 @pytest.mark.timeout(30)
+async def test_an_empty_driver_deck_does_not_agree_with_a_record_that_has_labware_there(bench: _Bench) -> None:
+    """The record has a reservoir on the deck and the driver reports none: the record has not reached the driver."""
+    await bench.driver.reset_deck_labware(ResetDeckLabwareRequest())
+
+    answer = await CompareDeckOperation(bench.runtime).run(CompareDeckRequest(device_id=bench.lh_name))
+
+    assert answer.driver_deck_empty is True
+    assert answer.agrees is False
+    assert answer.disagreements == [], "an empty driver deck is still not a list of plates to settle one by one"
+
+
+@pytest.mark.timeout(30)
+async def test_an_empty_driver_deck_agrees_with_a_record_that_has_nothing_there(bench: _Bench) -> None:
+    labware_id = bench.runtime.system.get_labware(bench.labware_name).id
+    await bench.runtime.labware.discharge_labware(labware_id, confirm=True)
+
+    answer = await CompareDeckOperation(bench.runtime).run(CompareDeckRequest(device_id=bench.lh_name))
+
+    assert answer.driver_deck_empty is True
+    assert answer.agrees is True
+
+
+@pytest.mark.timeout(30)
 async def test_a_bare_compare_files_nothing(bench: _Bench) -> None:
     """Read-only means the incident queue is untouched too.
 
@@ -214,3 +240,55 @@ async def test_deck_furniture_is_not_a_disagreement(bench: _Bench) -> None:
         if d.reason is DeckConflictReason.UNKNOWN_TO_LEDGER
     ]
     assert unknown == [], f"furniture reported as a conflict: {unknown}"
+
+
+async def _strand_a_stand_in(bench: _Bench) -> None:
+    """Make the driver report a gripper move that died with no labware named."""
+    driver = bench.driver
+    real_get_deck_state = driver.get_deck_state
+
+    async def with_a_stranded_stand_in(request: GetDeckStateRequest) -> DeckStateResponse:
+        state = await real_get_deck_state(request)
+        return state.model_copy(update={"interrupted_move": InterruptedMove(
+            from_site="carrier-7-1", to_site="carrier-7-2", error="RuntimeError: Run was cancelled",
+        )})
+
+    driver.get_deck_state = with_a_stranded_stand_in  # type: ignore[method-assign]
+
+
+@pytest.mark.timeout(30)
+async def test_an_interrupted_move_of_nothing_on_record_is_a_disagreement_that_names_no_labware(bench: _Bench) -> None:
+    """The gripper may hold a plate nobody recorded, so the two sides must not read as agreeing."""
+    await _strand_a_stand_in(bench)
+
+    comparison = await bench.runtime.devices.compare_deck(bench.lh_name)
+
+    [entry] = comparison.disagreements
+    assert entry.reason is DeckConflictReason.INTERRUPTED_MOVE
+    assert (entry.labware_id, entry.labware_name) == (None, None)
+    assert entry.position_id.endswith("/carrier-7-1") and entry.driver_site == "carrier-7-2"
+    assert entry.detail is not None and "Look at the gripper" in entry.detail
+    assert comparison.interrupted_move_labware is None
+
+
+@pytest.mark.timeout(30)
+async def test_compare_deck_does_not_agree_while_a_move_of_nothing_on_record_is_interrupted(bench: _Bench) -> None:
+    await _strand_a_stand_in(bench)
+
+    answer = await CompareDeckOperation(bench.runtime).run(CompareDeckRequest(device_id=bench.lh_name))
+
+    assert answer.agrees is False
+    [entry] = answer.disagreements
+    assert entry.labware_name is None and entry.labware_id is None
+    assert entry.detail is not None and "Look at the gripper" in entry.detail
+
+
+@pytest.mark.timeout(30)
+async def test_a_reconcile_files_an_incident_that_tells_the_operator_to_look_at_the_gripper(bench: _Bench) -> None:
+    await _strand_a_stand_in(bench)
+
+    await bench.runtime.devices.reconcile_deck(bench.lh_name, confirm=True)
+
+    [incident] = await bench.runtime.incidents.list(category=IncidentCategory.DECK_RECONCILE_CONFLICT)
+    assert "Look at the gripper" in incident.message
+    assert "None" not in incident.message

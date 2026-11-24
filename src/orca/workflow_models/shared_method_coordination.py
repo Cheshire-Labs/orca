@@ -14,9 +14,6 @@ context manager); the owner thread queries ``is_contributor(thread_id)`` to
 suppress
 auto-spawn and route to ``wait_for_current_action`` instead of
 ``resolve_current_action``.
-
-Replaces the scattered ``ExecutingLabwareThread._executing_shared_method``
-flag pattern.
 """
 import asyncio
 from contextlib import asynccontextmanager
@@ -48,7 +45,26 @@ class SharedMethodCoordination:
         self.current_action_resolved: asyncio.Event = asyncio.Event()
         self.exit_signal: asyncio.Event = asyncio.Event()
         self.completed: asyncio.Event = asyncio.Event()
+        self.labware_lost: asyncio.Event = asyncio.Event()
+        self._lost_labware: list[str] = []
         self._contributors: Set[str] = set()
+
+    def note_labware_lost_by_its_bringer(self, labware_name: str) -> None:
+        """A thread spawned to bring this method's labware ended before it arrived."""
+        self._lost_labware.append(labware_name)
+        self.labware_lost.set()
+
+    def signal_lost_among(self, needed: set[str]) -> None:
+        """Raise the signal again for labware lost earlier that this action needs."""
+        if any(name in needed for name in self._lost_labware):
+            self.labware_lost.set()
+
+    def take_lost_labware(self, needed: set[str]) -> list[str]:
+        """The lost labware among `needed`; the rest stays for the action that needs it. Clears the signal."""
+        lost = [name for name in self._lost_labware if name in needed]
+        self._lost_labware = [name for name in self._lost_labware if name not in needed]
+        self.labware_lost.clear()
+        return lost
 
     @property
     def is_shared(self) -> bool:

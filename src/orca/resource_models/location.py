@@ -4,11 +4,13 @@ from enum import Enum
 import logging
 from typing import List, Optional, Any, Dict
 
+from orca.devices.device_interfaces import IPlateSource
 from orca.resource_models.plate_pad import PlatePad
+from orca.resource_models.labware_directory import LabwarePlacements
 from orca.resource_models.labware_placeable_interface import ILabwarePlaceable, IPlateMover
 from orca.resource_models.labware import LabwareInstance
 
-# Round 5 S2: per-observer dispatch budget on ``Location._fan_out``.
+# Per-observer dispatch budget on ``Location._fan_out``.
 # Bounds the worst-case latency that a single hung observer (e.g. a
 # Transporter wire op to an orca-client busy executing a long-running
 # command) can impose on labware-discharge / move / dispose paths.
@@ -52,6 +54,11 @@ class Location(ILabwarePlaceable):
         self._labware_observers: List[ILabwareLocationObserver] = []
         self._availability_condition = asyncio.Condition()
         self._spawn_lock = asyncio.Lock()
+        self._placements: LabwarePlacements | None = None
+
+    def bind_placements(self, placements: LabwarePlacements) -> None:
+        self._placements = placements
+        self._resource.bind_placements(placements)
 
     @property
     def spawn_lock(self) -> asyncio.Lock:
@@ -73,6 +80,11 @@ class Location(ILabwarePlaceable):
     @property
     def position_id(self) -> str:
         return self._position_id
+
+    @property
+    def site_name(self) -> str | None:
+        """The site's name on its owner's model; None for a location that is not a named site."""
+        return None
 
     @property
     def labware(self) -> Optional[LabwareInstance]:
@@ -100,18 +112,13 @@ class Location(ILabwarePlaceable):
         Pre-check / spawn paths use this to skip "occupied = blocked"
         semantics that only apply to single-slot stages (PlatePads).
 
-        Handles the common LabwareStagingBridge wrap: device-backed
-        Locations have the bridge as their `_resource`, with the actual
-        device behind `bridge.device`.
+        A device-backed Location has a LabwareStagingBridge as its `_resource`,
+        which answers for the device behind it.
         """
-        from orca.devices.device_interfaces import IPlateSource
-        from orca.resource_models.labware_staging_bridge import LabwareStagingBridge
         resource = self._resource
         if isinstance(resource, IPlateSource):
             return True
-        if isinstance(resource, LabwareStagingBridge):
-            return isinstance(resource.device, IPlateSource)
-        return False
+        return isinstance(resource, ILabwarePlaceable) and resource.device_is_plate_source
 
     @property
     def loaded_labware(self) -> List[LabwareInstance]:
@@ -165,22 +172,23 @@ class Location(ILabwarePlaceable):
     def resource(self) -> ILabwarePlaceable:
         return self._resource
 
+    @resource.setter
+    def resource(self, resource: ILabwarePlaceable) -> None:
+        self._resource = resource
+        if self._placements is not None:
+            resource.bind_placements(self._placements)
+        for observer in self._resource_observers:
+            observer.location_notify("resource_set", self, resource)
+
     @property
     def supports_deadlock_resolution(self) -> bool:
         """Delegate to the underlying resource."""
         return self._resource.supports_deadlock_resolution
-
-
-    @resource.setter
-    def resource(self, resource: ILabwarePlaceable) -> None:
-        self._resource = resource
-        for obeserver in self._resource_observers:
-            obeserver.location_notify("resource_set", self, resource)
     
     def set_options(self, options: Dict[str, Any]) -> None:
         self._options = options
 
-    async def _fan_out(self, event: LabwareLocationEvent, labware: LabwareInstance) -> None:
+    async def _fan_out(self, event: LabwareLocationEvent, labware: LabwareInstance | None) -> None:
         """Fan out a labware-location event to every registered observer in parallel.
 
         Observers may dispatch wire ops (e.g. the Transporter observer fires
@@ -190,15 +198,13 @@ class Location(ILabwarePlaceable):
         ``ILabwareLocationObserver.notify_labware_location_change`` does not
         promise call ordering, so ``asyncio.gather`` is safe.
 
-        Round 5 S2: each observer call is wrapped by
-        ``_FAN_OUT_OBSERVER_TIMEOUT`` so a single hung observer cannot
-        wedge the dispose / move paths indefinitely. The
-        ``labware_discharge`` MCP wedge symptom (4-minute hang during
-        active execution) was the operator-visible form of this gap;
-        timing-out the offender lets the labware-state mutation
-        complete and the observer reconverges on the next event.
+        Each observer call is wrapped by ``_FAN_OUT_OBSERVER_TIMEOUT`` so a
+        single hung observer cannot wedge the dispose / move paths. Timing out
+        the offender lets the labware-state mutation complete, and the observer
+        reconverges on the next event.
         """
-        if not self._labware_observers:
+        # A reach with no plate on record moves no labware an observer could follow.
+        if labware is None or not self._labware_observers:
             return
         await asyncio.gather(*(
             self._dispatch_observer_with_timeout(observer, event, labware)
@@ -229,14 +235,14 @@ class Location(ILabwarePlaceable):
                 labware.name if labware is not None else None,
             )
 
-    async def prepare_for_place(self, labware: LabwareInstance, mover: IPlateMover) -> None:
+    async def prepare_for_place(self, labware: LabwareInstance | None, mover: IPlateMover) -> None:
         await self._resource.prepare_for_place(labware, mover)
 
-    async def prepare_for_pick(self, labware: LabwareInstance, mover: IPlateMover) -> None:
+    async def prepare_for_pick(self, labware: LabwareInstance | None, mover: IPlateMover) -> None:
         await self._resource.prepare_for_pick(labware, mover)
         await self._fan_out(LabwareLocationEvent.PREPARED_FOR_PICK, labware)
 
-    async def notify_picked(self, labware: LabwareInstance, mover: IPlateMover) -> None:
+    async def notify_picked(self, labware: LabwareInstance | None, mover: IPlateMover) -> None:
         await self._resource.notify_picked(labware, mover)
         await self._fan_out(LabwareLocationEvent.PICKED, labware)
 
@@ -244,7 +250,7 @@ class Location(ILabwarePlaceable):
         async with self._availability_condition:
             self._availability_condition.notify_all()
 
-    async def notify_placed(self, labware: LabwareInstance, mover: IPlateMover) -> None:
+    async def notify_placed(self, labware: LabwareInstance | None, mover: IPlateMover) -> None:
         await self._resource.notify_placed(labware, mover)
         await self._fan_out(LabwareLocationEvent.PLACED, labware)
 
@@ -288,6 +294,9 @@ class Location(ILabwarePlaceable):
     def __str__(self) -> str:
         return f"Location: {self._position_id}"
     
+    def is_observed_by(self, observer: ILabwareLocationObserver) -> bool:
+        return observer in self._labware_observers
+
     def add_observer(self, observer: IResourceLocationObserver | ILabwareLocationObserver) -> None:
         if isinstance(observer, ILabwareLocationObserver):
             if observer in self._labware_observers:

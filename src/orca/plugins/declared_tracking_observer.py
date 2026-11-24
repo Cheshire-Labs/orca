@@ -11,7 +11,7 @@ Conventions:
   target_wells may have different cardinalities (1:N fan-out, N:1 pool);
   the aspirate op matches source_wells length, the dispense op matches
   target_wells length, and volumes are length-matched to positions.
-- Aspirate+dispense pairs share a freshly-minted group_id (uuid4) so a
+- Aspirate+dispense pairs share a freshly-minted transfer_id (uuid4) so a
   consumer can reconstruct the transfer as a unit.
 - Black-box case (source_wells=None, target_wells=None) emits ops with
   positions=[]; well_volumes will not decrement on that labware
@@ -94,7 +94,7 @@ class DeclaredTrackingObserver:
 
         if declares.volume_transferred:
             for vt in declares.volume_transferred:
-                group_id = str(uuid.uuid4())
+                transfer_id = str(uuid.uuid4())
                 src_positions = vt.source_wells or []
                 tgt_positions = vt.target_wells or []
                 src_inst, src_ids = _resolve(vt.source, template_to_instance)
@@ -113,7 +113,7 @@ class DeclaredTrackingObserver:
                             volumes=[vt.volume_ul] * len(src_positions),
                         ),
                         timestamp=now,
-                        group_id=group_id,
+                        transfer_id=transfer_id,
                     )
                 )
                 synthesized.append(
@@ -130,7 +130,7 @@ class DeclaredTrackingObserver:
                             volumes=[vt.volume_ul] * len(tgt_positions),
                         ),
                         timestamp=now,
-                        group_id=group_id,
+                        transfer_id=transfer_id,
                     )
                 )
 

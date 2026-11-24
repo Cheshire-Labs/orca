@@ -13,8 +13,11 @@ from typing import List, Optional
 from orca.resource_models.devices import Device
 from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.labware_placeable_interface import ILabwarePlaceable, IPlateMover
+from orca.resource_models.labware_directory import LabwarePlacements
 from orca.resource_models.position_occupancy import PositionOccupancy
 from orca.state.placement import Reach
+from orca.resource_models.device_error import SlotOccupiedError
+from orca.devices.device_interfaces import IPlateSource
 
 orca_logger = logging.getLogger("orca")
 
@@ -29,7 +32,7 @@ class LabwareStagingBridge(ILabwarePlaceable):
 
     Staged and loaded are one record at two reaches, not two stores. Loading is
     a clamp on the same physical position, so a loaded plate keeps the site
-    occupied; the old loaded-reads-empty split would stack plates.
+    occupied.
     """
 
     def __init__(self, name: str, device: Device) -> None:
@@ -42,6 +45,9 @@ class LabwareStagingBridge(ILabwarePlaceable):
     @property
     def name(self) -> str:
         return self._name
+
+    def bind_placements(self, placements: LabwarePlacements) -> None:
+        self._occupancy.bind_placements(placements)
 
     @property
     def labware(self) -> Optional[LabwareInstance]:
@@ -77,7 +83,7 @@ class LabwareStagingBridge(ILabwarePlaceable):
         (operator discharge, edit-location source clear)."""
         self._occupancy.leave(labware)
 
-    async def prepare_for_place(self, labware: LabwareInstance, mover: IPlateMover) -> None:
+    async def prepare_for_place(self, labware: LabwareInstance | None, mover: IPlateMover) -> None:
         occupant = self._occupancy.labware
         if occupant is not None and occupant is not labware:
             self._refuse(occupant)
@@ -87,37 +93,44 @@ class LabwareStagingBridge(ILabwarePlaceable):
         async with self._device.lock.held_for("prepare_for_place"):
             await self._device._do_prepare_for_place(labware, mover, site=self._site)
 
-    async def prepare_for_pick(self, labware: LabwareInstance, mover: IPlateMover) -> None:
-        if self._occupancy.accessible_labware is labware:
+    async def prepare_for_pick(self, labware: LabwareInstance | None, mover: IPlateMover) -> None:
+        if labware is not None and self._occupancy.accessible_labware is labware:
             return
         orca_logger.info(f"{self} - preparing for pick of {labware}")
         async with self._device.lock.held_for("prepare_for_pick"):
             await self._device._do_prepare_for_pick(labware, mover, site=self._site)
-            self._occupancy.reached(labware, Reach.AT_HAND)
+            if labware is not None:
+                self._occupancy.reached(labware, Reach.AT_HAND)
 
-    async def notify_placed(self, labware: LabwareInstance, mover: IPlateMover) -> None:
+    async def notify_placed(self, labware: LabwareInstance | None, mover: IPlateMover) -> None:
         staged = self._occupancy.accessible_labware
         if staged is not None and staged is not labware:
             raise ValueError(
                 f"{self} - Labware {labware} placed with {staged} already on stage."
             )
-        self._occupancy.arrive(labware)
+        if labware is not None:
+            self._occupancy.arrive(labware)
         orca_logger.info(f"{self} - labware {labware} received on stage")
         # Projection op + ledger write share ONE device.lock section, else a
         # concurrent reconcile sees a torn state (move then record).
         async with self._device.lock.held_for("notify_placed"):
             await self._device._do_notify_placed(labware, mover, site=self._site)
-            self._occupancy.reached(labware, Reach.INSIDE)
+            if labware is not None:
+                self._occupancy.reached(labware, Reach.INSIDE)
 
-    async def notify_picked(self, labware: LabwareInstance, mover: IPlateMover) -> None:
+    async def notify_picked(self, labware: LabwareInstance | None, mover: IPlateMover) -> None:
         # No staged-match guard. The mover records the plate at its gripper
         # the instant the pick returns, and one record cannot hold it at two
         # positions, so by the time this runs the site is legitimately empty.
-        # The guard was catching drift between two stores that no longer exist.
         orca_logger.info(f"{self} - labware {labware} picked from stage")
-        self._occupancy.leave(labware)
+        if labware is not None:
+            self._occupancy.leave(labware)
         async with self._device.lock.held_for("notify_picked"):
             await self._device._do_notify_picked(labware, mover, site=self._site)
+
+    @property
+    def device_is_plate_source(self) -> bool:
+        return isinstance(self.device, IPlateSource)
 
     def reset_loaded_labware(self) -> None:
         """Drop every reference this site holds. Driven by clear-all, which
@@ -131,7 +144,6 @@ class LabwareStagingBridge(ILabwarePlaceable):
         self._occupancy.leave(labware)
 
     def _refuse(self, occupant: LabwareInstance) -> None:
-        from orca.resource_models.device_error import SlotOccupiedError
         raise SlotOccupiedError(
             position_id=self._name,
             existing_labware_name=occupant.name,

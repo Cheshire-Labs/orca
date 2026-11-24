@@ -18,19 +18,42 @@ entry, so the catalogue is where bench experience accumulates.
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from enum import Enum
 
 from pydantic import JsonValue
+
+from orca.workflow_models.status_enums import RecoveryDecision
+
+
+class RemedyAction(str, Enum):
+    """The calls orca-core knows. A server routes those it serves and adds its own as strings."""
+
+    RECOVER_THREAD = "recover_thread"
+    RESUME = "resume"
+    EDIT_LABWARE_LOCATION = "edit_labware_location"
+    REGISTER_LABWARE = "register_labware"
+    DISCHARGE_LABWARE = "discharge_labware"
+    MARK_TIPS_USED = "mark_tips_used"
+    SET_WELL_VOLUMES = "set_well_volumes"
+    CANCEL_RESERVATION = "cancel_reservation"
+    CLEAR_DEVICE_FAULT = "clear_device_fault"
+    COMPARE_DECK = "compare_deck"
+    RELEASE_DEVICE_CONTROL = "release_device_control"
+    CONFIRM_MANUAL_STEP = "confirm_manual_step"
+    RECONCILE_HARDWARE_STATE = "reconcile_hardware_state"
+
+    def __str__(self) -> str:
+        return self.value
 
 
 @dataclass(frozen=True)
 class RemedyStep:
-    """One call in a remedy, on whichever surface the caller is using."""
+    """One call in a remedy. The surface that sends it says where the call goes."""
 
     verb: str
     label: str
     args: dict[str, JsonValue]
-    mcp_tool: str
-    rest: str
+    action: str
     cli: str
     needs: tuple[str, ...] = field(default_factory=tuple)
     """Argument names the operator still has to supply.
@@ -38,12 +61,6 @@ class RemedyStep:
     A remedy that cannot name the plate in the way is still worth offering:
     it says what to do and leaves the one blank a person has to fill. Silently
     dropping the step instead would hide the only useful half.
-    """
-    query: tuple[str, ...] = field(default_factory=tuple)
-    """Argument names the REST route takes in the query string, not the body.
-
-    A client that posts every argument as JSON gets a 400 from a route that
-    wanted one in the URL, so the step has to say which.
     """
 
 
@@ -67,10 +84,11 @@ class RemedyContext:
 
     execution_id: str
     thread_id: str
+    honoured_decisions: frozenset[str]
+    """The decisions the pause accepts. A remedy is built only from these."""
     labware_id: str | None = None
     labware_name: str | None = None
     device_name: str | None = None
-    paused_device_command: str | None = None
 
 
 def _recover(decision: str, ctx: RemedyContext, label: str) -> RemedyStep:
@@ -82,13 +100,19 @@ def _recover(decision: str, ctx: RemedyContext, label: str) -> RemedyStep:
             "thread_id": ctx.thread_id,
             "decision": decision,
         },
-        mcp_tool="operations_recover_thread",
-        rest="POST /api/operations/recover-thread",
+        action=RemedyAction.RECOVER_THREAD,
         cli=(
-            f"orca thread recover {ctx.execution_id} {ctx.thread_id} "
-            f"--decision {decision}"
+            f"orca execution thread recover {ctx.execution_id} {ctx.thread_id} "
+            f"{RecoveryDecision(decision).cli_word}"
         ),
     )
+
+
+def _retry_where_it_stopped(ctx: RemedyContext) -> RemedyStep:
+    """The retry this pause takes: the failed step where one failed, else the action whose own code failed."""
+    if "RETRY" in ctx.honoured_decisions:
+        return _recover("RETRY", ctx, "Retry the failed step")
+    return _recover("RETRY_ACTION", ctx, "Retry the action")
 
 
 def _edit_location(ctx: RemedyContext) -> RemedyStep:
@@ -96,9 +120,8 @@ def _edit_location(ctx: RemedyContext) -> RemedyStep:
         verb="labware.edit_location",
         label="Say where the plate actually is",
         args={"labware_id": ctx.labware_id},
-        mcp_tool="operations_edit_labware_location",
-        rest="POST /api/operations/edit-labware-location",
-        cli=f"orca labware edit-location {ctx.labware_id or '<labware_id>'} <location>",
+        action=RemedyAction.EDIT_LABWARE_LOCATION,
+        cli=f"orca labware edit-location {ctx.labware_id or '<labware_id>'} <location> --reason <reason>",
         needs=("location", "reason"),
     )
 
@@ -119,12 +142,11 @@ def _plate_in_the_way(ctx: RemedyContext) -> Remedy:
                 verb="labware.discharge",
                 label="Take the occupant off",
                 args={},
-                mcp_tool="operations_discharge_labware",
-                rest="POST /api/operations/discharge-labware",
+                action=RemedyAction.DISCHARGE_LABWARE,
                 cli="orca labware discharge <labware_id>",
                 needs=("labware_id",),
             ),
-            _recover("RETRY", ctx, "Retry the step"),
+            _retry_where_it_stopped(ctx),
         ),
     )
 
@@ -145,16 +167,11 @@ def _position_already_reserved(ctx: RemedyContext) -> Remedy:
                 verb="reservation.cancel",
                 label="Cancel the hold",
                 args={"execution_id": ctx.execution_id},
-                mcp_tool="reservation_cancel",
-                rest=(
-                    f"DELETE /api/executions/{ctx.execution_id}"
-                    "/reservations/<reservation_id>"
-                ),
-                cli=f"orca reservation cancel {ctx.execution_id} <reservation_id>",
+                action=RemedyAction.CANCEL_RESERVATION,
+                cli=f"orca reservation cancel <reservation_id> --execution {ctx.execution_id} --reason <reason>",
                 needs=("reservation_id", "reason"),
-                query=("reason",),
             ),
-            _recover("RETRY", ctx, "Retry the step"),
+            _retry_where_it_stopped(ctx),
         ),
     )
 
@@ -174,12 +191,14 @@ def _tip_column_empty(ctx: RemedyContext) -> Remedy:
                 verb="labware.mark_tips_used",
                 label="Mark the empty positions used",
                 args={"labware_id": ctx.labware_id},
-                mcp_tool="operations_mark_tips_used",
-                rest="POST /api/operations/mark-tips-used",
-                cli=f"orca labware mark-tips-used {ctx.labware_id or '<labware_id>'}",
-                needs=("positions",),
+                action=RemedyAction.MARK_TIPS_USED,
+                cli=(
+                    f"orca labware mark-tips-used {ctx.labware_id or '<labware_id>'} "
+                    "--position <positions> --reason <reason>"
+                ),
+                needs=("positions", "reason"),
             ),
-            _recover("RETRY_OP", ctx, "Retry just the failed call"),
+            _recover("RETRY", ctx, "Retry just the failed call"),
         ),
     )
 
@@ -199,12 +218,14 @@ def _not_enough_liquid(ctx: RemedyContext) -> Remedy:
                 verb="labware.set_well_volumes",
                 label="Set the real volume",
                 args={"labware_id": ctx.labware_id},
-                mcp_tool="operations_set_well_volumes",
-                rest="POST /api/operations/set-well-volumes",
-                cli=f"orca labware set-volume {ctx.labware_id or '<labware_id>'}",
-                needs=("volumes",),
+                action=RemedyAction.SET_WELL_VOLUMES,
+                cli=(
+                    f"orca labware set-volume {ctx.labware_id or '<labware_id>'} "
+                    "--well <well_volumes> --reason <reason>"
+                ),
+                needs=("well_volumes", "reason"),
             ),
-            _recover("RETRY_OP", ctx, "Retry just the failed call"),
+            _recover("RETRY", ctx, "Retry just the failed call"),
         ),
     )
 
@@ -213,24 +234,24 @@ def _head_disagrees_about_tips(ctx: RemedyContext) -> Remedy:
     device = ctx.device_name or "<device>"
     return Remedy(
         id="reconcile_the_head_then_retry",
-        label="Reconcile the head, then retry the action",
+        label="Reconcile the head, then retry",
         explain=(
             "The driver and the instrument disagree about what is on the "
             "channels. Reconcile rebuilds a dead session and clears tips that "
-            "are definitely gone. The op-level retry is refused after a "
-            "divergence, so the whole action is the retry here."
+            "are definitely gone. RETRY then repeats the failed call. Where the "
+            "action's own code failed, RETRY_ACTION re-runs the action instead."
         ),
         recommended=True,
         steps=(
             RemedyStep(
                 verb="liquid_handler.reconcile_hardware_state",
                 label="Reconcile the head",
-                args={"device_id": ctx.device_name},
-                mcp_tool="liquid_handler-reconcile_hardware_state",
-                rest=f"POST /api/liquid-handlers/{device}/reconcile_hardware_state",
+                args={} if ctx.device_name is None else {"device_id": ctx.device_name},
+                action=RemedyAction.RECONCILE_HARDWARE_STATE,
                 cli=f"orca device send {device} reconcile_hardware_state",
+                needs=("device_id",) if ctx.device_name is None else (),
             ),
-            _recover("RETRY", ctx, "Retry the action"),
+            _retry_where_it_stopped(ctx),
         ),
     )
 
@@ -299,7 +320,7 @@ _MOVE_PAUSE_REMEDIES: tuple[Callable[[RemedyContext], Remedy], ...] = (
 def remedies_for(
     error_type: str | None, ctx: RemedyContext, *, at_move: bool = False,
 ) -> tuple[Remedy, ...]:
-    """The named recoveries for this failure, best first. Empty when none fit."""
+    """The named recoveries for this failure, best first. Empty when none fit, and none the pause would refuse."""
     found: list[Remedy] = []
     if error_type is not None:
         build = _BY_ERROR_TYPE.get(error_type)
@@ -307,7 +328,14 @@ def remedies_for(
             found.append(build(ctx))
     if at_move:
         found.extend(build(ctx) for build in _MOVE_PAUSE_REMEDIES)
-    return tuple(found)
+    return tuple(remedy for remedy in found if _the_pause_takes_it(remedy, ctx))
+
+
+def _the_pause_takes_it(remedy: Remedy, ctx: RemedyContext) -> bool:
+    return all(
+        step.args["decision"] in ctx.honoured_decisions
+        for step in remedy.steps if step.action is RemedyAction.RECOVER_THREAD
+    )
 
 
 def known_error_types() -> frozenset[str]:

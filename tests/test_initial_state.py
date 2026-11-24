@@ -30,10 +30,11 @@ from tests.test_helpers import (
     FactoryTipRackTemplate as TipRackTemplate,
     FactoryTroughTemplate as TroughTemplate,
 )
+from tests.memory_activity import memory_ops_store
 
 
 def _plate_factory(num_rows: int = 2, num_cols: int = 2, well_max: float = 300.0):
-    def factory(name: str, with_lid: bool | None = None):
+    def factory(name: str):
         plate = MagicMock()
         plate.name = name
         plate.model = "test_plate"
@@ -91,7 +92,7 @@ class TestPlateTemplateSeed:
         """It used to write a grid of zeros, which reads back as "every well
         was seen empty" -- a confident answer about wells nobody looked in, and
         it made the `unknown` provenance unreachable for plates."""
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         template = PlateTemplate("plate1", _plate_factory())
         instance = await template.create_instance()
         await instance.enter_record(LabwareContentsLedger(history))
@@ -104,7 +105,7 @@ class TestPlateTemplateSeed:
     async def test_declared_wells_still_pad_the_rest_to_zero(self) -> None:
         """Naming some wells IS a statement about the plate: the author
         prepared it, so the wells they left out are empty, not unspoken."""
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         template = PlateTemplate(
             "plate1", _plate_factory(),
             initial_state=LabwareInitialState(wells={"A1": 120.0}),
@@ -119,7 +120,7 @@ class TestPlateTemplateSeed:
 
     @pytest.mark.asyncio
     async def test_max_fill_reads_well_max_volume(self) -> None:
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         template = PlateTemplate(
             "plate1",
             _plate_factory(well_max=250.0),
@@ -132,7 +133,7 @@ class TestPlateTemplateSeed:
 
     @pytest.mark.asyncio
     async def test_uniform_volume(self) -> None:
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         template = PlateTemplate(
             "plate1",
             _plate_factory(),
@@ -145,7 +146,7 @@ class TestPlateTemplateSeed:
 
     @pytest.mark.asyncio
     async def test_per_well_dict(self) -> None:
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         template = PlateTemplate(
             "plate1",
             _plate_factory(),
@@ -164,7 +165,7 @@ class TestTroughTemplateSeed:
     async def test_default_is_empty(self) -> None:
         # Undeclared trough seeds EMPTY (0), matching the plate + lenient driver
         # default; the old max_volume default diverged from the sim tracker's 0.
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         template = TroughTemplate("wash", _trough_factory(max_volume=50000.0))
         instance = await template.create_instance()
         await instance.enter_record(LabwareContentsLedger(history))
@@ -173,7 +174,7 @@ class TestTroughTemplateSeed:
 
     @pytest.mark.asyncio
     async def test_max_fill_is_max_volume(self) -> None:
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         template = TroughTemplate(
             "wash", _trough_factory(max_volume=50000.0),
             initial_state=LabwareInitialState(max_fill=True),
@@ -186,7 +187,7 @@ class TestTroughTemplateSeed:
 
     @pytest.mark.asyncio
     async def test_partial_fill(self) -> None:
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         template = TroughTemplate(
             "partial",
             _trough_factory(max_volume=50000.0),
@@ -201,7 +202,7 @@ class TestTroughTemplateSeed:
 class TestTipRackTemplateSeed:
     @pytest.mark.asyncio
     async def test_default_with_tips_all_present(self) -> None:
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         template = TipRackTemplate("rack", _tip_rack_factory(num_tips=4), with_tips=True)
         instance = await template.create_instance()
         await instance.enter_record(LabwareContentsLedger(history))
@@ -210,7 +211,7 @@ class TestTipRackTemplateSeed:
 
     @pytest.mark.asyncio
     async def test_without_tips_empty(self) -> None:
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         template = TipRackTemplate("empty_rack", _tip_rack_factory(num_tips=4), with_tips=False)
         instance = await template.create_instance()
         await instance.enter_record(LabwareContentsLedger(history))
@@ -219,7 +220,7 @@ class TestTipRackTemplateSeed:
 
     @pytest.mark.asyncio
     async def test_explicit_positions(self) -> None:
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         template = TipRackTemplate(
             "partial",
             _tip_rack_factory(num_tips=4),
@@ -235,7 +236,7 @@ class TestTipRackTemplateSeed:
 async def _projected(template, instance=None):
     """Seed the instance at birth, then read what its driver would be told."""
     instance = instance if instance is not None else await template.create_instance()
-    ledger = LabwareContentsLedger(OpsHistory())
+    ledger = LabwareContentsLedger(OpsHistory(store=memory_ops_store()))
     instance.bind_contents(ledger)
     await instance.enter_record(ledger)
     return await instance.driver_well_state()

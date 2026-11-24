@@ -10,6 +10,9 @@ import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+from tests.test_helpers import engine_pipeline
+from tests.test_helpers import command_recorder
 from cheshire_drivers import SimDriver
 
 from orca.resource_models.devices import Device
@@ -18,7 +21,7 @@ from orca.resource_models.labware_staging_bridge import LabwareStagingBridge
 from orca.resource_models.location import Location
 from orca.resource_models.plate_pad import PlatePad
 from orca.resource_models.tracked_lock import LockWait, TrackedLock, current_lock_wait
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from orca.runtime.status_builders import derive_waiting_for
 from orca.system.reservation_manager.location_reservation import LocationReservation
 from orca.workflow_models.actions.device_call_dispatcher import DeviceCallDispatcher
@@ -31,9 +34,11 @@ from orca.workflow_models.labware_threads.labware_thread import LabwareThreadIns
 from tests.test_helpers import (
     create_test_labware_instance,
     create_test_transporter,
-    make_labware_placer,
+    make_command_pipeline,
     no_source_hold,
 )
+from tests.mock import outside_any_system
+from tests.thread_builder import build_executing_thread
 
 # Enough scheduler turns for a queued acquire to reach the lock and park there.
 _TURNS_TO_REACH_THE_LOCK = 50
@@ -56,7 +61,7 @@ class _HeldDevice(Device[_HeldDriver]):
     KIND = "mock"
 
     def __init__(self, name: str, driver: _HeldDriver, release: asyncio.Event) -> None:
-        super().__init__(name, driver, driver)
+        super().__init__(name, driver)
         self._release = release
 
     async def shake(self) -> None:
@@ -65,17 +70,17 @@ class _HeldDevice(Device[_HeldDriver]):
 
 def _held_device(name: str, release: asyncio.Event) -> _HeldDevice:
     driver = _HeldDriver(name)
-    return _HeldDevice(name, driver, release)
+    return outside_any_system(_HeldDevice(name, driver, release))
 
 
 def _shake_forever(device: _HeldDevice) -> asyncio.Task[None]:
     """Dispatch a real device command that holds the lock until released."""
     dispatcher = DeviceCallDispatcher(
         device=device,
-        interpreter=None,
-        operation_log=[],
-        action_id="a1",
-        thread_id="t1",
+
+
+        recorder=command_recorder(), pipeline=engine_pipeline(), action_id="a1",
+
         execution_id="e1",
     )
     request = ActionRequest(
@@ -91,6 +96,7 @@ def _a_move_context() -> MagicMock:
     context.thread_id = "t1"
     context.thread_name = "plate_1"
     context.template_name = "tmpl_1"
+    context.group_id = None
     return context
 
 
@@ -231,14 +237,14 @@ def _build_executing_thread() -> ExecutingLabwareThread:
         labware=LabwareInstance("plate_96", "96_well"),
         start_location=location,
         end_locations=[location],
-        run_mode=WorkflowRunMode.PURE_SIM,
+        run_mode=WorkflowRunMode.CHECK_RUN,
     )
     context = MagicMock()
     context.execution_id = "exec-lock-wait"
     context.workflow_name = "wf-lock-wait"
     location_service = MagicMock()
     location_service.get_history.return_value = MagicMock()
-    return ExecutingLabwareThread(
+    return build_executing_thread(
         thread=thread,
         event_bus=MagicMock(),
         move_handler=MagicMock(),
@@ -309,7 +315,7 @@ async def test_a_move_queued_for_a_busy_handler_names_the_command_holding_it() -
         context=_a_move_context(),
         action=move,
         labware_location_service=MagicMock(),
-        labware_placer=make_labware_placer(MagicMock()),
+        command_pipeline=make_command_pipeline(MagicMock()),
         slot_holder=no_source_hold(),
     )
 

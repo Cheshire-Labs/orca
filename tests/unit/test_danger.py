@@ -7,30 +7,17 @@ from enum import Enum, auto
 
 import pytest
 
+from tests.audit_capture import AuditCapture
 from orca.runtime.danger import (
-    ActionDescriptor,
-    ActionRegistry,
     ConfirmationRequired,
     DangerLevel,
     ParamSpec,
-    clear_audit_trail,
+    action_descriptor,
     dangerous,
-    describe_action,
-    list_actions,
-    list_audit_entries,
 )
 
 
-@pytest.fixture(autouse=True)
-def isolate_module_registry() -> None:
-    """The danger module uses a single process-wide _REGISTRY. Do not clear
-    it -- action registrations belong to the module import graph. Tests
-    below register into a private ActionRegistry to stay isolated."""
-
-
 def test_confirmation_required_on_sync_call_without_confirm() -> None:
-    # Use a private registry scenario: register with a unique name to avoid
-    # collisions with other tests that also register actions.
     @dangerous(
         name="test.danger.sync_guard",
         level=DangerLevel.CRITICAL,
@@ -106,7 +93,7 @@ def test_describe_action_roundtrip() -> None:
     def op(thing: str, count: int = 1) -> None:
         return None
 
-    desc = describe_action("test.danger.descriptor_rt")
+    desc = action_descriptor(op)
     assert desc.name == "test.danger.descriptor_rt"
     assert desc.danger_level == DangerLevel.OPERATOR
     assert desc.message == "operate on {thing}"
@@ -123,54 +110,12 @@ def test_describe_action_roundtrip() -> None:
     assert count_param.default == "1"
 
 
-def test_list_actions_includes_registered() -> None:
-    @dangerous(
-        name="test.danger.listed",
-        level=DangerLevel.OPERATOR,
-        message="...",
-    )
+def test_a_method_that_is_not_dangerous_has_no_descriptor() -> None:
     def op() -> None:
         return None
 
-    all_actions = list_actions()
-    names = [a.name for a in all_actions]
-    assert "test.danger.listed" in names
-
-
-def test_name_collision_raises() -> None:
-    name = "test.danger.collision"
-
-    @dangerous(name=name, level=DangerLevel.OPERATOR, message="...")
-    def first() -> None:
-        return None
-
-    with pytest.raises(ValueError, match="already registered"):
-        @dangerous(name=name, level=DangerLevel.OPERATOR, message="...")
-        def second() -> None:
-            return None
-
-
-def test_private_registry_isolation() -> None:
-    """Using a fresh ActionRegistry proves the data structure works
-    independent of module-level state."""
-    reg = ActionRegistry()
-    desc = ActionDescriptor(
-        name="isolated.foo",
-        danger_level=DangerLevel.SAFE,
-        message="",
-        requires_reason=False,
-        parameters=(),
-    )
-    reg.register(desc)
-
-    assert reg.describe("isolated.foo") is desc
-    assert [d.name for d in reg.list_all()] == ["isolated.foo"]
-
     with pytest.raises(KeyError):
-        reg.describe("isolated.does_not_exist")
-
-    with pytest.raises(ValueError, match="collision"):
-        reg.register(desc)
+        action_descriptor(op)
 
 
 def test_param_spec_fields() -> None:
@@ -230,11 +175,12 @@ def test_confirmation_required_call_args_are_json_safe_for_domain_objects() -> N
     }
 
 
-def test_audit_entry_call_args_are_json_safe_and_recurse_through_containers() -> None:
-    """The audit ring buffer entry for a confirmed call must carry structured
+def test_audit_entry_call_args_are_json_safe_and_recurse_through_containers(
+    audit: AuditCapture,
+) -> None:
+    """The audit row for a confirmed call must carry structured
     data: a dataclass field nested inside a list, with an Enum value inside
     it, must all come out JSON-safe."""
-    clear_audit_trail()
 
     @dangerous(
         name="test.danger.teachpoint_patch",
@@ -247,7 +193,7 @@ def test_audit_entry_call_args_are_json_safe_and_recurse_through_containers() ->
     tp = _FakeTeachpoint("pad_1", x=335.588, y=90.74)
     patch(tp, [_FakePatch(field="speed", orientation=_Orientation.LEFT)], confirm=True)
 
-    entries = list_audit_entries()
+    entries = audit.rows()
     entry = next(e for e in entries if e.action_name == "test.danger.teachpoint_patch")
     assert entry.call_args == {
         "teachpoint": {"position_id": "pad_1", "x": 335.588, "y": 90.74},

@@ -10,9 +10,8 @@ Known differences from JSON tests:
 - Shaker assignment within shaker_collection is nondeterministic
 
 The full SMC workflow runs ONCE per module via the `smc_run` fixture, with
-both MethodTracker and LabwareJourneyTracker attached. Individual tests
-assert against the captured snapshots. The trackers are read-only event
-observers, so attaching both does not alter execution behavior.
+a ThreadRecorder attached. Individual tests assert against what it recorded.
+The recorder only reads events, so it does not alter execution.
 """
 
 import asyncio
@@ -21,11 +20,13 @@ from dataclasses import dataclass
 
 import pytest
 
-from examples.smc_assay.smc_assay_example import build_smc
-from orca.plugins import LabwareJourneyTracker, MethodTracker
-from tests.test_helpers import assert_translator_carriage_pairs, execution_outcome
-from orca.runtime.system_runtime import SystemRuntime
-from orca.runtime.run_modes import WorkflowRunMode
+from tests.real_device_path import on_its_own_device_path
+
+from tests.example_builds import build_smc
+from tests.thread_recorder import ThreadRecorder
+from tests.test_helpers import assert_translator_carriage_pairs, execution_outcome, state_every_liquid_handler_head_empty
+from orca.modes.run_modes import WorkflowRunMode
+from tests.memory_activity import close_memory_activity, memory_runtime
 
 
 @pytest.mark.asyncio
@@ -56,30 +57,30 @@ async def test_translators_declare_single_carriage() -> None:
 
 @dataclass
 class SmcRunResult:
-    method_tracker: MethodTracker
-    journey_tracker: LabwareJourneyTracker
+    recorder: ThreadRecorder
 
 
-async def _run_smc_with_trackers() -> SmcRunResult:
+async def _run_smc_with_a_recorder() -> SmcRunResult:
     smc = await build_smc()
     assert smc.workflow is not None
-    runtime = SystemRuntime(smc.system, event_bus=smc.event_bus)
-    method_tracker = MethodTracker()
-    journey_tracker = LabwareJourneyTracker()
-    runtime.register_plugin(method_tracker)
-    runtime.register_plugin(journey_tracker)
+    runtime = await memory_runtime(smc.system, event_bus=smc.event_bus)
+    recorder = ThreadRecorder()
+    runtime.register_plugin(recorder)
 
     await runtime.start()
-    submission = await runtime.submit(smc.workflow, mode=WorkflowRunMode.PURE_SIM)
+
+    await state_every_liquid_handler_head_empty(runtime)
+    submission = await runtime.submit(smc.workflow, mode=WorkflowRunMode.CHECK_RUN)
     await execution_outcome(runtime, submission, timeout=900.0)
     await runtime.shutdown()
+    await close_memory_activity()
 
-    return SmcRunResult(method_tracker=method_tracker, journey_tracker=journey_tracker)
+    return SmcRunResult(recorder=recorder)
 
 
 @pytest.fixture(scope="module")
 def smc_run() -> SmcRunResult:
-    return asyncio.run(_run_smc_with_trackers())
+    return asyncio.run(on_its_own_device_path(_run_smc_with_a_recorder))
 
 
 @pytest.mark.slow
@@ -93,14 +94,14 @@ class TestSdkSmcExecution:
         If the workflow run failed (timeout or exception), the fixture itself
         would have errored before reaching this test.
         """
-        assert smc_run.method_tracker.all_completed_snapshots, (
+        assert smc_run.recorder.completed_methods, (
             "Workflow completed but no threads recorded any methods"
         )
 
     def test_sdk_smc_method_tracking(self, smc_run: SmcRunResult) -> None:
         """All expected methods complete in correct per-thread order."""
-        tracker = smc_run.method_tracker
-        snapshots = tracker.all_completed_snapshots
+        recorder = smc_run.recorder
+        snapshots = recorder.completed_methods
 
         # -- All expected methods ran --
         expected_methods = {
@@ -121,7 +122,7 @@ class TestSdkSmcExecution:
         def find_thread_methods(template_prefix: str) -> list[list[str]]:
             return [
                 methods for tid, methods in snapshots.items()
-                if tracker.thread_names.get(tid, "").startswith(template_prefix)
+                if recorder.thread_names.get(tid, "").startswith(template_prefix)
             ]
 
         plate_1_runs = find_thread_methods("plate_1")
@@ -167,13 +168,13 @@ class TestSdkSmcExecution:
 
     def test_sdk_smc_labware_journeys(self, smc_run: SmcRunResult) -> None:
         """Labware threads visit all expected devices, waypoints, and locations."""
-        journey_tracker = smc_run.journey_tracker
-        journeys = journey_tracker.all_completed_journeys
+        recorder = smc_run.recorder
+        journeys = recorder.completed_journeys
 
         def find_journeys(name_prefix: str) -> list[list[str]]:
             return [
                 j for tid, j in journeys.items()
-                if journey_tracker.thread_names.get(tid, "").startswith(name_prefix)
+                if recorder.thread_names.get(tid, "").startswith(name_prefix)
             ]
 
         def device_of(location: str) -> str:
@@ -189,8 +190,8 @@ class TestSdkSmcExecution:
 
         # -- Thread instance counts --
         template_counts: Counter[str] = Counter()
-        for thread_id in journey_tracker.thread_names:
-            name = journey_tracker.thread_names[thread_id]
+        for thread_id in recorder.thread_names:
+            name = recorder.thread_names[thread_id]
             parts = name.rsplit("-", 1)
             template_counts[parts[0]] += 1
         assert template_counts["plate_1"] == 1

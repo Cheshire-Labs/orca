@@ -17,30 +17,33 @@ import asyncio
 
 import pytest
 
+from tests.recording_handler import RecordingHandler
+
 from cheshire_drivers import RecordingLiquidHandlerDriver
-from cheshire_drivers.plr import ChatterboxLiquidHandlerDriver
-from orca.runtime.run_modes import WorkflowRunMode
+from cheshire_drivers.plr import ChatterboxLiquidHandlerWithProtocolDriver
+from orca.modes.run_modes import WorkflowRunMode
 from orca.runtime.system_runtime import SystemRuntime
 from orca.workflow_models.labware_threads.executing_labware_thread import (
     ExecutingLabwareThread,
 )
 from tests.test_deck_resident_reagent_pipetting import build_pipetting_bench
 from tests.test_helpers import wait_for_paused_thread, wait_for_runtime_condition
+from tests.memory_activity import memory_runtime
 
 _TERMINAL = {"COMPLETED", "ABORTED", "STOPPED", "FAILED"}
 
 
-class _DispenseFails(RecordingLiquidHandlerDriver):
+class _DispenseFails(RecordingHandler):
     """Picks tips and aspirates for real, then dies at the dispense."""
 
     async def dispense(self, request):  # noqa: ANN001 - mirrors the driver signature
         raise RuntimeError("Simulated dispense failure")
 
 
-class _DispenseNeverReturns(RecordingLiquidHandlerDriver):
+class _DispenseNeverReturns(RecordingHandler):
     """Holds the action open so the stop lands with an action still bound."""
 
-    def __init__(self, inner: ChatterboxLiquidHandlerDriver) -> None:
+    def __init__(self, inner: ChatterboxLiquidHandlerWithProtocolDriver) -> None:
         super().__init__(inner)
         self.reached_dispense = asyncio.Event()
 
@@ -51,10 +54,10 @@ class _DispenseNeverReturns(RecordingLiquidHandlerDriver):
 
 async def _started(driver: RecordingLiquidHandlerDriver) -> tuple[SystemRuntime, str]:
     build, _ = await build_pipetting_bench(driver)
-    runtime = SystemRuntime(build.system, event_bus=build.event_bus)
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
     await runtime.start()
     record = await runtime.submit_workflow(
-        "pipetting_wf", mode=WorkflowRunMode.PURE_SIM,
+        "pipetting_wf", mode=WorkflowRunMode.CHECK_RUN,
     )
     return runtime, record.id
 
@@ -71,7 +74,7 @@ def _owner(runtime: SystemRuntime, execution_id: str) -> ExecutingLabwareThread:
 @pytest.mark.slow
 @pytest.mark.asyncio
 async def test_a_stop_ends_a_thread_parked_on_a_failed_action() -> None:
-    driver = _DispenseFails(ChatterboxLiquidHandlerDriver(num_channels=8))
+    driver = _DispenseFails(ChatterboxLiquidHandlerWithProtocolDriver(num_channels=8))
     runtime, execution_id = await _started(driver)
     try:
         await wait_for_paused_thread(runtime, execution_id, timeout=30.0)
@@ -102,7 +105,7 @@ async def test_a_stop_mid_action_leaves_the_runtime_answering() -> None:
     back to this coroutine, so the read below is what proves the runtime is
     still running at all.
     """
-    driver = _DispenseNeverReturns(ChatterboxLiquidHandlerDriver(num_channels=8))
+    driver = _DispenseNeverReturns(ChatterboxLiquidHandlerWithProtocolDriver(num_channels=8))
     runtime, execution_id = await _started(driver)
     try:
         await asyncio.wait_for(driver.reached_dispense.wait(), timeout=30.0)

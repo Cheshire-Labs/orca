@@ -29,11 +29,14 @@ from enum import Enum
 
 
 class OverflowAction(str, Enum):
-    """Selects which built-in overflow strategy applies when capacity is reached."""
+    """What the next contributor gets once a receiver is full or used up.
+
+    NEW: a new receiver, started as soon as the full one stops taking contributions; the two overlap.
+    REJECT: while the full receiver still runs, the contributor pauses for the operator.
+    """
 
     NEW = "NEW"
     REJECT = "REJECT"
-    RECOVERABLE_REJECT = "RECOVERABLE_REJECT"
 
 
 @dataclass(frozen=True)
@@ -62,52 +65,8 @@ class CapacityPolicy:
 
 
 class CapacityExceededError(RuntimeError):
-    """Raised by RejectStrategy when a REJECT-policy slot is full.
+    """A contribution reached a REJECT slot that is full. The contributor pauses for the operator.
 
-    User-visible behavior:
-    - Raised SYNCHRONOUSLY from the spawn callback running inside a thread's
-      action loop (_auto_spawn_for_action -> callback -> strategy.on_overflow).
-    - Propagates up through _run_method_loop to asyncio.gather in
-      ExecutingWorkflow.start. The originating thread's status becomes
-      ERRORED via the existing error-handling path.
-    - The workflow's overall status becomes FAILED, same outcome as any
-      uncaught exception in a thread today.
-    - Exposed via orca.CapacityExceededError so user code wrapping
-      runtime.run() can catch it explicitly.
-
-    For the recoverable variant (operator decision instead of workflow
-    failure), see RecoverableCapacityExceededError below.
+    RETRY runs the spawn again; it succeeds once capacity frees. ABORT_THREAD ends only the contributor.
+    The action-level verbs do not apply: the spawn runs before the action is resolved.
     """
-
-    pass
-
-
-class RecoverableCapacityExceededError(CapacityExceededError):
-    """Raised by RecoverableRejectStrategy to pause the contributor for operator
-    decision instead of failing the workflow.
-
-    Distinguished from the base CapacityExceededError by the action-loop's
-    spawn-callback wrapper, which catches this variant and routes through
-    the thread's _pause_for_error path. The contributor's status becomes
-    PAUSED; operator decisions accepted at this pause site:
-    - RecoveryDecision.RETRY: re-runs the spawn callback. Succeeds if state
-      changed in the interim (e.g., the active receiver completed, slot.close()
-      was called and a fresh receiver is ready, capacity was raised).
-    - RecoveryDecision.ABORT_THREAD: terminates the contributor thread.
-
-    Every action-level decision is unsupported here: the spawn callback fires
-    before action resolution, so ExecutingMethod has no `_current_action` to
-    recover. CONTINUE / ABORT_ACTION / ABORT_METHOD are warned about and the
-    contributor re-pauses for a decision that applies. CONTINUE additionally
-    never reaches this loop for a thread parked here alone, because
-    `resume_with_decision` refuses it without a bound action; it arrives only
-    when the thread's SHARED group is separately action-paused. Future
-    enhancement: skip-spawn semantics that advance the method's lane without
-    invoking handle_recovery.
-
-    IS-A CapacityExceededError so any code catching the base class still
-    observes the recoverable variant (defensive backstop if the recovery
-    wrapper is ever bypassed).
-    """
-
-    pass

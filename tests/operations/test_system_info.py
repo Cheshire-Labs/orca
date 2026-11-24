@@ -2,32 +2,34 @@
 
 Unit tests mock `ISystemRuntime` and exercise `run()` directly. The
 integration tests go through the daemon's binder + FastAPI router and
-verify the wire shape on `/operations/system-info`.
+verify the wire shape on `/system`.
 """
 
+from orca.modes.run_modes import OUT_OF_RUN_BASE
+from orca.runtime.startup import build_device_gateway
 from collections.abc import AsyncIterator
 
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from orca.daemon.app import create_app
-from orca.operations._protocol import OperationError, OperationErrorCode
+from orca.daemon.app import InjectedSystem, create_app
+from orca.operations.protocol import OperationError
 from orca.operations.system import (
     GetSystemInfoOperation,
     GetSystemInfoRequest,
 )
 from orca.runtime.facades.registry import IRegistryFacade, RegistryFacade
-from orca.runtime.registries.null_gateway_registry import NullDeviceConnectionSource
-from orca.runtime.system_runtime import SystemRuntime
+from tests.no_devices import NullDeviceConnectionSource
 
 from tests.test_system_runtime import _build_simple_system
+from orca.runtime.server_events import ServerEvents
 
 
 @pytest_asyncio.fixture
-async def loaded_client(runtime: SystemRuntime) -> AsyncIterator[AsyncClient]:
+async def loaded_client(injected: InjectedSystem) -> AsyncIterator[AsyncClient]:
     """Daemon with the daemon-conftest fixture system pre-loaded."""
-    app = create_app(initial_system_runtime=runtime)
+    app = create_app(injected=injected)
     async with AsyncClient(
         transport=ASGITransport(app=app),
         base_url="http://daemon.test",
@@ -38,7 +40,7 @@ async def loaded_client(runtime: SystemRuntime) -> AsyncIterator[AsyncClient]:
 @pytest_asyncio.fixture
 async def empty_client() -> AsyncIterator[AsyncClient]:
     """Daemon with no system loaded."""
-    app = create_app(initial_system_runtime=None)
+    app = create_app()
     async with AsyncClient(
         transport=ASGITransport(app=app),
         base_url="http://daemon.test",
@@ -71,6 +73,8 @@ async def test_get_system_info_computes_fields_from_real_system() -> None:
         list_reservations_fn=lambda _execution_id: [],
         cancel_reservation_fn=lambda _execution_id, _reservation_id: None,
         connections=NullDeviceConnectionSource(),
+        faults=build_device_gateway(ServerEvents(), None).controller,
+        base_mode=lambda: OUT_OF_RUN_BASE,
     )
     op = GetSystemInfoOperation(runtime=_RuntimeWithRealRegistry(facade))
 
@@ -78,6 +82,10 @@ async def test_get_system_info_computes_fields_from_real_system() -> None:
 
     assert resp.name == system.name == "test_system"
     assert resp.description == system.description
+    assert resp.device_count == len(system.devices)
+    assert resp.transporter_count == len(facade.list_transporters())
+    assert resp.workflow_count == len(facade.list_workflow_templates())
+    assert resp.method_count == len(facade.list_method_templates())
     assert resp.version == system.version
 
 
@@ -93,7 +101,7 @@ async def test_get_system_info_runtime_with_broken_registry_raises_unavailable()
     op = GetSystemInfoOperation(runtime=_BrokenRuntime())
     with pytest.raises(OperationError) as excinfo:
         await op.run(GetSystemInfoRequest())
-    assert excinfo.value.code == OperationErrorCode.SERVICE_UNAVAILABLE
+    assert excinfo.value.http_status == 503
 
 
 # -- Integration tests through the daemon binder -------------------
@@ -104,12 +112,15 @@ async def test_daemon_rest_system_info_returns_200_when_loaded(
     loaded_client: AsyncClient,
 ) -> None:
     """The binder wires Operation -> JSON response."""
-    resp = await loaded_client.get("/operations/system-info")
+    resp = await loaded_client.get("/api/system")
     assert resp.status_code == 200
     body = resp.json()
     # ``is_simulating`` was retired in canon's sim-hierarchy v3.4 when
     # run-mode moved from deployment-scope to per-submission scope.
-    assert set(body.keys()) == {"name", "description", "version"}
+    assert set(body.keys()) == {
+        "name", "description", "version",
+        "device_count", "transporter_count", "workflow_count", "method_count",
+    }
     assert isinstance(body["name"], str)
 
 
@@ -118,6 +129,6 @@ async def test_daemon_rest_system_info_503_when_no_system(
     empty_client: AsyncClient,
 ) -> None:
     """No runtime loaded => OperationError.service_unavailable => HTTP 503."""
-    resp = await empty_client.get("/operations/system-info")
+    resp = await empty_client.get("/api/system")
     assert resp.status_code == 503
     assert "no system loaded" in resp.text.lower()

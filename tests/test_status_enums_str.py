@@ -207,23 +207,12 @@ def test_enum_identity_preserved() -> None:
 
 
 def test_member_count_unchanged() -> None:
-    # Lock the inventory so a future drop-or-rename surfaces here.
-    # LabwareThreadStatus 14 -> 16: added
-    # AWAITING_MANUAL_PLACE + AWAITING_MANUAL_REMOVE for the LIVE-mode
-    # operator wait paths in ManualPlaceSpawn / ManualRemoveSpawn.
-    # LabwareThreadStatus 16 -> 17: added
-    # AWAITING_ACTION_RESERVATION so the dashboard surfaces the
-    # reservation-retry wait with candidate locations populated on
-    # ``waiting_for`` instead of leaving the thread silently parked
-    # in ``RESOLVING_ACTION_LOCATION``.
-    # LabwareThreadStatus 17 -> 18: added crash-only terminal FAILED (an
-    # unhandled thread error lands terminal instead of freezing non-terminal).
+    # Lock the inventory so a dropped or added status is a deliberate change: every client lists them.
     assert len(ActionStatus) == 13
     assert len(MethodStatus) == 5
-    assert len(LabwareThreadStatus) == 18
+    assert len(LabwareThreadStatus) == 19
     assert len(WorkflowStatus) == 4
-    # RecoveryDecision 4 -> 5: added RETRY_OP (operation-level device retry;
-    # re-run only the failed device call, action body stays suspended).
+    # RecoveryDecision 4 -> 5: added the step retry (RETRY; RETRY_ACTION re-runs the action).
     # 5 -> 6: added CONTINUE (carry on to the next action after one errored,
     # recorded as operator-confirmed rather than executed).
     assert len(RecoveryDecision) == 6

@@ -3,10 +3,11 @@ import logging
 from typing import List
 from orca.events.execution_context import WorkflowExecutionContext
 from orca.system.reservation_manager.errors import IThreadIncidentDeclarer
-from orca.system.thread_manager_interface import IThreadManager
+from orca.workflow_models.thread_status_recorder import IThreadStatusRecorder
+from orca.workflow_models.labware_threads.thread_manager_interface import IThreadManager
 from orca.workflow_models.status_enums import LabwareThreadStatus
 from orca.workflow_models.labware_threads.executing_labware_thread import ExecutingLabwareThread, ExecutingThreadRegistry, IExecutingThreadRegistry
-from orca.resource_models.labware_placement import LabwarePlacer
+from orca.resource_models.command_effects import SystemCommandPipeline
 
 
 orca_logger = logging.getLogger("orca")
@@ -33,9 +34,12 @@ class ThreadManager(IThreadManager, IExecutingThreadRegistry):
         """Forward the deadlock-declarer back-reference to the wrapped registry (S3 R1.5)."""
         self._thread_registry.set_thread_incident_declarer(declarer)
 
-    def set_labware_placer(self, placer: LabwarePlacer) -> None:
+    def set_thread_status_recorder(self, recorder: IThreadStatusRecorder) -> None:
+        self._thread_registry.set_thread_status_recorder(recorder)
+
+    def set_command_pipeline(self, pipeline: SystemCommandPipeline) -> None:
         """Forward the placement chokepoint to the wrapped registry."""
-        self._thread_registry.set_labware_placer(placer)
+        self._thread_registry.set_command_pipeline(pipeline)
 
     def get_thread_by_labware(self, labware_id: str) -> ExecutingLabwareThread:
         matches = list(filter(lambda thread: thread.labware.id == labware_id, self.threads))

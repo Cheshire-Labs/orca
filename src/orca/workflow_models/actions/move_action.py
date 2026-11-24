@@ -1,24 +1,30 @@
 from abc import ABC, abstractmethod
 import asyncio
 import logging
-import time
 import uuid
 from typing import List, Protocol, Sequence
 from orca.resource_models.device_error import DeviceUnderExternalControlError
-from orca.resource_models.deck_access import clear_the_deck_for
 from orca.resource_models.external_control import device_under_external_control
 from orca.resource_models.labware import LabwareInstance
-from orca.resource_models.labware_placement import LabwarePlacer
+from orca.resource_models.command_effects import (
+    Sender,
+    SiteEvent,
+    SiteNotice,
+    SystemCommandPipeline,
+    pick_with_the_arm,
+    place_with_the_arm,
+    reach_params,
+)
 from orca.resource_models.labware_location_service import ILabwareLocationService
 from orca.state.placement import PlacementState
 from orca.resource_models.location import Location
 from orca.events.execution_context import MoveActionExecutionContext, ThreadExecutionContext
+from orca.gateway.controller.exceptions import CommandNotSavedError, MoveNotSavedError
 from orca.resource_models.transporter_base import TransporterBase
 from orca.system.reservation_manager.location_reservation import (
     LocationReservation,
     ReservationPriority,
 )
-from orca.runtime.sim_pacing import NOMINAL_PLATE_MOVE_SECONDS, current_sim_pacer
 from orca.workflow_models.action_state_machine import ActionEvent, ActionStateMachine
 from orca.workflow_models.pause_checkpoint import IPauseCheckpoint
 from orca.workflow_models.status_manager import StatusManager
@@ -138,7 +144,7 @@ class ExecutableMoveAction(IMoveAction):
                  context: ThreadExecutionContext,
                  action: IMoveAction,
                  labware_location_service: ILabwareLocationService,
-                 labware_placer: LabwarePlacer,
+                 command_pipeline: SystemCommandPipeline,
                  slot_holder: IHoldsTheSourceSlot,
                  pause_checkpoint: IPauseCheckpoint | None = None) -> None:
         super().__init__()
@@ -148,14 +154,14 @@ class ExecutableMoveAction(IMoveAction):
         self._slot_holder = slot_holder
         self._pause_checkpoint = pause_checkpoint
         self._labware_location_service = labware_location_service
-        self._labware_placer = labware_placer
+        self._pipeline = command_pipeline
         self._state_machine = ActionStateMachine()
         self._publish_status(self._state_machine.current)
         # CREATED is transitional for moves: the wrapper immediately fires
         # MOVE_RESERVATION_AWAITED so AWAITING_MOVE_RESERVATION is the steady
         # state observers see. This mirrors the pre-2A property-setter
         # double-write at construction. Don't "simplify" the two-call init
-        # into a single publish — the dual events are part of the wire shape.
+        # into a single publish -- the dual events are part of the wire shape.
         self._fire(ActionEvent.MOVE_RESERVATION_AWAITED)
 
     @property
@@ -180,6 +186,7 @@ class ExecutableMoveAction(IMoveAction):
                                  thread_id=self._context.thread_id,
                                  thread_name=self._context.thread_name,
                                  template_name=self._context.template_name,
+                                 group_id=self._context.group_id,
                                  action_id=id,
                                  action_status=status.name.upper(),
                              )
@@ -188,9 +195,8 @@ class ExecutableMoveAction(IMoveAction):
     def _jaws_hold_our_labware(self) -> bool:
         """True when this move's plate is already in the mover's jaws.
 
-        One place to ask it. Three sites used to write it out separately, and
-        one of them drifting to "any plate at all" is what made every move
-        queued behind an in-flight one skip its wait.
+        It must be this move's plate, not any plate: "any plate at all" makes
+        every move queued behind an in-flight one skip its wait.
         """
         return self._action.transporter.labware == self._action.labware
 
@@ -260,44 +266,21 @@ class ExecutableMoveAction(IMoveAction):
                     await self._finish_telling_the_target()
             else:
                 source_hold = await self._hold_the_slot_the_plate_is_still_in()
-                started_at = time.monotonic()
                 try:
                     await self._actuate()
                 finally:
                     if source_hold is not None:
                         source_hold.release_reservation()
-                await self._pace_the_move(started_at)
 
         if self._action.release_reservation_on_place:
             self._action.reservation.release_reservation()
-
-    async def _pace_the_move(self, started_at: float) -> None:
-        """A simulated move lasts a plate move's real time at the run's scale.
-
-        Only a simulated thread seeds a pacer; a LIVE thread returns at once.
-        A pause ends the wait and the move completes: a thread has no
-        checkpoint to hold at while MOVING, and it pauses at the boundary
-        just after.
-        """
-        pacer = current_sim_pacer.get()
-        if pacer is None:
-            return
-        pause_requested = (
-            None if self._pause_checkpoint is None
-            else self._pause_checkpoint.pause_requested
-        )
-        await pacer.pace(
-            pacer.remaining_after(NOMINAL_PLATE_MOVE_SECONDS, started_at),
-            pause_requested=pause_requested,
-        )
 
     async def _finish_telling_the_target(self) -> None:
         """Re-make the arrival call this move already owes the target.
 
         The arm let go and then the call saying so raised. Nothing is left to
-        carry, so the whole actuation is skipped, and it used to take this call
-        with it: the one call a retry needed to re-make was the one call it
-        would not.
+        carry, so the whole actuation is skipped; this call is re-made on its own,
+        because a retry still owes it.
 
         Only ever for a plate THIS move set down. A plate an operator carried
         was never handed over by an arm, and the hooks behind this call open
@@ -305,9 +288,9 @@ class ExecutableMoveAction(IMoveAction):
         moves hardware for an arrival that already happened.
         """
         self._refuse_a_hand_in_the_machine(source_too=False)
-        await self._action.target.notify_placed(
-            self._action.labware, self._action.transporter,
-        )
+        await self._pipeline.tell_the_site_again(SiteNotice(
+            self._action.target, self._action.labware, self._action.transporter, SiteEvent.PLACED,
+        ))
         self._action.set_target_still_to_be_told(False)
 
     async def _make_room_at_both_ends(self) -> None:
@@ -318,9 +301,10 @@ class ExecutableMoveAction(IMoveAction):
         reservation says the site is not claimed; it does not say the device
         behind it will let an arm in.
 
-        The gates inside ``_actuate`` stay. A device ready now can be busy again
-        by the time the arm gets there, and those are the ones the actuation
-        depends on. This one only decides whether to commit.
+        The pick and the place still take their own reach-in lease. A device
+        ready now can be busy again by the time the arm gets there, and those
+        leases are what the actuation depends on. This one only decides whether
+        to commit.
 
         Skipped when there is nothing left to commit to: this move's plate is
         already in the jaws, so the retry owes a place rather than a wait, or
@@ -337,8 +321,8 @@ class ExecutableMoveAction(IMoveAction):
         if self._jaws_hold_our_labware() or self._move_is_already_done():
             return
         self._refuse_before_anything_moves(source_too=True)
-        await clear_the_deck_for(self._action.source, mover)
-        await clear_the_deck_for(self._action.target, mover)
+        await mover.make_room_at(self._action.source)
+        await mover.make_room_at(self._action.target)
 
     def _refuse_before_anything_moves(self, *, source_too: bool) -> None:
         """The three refusals that must land before an arm or a gantry moves.
@@ -391,95 +375,54 @@ class ExecutableMoveAction(IMoveAction):
         )
 
     async def _actuate(self) -> None:
-        """Carry the labware to the target. Runs under the mover's lock."""
+        """Carry the labware to the target. Runs under the mover's lock.
+
+        The pick and the place each go through the pipeline, which saves the command, then where the plate is, then
+        tells the site: the same records an operator's pick and place leave.
+        """
         # If the transporter already holds our labware (from a previous
         # failed attempt), skip pick and go straight to place.
         already_picked = self._jaws_hold_our_labware()
+        mover = self._action.transporter
+        if already_picked and self._action.target_still_to_be_told:
+            # This move's place already ran and the arm let go, so the jaws are empty whatever the record says.
+            raise MoveNotSavedError(
+                f"{mover.name} already set {self._action.labware.name} down at "
+                f"{self._action.target.position_id}, but the record still has it in the jaws. Say where it is, "
+                f"then retry; the place is not sent again."
+            )
         self._refuse_before_anything_moves(source_too=not already_picked)
 
-        mover = self._action.transporter
-        if already_picked:
-            await self._place_at_target(mover)
-        else:
+        if not already_picked:
             self._fire(ActionEvent.MOVE_PREPARING)
-            # Gated before the fingers enter: a handler mid-transfer
-            # refuses to move off its deck and this waits for it.
-            await clear_the_deck_for(self._action.source, mover)
             await self._action.source.prepare_for_pick(self._action.labware, mover)
             await self._action.target.prepare_for_place(self._action.labware, mover)
 
             self._fire(ActionEvent.MOVE_PICKING)
-            await mover.pick(self._action.source)
-            # Before notify_picked, which is a device call that can fail: the
-            # plate is in the jaws the instant pick returns.
-            await self._record_picked_up(mover)
             try:
-                await self._action.source.notify_picked(self._action.labware, mover)
-                await self._place_at_target(mover)
-            except Exception:
-                await self._undo_a_pick_that_moved_nothing(mover)
-                raise
-        await self._record_set_down(mover)
-        self._action.set_target_still_to_be_told(True)
-        await self._action.target.notify_placed(self._action.labware, mover)
-        self._action.set_target_still_to_be_told(False)
-
-    async def _place_at_target(self, mover: TransporterBase) -> None:
-        """Everything up to and including the actuation that sets it down.
-
-        Kept apart from the records that follow so the rollback around it can
-        cover the actuation and nothing after: once the place has returned the
-        plate is at the target, and putting the record back at the source would
-        be the lie in the other direction.
-        """
-        await clear_the_deck_for(self._action.target, mover)
+                await pick_with_the_arm(
+                    self._pipeline, mover, self._action.source, self._action.labware,
+                    self._sender(mover, "pick_at_coords", self._action.source),
+                )
+            except CommandNotSavedError as not_saved:
+                raise MoveNotSavedError(str(not_saved)) from not_saved
         self._fire(ActionEvent.MOVE_PLACING)
-        await mover.place(self._action.target)
-
-    async def _undo_a_pick_that_moved_nothing(self, mover: TransporterBase) -> None:
-        """Put the labware back when the mover never lifted it.
-
-        A mover whose driver carries the plate in one call has touched nothing
-        until that call returns, so a refused place leaves the plate on its
-        slot. Keeping the jaws record would strand a hold for a pick that never
-        happened: the next plate finds the jaws full, and a deck reconcile has
-        a labware at no site to project.
-
-        A raise after that call already moved the plate is not distinguishable
-        from a refusal, here or anywhere else. The source is the better guess of
-        the two: the driver reports the same thing as its own interrupted move,
-        and a plate this mover left held is one its jaws cannot be trusted to
-        still have. Only an action that found the plate ALREADY in the jaws
-        leaves that record alone, because it did not put it there.
-        """
-        if mover.pick_moves_the_plate:
-            return
+        # A plate this action found already in the jaws was not put there by it, so a failed place leaves it there.
+        picked_from = None if already_picked else self._action.source
         try:
-            await self._labware_placer.put_back(
-                self._action.labware, self._action.source, mover.gripper_location,
+            await place_with_the_arm(
+                self._pipeline, mover, self._action.target, self._action.labware, picked_from,
+                self._sender(mover, "place_at_coords", self._action.target),
             )
-        except Exception:
-            # The source refilled while the move was in flight, which the
-            # handoff site does on every pipelined run. There is nowhere to put
-            # the plate back, so the hold stands and the caller's own error is
-            # the one the operator needs.
-            orca_logger.exception(
-                "%s: could not put %s back on %s after a failed move; it stays "
-                "recorded in the jaws and an operator has to say where it is.",
-                mover.name, self._action.labware.name,
-                self._action.source.position_id,
-            )
+        except CommandNotSavedError as not_saved:
+            # The arm let go at the target; the record of it, or the target's own notice, is still owed.
+            self._action.set_target_still_to_be_told(True)
+            raise MoveNotSavedError(str(not_saved)) from not_saved
 
-    async def _record_picked_up(self, mover: TransporterBase) -> None:
-        """The move says what happened; the chokepoint records it. The mover
-        used to keep an answer of its own, which is what this removes."""
-        await self._labware_placer.picked_up(
-            self._action.labware, mover.gripper_location,
-        )
-
-    async def _record_set_down(self, mover: TransporterBase) -> None:
-        await self._labware_placer.set_down(
-            self._action.labware, self._action.target, mover.gripper_location,
+    def _sender(self, mover: TransporterBase, command: str, site: Location) -> Sender:
+        return Sender(
+            record=self._pipeline.record_by_name(mover.name, command, reach_params(site.position_id)), checks=(),
+            execution_id=self._context.execution_id, events=None,
         )
 
     async def execute(self) -> None:
@@ -682,7 +625,7 @@ class MoveAction(IMoveAction):
         status_manager: StatusManager,
         context: ThreadExecutionContext,
         labware_location_service: ILabwareLocationService,
-        labware_placer: LabwarePlacer,
+        command_pipeline: SystemCommandPipeline,
         slot_holder: IHoldsTheSourceSlot,
         pause_checkpoint: IPauseCheckpoint | None = None,
     ) -> ExecutableMoveAction:
@@ -690,6 +633,6 @@ class MoveAction(IMoveAction):
         MoveAction (data) -> ExecutableMoveAction (execution-context bound).
         No AssignedMoveAction stage -- moves carry no labware-assignment slots."""
         return ExecutableMoveAction(
-            status_manager, context, self, labware_location_service, labware_placer,
+            status_manager, context, self, labware_location_service, command_pipeline,
             slot_holder, pause_checkpoint=pause_checkpoint,
         )

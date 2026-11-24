@@ -7,10 +7,9 @@ Each test targets one branch:
 - Live PID: detect returns the info.
 - Dead PID: detect deletes the file and returns None (stale cleanup).
 - Atomic write: no partial .tmp artifact left behind on a successful write.
-- update_spec: mutates in place; no-op when file absent.
 
 These are not tautologies. Each exercises a documented behavior of
-`detect_live_daemon`, `write_pid_file`, `read_pid_file`, `update_spec`.
+`detect_live_daemon`, `write_pid_file`, `read_pid_file`.
 """
 
 import json

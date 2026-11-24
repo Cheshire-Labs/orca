@@ -1,7 +1,10 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Sequence
+from contextlib import AbstractAsyncContextManager
+from typing import Dict, List, Sequence
 
-from cheshire_drivers.labware_interfaces import IContainer, IPlate, ITipRack, ITipSpot, ITrough, IWell
+from pydantic import JsonValue
+
+from cheshire_drivers.labware_interfaces import IContainer, IPlate, ITipRack, ITipSpot, ITrough
 from cheshire_drivers.liquid_handler_models import (
     LabwareStateResponse,
     ReconcileHardwareStateResponse,
@@ -30,12 +33,6 @@ class ITrackedDevice(ABC):
         ...
 
 
-class IGenericExecutable(ABC):
-    @abstractmethod
-    async def execute(self, command: str, options: Dict[str, Any]) -> None:
-        """Execute a command with the driver."""
-        ...
-
 class ITempSettable(ABC):
     @abstractmethod
     async def set_temperature(self, temperature: float) -> None:
@@ -59,7 +56,7 @@ class ISealer(ABC):
 
 class IProtocolRunner(ABC):
     @abstractmethod
-    async def run_protocol(self, protocol_filepath: str, params: Dict[str, Any]) -> None:
+    async def run_protocol(self, protocol_filepath: str, params: Dict[str, JsonValue]) -> None:
         """Execute a protocol run command."""
         ...    
     
@@ -198,7 +195,7 @@ class ILiquidHandler(ITrackedDevice, ABC):
 
     Used with ctx.device(ILiquidHandler) in @orca.action for typed
     access to aspirate/dispense/tip management. Devices that execute a
-    vendor protocol file (e.g. Hamilton Venus, Tecan EVOware) should
+    vendor protocol file should
     implement IProtocolRunner directly instead; a LiquidHandler device
     can implement both when a driver supports both modes.
 
@@ -337,6 +334,15 @@ class IPlateSource(ABC):
     command. See ``Storage.dispense`` for the canonical wrapper shape:
     ``await self.driver.dispense()``.
     """
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """The source's name, used in what a failed dispense tells the operator."""
+
+    @abstractmethod
+    def dispensing(self) -> AbstractAsyncContextManager[None]:
+        """Held across one dispense and its record, so two dispenses never meet at the output."""
 
     @abstractmethod
     async def dispense(self) -> None:

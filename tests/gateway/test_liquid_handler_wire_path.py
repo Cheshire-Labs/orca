@@ -28,16 +28,16 @@ from cheshire_drivers.liquid_handler_models import (
     DiscardStrandedTipsRequest,
     ReconcileHardwareStateRequest,
 )
-from cheshire_drivers.sims import SimLiquidHandlerWithProtocolDriver
 
 from orca.devices.devices import LiquidHandler, LiquidHandlerProtocol
 from cheshire_drivers.pipetting import MixParams, PipettingProfile
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.deck_layout_service import seeded_deck_layout_service
+from orca.modes.run_modes import WorkflowRunMode
 
 from orca.gateway.controller.controller import DeviceController
 from orca.gateway.remote_device_factory import RemoteDeviceFactory
 from orca.gateway.remote_drivers import RemoteLiquidHandlerDriver
+from tests.setup_package import deck_layout_file, with_deck_layouts
+from tests.gateway.mode_doubles import fixed_mode
 
 
 @dataclass
@@ -63,7 +63,6 @@ class _FakeController:
         params: Optional[Dict[str, Any]] = None,
         timeout_seconds: Optional[float] = None,
         effective_mode: WorkflowRunMode = WorkflowRunMode.LIVE,
-        resend_on_reconnect: bool = True,
         execution_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         self.calls.append(_RecordedCall(
@@ -102,8 +101,7 @@ def _make_factory() -> tuple[RemoteDeviceFactory, _FakeController]:
     controller = _FakeController()
     factory = RemoteDeviceFactory(
         controller=cast(DeviceController, controller),
-        default_timeout=30.0,
-        mode_resolver=lambda _name: WorkflowRunMode.LIVE,
+        mode_resolver=fixed_mode(WorkflowRunMode.LIVE),
     )
     return factory, controller
 
@@ -137,17 +135,17 @@ class TestDeckLayoutOverWire:
         device.resolve_deck_config_async() reads from the bound store, then
         device.driver.configure_deck(config) goes over the wire via
         RemoteLiquidHandlerDriver. Pins the resolve+forward pair."""
-        from orca.runtime.run_modes import current_run_mode
+        from orca.modes.run_modes import current_run_mode
         factory, controller = _make_factory()
-        store = seeded_deck_layout_service()
+        store = deck_layout_file()
         await store.add("default", _layout())
 
-        from orca.runtime.device_factory_context import use_device_factory
+        from orca.driver_management.device_factory_context import use_device_factory
         with use_device_factory(factory):
-            device = LiquidHandler(
+            device = with_deck_layouts(LiquidHandler(
                 "lh_1",
-                deck_layout_store=store, deck_layout="default",
-            )
+                deck_layout="default",
+            ), store)
 
         # SimulationManager.driver reads current_run_mode at dispatch
         # time (sim-hierarchy v3.4). Production seeds via lifecycle +
@@ -179,7 +177,7 @@ class TestDeckLayoutOverWire:
         None. Caller (orca-core's configure_liquid_handler_decks) skips the
         wire call entirely; nothing fires."""
         factory, controller = _make_factory()
-        from orca.runtime.device_factory_context import use_device_factory
+        from orca.driver_management.device_factory_context import use_device_factory
         with use_device_factory(factory):
             device = LiquidHandler("lh_1")
 
@@ -197,18 +195,13 @@ class TestAtomicOpsOverWire:
         with the AspirateRequest fields flat on params. Pins the full
         bridge -> driver -> _send chain that customer @orca.action code
         triggers via ctx.device(ILiquidHandler).aspirate(...)."""
-        from orca.runtime.run_modes import current_run_mode
+        from orca.modes.run_modes import current_run_mode
         factory, controller = _make_factory()
-        from orca.runtime.device_factory_context import use_device_factory
+        from orca.driver_management.device_factory_context import use_device_factory
         with use_device_factory(factory):
             device = LiquidHandlerProtocol("lh_1")
-        # Verify the live driver is the wire-forwarding one. No profile card
-        # is bound here, so the LH defaults to the plr-only LIVE profile; the
-        # sim slot is always the protocol-capable composite.
-        assert isinstance(device._sim_manager._live_driver, RemoteLiquidHandlerDriver)
-        assert isinstance(
-            device._sim_manager._sim_driver, SimLiquidHandlerWithProtocolDriver
-        )
+        # No profile card is bound here, so the LH defaults to the plr-only profile.
+        assert isinstance(device.driver, RemoteLiquidHandlerDriver)
 
         wells = [
             _StubWell(parent_name="plate_a", identifier="A1"),
@@ -240,9 +233,9 @@ class TestAtomicOpsOverWire:
         """An author's profiles are folded into one record before the wire, so the
         pipetting height is settable from @orca.action code and the driver never
         chooses between layers."""
-        from orca.runtime.run_modes import current_run_mode
+        from orca.modes.run_modes import current_run_mode
         factory, controller = _make_factory()
-        from orca.runtime.device_factory_context import use_device_factory
+        from orca.driver_management.device_factory_context import use_device_factory
         with use_device_factory(factory):
             device = LiquidHandlerProtocol("lh_1")
 
@@ -268,9 +261,9 @@ class TestAtomicOpsOverWire:
         """A mix names the rate its own cycles run at, which is narrower than
         anything the liquid or the step said. Drop that and every mix quietly
         runs at whatever the layers decided instead."""
-        from orca.runtime.run_modes import current_run_mode
+        from orca.modes.run_modes import current_run_mode
         factory, controller = _make_factory()
-        from orca.runtime.device_factory_context import use_device_factory
+        from orca.driver_management.device_factory_context import use_device_factory
         with use_device_factory(factory):
             device = LiquidHandlerProtocol("lh_1")
 
@@ -307,7 +300,7 @@ class TestHeadConfigurationOverWire:
         driver = RemoteLiquidHandlerDriver(
             name="lh_1",
             controller=cast(DeviceController, controller),
-            mode_resolver=lambda _name: WorkflowRunMode.LIVE,
+            mode_resolver=fixed_mode(WorkflowRunMode.LIVE),
         )
 
         result = await driver.get_head_configuration(GetHeadConfigurationRequest())
@@ -319,7 +312,7 @@ class TestHeadConfigurationOverWire:
 
 class TestHardwareReconcileOverWire:
     """The reconcile pair is on an automatic recovery path (the engine fires it
-    before a RETRY_OP), so the payload and the strict response parse are pinned
+    before a RETRY of a device call), so the payload and the strict response parse are pinned
     the same as any other atomic op."""
 
     @pytest.mark.asyncio
@@ -339,7 +332,7 @@ class TestHardwareReconcileOverWire:
         driver = RemoteLiquidHandlerDriver(
             name="lh_1",
             controller=cast(DeviceController, controller),
-            mode_resolver=lambda _name: WorkflowRunMode.LIVE,
+            mode_resolver=fixed_mode(WorkflowRunMode.LIVE),
         )
 
         result = await driver.reconcile_hardware_state(ReconcileHardwareStateRequest())
@@ -365,7 +358,7 @@ class TestHardwareReconcileOverWire:
         driver = RemoteLiquidHandlerDriver(
             name="lh_1",
             controller=cast(DeviceController, controller),
-            mode_resolver=lambda _name: WorkflowRunMode.LIVE,
+            mode_resolver=fixed_mode(WorkflowRunMode.LIVE),
         )
 
         result = await driver.discard_stranded_tips(DiscardStrandedTipsRequest())
@@ -383,7 +376,7 @@ class TestHardwareReconcileOverWire:
         driver = RemoteLiquidHandlerDriver(
             name="lh_1",
             controller=cast(DeviceController, controller),
-            mode_resolver=lambda _name: WorkflowRunMode.LIVE,
+            mode_resolver=fixed_mode(WorkflowRunMode.LIVE),
         )
 
         with pytest.raises(ValidationError):

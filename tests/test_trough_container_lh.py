@@ -27,6 +27,7 @@ from cheshire_drivers.interfaces import ILiquidHandlerDriver
 from cheshire_drivers.pipetting import MixParams
 from cheshire_drivers.sims import SimLiquidHandlerDriver
 
+from tests.real_device_path import connected, the_real_device_path
 from orca.devices.devices import LiquidHandlerProtocol
 from orca.plugins.liquid_handler_interpreter import LiquidHandlerInterpreter
 from orca.resource_models.labware import TroughInstance
@@ -40,34 +41,22 @@ from orca.state.records import (
     TrackingRecord,
     TrackingSource,
 )
-from orca.runtime.device_factory_context import use_device_factory
-from orca.runtime.device_factory_protocol import DriverPairElement
-from orca.runtime.sim_labware import (
+from orca.resource_models.sim_labware import (
     LABWARE_TYPE_MAP,
     SimTrough,
     SimTroughTemplate,
     SimWell,
 )
+from tests.memory_activity import memory_ops_store
 
 
 _OK = LabwareStateResponse(success=True)
 
 
-class _LhInjectFactory:
-    """Inject a specific LH driver via the no-driver SDK ctor (see test_liquid_handler_device)."""
-
-    def __init__(self, driver: ILiquidHandlerDriver) -> None:
-        self._d = driver
-
-    def build_drivers(
-        self, device_type: str, name: str, *, deck_modeling: bool = False,
-    ) -> tuple[DriverPairElement, DriverPairElement]:
-        return self._d, self._d
-
-
-def _make_lh(name: str, driver: ILiquidHandlerDriver) -> LiquidHandlerProtocol:
-    with use_device_factory(_LhInjectFactory(driver)):
-        return LiquidHandlerProtocol(name)
+async def _make_lh(name: str, driver: ILiquidHandlerDriver) -> LiquidHandlerProtocol:
+    """A LiquidHandlerProtocol whose commands the in-process orca-client runs on `driver`."""
+    the_real_device_path().simulate_with(name, driver)
+    return await connected(LiquidHandlerProtocol(name))
 
 
 class _RecordingDriver(SimLiquidHandlerDriver):
@@ -107,7 +96,7 @@ class TestTroughBridgeWireShape:
     @pytest.mark.asyncio
     async def test_aspirate_single_trough_targets_one_pool(self) -> None:
         driver = _RecordingDriver()
-        lh = _make_lh("lh", driver)
+        lh = await _make_lh("lh", driver)
         await lh.aspirate(SimTrough(name="reservoir"), [25.0] * 8)
         req = driver.aspirate_request
         assert req is not None
@@ -120,7 +109,7 @@ class TestTroughBridgeWireShape:
     @pytest.mark.asyncio
     async def test_dispense_single_trough_targets_one_pool(self) -> None:
         driver = _RecordingDriver()
-        lh = _make_lh("lh", driver)
+        lh = await _make_lh("lh", driver)
         await lh.dispense(SimTrough(name="reservoir"), [25.0] * 8)
         req = driver.dispense_request
         assert req is not None
@@ -135,14 +124,14 @@ class TestTroughBridgeWireShape:
         # A single itemized well must be a list; only a single-pool container
         # broadcasts. A forgotten list must not silently fan one well across channels.
         driver = _RecordingDriver()
-        lh = _make_lh("lh", driver)
+        lh = await _make_lh("lh", driver)
         with pytest.raises(TypeError, match="must be passed in a list"):
             await lh.aspirate(SimWell(parent_name="plate", identifier="A1"), [25.0])
 
     @pytest.mark.asyncio
     async def test_mix_single_trough_no_positions_uses_channels(self) -> None:
         driver = _RecordingDriver()
-        lh = _make_lh("lh", driver)
+        lh = await _make_lh("lh", driver)
         await lh.mix(
             SimTrough(name="reservoir"),
             MixParams(volume=50.0, repetitions=3, flow_rate=100.0),
@@ -200,7 +189,7 @@ class TestTroughLedgerSinglePool:
 
     @pytest.mark.asyncio
     async def test_aspirate_then_dispense_nets_to_seed(self) -> None:
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         await history.append_initial_state(
             "reservoir", InitialStateDetails(labware="reservoir", well_volumes={"A1": 1000.0}),
         )
@@ -272,7 +261,7 @@ class TestTroughPartialFailureAttribution:
 
     @pytest.mark.asyncio
     async def test_pool_drains_only_the_succeeded_channels(self) -> None:
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         await history.append_initial_state(
             "reservoir", InitialStateDetails(labware="reservoir", well_volumes={"A1": 1000.0}),
         )
@@ -310,7 +299,7 @@ class TestTrough96HeadLedger:
 
     @pytest.mark.asyncio
     async def test_aspirate96_drains_pool_by_full_head(self) -> None:
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         await history.append_initial_state(
             "reservoir", InitialStateDetails(labware="reservoir", well_volumes={"A1": 100_000.0}, single_pool=True),
         )
@@ -327,7 +316,7 @@ class TestTrough96HeadLedger:
 
     @pytest.mark.asyncio
     async def test_dispense96_credits_pool_by_full_head(self) -> None:
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         await history.append_initial_state(
             "reservoir", InitialStateDetails(labware="reservoir", well_volumes={"A1": 0.0}, single_pool=True),
         )

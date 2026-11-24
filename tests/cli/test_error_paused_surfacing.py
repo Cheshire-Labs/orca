@@ -1,7 +1,7 @@
 """CLI surfacing of error-paused threads.
 
 A default-PAUSE action failure parks the thread and leaves the execution
-in ACCEPTING. The error is on `ExecutionDetailDTO.threads[].last_error`,
+in ACCEPTING. The error is on `GetExecutionDetailResponse.threads[].last_error`,
 but the table render and `--wait` poll used to ignore it. These tests
 pin the surfacing:
 
@@ -17,33 +17,57 @@ from unittest.mock import MagicMock, patch
 import orca.cli.app  # noqa: F401  -- registers sub-apps, breaks the import cycle
 from orca.cli import execution as execution_mod
 from orca.cli import output as output_mod
-from orca.cli.control_plane import ExecutionDetailDTO, ThreadSnapshotDTO
+from orca.operations.execution_models import (
+    GetExecutionDetailResponse,
+)
+from orca.operations.thread_models import ActionSnapshotModel, MethodSnapshotModel
+from orca.operations.wire_models import ThreadSnapshotResponse
+
+
+def _thread(
+    id: str,
+    name: str,
+    status: str,
+    last_error: str | None = None,
+    pause_reason: str | None = None,
+    current_method: MethodSnapshotModel | None = None,
+) -> ThreadSnapshotResponse:
+    return ThreadSnapshotResponse(
+        id=id, name=name, status=status, current_location="",
+        current_method=current_method, completed_method_count=0,
+        last_error=last_error, pause_reason=pause_reason, completed_methods=(),
+    )
+
+
+def _method(description: str) -> MethodSnapshotModel:
+    action = ActionSnapshotModel(
+        id="a-1", command="run_target_capture", status="ERROR",
+        position_id="pad_1", resource_name="pf400", description=description,
+    )
+    return MethodSnapshotModel(
+        id="m-1", name="shake_and_read", status="PAUSED",
+        current_action=action, completed_action_count=0,
+    )
 
 
 def _detail_with_error_paused(
     description: str = "Shakes the plate for 30 minutes, then reads it.",
-) -> ExecutionDetailDTO:
-    return ExecutionDetailDTO(
+) -> GetExecutionDetailResponse:
+    return GetExecutionDetailResponse(
         id="exec-1234abcd",
         workflow_name="smc_assay",
         status="accepting",
         error=None,
         threads=[
-            ThreadSnapshotDTO(
+            _thread(
                 id="thread-aaaa1111",
                 name="plate_1_journey",
                 status="PAUSED",
                 last_error="RuntimeError: Simulated shake failure",
                 pause_reason="error",
-                current_method={
-                    "name": "shake_and_read",
-                    "current_action": {
-                        "command": "run_target_capture",
-                        "description": description,
-                    },
-                },
+                current_method=_method(description),
             ),
-            ThreadSnapshotDTO(
+            _thread(
                 id="thread-bbbb2222",
                 name="plate_2_journey",
                 status="RESOLVING_ACTION_LOCATION",
@@ -55,13 +79,13 @@ def _detail_with_error_paused(
     )
 
 
-def _detail_all_running() -> ExecutionDetailDTO:
-    return ExecutionDetailDTO(
+def _detail_all_running() -> GetExecutionDetailResponse:
+    return GetExecutionDetailResponse(
         id="exec-1234abcd",
         workflow_name="smc_assay",
         status="accepting",
         threads=[
-            ThreadSnapshotDTO(id="t1", name="j1", status="RUNNING"),
+            _thread(id="t1", name="j1", status="RUNNING"),
         ],
         total_thread_count=1,
         active_thread_count=1,
@@ -135,8 +159,7 @@ def test_run_wait_fails_fast_on_error_paused_thread() -> None:
                 profile="",
                 timeout=5.0,
                 poll=0.01,
-                run_mode="PURE_SIM",
-                confirm=False,
+                run_mode="CHECK_RUN",
             )
         except typer.Exit as exc:
             assert exc.exit_code not in (0, None), "expected non-zero exit"
@@ -148,7 +171,7 @@ def test_run_wait_fails_fast_on_error_paused_thread() -> None:
     assert "recover" in err.lower()
 
 
-def _rendered(detail: ExecutionDetailDTO) -> str:
+def _rendered(detail: GetExecutionDetailResponse) -> str:
     client = MagicMock()
     client.list_executions.return_value = [MagicMock(id="exec-1234abcd")]
     client.get_execution.return_value = detail

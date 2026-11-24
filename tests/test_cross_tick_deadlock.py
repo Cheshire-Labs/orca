@@ -30,17 +30,21 @@ from orca.system.reservation_manager.location_reservation import LocationReserva
 from orca.system.reservation_manager.reservation_manager import (
     ThreadReservationCoordinator,
 )
-from orca.system.reservation_manager.move_handler import (
+from orca.workflow_models.actions.move_handler import (
     MoveActionCollectionReservationRequest,
 )
 from orca.system.system_map import ILocationRegistry
-from orca.system.thread_registry_interface import IThreadRegistry
+from orca.system.reservation_manager.thread_registry_interface import IThreadRegistry
 from orca.workflow_models.action_context import ActionContext
 from orca.workflow_models.action_template import ActionTemplate
 from orca.workflow_models.actions.move_action import MoveAction
 from orca.workflow_models.method_context import MethodContext
 from orca.workflow_models.method_template import IMethodTemplate
 from orca.workflow_models.thread_context import ThreadContext
+from tests.memory_activity import memory_ops_store, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 
 # ---------------------------------------------------------------------------
@@ -620,18 +624,21 @@ class TestCrossTickDeadlockE2E:
             system_map=system_map,
             workflows=[workflow],
             event_bus=event_bus,
-            config=config,
+            config=config, ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+            labware_catalog=bundled_labware_catalog(),
+            labware_service=memory_labware_service(),
+            unsaved_positions=memory_unsaved_positions(),
         )
         await builder.bind_labwares()
         system = builder.get_system()
 
-        from orca.runtime.run_modes import WorkflowRunMode, current_run_mode
+        from orca.modes.run_modes import WorkflowRunMode, current_run_mode
         # Seed the per-task run-mode ContextVar so device.driver dispatch
         # resolves to the sim driver. Manual workflow-instance setup
-        # bypasses WorkflowExecutor.start() which would normally seed.
-        current_run_mode.set(WorkflowRunMode.PURE_SIM)
+        # bypasses SystemRuntime._run_workflow(), which would normally seed.
+        current_run_mode.set(WorkflowRunMode.CHECK_RUN)
         workflow_instance = await system.create_and_register_workflow_instance(
-            workflow, run_mode=WorkflowRunMode.PURE_SIM,
+            workflow, run_mode=WorkflowRunMode.CHECK_RUN,
         )
         system.add_workflow(workflow_instance)
         executing_workflow = system.get_executing_workflow(workflow_instance.id)

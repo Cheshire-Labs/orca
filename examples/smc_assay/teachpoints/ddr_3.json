@@ -1,0 +1,275 @@
+{
+  "biotek_2": {
+    "access": "default_vertical",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 1900.0,
+      "y": 200.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "bravo_384": {
+    "access": "default_vertical",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 2100.0,
+      "y": 200.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "delidder": {
+    "access": "default_vertical",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 2000.0,
+      "y": 400.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "hotel_pad_1": {
+    "access": "default_horizontal",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 2300.0,
+      "y": 200.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "hotel_pad_10": {
+    "access": "default_horizontal",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 2300.0,
+      "y": 200.0,
+      "yaw": 0.0,
+      "z": 660.0
+    },
+    "orientation": "right"
+  },
+  "hotel_pad_11": {
+    "access": "default_horizontal",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 2300.0,
+      "y": 200.0,
+      "yaw": 0.0,
+      "z": 700.0
+    },
+    "orientation": "right"
+  },
+  "hotel_pad_12": {
+    "access": "default_horizontal",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 2300.0,
+      "y": 200.0,
+      "yaw": 0.0,
+      "z": 740.0
+    },
+    "orientation": "right"
+  },
+  "hotel_pad_2": {
+    "access": "default_horizontal",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 2300.0,
+      "y": 200.0,
+      "yaw": 0.0,
+      "z": 340.0
+    },
+    "orientation": "right"
+  },
+  "hotel_pad_3": {
+    "access": "default_horizontal",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 2300.0,
+      "y": 200.0,
+      "yaw": 0.0,
+      "z": 380.0
+    },
+    "orientation": "right"
+  },
+  "hotel_pad_4": {
+    "access": "default_horizontal",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 2300.0,
+      "y": 200.0,
+      "yaw": 0.0,
+      "z": 420.0
+    },
+    "orientation": "right"
+  },
+  "hotel_pad_5": {
+    "access": "default_horizontal",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 2300.0,
+      "y": 200.0,
+      "yaw": 0.0,
+      "z": 460.0
+    },
+    "orientation": "right"
+  },
+  "hotel_pad_6": {
+    "access": "default_horizontal",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 2300.0,
+      "y": 200.0,
+      "yaw": 0.0,
+      "z": 500.0
+    },
+    "orientation": "right"
+  },
+  "hotel_pad_7": {
+    "access": "default_horizontal",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 2300.0,
+      "y": 200.0,
+      "yaw": 0.0,
+      "z": 540.0
+    },
+    "orientation": "right"
+  },
+  "hotel_pad_8": {
+    "access": "default_horizontal",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 2300.0,
+      "y": 200.0,
+      "yaw": 0.0,
+      "z": 580.0
+    },
+    "orientation": "right"
+  },
+  "hotel_pad_9": {
+    "access": "default_horizontal",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 2300.0,
+      "y": 200.0,
+      "yaw": 0.0,
+      "z": 620.0
+    },
+    "orientation": "right"
+  },
+  "pad_7": {
+    "access": "default_vertical",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 2000.0,
+      "y": 100.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "pad_8": {
+    "access": "default_vertical",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 2100.0,
+      "y": 100.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "pad_9": {
+    "access": "default_vertical",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 2200.0,
+      "y": 100.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "smc_pro": {
+    "access": "default_vertical",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 2300.0,
+      "y": 400.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "translator_2_end": {
+    "access": "default_horizontal",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 1900.0,
+      "y": 50.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "waste_2": {
+    "access": "default_vertical",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 2400.0,
+      "y": 100.0,
+      "yaw": 0.0,
+      "z": 200.0
+    },
+    "orientation": "right"
+  }
+}

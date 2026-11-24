@@ -6,7 +6,7 @@ command (move_channel_to, grip_with_force, ...) is rejected as unsupported.
 A single generic profile class cannot enumerate the many motion combinations, so
 the profile ClassVar stays the coarse plr-only / protocol / both marker (it fixes
 run_protocol behavior and is the cold-start default) while a per-instance
-`declared_interfaces`, sourced from the connection card, carries the real set.
+`declared_interfaces`, sourced from the device's setup, carries the real set.
 The topology registry reads the per-instance set; the capability gate then keeps
 motion.
 """
@@ -19,9 +19,10 @@ from orca.gateway.controller.controller import DeviceController
 from orca.gateway.registry.capabilities import validate_capability_for_device
 from orca.gateway.remote_device_factory import RemoteDeviceFactory
 from orca.gateway.remote_drivers import RemoteLiquidHandlerDriver
-from orca.runtime.device_factory_context import use_device_factory
+from orca.driver_management.device_factory_context import use_device_factory
 from orca.runtime.registries.topology_registry import SystemTopologyRegistry
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
+from tests.gateway.mode_doubles import fixed_mode
 
 
 # A Flex: pipette + gripper motion + a force-closed jaw; no protocol, no width jaw.
@@ -39,24 +40,23 @@ class _FakeController:
         return {}
 
 
-def _factory(profiles: Dict[str, frozenset[str]]) -> RemoteDeviceFactory:
+def _factory(declared: frozenset[str] | None) -> RemoteDeviceFactory:
     return RemoteDeviceFactory(
         controller=cast(DeviceController, _FakeController()),
-        default_timeout=30.0,
-        mode_resolver=lambda _name: WorkflowRunMode.LIVE,
-        profile_source=lambda name: profiles.get(name),
+        mode_resolver=fixed_mode(WorkflowRunMode.LIVE),
+        profile_source=None if declared is None else lambda _kind, _name, _deck_modeling: declared,
     )
 
 
 def _flex_device() -> LiquidHandlerProtocol:
-    with use_device_factory(_factory({"flex": FLEX})):
+    with use_device_factory(_factory(FLEX)):
         device = LiquidHandlerProtocol("flex")
     assert isinstance(device, LiquidHandlerProtocol)
     return device
 
 
 def _cold_start_device() -> LiquidHandlerProtocol:
-    with use_device_factory(_factory({})):
+    with use_device_factory(_factory(None)):
         device = LiquidHandlerProtocol("lh")
     assert isinstance(device, LiquidHandlerProtocol)
     return device
@@ -64,7 +64,7 @@ def _cold_start_device() -> LiquidHandlerProtocol:
 
 class TestRemoteDeclaresAdvertisedMotion:
     def test_live_driver_carries_advertised_set_but_keeps_profile_classvar(self) -> None:
-        live = _flex_device().live_driver
+        live = _flex_device().driver
         # A Flex has no protocol capability, so the coarse profile stays plr-only:
         # the class + its ClassVar are unchanged (the parity guard reads these).
         assert type(live) is RemoteLiquidHandlerDriver
@@ -73,7 +73,7 @@ class TestRemoteDeclaresAdvertisedMotion:
         assert live.declared_interfaces == FLEX
 
     def test_cold_start_declares_nothing(self) -> None:
-        live = _cold_start_device().live_driver
+        live = _cold_start_device().driver
         assert isinstance(live, RemoteLiquidHandlerDriver)
         assert live.declared_interfaces is None
 

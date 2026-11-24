@@ -17,13 +17,14 @@ Contract (authoritative-resolution model):
   ``wait_for_current_action`` via the slot outcome.
 """
 
+from orca.config import OrcaConfig
 import asyncio
 from collections.abc import AsyncGenerator
 
 import orca.orca as orca
 from orca.events.event_bus import EventBus
 from orca.resource_models.resource_pool import ResourcePool
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from orca.runtime.system_runtime import ExecutionState, SystemRuntime
 from orca.sdk.system import ResourceRegistry, SystemMap
 from orca.sdk.workflow import WorkflowTemplate
@@ -47,6 +48,10 @@ from tests.test_stop_cancel_and_cascade import (
     _build_join_system,
     _wait_for_shared_rendezvous,
 )
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 
 def _statuses(runtime: SystemRuntime, eid: str) -> dict[str, str]:
@@ -134,10 +139,13 @@ async def _build_two_action_join_system() -> tuple[SystemRuntime, WorkflowTempla
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=event_bus,
+        event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
-    runtime = SystemRuntime(builder.get_system(), event_bus=event_bus)
+    runtime = await memory_runtime(builder.get_system(), event_bus=event_bus)
     return runtime, workflow, device
 
 
@@ -150,7 +158,7 @@ async def test_abort_action_does_not_collapse_next_shared_action() -> None:
     next action's co-labware wait bail on every participant."""
     runtime, workflow, device = await _build_two_action_join_system()
     await runtime.start()
-    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
     try:
         await _wait_for_shared_rendezvous(runtime, record.id)
         assert device.shake_count == 1 and device.seal_count == 0
@@ -181,7 +189,7 @@ async def test_continue_resolves_the_whole_group_and_records_it_once() -> None:
 
     runtime, workflow, device = await _build_two_action_join_system()
     await runtime.start()
-    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
     try:
         await _wait_for_shared_rendezvous(runtime, record.id)
         assert device.shake_count == 1 and device.seal_count == 0
@@ -220,10 +228,10 @@ async def test_continue_resolves_the_whole_group_and_records_it_once() -> None:
         await runtime.shutdown()
 
 
-async def test_retry_op_is_accepted_from_a_contributor_of_a_shared_action() -> None:
-    """RETRY_OP applies on a shared action, and any participant may send it.
+async def test_retry_of_the_call_is_accepted_from_a_contributor_of_a_shared_action() -> None:
+    """RETRY of a failed call applies on a shared action, and any participant may send it.
 
-    The runtime gates RETRY_OP on the GROUP's op-pause rather than the calling
+    The runtime gates RETRY on the GROUP's op-pause rather than the calling
     thread's, precisely so a contributor -- which never drives the device call --
     can feed the decision. Nothing pinned that, and three surfaces now document
     it (the orca request model, a hosted deployment's knowledge base, the operator console blurb), so
@@ -231,7 +239,7 @@ async def test_retry_op_is_accepted_from_a_contributor_of_a_shared_action() -> N
     """
     runtime, workflow, device = await _build_two_action_join_system()
     await runtime.start()
-    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
     try:
         await _wait_for_shared_rendezvous(runtime, record.id)
         assert device.shake_count == 1
@@ -242,12 +250,12 @@ async def test_retry_op_is_accepted_from_a_contributor_of_a_shared_action() -> N
 
         # The device is fixed; the contributor asks for just the failed call again.
         device.shake_should_fail = False
-        runtime.recover_thread(record.id, contributors[0].id, RecoveryDecision.RETRY_OP)
+        runtime.recover_thread(record.id, contributors[0].id, RecoveryDecision.RETRY)
 
         final = await asyncio.wait_for(runtime.wait(record.id), timeout=15.0)
         assert final.status == ExecutionState.COMPLETED
         assert device.shake_count == 2, (
-            "RETRY_OP re-ran only the failed device call"
+            "RETRY re-ran only the failed device call"
         )
         assert device.seal_count >= 1, "the action body resumed and the method finished"
     finally:
@@ -290,7 +298,7 @@ async def test_abort_thread_collapses_contributor_parked_at_resolution(monkeypat
     monkeypatch.setattr(ExecutingMethod, "resolve_current_action", _fail_resolution)
 
     await runtime.start()
-    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
     try:
         # Only the owner pauses (at resolution); the contributor is parked in
         # wait_for_current_action, which is NOT a paused state.
@@ -327,7 +335,7 @@ async def test_abort_execution_mid_rendezvous_terminates_all() -> None:
     non-terminal limbo that would wedge a re-run."""
     runtime, workflow, device = await _build_join_system()
     await runtime.start()
-    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
     try:
         await _wait_for_shared_rendezvous(runtime, record.id)
 

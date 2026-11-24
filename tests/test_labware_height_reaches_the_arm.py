@@ -23,15 +23,15 @@ from orca.resource_models.labware import TipRackInstance, TipRackTemplate
 from orca.resource_models.location import Location
 from orca.resource_models.plate_pad import PlatePad
 from orca.resource_models.transporter import Transporter
-from orca.runtime.device_factory_context import use_device_factory
 from orca.runtime.labware_catalog import InMemoryLabwareCatalog
 from cheshire_drivers.labware_seed import load_labware_seed
 
 from tests.test_helpers import (
-    _SingleDriverFactory,
     create_test_teachpoints,
-    seeded_teachpoint_service,
 )
+from tests.setup_package import teachpoint_file, with_teachpoints
+from tests.mock import outside_any_system
+from tests.real_device_path import connected, the_real_device_path
 
 pytestmark = pytest.mark.asyncio
 
@@ -64,10 +64,10 @@ def _tip_rack_instance() -> TipRackInstance:
     )
 
 
-def _arm(driver: SimTransporterDriver) -> Transporter:
-    store = seeded_teachpoint_service(create_test_teachpoints(["pad1"]))
-    with use_device_factory(_SingleDriverFactory(driver)):
-        return Transporter("robot1", teachpoint_store=store)
+async def _arm(driver: SimTransporterDriver) -> Transporter:
+    store = teachpoint_file(create_test_teachpoints(["pad1"]))
+    the_real_device_path().simulate_with("robot1", driver)
+    return await connected(outside_any_system(with_teachpoints(Transporter("robot1"), store)))
 
 
 class TestTheArmIsToldWhatItIsCarrying:
@@ -75,13 +75,13 @@ class TestTheArmIsToldWhatItIsCarrying:
         """The bench failure, end to end: this is the number the retreat is
         computed from, and the one that was a microplate's."""
         driver = RecordingArmDriver("robot1")
-        arm = _arm(driver)
+        arm = await _arm(driver)
         rack = _tip_rack_instance()
         pad = PlatePad("pad1")
         await pad.notify_placed(rack, arm)
         location = Location("pad1", pad)
 
-        await arm._do_pick(location)
+        await arm.pick(location)
 
         assert driver.picks, "the arm was never asked to pick"
         sent = driver.picks[-1].handling.resource_height
@@ -98,7 +98,7 @@ class TestTheArmIsToldWhatItIsCarrying:
         """The labware's own height is the base of the labware layer, not the last
         word: somebody who measured this labware on this arm overrules it."""
         driver = RecordingArmDriver("robot1")
-        arm = _arm(driver)
+        arm = await _arm(driver)
         teachpoint = await arm._resolve_teachpoint("pad1")
 
         resolved = await arm.resolve_handling(
@@ -113,7 +113,7 @@ class TestTheArmIsToldWhatItIsCarrying:
         """`how does this arm reach that site` is a different question from `how
         will it hold this rack`, and must not answer the second one."""
         driver = RecordingArmDriver("robot1")
-        arm = _arm(driver)
+        arm = await _arm(driver)
         teachpoint = await arm._resolve_teachpoint("pad1")
 
         resolved = await arm.resolve_handling(teachpoint)

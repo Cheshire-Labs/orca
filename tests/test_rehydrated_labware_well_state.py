@@ -41,6 +41,7 @@ from tests.test_helpers import (
     FactoryTroughTemplate as TroughTemplate,
     bind_ledger,
 )
+from tests.memory_activity import memory_ops_store
 
 
 async def _restored_with_its_record(template) -> LabwareInstance:
@@ -49,7 +50,7 @@ async def _restored_with_its_record(template) -> LabwareInstance:
     The restart shape: the record outlives the instance, and the rebuilt one
     reads what the original wrote.
     """
-    history = OpsHistory()
+    history = OpsHistory(store=memory_ops_store())
     fresh = await template.create_instance()
     await fresh.enter_record(bind_ledger(fresh, history))
     restored = await template.restore_instance(_persisted(fresh))
@@ -60,7 +61,7 @@ pytestmark = pytest.mark.asyncio
 
 
 def _plate_factory(num_rows: int = 2, num_cols: int = 2, well_max: float = 300.0):
-    def factory(name: str, with_lid: bool | None = None):
+    def factory(name: str):
         plate = MagicMock()
         plate.name = name
         plate.model = "test_plate"
@@ -200,7 +201,7 @@ async def test_identity_only_labware_does_not_wedge_the_driver_projection() -> N
     """
     template = TipRackTemplate("r", _tip_rack_factory(), with_tips=False)
     stranded = _persisted(await template.create_instance())
-    bind_ledger(stranded, OpsHistory())
+    bind_ledger(stranded, OpsHistory(store=memory_ops_store()))
 
     assert await stranded.driver_well_state() is None
 
@@ -214,7 +215,7 @@ async def test_identity_only_labware_skips_its_initial_state_seed() -> None:
     template = PlateTemplate("p", _plate_factory())
     stranded = _persisted(await template.create_instance())
     stranded._template = template
-    history = OpsHistory()
+    history = OpsHistory(store=memory_ops_store())
 
     await stranded.enter_record(bind_ledger(stranded, history))
 

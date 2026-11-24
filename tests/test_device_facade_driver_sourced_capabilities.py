@@ -14,13 +14,11 @@ Two guarantees:
    protocol-only exposes only run_protocol. No LH special-casing.
 """
 
-from typing import Callable, ClassVar
+from typing import Callable
 
 import pytest
+from cheshire_drivers.device_setup import DeviceSetup, RealDriverSetup, TcpConnection, VenusProtocols
 
-from cheshire_drivers.labware_handoff import IgnoresLabwareHandoff
-from cheshire_drivers.protocol_runner_models import RunProtocolRequest
-from cheshire_drivers.sims import SimLiquidHandlerDriver
 from orca.devices.devices import (
     Delidder,
     LiquidHandlerProtocol,
@@ -33,57 +31,11 @@ from orca.devices.centrifuge import Centrifuge
 from orca.devices.sealer import Sealer
 from orca.devices.shaker import Shaker
 from orca.resource_models.devices import Device
-from orca.runtime.device_factory_context import use_device_factory
-from orca.runtime.device_factory_protocol import DriverPairElement
+from tests.real_device_path import the_real_device_path
 from orca.runtime.facades.devices import (
     _allowed_invoke_methods,
     _capabilities_for_device,
 )
-
-
-class _ProtocolOnlyLiquidHandlerDriver(IgnoresLabwareHandoff):
-    """Bravo-style protocol-only LH driver: advertises `{IProtocolRunner}`.
-
-    A real protocol-only liquid handler (Agilent Bravo + VWorks, Hamilton
-    Venus) issues vendor protocol files exclusively and exposes no atomic
-    aspirate/dispense surface. This stand-in declares only the protocol
-    interface so the facade's driver-sourced surface omits atomic ops.
-    """
-
-    interfaces: ClassVar[frozenset[str]] = frozenset({"IProtocolRunner"})
-
-    def __init__(self, name: str) -> None:
-        self._name = name
-        self._initialized = False
-
-    async def initialize(self) -> None:
-        self._initialized = True
-
-    @property
-    def is_initialized(self) -> bool:
-        return self._initialized
-
-    async def open(self) -> None: ...
-
-    async def close(self) -> None: ...
-
-    async def run_protocol(self, request: RunProtocolRequest) -> None: ...
-
-
-class _FixedDriverFactory:
-    """Bind a chosen (live, sim) driver pair for every device built in scope."""
-
-    def __init__(
-        self, live: DriverPairElement, sim: DriverPairElement,
-    ) -> None:
-        self._live = live
-        self._sim = sim
-
-    def build_drivers(
-        self, device_type: str, name: str,
-    ) -> tuple[DriverPairElement, DriverPairElement]:
-        del device_type, name
-        return self._live, self._sim
 
 
 def _caps(device: Device) -> set[str]:
@@ -133,16 +85,12 @@ _LH_ATOMIC = {
 
 
 def test_lh_plr_plus_protocol_profile_exposes_atomic_and_protocol() -> None:
-    """Default pure-sim LH (SimLiquidHandlerWithProtocolDriver) is plr+protocol."""
+    """Default check-run LH (its setup names SimLiquidHandlerWithProtocolDriver) is plr+protocol."""
     lh = LiquidHandlerProtocol("lh1")
-    # The profile is decided by the first two names; the rest are facets the sim
-    # also carries. Stated exactly, so a driver that grows an interface has to be
+    # Stated exactly, so a forwarding driver that grows an interface has to be
     # looked at rather than passing unnoticed.
-    advertised = set(type(lh.live_driver).interfaces)
-    assert advertised == {
-        "ILiquidHandler", "IProtocolRunner", "ILiquidProbe", "IHomeable",
-        "IGantryParking",
-    }
+    advertised = set(type(lh.driver).interfaces)
+    assert advertised == {"ILiquidHandler", "IProtocolRunner"}
     invoke = _allowed_invoke_methods(lh)
     assert _LH_ATOMIC <= invoke
     assert "run_protocol" in invoke
@@ -152,11 +100,12 @@ def test_lh_plr_plus_protocol_profile_exposes_atomic_and_protocol() -> None:
 
 
 def test_lh_plr_only_profile_omits_protocol() -> None:
-    """A plr-only driver ({ILiquidHandler}) exposes atomic ops, no run_protocol."""
-    sim = SimLiquidHandlerDriver("lh1")
-    live = SimLiquidHandlerDriver("lh1")
-    with use_device_factory(_FixedDriverFactory(live, sim)):
-        lh = LiquidHandlerProtocol("lh1")
+    """A plr-only driver (an OT-2: no IProtocolRunner) exposes atomic ops, no run_protocol."""
+    the_real_device_path().set_up("lh1", DeviceSetup(
+        client="lab_pc",
+        real=RealDriverSetup(type="plr", backend="OpentronsOT2Backend", connection=TcpConnection(type="tcp", host="ot2")),
+    ))
+    lh = LiquidHandlerProtocol("lh1")
     invoke = _allowed_invoke_methods(lh)
     assert _LH_ATOMIC <= invoke
     assert "run_protocol" not in invoke
@@ -164,11 +113,11 @@ def test_lh_plr_only_profile_omits_protocol() -> None:
 
 
 def test_lh_protocol_only_profile_omits_atomic_ops() -> None:
-    """A protocol-only driver ({IProtocolRunner}) exposes only run_protocol."""
-    sim = _ProtocolOnlyLiquidHandlerDriver("lh1")
-    live = _ProtocolOnlyLiquidHandlerDriver("lh1")
-    with use_device_factory(_FixedDriverFactory(live, sim)):
-        lh = LiquidHandlerProtocol("lh1")
+    """A protocol-only driver (a Venus: {IProtocolRunner}) exposes only run_protocol."""
+    the_real_device_path().set_up(
+        "lh1", DeviceSetup(client="hamilton_pc", real=RealDriverSetup(type="venus", venus=VenusProtocols())),
+    )
+    lh = LiquidHandlerProtocol("lh1")
     invoke = _allowed_invoke_methods(lh)
     assert invoke == frozenset({"run_protocol"})
     assert _caps(lh) == {"protocol.run_protocol"}

@@ -3,6 +3,7 @@ shelf that grants, so concurrent executions' result plates take distinct
 shelves instead of serializing on one (each blocking on the previous plate's
 operator removal in LIVE)."""
 
+from orca.config import OrcaConfig
 import asyncio
 from collections.abc import AsyncGenerator
 from typing import cast
@@ -13,7 +14,7 @@ import orca.orca as orca
 from orca.spawn import DISPENSE, LEAVE_IN_PLACE
 from orca.workflow_models.thread_template import _normalize_end, _normalize_start
 from orca.resource_models.resource_pool import ResourcePool
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from orca.runtime.system_runtime import SystemRuntime
 from orca.sdk.events import EventBus
 from orca.sdk.system import ResourceRegistry, SystemMap
@@ -34,6 +35,10 @@ from tests.test_helpers import (
     execution_outcome,
     wire_system_map,
 )
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 
 async def _build_world() -> tuple[SystemRuntime, WorkflowTemplate, SystemMap]:
@@ -82,10 +87,13 @@ async def _build_world() -> tuple[SystemRuntime, WorkflowTemplate, SystemMap]:
     builder = SdkToSystemBuilder(
         name="candidate_end_system", description="", labwares=[plate],
         resources_registry=registry, system_map=system_map,
-        workflows=[workflow], event_bus=event_bus,
+        workflows=[workflow], event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
-    runtime = SystemRuntime(builder.get_system(), event_bus=event_bus)
+    runtime = await memory_runtime(builder.get_system(), event_bus=event_bus)
     return runtime, workflow, system_map
 
 
@@ -124,10 +132,10 @@ class TestEndLocationCandidates:
         runtime, workflow, system_map = await _build_world()
         await runtime.start()
         try:
-            first = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+            first = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
             await execution_outcome(runtime, first, timeout=30.0)
 
-            second = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+            second = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
             await execution_outcome(runtime, second, timeout=30.0)
 
             shelf_a = system_map.get_location("shelf_a").labware
@@ -147,7 +155,7 @@ class TestEndLocationCandidates:
         runtime, workflow, system_map = await _build_world()
         await runtime.start()
         try:
-            submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+            submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
             await execution_outcome(runtime, submission, timeout=30.0)
             occupied = [
                 name for name in ("shelf_a", "shelf_b")

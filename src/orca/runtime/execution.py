@@ -12,9 +12,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from orca.runtime.execution_phase import ExecutionPhase
-from orca.runtime.sim_pacing import SimPacer
+from orca.modes.sim_pacing import SimPacer
 from orca.runtime.stall_detector import StallReport
-from orca.runtime.submission import Submission
+from orca.workflow_models.submission import Submission
 from orca.system.system_interface import ISystem
 from orca.workflow_models.workflow_templates import WorkflowTemplate
 from orca.workflow_models.workflows.executing_workflow import ExecutingWorkflow
@@ -37,6 +37,8 @@ class Execution:
     submissions: list[Submission] = field(default_factory=list)
     executing_workflow: ExecutingWorkflow | None = field(default=None, repr=False)
     workflow_attached: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
+    ended: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
+    """Set once the run is recorded ended, after its events are saved; its end event has fired."""
 
     # Execution-level pause latch (orthogonal to ``phase``) gating new
     # submissions; ``abort_armed`` lets a second confirmed stop abort.
@@ -67,8 +69,12 @@ class Execution:
         return self.new_threads_hold_reason if self.is_paused else None
 
     @property
-    def sim_time_scale(self) -> float | None:
-        return None if self.sim_pacer is None else self.sim_pacer.time_scale
+    def simulated(self) -> bool:
+        return self.sim_pacer is not None
+
+    @property
+    def sim_speedup(self) -> float | None:
+        return None if self.sim_pacer is None else self.sim_pacer.speedup
 
 
 @dataclass(frozen=True)

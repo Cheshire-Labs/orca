@@ -11,7 +11,7 @@ one. Two behaviours hang off that list:
 - being diverted to a parking pad does NOT clear it, which is what stops the
   A->B->A oscillation the avoid-set exists to prevent.
 """
-from typing import Dict, Iterable
+from typing import Callable, Dict, Iterable
 
 import pytest
 
@@ -23,7 +23,7 @@ from orca.system.reservation_manager.interfaces import (
     IThreadReservationCoordinator,
 )
 from orca.system.reservation_manager.location_reservation import LocationReservation
-from orca.system.reservation_manager.move_handler import MoveHandler
+from orca.workflow_models.actions.move_handler import MoveHandler
 from orca.system.system_map import SystemMap
 from tests.test_helpers import (
     create_simple_system_map,
@@ -102,6 +102,21 @@ class _StubCoordinator(IThreadReservationCoordinator):
         raise NotImplementedError
 
     def forget_threads(self, thread_ids: set[str]) -> None:
+        raise NotImplementedError
+
+    def note_location_wait(self, thread_id: str, request: LocationReservation) -> None:
+        raise NotImplementedError
+
+    def end_location_wait(self, thread_id: str) -> None:
+        raise NotImplementedError
+
+    def note_co_labware_wait(self, thread_id: str, missing_labware_ids: Callable[[], set[str]]) -> None:
+        raise NotImplementedError
+
+    def end_co_labware_wait(self, thread_id: str) -> None:
+        raise NotImplementedError
+
+    def note_cannot_yield(self, thread_id: str) -> None:
         raise NotImplementedError
 
     def release_reservations_for_threads(self, thread_ids: set[str]) -> list[str]:

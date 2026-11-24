@@ -1,11 +1,11 @@
 """Overflow strategies for capacity-limited slots.
 
 User-pluggable hook for what happens when a slot rejects an enqueue.
-Built-in strategies cover the common cases (stash for handoff, reject loudly).
+Built-in strategies cover the common cases (stash for handoff, pause the contributor).
 Users implement IOverflowStrategy (re-exported from labware_state) directly
 to plug in custom routing.
 
-The IOverflowStrategy/IWorkflowRef Protocols live in resource_models.labware_state
+The IOverflowStrategy/IWorkflowRef Protocols live in workflow_models.labware_state
 (not here) so LabwareSlot can type its overflow_strategy field without a
 circular import. This module only contains the built-in strategies and the
 selector.
@@ -13,12 +13,8 @@ selector.
 from typing import NoReturn
 
 from orca.events.execution_context import WorkflowExecutionContext
-from orca.resource_models.capacity import (
-    CapacityExceededError,
-    OverflowAction,
-    RecoverableCapacityExceededError,
-)
-from orca.resource_models.labware_state import (
+from orca.resource_models.capacity import CapacityExceededError, OverflowAction
+from orca.workflow_models.labware_state import (
     IOverflowStrategy,
     IWorkflowRef,
     LabwareSlot,
@@ -30,8 +26,7 @@ __all__ = [
     "IWorkflowRef",
     "SequentialStashStrategy",
     "RejectStrategy",
-    "RecoverableRejectStrategy",
-    "refuse_the_spent_candidate",
+    "refuse_the_candidate",
     "select_strategy",
 ]
 
@@ -45,10 +40,10 @@ def _emit_slot_event(workflow: IWorkflowRef, slot_key: str, status: str) -> None
 
 
 class SequentialStashStrategy:
-    """Stash in slot.pending; drain at handoff when the active receiver ENDs.
+    """Stash in slot.pending until the handoff, which routes the stash to a new receiver.
 
-    Matches existing SpawnNewOnFourthPlate-style chain semantics: one active
-    receiver at a time, overflow batched sequentially behind it.
+    Under OverflowAction.NEW the handoff comes as soon as the receiver stops taking contributions.
+    Attached explicitly, the handoff waits for the receiver to end: one receiver at a time.
     """
 
     def on_overflow(self, slot: LabwareSlot, method: ExecutingMethod,
@@ -58,7 +53,11 @@ class SequentialStashStrategy:
 
 
 class RejectStrategy:
-    """Raise CapacityExceededError. Used when overflow_action == REJECT."""
+    """Pause the contributor for the operator. Used when overflow_action == REJECT.
+
+    The rejected method is not stashed in slot.pending: the contributor keeps its own work, and RETRY
+    runs the spawn again.
+    """
 
     def on_overflow(self, slot: LabwareSlot, method: ExecutingMethod,
                     workflow: IWorkflowRef) -> None:
@@ -66,40 +65,7 @@ class RejectStrategy:
         max_str = str(slot.policy.max_contributions) if slot.policy else "?"
         raise CapacityExceededError(
             f"Slot '{slot.slot_key}' at capacity (max={max_str}); "
-            f"method '{method.name}' rejected per OverflowAction.REJECT"
-        )
-
-
-class RecoverableRejectStrategy:
-    """Pause the contributor for operator decision instead of failing the workflow.
-
-    Emits SLOT.{key}.AWAITING_DECISION (for UI/observers) and raises
-    RecoverableCapacityExceededError. The action-loop's spawn-callback
-    wrapper catches this subclass and routes through the thread's
-    _pause_for_error path: the contributor's status becomes PAUSED, the
-    workflow keeps running, and the operator picks one of:
-    - RecoveryDecision.RETRY: re-attempt the spawn (succeeds if capacity
-      freed in the interim, e.g. via slot.close() + fresh receiver).
-    - RecoveryDecision.ABORT_THREAD: terminate the contributor.
-    No action-level decision applies here: the spawn callback fires before
-    action resolution, so there is no current action to recover. CONTINUE /
-    ABORT_ACTION / ABORT_METHOD all re-pause the contributor with a warning.
-
-    The rejected method is NOT stashed in slot.pending. The contributor
-    holds its own work; on RETRY the spawn re-attempts and either lands or
-    pauses again. To unblock a stuck slot, the operator can pair this with
-    slot.close() (forces the active receiver to wrap up; a fresh receiver
-    spawns on next contribution).
-    """
-
-    def on_overflow(self, slot: LabwareSlot, method: ExecutingMethod,
-                    workflow: IWorkflowRef) -> None:
-        _emit_slot_event(workflow, slot.slot_key, "AWAITING_DECISION")
-        max_str = str(slot.policy.max_contributions) if slot.policy else "?"
-        raise RecoverableCapacityExceededError(
-            f"Slot '{slot.slot_key}' at capacity (max={max_str}); "
-            f"method '{method.name}' awaiting operator decision per "
-            f"OverflowAction.RECOVERABLE_REJECT"
+            f"method '{method.name}' paused per OverflowAction.REJECT"
         )
 
 
@@ -120,23 +86,24 @@ def select_strategy(slot: LabwareSlot) -> IOverflowStrategy:
         return SequentialStashStrategy()
     if slot.policy.overflow_action is OverflowAction.REJECT:
         return RejectStrategy()
-    if slot.policy.overflow_action is OverflowAction.RECOVERABLE_REJECT:
-        return RecoverableRejectStrategy()
     return SequentialStashStrategy()
 
 
-def refuse_the_spent_candidate(
+def refuse_the_candidate(
     slot: LabwareSlot, workflow: IWorkflowRef, reason: str,
 ) -> NoReturn:
-    """Refuse a contribution because the labware the slot adopted is used up.
+    """Refuse a contribution because the labware standing at a reuse site cannot serve it.
 
-    Every strategy above overflows PAST an active receiver to a replacement.
-    Here the labware was adopted rather than replaced, and a reuse-bound thread
-    has no route in: a replacement would ask for a placement at a site the spent
-    labware still occupies, with no thread owning it to take it off. So the
-    contributor pauses and the operator is told both halves. RETRY re-runs the
-    spawn, which succeeds once a labware with something in it is standing there
-    and its contents are stated.
+    It is used up or the wrong type. Every strategy above overflows PAST an
+    active receiver to a replacement, but a reuse-bound thread has no route in:
+    a replacement would ask for a placement at a site that labware still
+    occupies, with no thread owning it to take it off. So the contributor pauses
+    and the operator is told both halves. RETRY re-runs the spawn.
     """
-    _emit_slot_event(workflow, slot.slot_key, "AWAITING_DECISION")
-    raise RecoverableCapacityExceededError(reason)
+    refuse_the_spawn(workflow, slot.slot_key, reason)
+
+
+def refuse_the_spawn(workflow: IWorkflowRef, slot_key: str, reason: str) -> NoReturn:
+    """Pause the contributor with ``reason``; RETRY runs the spawn again."""
+    _emit_slot_event(workflow, slot_key, "AWAITING_DECISION")
+    raise CapacityExceededError(reason)

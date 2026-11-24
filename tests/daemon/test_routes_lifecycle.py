@@ -11,14 +11,13 @@ members instead of magic strings, so typos fail at import time.
   before AND after shutdown proves both, since a hard-coded value can only
   be one.
 - Teardown correctness: after /shutdown unloads the system, a subsequent
-  submit must return 409 (no system loaded). Catches regressions where
-  the shutdown path forgets to clear app.state.system_runtime.
+  submit must answer 503 (no system loaded). Catches regressions where
+  the shutdown path forgets to clear the daemon's runtime holder.
 """
 
 from httpx import AsyncClient
 
-from orca.daemon.schemas import (
-    ErrorResponse,
+from orca.operations.wire_models import (
     HealthResponse,
 )
 from orca.runtime.system_runtime import RuntimeState, SystemRuntime
@@ -52,21 +51,19 @@ async def test_health_tracks_shutdown_transition(
     assert body_stopped.runtime_state is None
 
 
-async def test_submit_after_shutdown_unloads_returns_409(
+async def test_submit_after_shutdown_unloads_answers_no_system_loaded(
     client: AsyncClient,
 ) -> None:
-    """After /shutdown unloads the system, submit must return a 409 carrying
-    the 'no system loaded' detail -- not 500, and not a different 409 reason.
+    """After /shutdown unloads the system, submit answers 503 `runtime_not_ready`.
 
-    Distinguishing the specific detail matters: this catches a regression
-    where /shutdown stops the SystemRuntime but forgets to clear
-    app.state.system_runtime. In that case submit would still 409, but
-    with a 'Runtime is not running' detail from the RuntimeError branch.
+    This catches /shutdown stopping the runtime but leaving it on app.state:
+    submit would then answer a 409 conflict that the runtime is not running.
     """
     await client.post("/shutdown")
     resp = await client.post(
-        "/executions", json={"workflow_name": "simple_workflow", "run_mode": "PURE_SIM"},
+        "/api/executions", json={"workflow_name": "simple_workflow", "run_mode": "CHECK_RUN"},
     )
-    assert resp.status_code == 409
-    body = ErrorResponse.model_validate(resp.json())
-    assert "no system loaded" in body.detail.lower()
+    assert resp.status_code == 503
+    detail = resp.json()["detail"]
+    assert detail["code"] == "runtime_not_ready"
+    assert "no system loaded" in detail["message"].lower()

@@ -16,44 +16,37 @@ from cheshire_drivers.liquid_handler_models import (
 )
 from cheshire_drivers.sims import SimLiquidHandlerDriver
 from cheshire_drivers.plr.liquid_handler import ChatterboxLiquidHandlerDriver
+from tests.real_device_path import connected, the_real_device_path
 from orca.devices.devices import LiquidHandlerProtocol
-from orca.runtime.device_factory_protocol import DriverPairElement
-from orca.runtime.device_factory_context import use_device_factory
 
 
-class _LhInjectFactory:
-    """Inject a specific LH driver instance via the no-driver SDK ctor.
-
-    The injected driver may be a real ``ILiquidHandlerDriver`` subclass
-    (Chatterbox, Sim*) or a duck-typed test double that implements just
-    the methods the test exercises. ``DriverPairElement`` is the typed
-    contract on the wire; runtime tests pass anything LH-shaped.
-    """
-
-    def __init__(self, driver: ILiquidHandlerDriver) -> None:
-        self._d = driver
-
-    def build_drivers(
-        self, device_type: str, name: str,
-    ) -> tuple[DriverPairElement, DriverPairElement]:
-        return self._d, self._d
-
-
-def _make_lh(name: str, driver: ILiquidHandlerDriver) -> LiquidHandlerProtocol:
-    """Build a LiquidHandlerProtocol wired to a specific test driver via the factory."""
-    with use_device_factory(_LhInjectFactory(driver)):
-        return LiquidHandlerProtocol(name)
+async def _make_lh(name: str, driver: ILiquidHandlerDriver) -> LiquidHandlerProtocol:
+    """A LiquidHandlerProtocol whose commands the in-process orca-client runs on `driver`."""
+    the_real_device_path().simulate_with(name, driver)
+    return await connected(LiquidHandlerProtocol(name))
 
 
 class TestLiquidHandlerWithChatterbox:
 
-    def test_accepts_chatterbox_driver(self) -> None:
+    async def test_accepts_chatterbox_driver(self) -> None:
         driver = ChatterboxLiquidHandlerDriver(num_channels=8)
-        lh = _make_lh("test_lh", driver)
-        assert lh.driver is driver
+        await _make_lh("test_lh", driver)
+        assert the_real_device_path().simulator("test_lh") is driver
 
     # Chatterbox-driver isinstance check dropped: wiring is pinned by
     # `test_accepts_chatterbox_driver`; behavior by `TestLiquidHandlerBridgeMultiRack`.
+
+
+class _FakeTipSpot:
+    """Minimal ITipSpot for bridge unit tests."""
+
+    def __init__(self, parent_name: str, identifier: str) -> None:
+        self.parent_name = parent_name
+        self.identifier = identifier
+        self.has_tip = True
+
+    def set_tip(self, has_tip: bool) -> None:
+        self.has_tip = has_tip
 
 
 class _FakeWell:
@@ -125,12 +118,12 @@ class TestLiquidHandlerBridgeMultiRack:
     @pytest.mark.asyncio
     async def test_pick_up_tips_groups_by_rack(self) -> None:
         driver = _RecordingDriver()
-        lh = _make_lh("test_lh", driver)
+        lh = await _make_lh("test_lh", driver)
         await lh.pick_up_tips([
-            _FakeWell("rack_a", "A1"),
-            _FakeWell("rack_a", "B1"),
-            _FakeWell("rack_b", "C1"),
-            _FakeWell("rack_b", "D1"),
+            _FakeTipSpot("rack_a", "A1"),
+            _FakeTipSpot("rack_a", "B1"),
+            _FakeTipSpot("rack_b", "C1"),
+            _FakeTipSpot("rack_b", "D1"),
         ])
         assert driver.pick_up_tips_request is not None
         picks = driver.pick_up_tips_request.picks
@@ -144,11 +137,11 @@ class TestLiquidHandlerBridgeMultiRack:
     async def test_pick_up_tips_preserves_channel_order_across_runs(self) -> None:
         """Channels alternating racks must produce one TipPick per consecutive run."""
         driver = _RecordingDriver()
-        lh = _make_lh("test_lh", driver)
+        lh = await _make_lh("test_lh", driver)
         await lh.pick_up_tips([
-            _FakeWell("rack_a", "A1"),
-            _FakeWell("rack_b", "A1"),
-            _FakeWell("rack_a", "A2"),
+            _FakeTipSpot("rack_a", "A1"),
+            _FakeTipSpot("rack_b", "A1"),
+            _FakeTipSpot("rack_a", "A2"),
         ])
         picks = driver.pick_up_tips_request.picks
         assert [(p.tip_rack, p.positions) for p in picks] == [
@@ -160,7 +153,7 @@ class TestLiquidHandlerBridgeMultiRack:
     @pytest.mark.asyncio
     async def test_aspirate_groups_by_plate(self) -> None:
         driver = _RecordingDriver()
-        lh = _make_lh("test_lh", driver)
+        lh = await _make_lh("test_lh", driver)
         await lh.aspirate(
             [
                 _FakeWell("plate_a", "A1"),
@@ -182,7 +175,7 @@ class TestLiquidHandlerBridgeMultiRack:
     @pytest.mark.asyncio
     async def test_dispense_groups_by_plate(self) -> None:
         driver = _RecordingDriver()
-        lh = _make_lh("test_lh", driver)
+        lh = await _make_lh("test_lh", driver)
         await lh.dispense(
             [
                 _FakeWell("plate_a", "A1"),
@@ -202,7 +195,7 @@ class TestLiquidHandlerBridgeMultiRack:
     @pytest.mark.asyncio
     async def test_drop_tips_returns_to_original_racks(self) -> None:
         driver = _RecordingDriver()
-        lh = _make_lh("test_lh", driver)
+        lh = await _make_lh("test_lh", driver)
         await lh.drop_tips([
             _FakeWell("rack_a", "A1"),
             _FakeWell("rack_b", "A1"),
@@ -219,7 +212,7 @@ class TestLiquidHandlerBridgeMultiRack:
     @pytest.mark.asyncio
     async def test_aspirate_volume_length_mismatch_raises(self) -> None:
         driver = _RecordingDriver()
-        lh = _make_lh("test_lh", driver)
+        lh = await _make_lh("test_lh", driver)
         with pytest.raises(ValueError, match="must be the same length"):
             await lh.aspirate(
                 [_FakeWell("plate_a", "A1"), _FakeWell("plate_a", "B1")],

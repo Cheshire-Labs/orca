@@ -7,15 +7,16 @@ registry / system-map / workflow assembly. That scaffolding lives here once;
 each test keeps its actions, methods, and thread generators inline because
 those ARE the scenario under test.
 """
+from orca.config import OrcaConfig
 import asyncio
 from dataclasses import dataclass
 
 from orca.resource_models.labware import PlateTemplate
-from orca.resource_models.labware_state import LabwareSlot
+from orca.workflow_models.labware_state import LabwareSlot
 from orca.resource_models.location import Location
 from orca.resource_models.resource_pool import ResourcePool
 from orca.resource_models.sharing import GroupSharing, SubmissionBatching
-from orca.runtime.labware_group import LabwareGroup, LabwareGroupMember
+from orca.workflow_models.labware_group import LabwareGroup, LabwareGroupMember
 from orca.runtime.system_runtime import SystemRuntime
 from orca.sdk.events import EventBus
 from orca.sdk.system import ResourceRegistry, SystemMap
@@ -28,6 +29,10 @@ from tests.test_helpers import (
     create_test_device,
     create_test_transporter,
 )
+from tests.memory_activity import memory_ops_store, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 TERMINAL_STATUSES = {"COMPLETED", "ABORTED", "STOPPED", "FAILED"}
 
@@ -137,7 +142,10 @@ async def finish_closure_system(
         resources_registry=scaffold.registry,
         system_map=scaffold.system_map,
         workflows=[workflow],
-        event_bus=event_bus,
+        event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     return builder.get_system(), workflow, event_bus

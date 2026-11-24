@@ -23,6 +23,7 @@ held until the joining feeder is live, so exactly one receiver results. The
 ``is_closed`` assertion fails every time on unfixed code, never intermittently.
 """
 
+from orca.config import OrcaConfig
 import asyncio
 import traceback
 from collections.abc import AsyncGenerator, Sequence
@@ -31,14 +32,14 @@ from uuid import uuid4
 import pytest
 
 import orca.orca as orca
-from orca.plugins import MethodTracker
+from tests.thread_recorder import ThreadRecorder
 from orca.resource_models.labware import PlateTemplate
-from orca.resource_models.labware_state import LabwareSlot
+from orca.workflow_models.labware_state import LabwareSlot
 from orca.resource_models.resource_pool import ResourcePool
 from orca.resource_models.sharing import GroupSharing, SubmissionBatching
-from orca.runtime.labware_group import LabwareGroup, LabwareGroupMember
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.submission import BatchMode, ResolvedAcquisition
+from orca.workflow_models.labware_group import LabwareGroup, LabwareGroupMember
+from orca.modes.run_modes import WorkflowRunMode
+from orca.workflow_models.submission import BatchMode, ResolvedAcquisition
 from orca.runtime.system_runtime import SystemRuntime
 from orca.sdk.events import EventBus
 from orca.sdk.system import ResourceRegistry, SystemMap
@@ -57,6 +58,10 @@ from tests.test_helpers import (
     create_test_device,
     create_test_transporter,
 )
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 _TERMINAL = {"COMPLETED", "ABORTED", "STOPPED", "FAILED"}
 
@@ -178,7 +183,10 @@ async def _build_gated_lineage_system(
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=event_bus,
+        event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     return builder.get_system(), workflow, event_bus
@@ -238,15 +246,15 @@ def _reservoir_slot(runtime: SystemRuntime, eid: str) -> LabwareSlot | None:
     )
 
 
-def _reservoir_count(tracker: MethodTracker) -> int:
-    return sum(1 for n in tracker.thread_names.values() if n.startswith("reservoir"))
+def _reservoir_count(recorder: ThreadRecorder) -> int:
+    return sum(1 for n in recorder.thread_names.values() if n.startswith("reservoir"))
 
 
 async def _drive_race(
     runtime: SystemRuntime,
     workflow: WorkflowTemplate,
     gate: _FeederGate,
-    tracker: MethodTracker,
+    recorder: ThreadRecorder,
     park_window: str,
 ) -> None:
     """Drive the deterministic interleaving.
@@ -287,19 +295,19 @@ async def _drive_race(
         resolve_calls = {"n": 0}
 
         async def gated_resolve(
-            groups: Sequence[LabwareGroup],
+            workflow_template: WorkflowTemplate, groups: Sequence[LabwareGroup],
         ) -> dict[tuple[str, str], ResolvedAcquisition]:
             resolve_calls["n"] += 1
             if resolve_calls["n"] >= 2:
                 window_entered.set()
                 await release_window.wait()
-            return await original_resolve(groups)
+            return await original_resolve(workflow_template, groups)
 
-        runtime._resolve_acquisitions = gated_resolve  # type: ignore[method-assign]
+        setattr(runtime, "_resolve_acquisitions", gated_resolve)
 
     sub1 = await runtime.submit(
         workflow, groups=[_sample_group()],
-        batch_mode=BatchMode.JOIN_EXISTING, mode=WorkflowRunMode.PURE_SIM,
+        batch_mode=BatchMode.JOIN_EXISTING, mode=WorkflowRunMode.CHECK_RUN,
     )
     eid = sub1.execution_id
     await _wait_for_boot(runtime, eid)
@@ -307,7 +315,7 @@ async def _drive_race(
 
     sub2_task = asyncio.create_task(runtime.submit(
         workflow, groups=[_sample_group()],
-        batch_mode=BatchMode.JOIN_EXISTING, mode=WorkflowRunMode.PURE_SIM,
+        batch_mode=BatchMode.JOIN_EXISTING, mode=WorkflowRunMode.CHECK_RUN,
     ))
     try:
         await asyncio.wait_for(window_entered.wait(), timeout=15.0)
@@ -335,9 +343,9 @@ async def _drive_race(
         if not sub2_task.done():
             sub2_task.cancel()
 
-    assert _reservoir_count(tracker) == 1, (
+    assert _reservoir_count(recorder) == 1, (
         "JOIN_EXISTING must converge on ONE shared receiver; a premature slot "
-        f"close spawned a duplicate: got {_reservoir_count(tracker)}"
+        f"close spawned a duplicate: got {_reservoir_count(recorder)}"
     )
 
 
@@ -348,12 +356,12 @@ async def test_join_existing_survives_feeder_terminal_in_build_window() -> None:
     """W1: feeder terminates while the join is parked in ``build_entry_threads_for``."""
     gate = _FeederGate()
     system, workflow, event_bus = await _build_gated_lineage_system(gate)
-    runtime = SystemRuntime(system, event_bus=event_bus)
-    tracker = MethodTracker()
-    runtime.register_plugin(tracker)
+    runtime = await memory_runtime(system, event_bus=event_bus)
+    recorder = ThreadRecorder()
+    runtime.register_plugin(recorder)
     await runtime.start()
     try:
-        await _drive_race(runtime, workflow, gate, tracker, park_window="build")
+        await _drive_race(runtime, workflow, gate, recorder, park_window="build")
     finally:
         await runtime.shutdown()
 
@@ -371,12 +379,12 @@ async def test_join_existing_survives_feeder_terminal_in_resolve_window() -> Non
     """
     gate = _FeederGate()
     system, workflow, event_bus = await _build_gated_lineage_system(gate)
-    runtime = SystemRuntime(system, event_bus=event_bus)
-    tracker = MethodTracker()
-    runtime.register_plugin(tracker)
+    runtime = await memory_runtime(system, event_bus=event_bus)
+    recorder = ThreadRecorder()
+    runtime.register_plugin(recorder)
     await runtime.start()
     try:
-        await _drive_race(runtime, workflow, gate, tracker, park_window="resolve")
+        await _drive_race(runtime, workflow, gate, recorder, park_window="resolve")
     finally:
         await runtime.shutdown()
 
@@ -394,12 +402,12 @@ async def test_injecting_guard_holds_then_releases_slot_close() -> None:
     """
     gate = _FeederGate()
     system, workflow, event_bus = await _build_gated_lineage_system(gate)
-    runtime = SystemRuntime(system, event_bus=event_bus)
+    runtime = await memory_runtime(system, event_bus=event_bus)
     await runtime.start()
     try:
         sub = await runtime.submit(
             workflow, groups=[_sample_group()],
-            batch_mode=BatchMode.JOIN_EXISTING, mode=WorkflowRunMode.PURE_SIM,
+            batch_mode=BatchMode.JOIN_EXISTING, mode=WorkflowRunMode.CHECK_RUN,
         )
         eid = sub.execution_id
         await _wait_for_boot(runtime, eid)

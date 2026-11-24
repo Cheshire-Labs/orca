@@ -35,6 +35,8 @@ class DeviceOperation(Enum):
     SET_TIP_STATE = "set_tip_state"
     ACTION_CONTINUED = "action_continued"
     OBSERVATION_GAP = "observation_gap"
+    # A device command with no operation of its own, such as home. It folds into nothing.
+    COMMAND = "command"
 
 
 class TrackingSource(Enum):
@@ -108,6 +110,11 @@ class TipPickUpDetails(BaseModel):
     """The channels above were counted in target order across the whole command
     rather than named by whoever sent it, so they are the record's own best
     guess at which nozzle holds what."""
+    failed_positions: list[str] = []
+    """Spots a channel was sent to and took no tip from. A failed channel gets a record of its own with no
+    ``positions``, so it moves no tip."""
+    failed_channels: list[int] = []
+    error_code: str | None = None
 
 
 class TipDropDetails(BaseModel):
@@ -117,6 +124,10 @@ class TipDropDetails(BaseModel):
     positions: list[str]
     to_waste: bool = False
     use_channels: list[int] | None = None
+    failed_positions: list[str] = []
+    """Spots a channel was sent to and left no tip in. See ``TipPickUpDetails.failed_positions``."""
+    failed_channels: list[int] = []
+    error_code: str | None = None
 
 
 class MountedTipsAssertedDetails(BaseModel):
@@ -125,6 +136,8 @@ class MountedTipsAssertedDetails(BaseModel):
     by_channel: dict[int, tuple[str, str]]
     """channel -> (tip rack, position). Empty means the operator says the head
     is carrying nothing, which is a statement, not silence."""
+    head96: dict[int, tuple[str, str]] = {}
+    """The same for the 96 head, by its own channel numbers."""
 
 
 class MountedTipsConfirmedDetails(BaseModel):
@@ -145,6 +158,9 @@ class TipDiscardDetails(BaseModel):
     kind: Literal["discard_tips"] = "discard_tips"
     use_channels: list[int] | None = None
     """A discard names no rack: the tips go to waste and stop existing."""
+    failed_channels: list[int] = []
+    """Channels sent to waste that kept their tip. Such a record has an empty ``use_channels``, so it bins no tip."""
+    error_code: str | None = None
 
 
 class ShakeDetails(BaseModel):
@@ -211,6 +227,9 @@ class TipDrop96Details(BaseModel):
     kind: Literal["drop_tips96"] = "drop_tips96"
     tip_rack: str | None = None
     to_waste: bool = True
+    positions: list[str] | None = None
+    """The rack spots the tips went back to, when the record knows them. None credits the rack's last stated
+    layout."""
 
 
 class GenericOperationDetails(BaseModel):
@@ -284,14 +303,17 @@ class ObservationGapCause(Enum):
     DEVICE_RECONNECT = "device_reconnect"
     ERROR_PAUSE = "error_pause"
     OPERATOR_CONTRADICTED = "operator_contradicted"
-    """An operator command only made sense if the record was wrong. Unlike
-    the stretches of time this is one moment that proved the fold no longer
-    describes the labware, and by an amount the command itself cannot say."""
+    """An operator command only made sense if the record was wrong. No longer written: such a tip pick-up is now
+    refused before it is sent. Kept so a gap already in the record reads back."""
+
+    MODE_SWITCHED = "mode_switched"
+    """The device was switched between sim and live. Sim and live share one record,
+    so what it held in one world carries over to the other unconfirmed."""
 
     OPERATIONS_DROPPED = "operations_dropped"
-    """An action was abandoned holding operations it had really performed, and
-    they went with it. Also one moment rather than a stretch: the pick-up and
-    the aspirate happened, nobody wrote them down, and nothing will now."""
+    """A command was cut off at the device, so nobody knows what it did: a stop
+    cancelled it, it got no answer, or the device failed it after taking it.
+    One moment rather than a stretch."""
 
 
 GAPS_THAT_LOST_WORK = frozenset({ObservationGapCause.OPERATIONS_DROPPED})
@@ -299,7 +321,7 @@ GAPS_THAT_LOST_WORK = frozenset({ObservationGapCause.OPERATIONS_DROPPED})
 
 Agreeing with the fold cannot settle this one. The labware looks exactly as the
 record describes it to anyone glancing at the shelf, and the record is still
-short by what the abort discarded, so a confirm freezes a wrong number and
+wrong by what the cut-off command did, so a confirm freezes a wrong number and
 marks it checked. Only counting and stating settles it.
 
 A contradicted record is deliberately NOT here. Something was proved wrong at
@@ -334,6 +356,8 @@ class HeadObservationGapDetails(BaseModel):
     kind: Literal["head_observation_gap"] = "head_observation_gap"
     device_name: str
     cause: ObservationGapCause
+    head: Literal["channels", "head96"] | None = None
+    """The head a cut-off tip command drives. None (a restart or a reconnect) is about the whole device."""
 
 
 class InitialStateDetails(BaseModel):
@@ -409,14 +433,18 @@ class OperationRecord(BaseModel):
     driver-state-derived records (DRIVER_OBSERVED). When a driver advertises
     ``provides_state=True`` and the user opts into ``trust_driver_state``, the
     LiquidHandler bridge emits paired DRIVER_OBSERVED records reflecting the
-    driver's reported labware state. Trackers fold both kinds; ledger projections
-    can prefer DRIVER_OBSERVED as authoritative when present.
+    driver's reported labware state. They are witnesses: nothing folds them, and
+    they are only compared with the fold.
 
     ``affected_labware`` holds human-readable display names; ``affected_labware_ids``
-    holds the parallel canonical UUIDs that ``labware journey`` / ``labware history``
-    accept. Populated wherever the recording site holds a LabwareInstance (the
+    holds the parallel canonical UUIDs that ``labware journey``
+    accepts. Populated wherever the recording site holds a LabwareInstance (the
     device-call dispatch boundary, the declared-tracking observer); empty when only
     a driver-reported name is available.
+
+    ``group_id`` is the labware group the action served: the one group among its
+    threads, or None when it served none or more than one. ``transfer_id`` pairs
+    the aspirate and dispense of one declared volume transfer.
     """
 
     model_config = _FROZEN
@@ -431,6 +459,7 @@ class OperationRecord(BaseModel):
     timestamp: float
     sequence: int = Field(default_factory=_next_op_sequence)
     group_id: str | None = None
+    transfer_id: str | None = None
     source: TrackingSource = TrackingSource.OBSERVED
 
 
@@ -438,9 +467,7 @@ class TrackingRecord(BaseModel):
     """Per-action tracking summary.
 
     Carries only the ordered typed ``operations`` list plus per-action
-    metadata. Denormalized summary fields (volume_changes, tips_used,
-    wells_used, tip_status_changes) were removed; consumers derive what
-    they need from ``operations`` via ledger_projections.
+    metadata. Consumers derive summaries from ``operations`` via ledger_projections.
 
     ``execution_id`` is required: every record self-describes which
     execution produced it. System-bucket records (initial-state seeds
@@ -466,6 +493,8 @@ class TrackingRecord(BaseModel):
     source: TrackingSource
     timestamp: float
     operations: list[OperationRecord] = Field(default_factory=list)
+    tag: str | None = None
+    """The ``tag`` of the action that wrote this record; None when it has none or no action wrote it."""
 
 
 class DeclaredVolumeTransfer(BaseModel):

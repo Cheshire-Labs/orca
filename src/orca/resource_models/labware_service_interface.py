@@ -1,0 +1,29 @@
+"""ILabwareService: the interface the engine holds for labware identity."""
+
+from typing import Protocol
+
+from orca.resource_models.labware import LabwareInstance
+
+
+class ILabwareService(Protocol):
+    """Labware identity, barcodes and active positions, over one store."""
+
+    async def register(self, instance: LabwareInstance, execution_id: str | None = None) -> None:
+        """Raises ``BarcodeInUseError`` when another labware already holds the barcode."""
+        ...
+    async def get_by_id(self, labware_id: str) -> LabwareInstance | None: ...
+    async def get_by_barcode(self, barcode: str) -> LabwareInstance | None: ...
+    async def get_by_position(self, position_id: str) -> LabwareInstance | None:
+        """The most recently registered labware persisted at ``position_id``, or None."""
+        ...
+    async def update_location(self, labware_id: str, position_id: str) -> None: ...
+    async def clear_location(self, labware_id: str) -> None:
+        """Drop the labware's active position and keep its row and history."""
+        ...
+    async def list_active_locations(self) -> list[tuple[str, str]]: ...
+    async def list_departed_locations(self) -> list[tuple[str, str]]:
+        """(labware_id, last position_id) of every labware whose position was cleared."""
+        ...
+    async def get_location_history(
+        self, labware_id: str,
+    ) -> list[tuple[str, str | None, float]]: ...

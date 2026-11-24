@@ -1,3 +1,7 @@
+from orca.operations.manual_step_models import (
+    CONFIRM_MANUAL_STEP_ROUTE,
+    LIST_PENDING_MANUAL_STEPS_ROUTE,
+)
 """Operator manual-step Operations: list pending + confirm.
 
 `ctx.manual_step(instruction)` parks a thread until an operator confirms
@@ -7,9 +11,11 @@ immediately). An unknown execution / step_id, an already-confirmed or
 timed-out step, or a not-yet-started execution all map to not-found.
 """
 
+from orca.operations.binding import RestBinding
 from typing import ClassVar
 from pydantic import BaseModel
-from orca.operations._protocol import OperationError
+from orca.operations.error_codes import ErrorCode
+from orca.operations.protocol import OperationError
 from orca.runtime.runtime_interface import ISystemRuntime
 from orca.operations.manual_step_models import (
     ConfirmManualStepRequest,
@@ -21,8 +27,9 @@ from orca.operations.manual_step_models import (
 
 
 class ConfirmManualStepOperation:
-    Request: ClassVar[type[BaseModel]] = ConfirmManualStepRequest
-    Response: ClassVar[type[BaseModel]] = ConfirmManualStepResponse
+    Request: ClassVar[type[BaseModel]] = CONFIRM_MANUAL_STEP_ROUTE.request
+    Response: ClassVar[type[BaseModel]] = CONFIRM_MANUAL_STEP_ROUTE.response
+    binding: ClassVar[RestBinding] = CONFIRM_MANUAL_STEP_ROUTE.binding
 
     def __init__(self, runtime: ISystemRuntime):
         self._runtime = runtime
@@ -33,7 +40,8 @@ class ConfirmManualStepOperation:
                 req.execution_id, req.step_id, reason=req.reason, confirm=True,
             )
         except KeyError as exc:
-            raise OperationError.not_found(
+            raise OperationError.of(
+                ErrorCode.MANUAL_STEP_NOT_FOUND,
                 f"manual step {req.step_id!r} not found in execution "
                 f"{req.execution_id!r}; run 'manual-step list' to see "
                 "pending steps",
@@ -46,8 +54,9 @@ class ConfirmManualStepOperation:
 
 
 class ListPendingManualStepsOperation:
-    Request: ClassVar[type[BaseModel]] = ListPendingManualStepsRequest
-    Response: ClassVar[type[BaseModel]] = ListPendingManualStepsResponse
+    Request: ClassVar[type[BaseModel]] = LIST_PENDING_MANUAL_STEPS_ROUTE.request
+    Response: ClassVar[type[BaseModel]] = LIST_PENDING_MANUAL_STEPS_ROUTE.response
+    binding: ClassVar[RestBinding] = LIST_PENDING_MANUAL_STEPS_ROUTE.binding
 
     def __init__(self, runtime: ISystemRuntime):
         self._runtime = runtime
@@ -58,10 +67,17 @@ class ListPendingManualStepsOperation:
         try:
             records = self._runtime.list_pending_manual_steps(req.execution_id)
         except KeyError as exc:
-            raise OperationError.not_found(
+            raise OperationError.of(
+                ErrorCode.EXECUTION_NOT_FOUND,
                 f"execution {req.execution_id!r} not found",
                 execution_id=req.execution_id,
             ) from exc
         return ListPendingManualStepsResponse(
             pending=tuple(PendingManualStepDTO.from_record(r) for r in records),
         )
+
+
+MANUAL_STEP_OPERATIONS = (
+    ConfirmManualStepOperation,
+    ListPendingManualStepsOperation,
+)

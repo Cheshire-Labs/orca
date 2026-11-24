@@ -5,19 +5,15 @@ Covered:
 - Submit + list wiring: proves the POST route's ExecutionRecord lands in the
   runtime's registry (same instance observable via GET). If submit accidentally
   called a different runtime method (or a no-op), list would be empty.
-- Error mappings written by hand in routes.py: KeyError -> 404 for unknown
-  execution on GET / DELETE / threads subpath.
+- Error mappings: KeyError -> 404 for an unknown execution on GET and stop.
 - Request-body validation at the HTTP boundary: missing workflow_name -> 422,
-  ensures the SubmitWorkflowRequest DTO is actually enforced by FastAPI.
+  ensures the SubmitExecutionRequest DTO is actually enforced by FastAPI.
 """
 
 from httpx import AsyncClient
+from orca.operations.submission_models import SubmitExecutionResponse
 
-from orca.daemon.schemas import (
-    ErrorResponse,
-    ExecutionRecordDTO,
-    ValidationErrorResponse,
-)
+from orca.operations.execution_models import ExecutionRecordModel
 
 
 async def test_submit_then_list_round_trips_the_execution(
@@ -30,28 +26,25 @@ async def test_submit_then_list_round_trips_the_execution(
     returned a fabricated id, the id wouldn't appear in the GET response.
     """
     submit = await client.post(
-        "/executions", json={"workflow_name": "simple_workflow", "run_mode": "PURE_SIM"},
+        "/api/executions", json={"workflow_name": "simple_workflow", "run_mode": "CHECK_RUN"},
     )
     assert submit.status_code == 200
-    submitted = ExecutionRecordDTO.model_validate(submit.json())
+    submitted = SubmitExecutionResponse.model_validate(submit.json())
 
-    listing = await client.get("/operations/list-executions")
+    listing = await client.get("/api/executions")
     assert listing.status_code == 200
     records = [
-        ExecutionRecordDTO.model_validate(item)
+        ExecutionRecordModel.model_validate(item)
         for item in listing.json()["executions"]
     ]
-    assert submitted.id in {r.id for r in records}
+    assert submitted.execution_id in {r.id for r in records}
 
 
 async def test_get_execution_by_unknown_id_returns_404(
     client: AsyncClient,
 ) -> None:
     """KeyError from get_execution_detail must map to 404, not 500."""
-    resp = await client.post(
-        "/operations/get-execution-detail",
-        json={"execution_id": "does-not-exist"},
-    )
+    resp = await client.get("/api/executions/does-not-exist")
     assert resp.status_code == 404
 
 
@@ -59,18 +52,7 @@ async def test_delete_execution_by_unknown_id_returns_404(
     client: AsyncClient,
 ) -> None:
     """Same mapping on the stop path."""
-    resp = await client.post(
-        "/operations/stop-execution",
-        json={"execution_id": "does-not-exist"},
-    )
-    assert resp.status_code == 404
-
-
-async def test_list_threads_for_unknown_execution_returns_404(
-    client: AsyncClient,
-) -> None:
-    """Same mapping on the thread subpath."""
-    resp = await client.get("/executions/does-not-exist/threads")
+    resp = await client.post("/api/executions/does-not-exist/stop", json={})
     assert resp.status_code == 404
 
 
@@ -79,16 +61,15 @@ async def test_submit_with_missing_workflow_name_returns_422(
 ) -> None:
     """Pydantic request-body validation must reject malformed inputs.
 
-    This proves SubmitWorkflowRequest is actually bound as the body model,
+    This proves SubmitExecutionRequest is actually bound as the body model,
     not accepted as a loose dict. If someone loosened the signature to
     `body: dict`, we'd silently accept missing fields.
     """
-    resp = await client.post("/executions", json={})
+    resp = await client.post("/api/executions", json={})
     assert resp.status_code == 422
-    body = ValidationErrorResponse.model_validate(resp.json())
-    missing_fields = {
-        str(item.loc[-1]) for item in body.detail if item.type == "missing"
-    }
+    detail = resp.json()["detail"]
+    assert detail["code"] == "validation_error"
+    missing_fields = {str(e["loc"][-1]) for e in detail["extras"]["errors"] if e["type"] == "missing"}
     assert "workflow_name" in missing_fields
 
 
@@ -98,20 +79,14 @@ async def test_submit_with_missing_workflow_name_returns_422(
 async def test_execution_close_gated(empty_client: AsyncClient) -> None:
     """No system loaded -> the Operations binder surfaces
     ``service_unavailable`` (503), not the legacy 409."""
-    resp = await empty_client.post(
-        "/operations/close-execution",
-        json={"execution_id": "any-id"},
-    )
+    resp = await empty_client.post("/api/executions/any-id/close", json={})
     assert resp.status_code == 503
 
 
 async def test_execution_close_unknown_returns_404(
     client: AsyncClient,
 ) -> None:
-    resp = await client.post(
-        "/operations/close-execution",
-        json={"execution_id": "no-such-execution"},
-    )
+    resp = await client.post("/api/executions/no-such-execution/close", json={})
     assert resp.status_code == 404
 
 
@@ -120,15 +95,12 @@ async def test_execution_close_transitions_to_draining(
 ) -> None:
     """Happy path: submit an execution, close it, assert phase=draining."""
     submit = await client.post(
-        "/executions", json={"workflow_name": "simple_workflow", "run_mode": "PURE_SIM"},
+        "/api/executions", json={"workflow_name": "simple_workflow", "run_mode": "CHECK_RUN"},
     )
     assert submit.status_code == 200
-    execution_id = submit.json()["id"]
+    execution_id = submit.json()["execution_id"]
 
-    resp = await client.post(
-        "/operations/close-execution",
-        json={"execution_id": execution_id},
-    )
+    resp = await client.post(f"/api/executions/{execution_id}/close", json={})
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["execution_id"] == execution_id

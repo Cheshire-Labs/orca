@@ -1,15 +1,14 @@
 """Tests for SDK-based PLR example: run the Python SDK example in sim.
 
-Mirrors the SMC assay test pattern with MethodTracker, LabwareJourneyTracker,
-and PLR command verification via RecordingLiquidHandlerDriver.
+Mirrors the SMC assay test pattern with a ThreadRecorder and PLR command
+verification via RecordingLiquidHandlerDriver.
 
 The default-driver workflow runs ONCE per module via the `plr_run` fixture,
-with both MethodTracker and LabwareJourneyTracker attached. Individual tests
-assert against the captured snapshots. The trackers are read-only event
-observers, so attaching both does not alter execution behavior.
+with a ThreadRecorder attached. Individual tests assert against what it
+recorded. The recorder only reads events, so it does not alter execution.
 
-test_plr_commands_reach_driver uses a different system (RecordingLiquidHandler
-injected via build_plr(lh_driver=...)) and runs its own workflow.
+test_plr_commands_reach_driver runs the liquid handler's commands on a recording
+driver and runs its own workflow.
 """
 
 import asyncio
@@ -20,62 +19,37 @@ import pytest
 
 from tests.test_helpers import execution_outcome
 
-from cheshire_drivers.plr import ChatterboxLiquidHandlerDriver
-from cheshire_drivers import RecordingLiquidHandlerDriver
-from examples.pylabrobot_example.pylabrobot_example import build_plr
-from orca.plugins import LabwareJourneyTracker, MethodTracker
-from orca.runtime.device_factory_protocol import DriverPairElement
-from orca.runtime.device_factory_context import use_device_factory
-from orca.runtime.system_runtime import SystemRuntime
-from orca.runtime.run_modes import WorkflowRunMode, current_run_mode
-
-
-class _LhRecordingFactory:
-    """Test factory that injects a RecordingLiquidHandlerDriver for the LH.
-
-    Sim* defaults for every other device. Bound via `use_device_factory(...)`
-    around `build_plr()` so the no-driver `LiquidHandler("liquid_handler")`
-    in the example topology resolves to the recorder.
-    """
-
-    def __init__(self, lh_driver: RecordingLiquidHandlerDriver) -> None:
-        self._lh = lh_driver
-        from orca.runtime.device_factory import SimDeviceFactory
-        self._fallback = SimDeviceFactory()
-
-    def build_drivers(
-        self, device_type: str, name: str, *, deck_modeling: bool = False,
-    ) -> tuple[DriverPairElement, DriverPairElement]:
-        if device_type == "liquid_handler":
-            return self._lh, self._lh
-        return self._fallback.build_drivers(device_type, name, deck_modeling=deck_modeling)
+from tests.example_builds import build_plr
+from tests.thread_recorder import ThreadRecorder
+from orca.modes.run_modes import WorkflowRunMode, current_run_mode
+from tests.memory_activity import close_memory_activity, memory_runtime
+from tests.real_device_path import on_its_own_device_path, the_real_device_path
+from tests.recording_handler import RecordingHandler
 
 
 @dataclass
 class PlrRunResult:
-    method_tracker: MethodTracker
-    journey_tracker: LabwareJourneyTracker
+    recorder: ThreadRecorder
 
 
-async def _run_plr_with_trackers() -> PlrRunResult:
+async def _run_plr_with_a_recorder() -> PlrRunResult:
     plr = await build_plr()
-    runtime = SystemRuntime(plr.system, event_bus=plr.event_bus)
-    method_tracker = MethodTracker()
-    journey_tracker = LabwareJourneyTracker()
-    runtime.register_plugin(method_tracker)
-    runtime.register_plugin(journey_tracker)
+    runtime = await memory_runtime(plr.system, event_bus=plr.event_bus)
+    recorder = ThreadRecorder()
+    runtime.register_plugin(recorder)
 
     await runtime.start()
-    submission = await runtime.submit(plr.workflow, mode=WorkflowRunMode.PURE_SIM)
+    submission = await runtime.submit(plr.workflow, mode=WorkflowRunMode.CHECK_RUN)
     await execution_outcome(runtime, submission, timeout=300.0)
     await runtime.shutdown()
+    await close_memory_activity()
 
-    return PlrRunResult(method_tracker=method_tracker, journey_tracker=journey_tracker)
+    return PlrRunResult(recorder=recorder)
 
 
 @pytest.fixture(scope="module")
 def plr_run() -> PlrRunResult:
-    return asyncio.run(_run_plr_with_trackers())
+    return asyncio.run(on_its_own_device_path(_run_plr_with_a_recorder))
 
 
 @pytest.mark.slow
@@ -89,14 +63,14 @@ class TestPlrExecution:
         If the workflow run failed (timeout or exception), the fixture itself
         would have errored before reaching this test.
         """
-        assert plr_run.method_tracker.all_completed_snapshots, (
+        assert plr_run.recorder.completed_methods, (
             "Workflow completed but no threads recorded any methods"
         )
 
     def test_plr_method_tracking(self, plr_run: PlrRunResult) -> None:
         """All expected methods complete in correct per-thread order."""
-        tracker = plr_run.method_tracker
-        snapshots = tracker.all_completed_snapshots
+        recorder = plr_run.recorder
+        snapshots = recorder.completed_methods
 
         # -- All expected methods ran --
         expected_methods = {
@@ -113,7 +87,7 @@ class TestPlrExecution:
         def find_thread_methods(template_prefix: str) -> list[list[str]]:
             return [
                 methods for tid, methods in snapshots.items()
-                if tracker.thread_names.get(tid, "").startswith(template_prefix)
+                if recorder.thread_names.get(tid, "").startswith(template_prefix)
             ]
 
         # dest_plate: cherry_pick -> dilute -> shake -> read -> QC -> branch(pass) -> seal
@@ -149,13 +123,13 @@ class TestPlrExecution:
 
     def test_plr_labware_journeys(self, plr_run: PlrRunResult) -> None:
         """Labware threads visit all expected locations."""
-        journey_tracker = plr_run.journey_tracker
-        journeys = journey_tracker.all_completed_journeys
+        recorder = plr_run.recorder
+        journeys = recorder.completed_journeys
 
         def find_journeys(name_prefix: str) -> list[list[str]]:
             return [
                 j for tid, j in journeys.items()
-                if journey_tracker.thread_names.get(tid, "").startswith(name_prefix)
+                if recorder.thread_names.get(tid, "").startswith(name_prefix)
             ]
 
         def device_of(location: str) -> str:
@@ -171,8 +145,8 @@ class TestPlrExecution:
 
         # -- Thread instance counts --
         template_counts: Counter[str] = Counter()
-        for thread_id in journey_tracker.thread_names:
-            name = journey_tracker.thread_names[thread_id]
+        for thread_id in recorder.thread_names:
+            name = recorder.thread_names[thread_id]
             parts = name.rsplit("-", 1)
             template_counts[parts[0]] += 1
         assert template_counts["dest_plate"] == 1
@@ -228,24 +202,23 @@ class TestPlrCommandRecording:
     @pytest.mark.timeout(360)
     async def test_plr_commands_reach_driver(self) -> None:
         """PLR commands (aspirate, dispense, tip ops) reach the driver correctly."""
-        inner = ChatterboxLiquidHandlerDriver(num_channels=8)
-        recorder = RecordingLiquidHandlerDriver(inner)
-        with use_device_factory(_LhRecordingFactory(recorder)):
-            plr = await build_plr()
+        recorder = RecordingHandler()
+        the_real_device_path().simulate_with("liquid_handler", recorder)
+        plr = await build_plr()
 
-        runtime = SystemRuntime(plr.system, event_bus=plr.event_bus)
+        runtime = await memory_runtime(plr.system, event_bus=plr.event_bus)
         await runtime.start()
         # `runtime.start()` does not walk LiquidHandler decks; the lazy
         # seam fires on first execution entry. Seed `current_run_mode`
         # explicitly and run the seam so the recorder's deck is configured
         # before the manual `initialize()` below (`initialize()` raises
-        # without a prior `configure_deck()`). PURE_SIM keeps
-        # `initialize_all` off; this test's explicit `recorder.initialize()`
+        # without a prior `configure_deck()`). CHECK_RUN keeps
+        # the bring-up walk off; this test's explicit `recorder.initialize()`
         # still controls the timing of the first driver init.
-        current_run_mode.set(WorkflowRunMode.PURE_SIM)
+        current_run_mode.set(WorkflowRunMode.CHECK_RUN)
         await runtime.system.ensure_runtime_initialized()
         await recorder.initialize()
-        submission = await runtime.submit(plr.workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(plr.workflow, mode=WorkflowRunMode.CHECK_RUN)
         await execution_outcome(runtime, submission, timeout=300.0)
         await runtime.shutdown()
 

@@ -4,10 +4,6 @@ ID resolution. Every command that takes an execution id, thread id, or
 reservation id accepts full UUIDs, unambiguous prefixes (>=4 chars), entity
 names where applicable, or the literal `last` (most recently submitted in
 this CLI session, persisted to `~/.orca/last.json`).
-
-The system-module loader that used to live here is gone:
-the daemon owns the system, and the CLI talks to it via HTTP. See
-`orca.daemon.system_builder` for the daemon-side loader.
 """
 
 import json

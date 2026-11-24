@@ -10,14 +10,18 @@ Covers three things the genuine-layering refactor introduced:
   ``IRuntimeStoreFactory`` hands out.
 """
 
+from orca.events.event_bus import EventBus
+from orca.runtime.store_factory import default_package_root
 import threading
 
 import pytest
 
-from orca.runtime.store_factory import InMemoryRuntimeStoreFactory, IRuntimeStoreFactory
-from orca.sdk.build import Topology, build_system
+from orca.runtime.store_factory import IRuntimeStoreFactory
+from cheshire_drivers.device_setup import BUILTIN_CLIENT
+from orca.runtime.startup import PackageSetupStoreFactory
+from orca.sdk.build import Topology
+from orca.sdk.package import build_system
 from orca.variables import (
-    DeploymentProfile,
     IVariableResolver,
     IVariableStore,
     NullVariableResolver,
@@ -26,6 +30,8 @@ from orca.variables import (
     VariableStore,
 )
 from tests.daemon.daemon_test_fixture_topology import build_topology
+from tests.setup_package import package_stores
+from tests.memory_activity import memory_ops_store
 
 
 # The primitive accessors the dumb store exposes = the IVariableStore seam.
@@ -212,11 +218,11 @@ class TestVariableServiceContract:
 # INJECTION SEAM
 # ===========================================================================
 
-class _SpyStoreFactory(InMemoryRuntimeStoreFactory):
+class _SpyStoreFactory(PackageSetupStoreFactory):
     """Hands out one known variable store so the seam can be asserted by identity."""
 
     def __init__(self) -> None:
-        super().__init__()
+        super().__init__(default_package_root(), default_client=BUILTIN_CLIENT)
         self.injected = VariableService(VariableStore())
 
     def variable_store(self) -> VariableService:
@@ -226,7 +232,7 @@ class _SpyStoreFactory(InMemoryRuntimeStoreFactory):
 class TestVariableSeam:
 
     def test_factory_returns_a_fresh_store_per_call(self) -> None:
-        factory = InMemoryRuntimeStoreFactory()
+        factory = package_stores()
         first = factory.variable_store()
         second = factory.variable_store()
         assert isinstance(first, VariableService)
@@ -234,6 +240,6 @@ class TestVariableSeam:
 
     async def test_build_system_uses_the_injected_variable_store(self) -> None:
         factory: IRuntimeStoreFactory = _SpyStoreFactory()
-        topology: Topology = build_topology(factory)
-        build = await build_system("sys", topology, factory)
+        topology: Topology = build_topology()
+        build = await build_system("sys", topology, factory, event_bus=EventBus(), ops_history_store=memory_ops_store())
         assert build.system.variable_store is factory.injected

@@ -20,8 +20,8 @@ from cheshire_drivers.liquid_handler_models import (
 from orca.devices.devices import LiquidHandler
 from orca.resource_models.plate_pad import PlatePad
 from orca.resource_models.resources import IResource
-from orca.runtime.deck_layout_service import seeded_deck_layout_service
 from orca.runtime.facades.deck_layouts import DeckLayoutFacade
+from tests.setup_package import deck_layout_file, with_deck_layouts
 
 
 def _layout(deck_type: str = "BRAVO_96") -> DeckLayoutConfig:
@@ -61,12 +61,11 @@ def _build_lh(
     name: str, layouts: dict[str, DeckLayoutConfig] | None = None,
     deck_layout: str | None = None,
 ) -> LiquidHandler:
-    return LiquidHandler(
+    return with_deck_layouts(LiquidHandler(
         name=name,
         sim=True,
-        deck_layout_store=seeded_deck_layout_service(layouts or {}),
         deck_layout=deck_layout,
-    )
+    ), deck_layout_file(layouts or {}))
 
 
 def _build_facade(

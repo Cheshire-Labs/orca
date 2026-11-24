@@ -1,9 +1,8 @@
 """Nothing the runtime started is still on the loop once shutdown returns.
 
-`shutdown` closes the incident, record, access-config, move-defaults,
-grip-profile and per-device stores. Anything still running when it does hits a
-disposed engine, and an aiosqlite call against one does not fail fast: it never
-answers. The task then cannot be cancelled either, because cancellation lands
+Whoever built the runtime closes its stores once `shutdown` returns. Anything
+the runtime left running then hits a disposed engine, and an aiosqlite call
+against one does not fail fast: it never answers. The task then cannot be cancelled either, because cancellation lands
 at its next await and it never reaches one.
 
 In CI that was a teardown nobody could end. pytest-asyncio closes its loop with
@@ -16,7 +15,7 @@ had passed. The log showed the give-away pair: a workflow thread mid-pick, and
 and the location persist task. The two it did not were the execution tasks and
 `_background_tasks` -- the orphan-slot drain and the failed-execution teardown,
 which are spawned exactly when a run goes wrong and both of which write to the
-stores being closed.
+stores.
 """
 
 import asyncio
@@ -24,18 +23,17 @@ import asyncio
 import pytest
 
 from orca.runtime.execution import ExecutionPhase
-from orca.runtime.registries import NullGatewayRegistry
-from orca.runtime.run_modes import WorkflowRunMode
+from tests.no_devices import NullGatewayRegistry
+from orca.modes.run_modes import WorkflowRunMode
 from orca.runtime.system_runtime import SystemRuntime
 
-from tests.runtime.test_deck_layout_required_on_submit import (
-    _build_system_with_lh,
-)
+from tests.test_system_runtime import _build_simple_system
+from tests.memory_activity import memory_runtime
 
 
 async def _started_runtime() -> SystemRuntime:
-    system = await _build_system_with_lh(deck_layout=None)
-    runtime = SystemRuntime(system, gateway_registry=NullGatewayRegistry())
+    system, _ = await _build_simple_system()
+    runtime = await memory_runtime(system, gateway_registry=NullGatewayRegistry())
     await runtime.start()
     return runtime
 
@@ -53,7 +51,7 @@ async def _work_that_does_not_end() -> asyncio.Task[None]:
 
 async def test_a_background_task_does_not_outlive_shutdown() -> None:
     """The orphan-slot drain and the failed-execution teardown live here. Both
-    write to stores shutdown is about to close."""
+    write to stores that are closed once shutdown returns."""
     runtime = await _started_runtime()
     task = await _work_that_does_not_end()
     runtime._background_tasks.add(task)
@@ -78,10 +76,12 @@ async def test_every_background_task_is_waited_for_not_just_one() -> None:
     assert [task.done() for task in tasks] == [True, True, True]
 
 
-async def test_the_stores_are_closed_after_the_work_stops_not_before() -> None:
-    """The ordering is the whole fix. Closing first is what leaves a task
-    blocked on a dead connection, and a task blocked there cannot be
-    cancelled."""
+async def test_shutdown_stops_the_work_and_never_closes_the_stores(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A store closed under running work leaves a task blocked on a dead
+    connection that cannot be cancelled. The runtime closes none of its
+    stores; their owner closes them after shutdown returns."""
     runtime = await _started_runtime()
     order: list[str] = []
     task = asyncio.ensure_future(asyncio.sleep(300))
@@ -89,17 +89,18 @@ async def test_the_stores_are_closed_after_the_work_stops_not_before() -> None:
     await asyncio.sleep(0)
     runtime._background_tasks.add(task)
 
-    original = runtime._dispose_device_stores
+    incidents = runtime._incident_service
+    original = incidents.aclose
 
-    async def note_then_dispose() -> None:
+    async def note_then_close() -> None:
         order.append("stores closed")
         await original()
 
-    runtime._dispose_device_stores = note_then_dispose  # type: ignore[method-assign]
+    monkeypatch.setattr(incidents, "aclose", note_then_close)
 
     await runtime.shutdown()
 
-    assert order == ["work stopped", "stores closed"], order
+    assert order == ["work stopped"], order
 
 
 async def test_an_execution_task_does_not_outlive_shutdown() -> None:
@@ -108,7 +109,7 @@ async def test_an_execution_task_does_not_outlive_shutdown() -> None:
     stops a later edit from moving that await."""
     runtime = await _started_runtime()
     record = await runtime.submit_workflow(
-        "deck_layout_test_wf", mode=WorkflowRunMode.PURE_SIM,
+        "simple_workflow", mode=WorkflowRunMode.CHECK_RUN,
     )
     execution = runtime._executions[record.id]
     if not execution.task.done():
@@ -126,7 +127,7 @@ async def test_a_finished_execution_keeps_its_result() -> None:
     the way out."""
     runtime = await _started_runtime()
     record = await runtime.submit_workflow(
-        "deck_layout_test_wf", mode=WorkflowRunMode.PURE_SIM,
+        "simple_workflow", mode=WorkflowRunMode.CHECK_RUN,
     )
     execution = runtime._executions[record.id]
     await asyncio.wait_for(asyncio.shield(execution.task), timeout=30)

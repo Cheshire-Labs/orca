@@ -15,6 +15,7 @@ is still unresolved abandons the park (the labware rests where it is; a pad or
 site is a legitimate resting spot) and the thread serves its slot.
 """
 
+from orca.config import OrcaConfig
 import asyncio
 from collections.abc import AsyncGenerator, Callable
 from unittest.mock import AsyncMock, MagicMock
@@ -23,18 +24,17 @@ import pytest
 
 import orca.orca as orca
 from orca.config import ReservationConfig
-from orca.plugins import MethodTracker
+from tests.thread_recorder import ThreadRecorder
 from orca.resource_models.labware import PlateTemplate
 from orca.resource_models.location import Location
 from orca.resource_models.plate_pad import PlatePad
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.system_runtime import SystemRuntime
+from orca.modes.run_modes import WorkflowRunMode
 from orca.sdk.events import EventBus
 from orca.sdk.system import ResourceRegistry, SystemMap
 from orca.sdk.workflow import MethodTemplate, ThreadTemplate, WorkflowTemplate
 from orca.system.SdkToSystemBuilder import SdkToSystemBuilder
 from orca.system.reservation_manager.errors import MoveAbandonedError
-from orca.system.reservation_manager.move_handler import MoveHandler
+from orca.workflow_models.actions.move_handler import MoveHandler
 from orca.system.reservation_manager.reservation_manager import (
     ThreadReservationCoordinator,
 )
@@ -71,6 +71,10 @@ from tests.test_helpers import (
     wire_system_map,
 )
 from tests.test_single_carriage_transporter import _pump
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 
 # --- Move-handler layer: the abandon predicate ---------------------------------
@@ -327,7 +331,10 @@ async def _build_contended_park_system() -> tuple[
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=event_bus,
+        event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     system = builder.get_system()
@@ -349,19 +356,19 @@ async def test_dispatch_arriving_mid_park_is_served_not_deadlocked() -> None:
     park and serve; the run must complete. Pre-fix this deadlocks: the park
     retries forever, combine never gets its rack, and the resident never leaves."""
     system, workflow, event_bus, release_gate = await _build_contended_park_system()
-    runtime = SystemRuntime(system, event_bus=event_bus)
-    tracker = MethodTracker()
-    runtime.register_plugin(tracker)
+    runtime = await memory_runtime(system, event_bus=event_bus)
+    recorder = ThreadRecorder()
+    runtime.register_plugin(recorder)
     await runtime.start()
     try:
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
 
         def _rack_park_blocked() -> bool:
             # Rack's only move after serving combine_first is the park; the
             # pad is occupied all run, so this wait state IS the blocked park.
             first_done = any(
                 "combine_first_method" in methods
-                for methods in tracker.all_completed_snapshots.values()
+                for methods in recorder.completed_methods.values()
             )
             if not first_done:
                 return False
@@ -387,10 +394,10 @@ async def test_dispatch_arriving_mid_park_is_served_not_deadlocked() -> None:
         await runtime.shutdown()
 
     rack_tid = next(
-        tid for tid, name in tracker.thread_names.items()
+        tid for tid, name in recorder.thread_names.items()
         if name.startswith("rack")
     )
-    rack_methods = tracker.all_completed_snapshots.get(rack_tid, [])
+    rack_methods = recorder.completed_methods.get(rack_tid, [])
     assert "combine_second_method" in rack_methods, (
         f"the rack must have served the dispatch that arrived mid-park: {rack_methods}"
     )

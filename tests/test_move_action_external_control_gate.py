@@ -1,6 +1,11 @@
-"""Move-action and facade gates for the external-control flag."""
+"""Move-action and facade gates for the external-control flag: a hold keeps runs off a device, never the operator."""
 
+from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Any
+
+from typing_extensions import Self
 from unittest.mock import Mock
 
 import pytest
@@ -9,15 +14,20 @@ from pydantic import JsonValue
 from cheshire_drivers import SimShakerDriver
 
 from orca.devices.shaker import Shaker
+from orca.gateway.device_command_runner import NamedCommandResult
+from orca.gateway.registry import DeviceSnapshot
+from orca.operations.operator_device import DeviceBatchExecuteOperation
+from orca.operations.operator_device_models import BatchExecuteRequest
+from orca.modes.run_modes import WorkflowRunMode
 from orca.resource_models.device_error import DeviceUnderExternalControlError
 from orca.resource_models.devices import Device
 from orca.resource_models.external_control import device_under_external_control
 from orca.resource_models.labware_staging_bridge import LabwareStagingBridge
 from orca.resource_models.location import Location
 from orca.resource_models.plate_pad import PlatePad
-from orca.runtime.device_factory_context import use_device_factory
-from orca.runtime.device_factory_protocol import DriverPairElement
-from orca.runtime.registries.null_gateway_registry import NullDeviceConnectionSource
+from orca.driver_management.device_factory_context import use_device_factory
+from orca.driver_management.device_factory_protocol import DeviceDriver
+from tests.no_devices import NullDeviceConnectionSource
 from orca.system.reservation_manager.location_reservation import (
     LocationReservation,
 )
@@ -28,7 +38,7 @@ from orca.workflow_models.actions.move_action import (
 from orca.workflow_models.status_enums import ActionStatus
 from tests.test_helpers import (
     no_source_hold,
-    make_labware_placer,
+    make_command_pipeline,
     create_test_device,
     create_test_labware_instance,
     create_test_transporter,
@@ -93,6 +103,7 @@ def _mock_thread_context() -> Mock:
     ctx.thread_id = "thread_1"
     ctx.thread_name = "thread1"
     ctx.template_name = "tmpl_1"
+    ctx.group_id = None
     return ctx
 
 
@@ -112,7 +123,7 @@ async def _build_executing_move(
         context=_mock_thread_context(),
         action=move,
         labware_location_service=Mock(),
-        labware_placer=make_labware_placer(Mock()),
+        command_pipeline=make_command_pipeline(Mock()),
         slot_holder=no_source_hold(),
     )
     return executing
@@ -238,7 +249,7 @@ async def test_move_skips_source_check_when_already_picked() -> None:
         context=_mock_thread_context(),
         action=move,
         labware_location_service=Mock(),
-        labware_placer=make_labware_placer(Mock()),
+        command_pipeline=make_command_pipeline(Mock()),
         slot_holder=no_source_hold(),
     )
 
@@ -274,7 +285,7 @@ async def test_move_still_refuses_on_transporter_when_already_picked() -> None:
         context=_mock_thread_context(),
         action=move,
         labware_location_service=Mock(),
-        labware_placer=make_labware_placer(Mock()),
+        command_pipeline=make_command_pipeline(Mock()),
         slot_holder=no_source_hold(),
     )
 
@@ -310,7 +321,7 @@ async def test_move_still_refuses_on_target_when_already_picked() -> None:
         context=_mock_thread_context(),
         action=move,
         labware_location_service=Mock(),
-        labware_placer=make_labware_placer(Mock()),
+        command_pipeline=make_command_pipeline(Mock()),
         slot_holder=no_source_hold(),
     )
 
@@ -344,7 +355,7 @@ async def test_move_gate_raise_records_errored_status() -> None:
         context=_mock_thread_context(),
         action=move,
         labware_location_service=Mock(),
-        labware_placer=make_labware_placer(Mock()),
+        command_pipeline=make_command_pipeline(Mock()),
         slot_holder=no_source_hold(),
     )
 
@@ -375,83 +386,80 @@ class _RecordingShakerFactory:
     def __init__(self, driver: _RecordingShaker) -> None:
         self._d = driver
 
-    def build_drivers(
+    def build_driver(
         self, device_type: str, name: str,
-    ) -> tuple[DriverPairElement, DriverPairElement]:
+    ) -> DeviceDriver:
         del device_type, name
-        return self._d, self._d
+        return self._d
 
 
 def _build_facade_with_device(name: str, device: Device) -> Any:
-    from orca.gateway.controller import device_controller
     from orca.runtime.facades.devices import DeviceFacade
+    from tests.gateway_parts import gateway_parts
 
     system = Mock()
     system.get_device = Mock(return_value=device)
-    topology = Mock()
-    gateway = Mock()
     return DeviceFacade(
-        system=system, topology=topology, gateway=gateway,
-        connections=NullDeviceConnectionSource(), runtime=Mock(),
-        faults=device_controller,
+        system=system, connections=NullDeviceConnectionSource(), runtime=Mock(),
+        device_gateway=gateway_parts().gateway,
     )
 
 
-@pytest.mark.asyncio
-async def test_facade_execute_refuses_when_under_external_control() -> None:
-    driver = _RecordingShaker()
-    with use_device_factory(_RecordingShakerFactory(driver)):
-        shaker = Shaker("test_shaker")
-    shaker.take_external_control()
+class _RecordingRunner:
+    """The operator runner, recording what it sent."""
 
-    facade = _build_facade_with_device("test_shaker", shaker)
+    def __init__(self) -> None:
+        self.sent: list[str] = []
 
-    with pytest.raises(DeviceUnderExternalControlError) as excinfo:
-        await facade.execute(
-            "test_shaker", "shake", {"speed": 500}, confirm=True,
+    async def device(self, device_id: str) -> DeviceSnapshot:
+        return DeviceSnapshot(
+            type="shaker", name=device_id, interfaces=["IShaker"], capabilities=[], provides_state=False,
+            methods={}, site="test", lab="test", workcell=None, status="ready", last_seen=datetime.now(),
         )
 
-    assert excinfo.value.device_name == "test_shaker"
-    assert driver.execute_calls == []
+    async def run_named(
+        self, device_id: str, command: str, params: Mapping[str, JsonValue],
+        *, timeout_seconds: float | None = None, confirm: bool = False, reason: str | None = None,
+    ) -> NamedCommandResult:
+        self.sent.append(command)
+        return NamedCommandResult(duration_ms=1.0)
+
+    @asynccontextmanager
+    async def hold(self, device_id: str) -> AsyncIterator[Self]:
+        yield self
 
 
 @pytest.mark.asyncio
-async def test_facade_invoke_refuses_when_under_external_control() -> None:
-    driver = _RecordingShaker()
-    with use_device_factory(_RecordingShakerFactory(driver)):
-        shaker = Shaker("test_shaker")
-    shaker.take_external_control()
-
-    facade = _build_facade_with_device("test_shaker", shaker)
-
-    with pytest.raises(DeviceUnderExternalControlError) as excinfo:
-        await facade.invoke(
-            "test_shaker",
-            "shake",
-            {"speed": 500, "duration": 30},
-            confirm=True,
-        )
-
-    assert excinfo.value.device_name == "test_shaker"
-    assert driver.shake_calls == []
-
-
-@pytest.mark.asyncio
-async def test_facade_invoke_proceeds_after_release() -> None:
-    driver = _RecordingShaker()
-    with use_device_factory(_RecordingShakerFactory(driver)):
-        shaker = Shaker("test_shaker")
-    shaker.take_external_control()
-    shaker.release_external_control()
-
-    facade = _build_facade_with_device("test_shaker", shaker)
-
-    await facade.invoke(
-        "test_shaker",
-        "shake",
-        {"speed": 500, "duration": 30},
-        confirm=True,
+async def test_a_hold_keeps_runs_off_the_device_and_lets_the_operator_through() -> None:
+    """The hold is one-way: a run's move to the held device is refused, an operator's command by name is sent."""
+    target_device = create_test_device("target_shaker")
+    target_device.hold_external_control("driving it by hand")
+    source = Location("source_loc", resource=LabwareStagingBridge("source_bridge", create_test_device("source_shaker")))
+    target = Location("target_loc", resource=LabwareStagingBridge("target_bridge", target_device))
+    move = await _build_executing_move(
+        source=source, target=target, transporter=create_test_transporter("robot1", ["source_loc", "target_loc"]),
     )
 
-    assert len(driver.shake_calls) == 1
-    assert driver.shake_calls[0] == {"speed": 500, "duration": 30}
+    with pytest.raises(DeviceUnderExternalControlError):
+        await move.execute()
+
+    runtime = Mock()
+    runtime.devices = _build_facade_with_device("target_shaker", target_device)
+    runtime.operator_base_mode = Mock(return_value=WorkflowRunMode.LIVE)
+    runner = _RecordingRunner()
+    await DeviceBatchExecuteOperation(runtime=runtime, devices=runner).run(BatchExecuteRequest(
+        device_id="target_shaker", commands=[{"command": "shaker.shake"}], stop_on_error=True,
+    ))
+
+    assert runner.sent == ["shake"]
+
+
+def test_a_command_name_drops_only_the_orca_side_namespace() -> None:
+    driver = _RecordingShaker()
+    with use_device_factory(_RecordingShakerFactory(driver)):
+        shaker = Shaker("test_shaker")
+
+    facade = _build_facade_with_device("test_shaker", shaker)
+
+    assert facade.command_name("test_shaker", "shaker.shake") == "shake"
+    assert facade.command_name("test_shaker", "shake") == "shake"

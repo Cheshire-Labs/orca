@@ -8,12 +8,21 @@ import pytest
 from cheshire_drivers.move_parameters import MoveParameterPatch
 from cheshire_drivers.teachpoints import AccessConfig, CartesianCoordinates, Teachpoint
 
-from orca.runtime.db import create_memory_engine
-from orca.runtime.sqlite_teachpoint_store import SqliteTeachpointStore
 from orca.runtime.teachpoint_wire import build_teachpoint
+from tests.setup_package import fresh_teachpoints
+from orca.runtime.setup_file_stores import TeachpointFileStore
 
 
 pytestmark = pytest.mark.asyncio
+
+
+_DEFAULT_VERTICAL = AccessConfig(
+    name="default_vertical",
+    access_type="vertical",
+    gripper_offset=20.0,
+    vertical_clearance=20.0,
+    horizontal_clearance=100.0,
+)
 
 
 def _tp(
@@ -24,20 +33,14 @@ def _tp(
         position_id="hotel_3",
         coordinates=CartesianCoordinates(x=42.0, y=0, z=0, yaw=0, pitch=90, roll=180),
         orientation="right",
-        access=AccessConfig(
-            name="default_vertical",
-            access_type="vertical",
-            gripper_offset=20.0,
-            vertical_clearance=20.0,
-            horizontal_clearance=100.0,
-        ),
+        access=_DEFAULT_VERTICAL,
         taught_with=taught_with,
         by_labware=by_labware,
     )
 
 
-def _store() -> SqliteTeachpointStore:
-    return SqliteTeachpointStore(create_memory_engine())
+def _store() -> TeachpointFileStore:
+    return fresh_teachpoints([_DEFAULT_VERTICAL])
 
 
 class TestTheyRoundTripThroughTheStore:

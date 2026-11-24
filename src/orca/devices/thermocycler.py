@@ -1,7 +1,6 @@
 from typing import ClassVar, List
 
 from cheshire_drivers.interfaces import IThermocyclerDriver
-from cheshire_drivers.sims import SimThermocyclerDriver
 from cheshire_drivers.thermocycler_models import (
     CloseLidRequest,
     DeactivateBlockRequest,
@@ -27,8 +26,7 @@ from cheshire_drivers.thermocycler_models import (
 
 from orca.devices.device_interfaces import IThermocycler
 from orca.resource_models.devices import Device
-from orca.runtime.device_factory_context import resolve_drivers
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.driver_management.device_factory_context import resolve_driver
 
 
 class Thermocycler(Device[IThermocyclerDriver], IThermocycler):
@@ -39,12 +37,11 @@ class Thermocycler(Device[IThermocyclerDriver], IThermocycler):
     def __init__(
         self,
         name: str,
-        sim_override: WorkflowRunMode | None = None,
     ) -> None:
-        live, sim_drv = resolve_drivers(
-            self.KIND, name, SimThermocyclerDriver,
+        driver = resolve_driver(
+            self.KIND, name, IThermocyclerDriver,
         )
-        super().__init__(name, live, sim_drv, sim_override=sim_override)
+        super().__init__(name, driver)
 
     async def run_protocol(self, protocol: Protocol, block_max_volume: float) -> None:
         await self.driver.run_protocol(

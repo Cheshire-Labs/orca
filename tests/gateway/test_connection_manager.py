@@ -129,7 +129,7 @@ class TestConnectionManager:
         assert manager.get_active_connection_count() == 1
 
         # Disconnect
-        await manager.disconnect("lab1-client")
+        await manager.disconnect("lab1-client", mock_websocket)
 
         # Verify disconnected
         assert manager.get_active_connection_count() == 0
@@ -188,8 +188,8 @@ class TestConnectionManager:
         success = await manager.send_to_client("nonexistent", "test message")
         assert success is False
 
-    async def test_send_to_client_error_disconnects(self, manager):
-        """Test that send errors trigger disconnect."""
+    async def test_a_send_error_leaves_the_removal_to_the_router(self, manager):
+        """A failed send closes the socket; the router's cleanup for it removes the client."""
         mock_ws = Mock()
         mock_ws.send_text = AsyncMock(side_effect=Exception("Connection broken"))
 
@@ -201,12 +201,10 @@ class TestConnectionManager:
             workcell=None,
         )
 
-        # Send should fail and disconnect
         success = await manager.send_to_client("lab1-client", "test message")
         assert success is False
 
-        # Connection should be removed
-        assert manager.get_active_connection_count() == 0
+        assert manager.get_active_connection_count() == 1
 
     async def test_send_failure_closes_websocket(self, manager):
         """A failed send must close the socket so the router's receive_text()
@@ -228,8 +226,7 @@ class TestConnectionManager:
         mock_ws.close.assert_awaited_once()
 
     async def test_send_failure_swallows_close_error(self, manager):
-        """A close that itself raises must not propagate; the send result is
-        still False and the connection is still removed."""
+        """A close that itself raises must not propagate; the send result is still False."""
         mock_ws = Mock()
         mock_ws.send_text = AsyncMock(side_effect=Exception("Connection broken"))
         mock_ws.close = AsyncMock(side_effect=Exception("already closed"))
@@ -244,7 +241,6 @@ class TestConnectionManager:
 
         success = await manager.send_to_client("lab1-client", "test message")
         assert success is False
-        assert manager.get_active_connection_count() == 0
 
     async def test_update_heartbeat(self, manager, mock_websocket):
         """Test updating heartbeat for connected client."""
@@ -264,8 +260,8 @@ class TestConnectionManager:
         conn = await manager.get_connection("lab1-client")
         assert conn.last_heartbeat >= initial_heartbeat
 
-    async def test_cleanup_stale_connections(self, manager):
-        """Test cleaning up stale connections."""
+    async def test_close_stale_connections(self, manager):
+        """A stale connection is closed and named; the router's cleanup for it removes the client."""
         mock_ws1 = Mock()
         mock_ws1.close = AsyncMock()
 
@@ -293,20 +289,15 @@ class TestConnectionManager:
         conn1 = await manager.get_connection("lab1-client")
         conn1.last_heartbeat = datetime.now(timezone.utc) - timedelta(seconds=120)
 
-        # Cleanup stale connections
-        removed = await manager.cleanup_stale_connections(timeout_seconds=90)
+        closed = await manager.close_stale_connections(timeout_seconds=90)
 
-        # One connection should be removed. The return type is
-        # `list[tuple[client_id, device_ids]]` so the heartbeat
-        # sweep can fire device.disconnected per device. The "one removed"
-        # contract is preserved via len().
-        assert len(removed) == 1
-        assert removed[0][0] == "lab1-client"
-        assert removed[0][1] == []  # No devices attached in this test
-        assert manager.get_active_connection_count() == 1
+        assert closed == ["lab1-client"]
+        mock_ws1.close.assert_awaited_once_with(code=1000, reason="Heartbeat timeout")
+        mock_ws2.close.assert_not_awaited()
 
-        # Stale connection should be gone
-        assert await manager.get_connection("lab1-client") is None
+        # A second sweep before the router has cleaned up does not close it again.
+        await manager.close_stale_connections(timeout_seconds=90)
+        mock_ws1.close.assert_awaited_once()
 
         # Fresh connection should still be active
         assert await manager.get_connection("lab2-client") is not None
@@ -369,13 +360,33 @@ class TestConnectionManagerDeviceTracking:
         )
         await manager.attach_devices("lab1-client", ["shaker_1"])
 
-        out = await manager.disconnect("lab1-client")
+        out = await manager.disconnect("lab1-client", mock_websocket)
 
         assert out == ["shaker_1"]
         assert manager.get_active_connection_count() == 0
 
-    async def test_disconnect_unknown_client_returns_empty(self, manager):
-        assert await manager.disconnect("missing") == []
+    async def test_disconnect_unknown_client_returns_none(self, manager, mock_websocket):
+        assert await manager.disconnect("missing", mock_websocket) is None
+
+    async def test_a_replaced_socket_does_not_remove_the_connection_that_replaced_it(
+        self, manager, mock_websocket,
+    ):
+        newer = Mock()
+        newer.close = AsyncMock()
+        for websocket in (mock_websocket, newer):
+            await manager.connect(
+                websocket=websocket,
+                client_id="lab1-client",
+                site="boston", lab="molbio", workcell=None,
+            )
+        await manager.attach_devices("lab1-client", ["shaker_1"])
+
+        assert await manager.disconnect("lab1-client", mock_websocket) is None
+
+        conn = await manager.get_connection("lab1-client")
+        assert conn is not None
+        assert conn.websocket is newer
+        assert conn.device_ids == ["shaker_1"]
 
     async def test_reconnect_displaces_returns_old_device_ids(self, manager):
         old_ws = Mock()
@@ -401,22 +412,3 @@ class TestConnectionManagerDeviceTracking:
         conn = await manager.get_connection("lab1-client")
         assert conn.device_ids == []
         old_ws.close.assert_awaited()
-
-    async def test_cleanup_returns_dropped_pairs_with_devices(self, manager):
-        ws = Mock()
-        ws.close = AsyncMock()
-
-        await manager.connect(
-            websocket=ws,
-            client_id="lab1-client",
-            site="boston", lab="molbio", workcell=None,
-        )
-        await manager.attach_devices("lab1-client", ["shaker_1", "centrifuge_1"])
-
-        # Force stale.
-        conn = await manager.get_connection("lab1-client")
-        conn.last_heartbeat = datetime.now(timezone.utc) - timedelta(seconds=300)
-
-        dropped = await manager.cleanup_stale_connections(timeout_seconds=90)
-
-        assert dropped == [("lab1-client", ["shaker_1", "centrifuge_1"])]

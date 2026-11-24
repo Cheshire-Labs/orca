@@ -9,41 +9,22 @@ passing bridge call also proves the interface declares the method.
 import pytest
 
 from cheshire_drivers import (
-    Aspirate96Request,
-    Dispense96Request,
-    DropTips96Request,
-    PickUpTips96Request,
     RecordingLiquidHandlerDriver,
     SimLiquidHandlerDriver,
 )
+from tests.real_device_path import connected, the_real_device_path
 from orca.devices.devices import LiquidHandlerProtocol
-from orca.runtime.sim_labware import SimPlate, SimTipRack
-from orca.runtime.device_factory_context import use_device_factory
-from orca.runtime.device_factory_protocol import DriverPairElement
-
-
-class _RecorderFactory:
-    """Inject a RecordingLiquidHandlerDriver into the no-driver SDK ctor."""
-
-    def __init__(self, driver: DriverPairElement) -> None:
-        self._d = driver
-
-    def build_drivers(
-        self, device_type: str, name: str, *, deck_modeling: bool = False,
-    ) -> tuple[DriverPairElement, DriverPairElement]:
-        return self._d, self._d
+from orca.resource_models.sim_labware import SimPlate, SimTipRack
 
 
 class TestLiquidHandlerBridge96Head:
     """LiquidHandlerProtocol bridges 96-head calls to serializable driver requests."""
 
     @pytest.fixture
-    def recording_lh(self) -> tuple[LiquidHandlerProtocol, RecordingLiquidHandlerDriver]:
-        inner = SimLiquidHandlerDriver("test_lh")
-        recorder = RecordingLiquidHandlerDriver(inner)
-        with use_device_factory(_RecorderFactory(recorder)):
-            lh = LiquidHandlerProtocol("test_lh")
-        return lh, recorder
+    async def recording_lh(self) -> tuple[LiquidHandlerProtocol, RecordingLiquidHandlerDriver]:
+        recorder = RecordingLiquidHandlerDriver(SimLiquidHandlerDriver("test_lh"))
+        the_real_device_path().simulate_with("test_lh", recorder)
+        return await connected(LiquidHandlerProtocol("test_lh")), recorder
 
     @pytest.mark.asyncio
     async def test_aspirate96_bridges_to_driver(

@@ -1,4 +1,4 @@
-"""Backend selection for the orca CLI (`local` daemon vs `cloud` REST).
+"""Which server the orca CLI talks to: the `local` daemon or a `cloud` deployment.
 
 Resolution precedence:
 
@@ -6,8 +6,7 @@ Resolution precedence:
 2. `ORCA_BACKEND=local|cloud`    env var
 3. `~/.orca/config.json`         top-level `"backend": "local"` field
 4. Auto-fallback: probe `~/.orca/daemon.json` + daemon `health()`. Pick `local`
-   on probe success; on failure, say to run `orca start`, and name the cloud
-   variables too when a cloud backend is installed.
+   on probe success; on failure, say to run `orca start` or set the cloud variables.
 
 (The config file is JSON rather than TOML to stay on the standard library:
 `requires-python = ">=3.10"` predates `tomllib`, and pulling in `tomli` for
@@ -31,11 +30,12 @@ from importlib.metadata import entry_points
 from pathlib import Path
 from typing import Literal
 
-import httpx
 
 from orca.cli import output
-from orca.cli.client import LocalDaemonClient
+from orca.cli.daemon_client import DaemonLoadingClient
+from orca.cli.client import OrcaClient
 from orca.cli.control_plane import (
+    ENV_CLOUD_API_KEY,
     BackendNotResolvedError,
     ControlPlaneError,
     ICloudControlPlaneClient,
@@ -46,10 +46,8 @@ from orca.daemon.lifecycle import detect_live_daemon, pid_file_path
 
 BackendName = Literal["local", "cloud"]
 
-# Setuptools entry-point group for cloud backend impls. Any package that
-# registers an entry point here can provide an alternative cloud-mode
-# IControlPlaneClient implementation. orca declares the Protocol; a cloud
-# backend is discovered at runtime rather than hardcoded.
+# Setuptools entry-point group for the package that implements the hosted-only
+# verbs. Every other verb reaches a hosted server through `OrcaClient`.
 _CLI_BACKENDS_GROUP = "orca.cli_backends"
 
 
@@ -57,7 +55,7 @@ _VALID_BACKENDS: frozenset[str] = frozenset({"local", "cloud"})
 
 _ENV_BACKEND = "ORCA_BACKEND"
 _ENV_CLOUD_URL = "ORCA_CLOUD_URL"
-_ENV_CLOUD_API_KEY = "ORCA_CLOUD_API_KEY"
+_ENV_CLOUD_API_KEY = ENV_CLOUD_API_KEY
 
 _LOCAL_REDIRECT = (
     "this command requires a local orca daemon; "
@@ -142,29 +140,26 @@ def _autodetect_backend() -> BackendName:
 
     Probes the loopback daemon first (since standalone users dominate); if it
     answers, choose `local`. If not, but cloud creds are present, choose
-    `cloud`. Otherwise fail clear, offering the cloud only if a backend is installed.
+    `cloud`. Otherwise fail clear.
     """
     if _has_cloud_creds() and not _daemon_reachable():
         return "cloud"
     if _daemon_reachable():
         return "local"
-    message = "no backend resolved: no daemon is running on 127.0.0.1. Run 'orca start' first."
-    if cloud_backend_installed():
-        message += (
-            f" To target a cloud deployment instead, set {_ENV_CLOUD_URL} and "
-            f"{_ENV_CLOUD_API_KEY}."
-        )
-    raise BackendNotResolvedError(message)
+    raise BackendNotResolvedError(
+        "no backend resolved: no daemon is running on 127.0.0.1. Run 'orca start' first. "
+        f"To target a cloud deployment instead, set {_ENV_CLOUD_URL} and {_ENV_CLOUD_API_KEY}.",
+    )
 
 
 @functools.cache
 def cloud_backend_installed() -> bool:
-    """True when a package registers a cloud backend. The public build has none."""
+    """True when a package implements the hosted-only verbs. The public build has none."""
     return any(True for _ in entry_points(group=_CLI_BACKENDS_GROUP, name="cloud"))
 
 
 def cloud_help(text: str) -> str:
-    """`text` when a cloud backend is installed, else nothing: help never offers what the build lacks."""
+    """`text` when the hosted-only verbs are installed, else nothing: help never offers what the build lacks."""
     return text if cloud_backend_installed() else ""
 
 
@@ -177,35 +172,19 @@ def _has_cloud_creds() -> bool:
 def _daemon_reachable() -> bool:
     """True iff the loopback daemon is recorded AND answers GET /health.
 
-    Silent probe -- never prints to stderr. Constructing `LocalDaemonClient`
-    here would call `output.fail` on a missing PID file, leaking a confusing
-    `error: no daemon running` message before the auto-detect can fall
-    through to the combined "no backend resolved" report. Use
-    `detect_live_daemon` + direct HTTP probe instead.
+    Silent probe -- never prints to stderr, so auto-detect can fall through to
+    the combined "no backend resolved" report.
     """
     # Use pid_file_path() (function) NOT the frozen PID_FILE_PATH constant
     # so tests that set ORCA_DAEMON_HOME post-import see their override.
     info = detect_live_daemon(pid_file_path())
     if info is None:
         return False
-    try:
-        with httpx.Client(
-            base_url=f"http://127.0.0.1:{info.port}", timeout=2.0,
-        ) as client:
-            resp = client.get("/health")
-    except httpx.HTTPError:
-        return False
-    return 200 <= resp.status_code < 300
+    return OrcaClient(f"http://127.0.0.1:{info.port}", timeout=2.0).health()
 
 
 def _resolve_cloud_backend_factory() -> type[ICloudControlPlaneClient]:
-    """Discover the registered cloud backend implementation.
-
-    The only resolution path is the ``orca.cli_backends`` entry-point group,
-    name ``cloud``. There is no in-tree fallback: a build that ships no cloud
-    backend exits here with an install hint rather than importing a module it
-    does not have.
-    """
+    """The class registered for the ``orca.cli_backends`` entry-point group, name ``cloud``."""
     for ep in entry_points(group=_CLI_BACKENDS_GROUP, name="cloud"):
         return ep.load()
     output.fail(
@@ -214,29 +193,30 @@ def _resolve_cloud_backend_factory() -> type[ICloudControlPlaneClient]:
     )
 
 
+def _local_daemon_url() -> str:
+    """The loopback URL from the PID file."""
+    info = detect_live_daemon(pid_file_path())
+    if info is None:
+        raise ControlPlaneError(
+            "no daemon running (run `orca start` first)",
+            exit_code=output.EXIT_NOT_CONNECTED,
+        )
+    return f"http://127.0.0.1:{info.port}"
+
+
 def make_client(backend: BackendName) -> IControlPlaneClient:
-    """Construct the concrete client for a resolved backend.
-
-    Local: today's loopback `LocalDaemonClient`. Cloud: whichever class is
-    registered for entry-point group ``orca.cli_backends`` name ``cloud``.
-    No silent fallback; missing creds raises.
-
-    The backend is resolved before the credentials are read. A build that
-    ships no cloud backend has nothing the credentials would reach, so asking
-    for them first sends the reader off to set two variables that change
-    nothing.
-    """
+    """The one client, pointed at the resolved server. No silent fallback; missing creds raises."""
     if backend == "local":
-        return LocalDaemonClient()
-    cloud_cls = _resolve_cloud_backend_factory()
+        return OrcaClient(_local_daemon_url())
     base_url = os.environ.get(_ENV_CLOUD_URL, "")
     api_key = os.environ.get(_ENV_CLOUD_API_KEY, "")
     if not base_url or not api_key:
         raise ControlPlaneError(
             f"backend=cloud requires {_ENV_CLOUD_URL} and {_ENV_CLOUD_API_KEY} "
             "to be set in the environment",
+            exit_code=output.EXIT_USAGE,
         )
-    return cloud_cls(base_url=base_url, api_key=api_key)
+    return OrcaClient(base_url, api_key)
 
 
 def _resolve_or_fail() -> BackendName:
@@ -256,19 +236,8 @@ def _resolve_or_fail() -> BackendName:
 
 
 def get_client() -> IControlPlaneClient:
-    """Convenience for verb bodies tagged `both`.
-
-    Resolves the backend from the global CLI state populated by `app._main`
-    (the root callback); raises if resolution fails. Verb bodies that need
-    `LocalDaemonClient`-only methods should call `require_local()` first
-    (which exits non-zero on cloud) and then call `LocalDaemonClient()`
-    directly.
-    """
-    backend = _resolve_or_fail()
-    try:
-        return make_client(backend)
-    except ControlPlaneError as exc:
-        output.fail(str(exc), code=output.EXIT_USAGE)
+    """The client for the active server, from the state the root callback set."""
+    return make_client(_resolve_or_fail())
 
 
 def require_local() -> None:
@@ -278,18 +247,10 @@ def require_local() -> None:
         output.fail(_LOCAL_REDIRECT, code=output.EXIT_USAGE)
 
 
-def local_client() -> LocalDaemonClient:
-    """Convenience for local-only CLI verbs.
-
-    Combines `require_local()` (exits with the cloud->local redirect when the
-    active backend is `cloud`) with construction of `LocalDaemonClient` (exits
-    with the no-daemon-running message when the daemon is down). Verb bodies
-    that need daemon-shape methods that are not on `IControlPlaneClient`
-    (threads, variables, incidents, submissions, plugins, etc.) call this
-    instead of `LocalDaemonClient()` directly.
-    """
+def daemon_client() -> DaemonLoadingClient:
+    """The client for the daemon-only verbs. Exits if the active server is not the daemon."""
     require_local()
-    return LocalDaemonClient()
+    return DaemonLoadingClient(_local_daemon_url())
 
 
 def require_cloud() -> None:
@@ -306,11 +267,10 @@ def require_cloud() -> None:
 
 
 def cloud_client() -> ICloudControlPlaneClient:
-    """Convenience for cloud-only CLI verbs.
+    """The client for the hosted-only verbs.
 
-    Combines ``require_cloud()`` with construction of the backend registered
-    for the ``orca.cli_backends`` entry-point group. Resolves the backend
-    before reading the credentials, for the reason `make_client` gives.
+    Resolves the backend before reading the credentials: a build that ships no
+    implementation has nothing the credentials would reach.
     """
     require_cloud()
     cloud_cls = _resolve_cloud_backend_factory()

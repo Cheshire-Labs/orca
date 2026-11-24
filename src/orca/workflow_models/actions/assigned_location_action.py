@@ -1,3 +1,5 @@
+from typing import Callable
+
 from orca.events.event_channel import EventChannelRegistry
 from orca.events.execution_context import MethodExecutionContext
 from orca.resource_models.tracking_context import TrackingContext
@@ -17,8 +19,9 @@ class AssignedLocationAction:
     assigned, N executables across N execution attempts.
     """
 
-    def __init__(self, location_action: ActionBodyLocationAction) -> None:
+    def __init__(self, location_action: ActionBodyLocationAction, tag: str | None = None) -> None:
         self._location_action = location_action
+        self._tag = tag
 
     @property
     def location_action(self) -> ActionBodyLocationAction:
@@ -33,6 +36,7 @@ class AssignedLocationAction:
         tracking_context: TrackingContext | None,
         pool_indices: dict[str, int] | None = None,
         submission_id: str | None = None,
+        group_served: Callable[[], str | None] | None = None,
     ) -> ExecutableLocationAction:
         return ExecutableLocationAction(
             status_manager,
@@ -43,4 +47,6 @@ class AssignedLocationAction:
             tracking_context,
             pool_indices,
             submission_id,
+            tag=self._tag,
+            group_served=group_served,
         )

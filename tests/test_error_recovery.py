@@ -4,6 +4,7 @@ Validates that when an action fails, the thread pauses (FailurePolicy.PAUSE)
 or propagates (FailurePolicy.ABORT), and that recovery decisions work correctly.
 """
 
+from orca.config import OrcaConfig
 import asyncio
 import contextlib
 import logging
@@ -12,7 +13,9 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from orca.events.execution_context import WorkflowExecutionContext
+from orca.events.execution_context import DeviceCommandContext, WorkflowExecutionContext
+from orca.operations.error_mapping import error_label
+from orca.runtime.server_events import ServerEvents
 from orca.resource_models.resource_pool import ResourcePool
 from orca.state.records import (
     ActionContinuedDetails,
@@ -25,11 +28,7 @@ from orca.runtime.incident_store import (
     IncidentSeverity,
     RecoveryAction,
 )
-from orca.runtime.db.engine import create_memory_engine
-from orca.runtime.execution_record_service import ExecutionRecordService
-from orca.runtime.execution_tracking_sink import ExecutionTrackingSink
 from orca.runtime.sinks import AlertSink, CollectorSink
-from orca.runtime.sqlite_execution_record_store import SqliteExecutionRecordStore
 from orca.runtime.system_runtime import ExecutionState, SystemRuntime
 from orca.sdk.events import EventBus
 from orca.system.reservation_manager.errors import (
@@ -48,7 +47,7 @@ from orca.workflow_models.labware_threads.thread_state_machine import ThreadEven
 from orca.workflow_models.method import ExecutingMethod, MethodInstance
 from orca.workflow_models.status_enums import FailurePolicy, RecoveryDecision
 from orca.workflow_models.status_manager import StatusManager
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from tests.mock import UniversalMockDevice
 from tests.test_helpers import (
     FailOnPlaceTransporter,
@@ -59,6 +58,10 @@ from tests.test_helpers import (
     wait_for_runtime_condition,
     wire_system_map,
 )
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 
 @dataclass
@@ -165,12 +168,15 @@ async def _build_failing_system(
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=event_bus,
+        event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     system = builder.get_system()
     res_mgr = builder._thread_reservation_coordinator._reservation_manager
-    runtime = SystemRuntime(system, event_bus=event_bus)
+    runtime = await memory_runtime(system, event_bus=event_bus)
     return FailingSystemFixture(runtime, workflow, device, event_bus, res_mgr)
 
 
@@ -235,12 +241,15 @@ async def _build_two_action_failing_system(
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=event_bus,
+        event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     system = builder.get_system()
     res_mgr = builder._thread_reservation_coordinator._reservation_manager
-    runtime = SystemRuntime(system, event_bus=event_bus)
+    runtime = await memory_runtime(system, event_bus=event_bus)
     return FailingSystemFixture(
         runtime, workflow, device, event_bus, res_mgr, later_action_calls,
     )
@@ -300,12 +309,15 @@ async def _build_partial_action_failing_system() -> FailingSystemFixture:
     builder = SdkToSystemBuilder(
         name="test_system", description="", labwares=[plate],
         resources_registry=registry, system_map=system_map,
-        workflows=[workflow], event_bus=event_bus,
+        workflows=[workflow], event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     system = builder.get_system()
     res_mgr = builder._thread_reservation_coordinator._reservation_manager
-    runtime = SystemRuntime(system, event_bus=event_bus)
+    runtime = await memory_runtime(system, event_bus=event_bus)
     return FailingSystemFixture(
         runtime, workflow, device, event_bus, res_mgr, later_action_calls,
     )
@@ -350,12 +362,15 @@ async def _build_move_failing_system() -> FailingSystemFixture:
     builder = SdkToSystemBuilder(
         name="test_system", description="", labwares=[plate],
         resources_registry=registry, system_map=system_map,
-        workflows=[workflow], event_bus=event_bus,
+        workflows=[workflow], event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     system = builder.get_system()
     res_mgr = builder._thread_reservation_coordinator._reservation_manager
-    runtime = SystemRuntime(system, event_bus=event_bus)
+    runtime = await memory_runtime(system, event_bus=event_bus)
     return FailingSystemFixture(
         runtime, workflow, device, event_bus, res_mgr, transporter=transporter,
     )
@@ -413,12 +428,15 @@ async def _build_body_failing_system() -> FailingSystemFixture:
     builder = SdkToSystemBuilder(
         name="test_system", description="", labwares=[plate],
         resources_registry=registry, system_map=system_map,
-        workflows=[workflow], event_bus=event_bus,
+        workflows=[workflow], event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     system = builder.get_system()
     res_mgr = builder._thread_reservation_coordinator._reservation_manager
-    runtime = SystemRuntime(system, event_bus=event_bus)
+    runtime = await memory_runtime(system, event_bus=event_bus)
     return FailingSystemFixture(
         runtime, workflow, device, event_bus, res_mgr, later_action_calls,
     )
@@ -434,24 +452,26 @@ class TestPauseOnFailure:
     async def test_pause_on_action_failure(self) -> None:
         f = await _build_failing_system(FailurePolicy.PAUSE)
         collector = CollectorSink()
-        f.runtime.register_sink(collector)
+        server_events = ServerEvents()
+        server_events.add_sink(collector)
         await f.runtime.start()
+        f.runtime.system.command_pipeline.report_to(server_events, f.runtime, error_label)
 
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         paused_thread = await wait_for_paused_thread(f.runtime, record.id)
 
         assert paused_thread.status == "PAUSED"
         assert len(f.device.shake_calls) == 1
         assert f.device.shake_calls[0].succeeded is False
 
-        # A device-op failure surfaces as DEVICE_OP.<command>.FAILED; the action
+        # A device-op failure surfaces once, as the command's COMMAND.<device>.FAILED; the action
         # itself does not ERROR (it stays suspended while the op is recovered).
-        device_op_failed_events = [
-            e for e in collector.events
-            if e.entity_type == "DEVICE_OP" and e.status == "FAILED"
+        failed = [
+            e.context.command for e in collector.events
+            if isinstance(e.context, DeviceCommandContext) and e.status == "FAILED"
         ]
-        assert len(device_op_failed_events) >= 1
-        assert device_op_failed_events[0].entity_id == "shake"
+        assert failed == ["shake"]
+        assert not [e for e in collector.events if e.entity_type == "DEVICE_OP"]
 
         f.runtime.recover_thread(record.id, paused_thread.id, RecoveryDecision.ABORT_THREAD)
         try:
@@ -465,7 +485,7 @@ class TestPauseOnFailure:
         f = await _build_failing_system(FailurePolicy.ABORT)
         await f.runtime.start()
 
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         status = await asyncio.wait_for(f.runtime.wait(record.id), timeout=10.0)
 
         assert status.status == ExecutionState.FAILED
@@ -482,7 +502,7 @@ class TestRecoveryDecisions:
         f = await _build_failing_system(FailurePolicy.PAUSE)
         await f.runtime.start()
 
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         paused_thread = await wait_for_paused_thread(f.runtime, record.id)
 
         f.device.should_fail = False
@@ -500,7 +520,7 @@ class TestRecoveryDecisions:
         f = await _build_failing_system(FailurePolicy.PAUSE)
         await f.runtime.start()
 
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         paused_thread = await wait_for_paused_thread(f.runtime, record.id)
 
         f.runtime.recover_thread(record.id, paused_thread.id, RecoveryDecision.ABORT_ACTION)
@@ -515,7 +535,7 @@ class TestRecoveryDecisions:
         f = await _build_failing_system(FailurePolicy.PAUSE)
         await f.runtime.start()
 
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         paused_thread = await wait_for_paused_thread(f.runtime, record.id)
 
         f.runtime.recover_thread(record.id, paused_thread.id, RecoveryDecision.ABORT_METHOD)
@@ -549,7 +569,7 @@ class TestRecoveryDecisions:
         f = await _build_failing_system(FailurePolicy.PAUSE)
         await f.runtime.start()
 
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         paused_thread = await wait_for_paused_thread(f.runtime, record.id)
 
         f.runtime.recover_thread(record.id, paused_thread.id, RecoveryDecision.ABORT_THREAD)
@@ -575,7 +595,7 @@ class TestRecoveryDecisions:
         f = await _build_failing_system(FailurePolicy.PAUSE)
         await f.runtime.start()
 
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         paused_thread = await wait_for_paused_thread(f.runtime, record.id)
 
         f.runtime.recover_thread(record.id, paused_thread.id, RecoveryDecision.ABORT_THREAD)
@@ -595,28 +615,53 @@ class TestRecoveryDecisions:
         await f.runtime.shutdown()
 
     async def test_aborted_thread_record_keeps_last_error(self) -> None:
-        """The record sink upserts on every THREAD transition, so the terminal
-        ABORTED event must itself carry the error: driven through the real
-        emitter (pause-on-error, then ABORT_THREAD), the persisted record must
+        """The run record upserts on every THREAD transition, so the terminal
+        ABORTED transition must itself carry the error: driven through the real
+        thread (pause-on-error, then ABORT_THREAD), the persisted record must
         still answer WHY after the terminal transition lands."""
         f = await _build_failing_system(FailurePolicy.PAUSE)
-        service = ExecutionRecordService(
-            SqliteExecutionRecordStore(create_memory_engine())
-        )
-        f.runtime.register_sink(ExecutionTrackingSink(service))
         await f.runtime.start()
 
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         paused_thread = await wait_for_paused_thread(f.runtime, record.id)
         f.runtime.recover_thread(record.id, paused_thread.id, RecoveryDecision.ABORT_THREAD)
         await asyncio.wait_for(f.runtime.wait(record.id), timeout=10.0)
 
-        detail = await service.get_detail(record.id)
+        detail = await f.runtime.execution_records.get_detail(record.id)
         assert detail is not None
         persisted = [t for t in detail.threads if t.id == paused_thread.id]
         assert len(persisted) == 1
         assert persisted[0].status == "ABORTED"
         assert persisted[0].last_error is not None
+        await f.runtime.shutdown()
+
+    async def test_a_failed_run_is_saved_failed_with_its_reason(self) -> None:
+        f = await _build_failing_system(FailurePolicy.ABORT)
+        await f.runtime.start()
+
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
+        live = await asyncio.wait_for(f.runtime.wait(record.id), timeout=10.0)
+
+        stored = await f.runtime.execution_records.get_record(record.id)
+        assert stored is not None
+        assert stored.status is ExecutionState.FAILED
+        assert stored.error is not None
+        assert stored.error == live.error
+        await f.runtime.shutdown()
+
+    async def test_an_aborted_run_is_saved_aborted(self) -> None:
+        f = await _build_failing_system(FailurePolicy.PAUSE)
+        await f.runtime.start()
+
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
+        await wait_for_paused_thread(f.runtime, record.id)
+        await f.runtime.abort_execution(record.id)
+        live = await asyncio.wait_for(f.runtime.wait(record.id), timeout=10.0)
+
+        stored = await f.runtime.execution_records.get_record(record.id)
+        assert live.status is ExecutionState.ABORTED
+        assert stored is not None
+        assert stored.status is ExecutionState.ABORTED
         await f.runtime.shutdown()
 
     async def test_abort_method_clears_last_error_on_continue(self) -> None:
@@ -630,7 +675,7 @@ class TestRecoveryDecisions:
         f = await _build_failing_system(FailurePolicy.PAUSE)
         await f.runtime.start()
 
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         paused_thread = await wait_for_paused_thread(f.runtime, record.id)
 
         f.runtime.recover_thread(record.id, paused_thread.id, RecoveryDecision.ABORT_METHOD)
@@ -655,7 +700,7 @@ class TestRecoveryDecisions:
         f = await _build_failing_system(FailurePolicy.PAUSE)
         await f.runtime.start()
 
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         paused_thread = await wait_for_paused_thread(f.runtime, record.id)
 
         f.runtime.recover_thread(record.id, paused_thread.id, RecoveryDecision.ABORT_ACTION)
@@ -683,7 +728,7 @@ class TestAlertSink:
         await f.runtime.start()
 
         with caplog.at_level(logging.ERROR, logger="orca.alerts"):
-            record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+            record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
             paused_thread = await wait_for_paused_thread(f.runtime, record.id)
 
         alerts = [r for r in caplog.records if r.name == "orca.alerts"]
@@ -713,7 +758,7 @@ class TestResumeValidation:
         f = await _build_failing_system(FailurePolicy.ABORT)
         await f.runtime.start()
 
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         await asyncio.wait_for(f.runtime.wait(record.id), timeout=10.0)
 
         threads = f.runtime.list_threads(record.id)
@@ -741,7 +786,7 @@ class TestBug1ReservationHeldDuringPause:
         f = await _build_failing_system()
         await f.runtime.start()
 
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         paused = await wait_for_paused_thread(f.runtime, record.id)
 
         assert "shaker1" in f.res_mgr.reservations, (
@@ -763,7 +808,7 @@ class TestBug1ReservationHeldDuringPause:
         f = await _build_failing_system()
         await f.runtime.start()
 
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         paused = await wait_for_paused_thread(f.runtime, record.id)
 
         assert "shaker1" in f.res_mgr.reservations
@@ -800,7 +845,7 @@ class TestConcern5AbortReleasesReservation:
         f = await _build_failing_system(FailurePolicy.ABORT)
         await f.runtime.start()
 
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         status = await asyncio.wait_for(f.runtime.wait(record.id), timeout=10.0)
         assert status.status == ExecutionState.FAILED
 
@@ -816,7 +861,7 @@ class TestConcern5AbortReleasesReservation:
         f = await _build_failing_system(FailurePolicy.ABORT)
         await f.runtime.start()
 
-        record1 = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record1 = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         status1 = await asyncio.wait_for(f.runtime.wait(record1.id), timeout=10.0)
         assert status1.status == ExecutionState.FAILED
 
@@ -830,7 +875,7 @@ class TestConcern5AbortReleasesReservation:
         await f.runtime.labware.clear_all_labware(confirm=True)
 
         f.device.should_fail = False
-        record2 = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record2 = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         status2 = await asyncio.wait_for(f.runtime.wait(record2.id), timeout=10.0)
 
         assert status2.status == ExecutionState.COMPLETED, (
@@ -845,7 +890,7 @@ class TestConcern5AbortReleasesReservation:
         f = await _build_failing_system(FailurePolicy.PAUSE)
         await f.runtime.start()
 
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         paused = await wait_for_paused_thread(f.runtime, record.id)
 
         assert "shaker1" in f.res_mgr.reservations
@@ -876,7 +921,7 @@ class TestSkipReleasesReservation:
         f = await _build_failing_system(FailurePolicy.PAUSE)
         await f.runtime.start()
 
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         paused = await wait_for_paused_thread(f.runtime, record.id)
 
         assert "shaker1" in f.res_mgr.reservations
@@ -895,7 +940,7 @@ class TestSkipReleasesReservation:
         f = await _build_two_action_failing_system()
         await f.runtime.start()
 
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         paused = await wait_for_paused_thread(f.runtime, record.id)
 
         assert "shaker1" in f.res_mgr.reservations
@@ -948,7 +993,7 @@ class TestMultiActionRecovery:
         f = await _build_two_action_failing_system()
         await f.runtime.start()
 
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         paused = await wait_for_paused_thread(f.runtime, record.id)
 
         f.runtime.recover_thread(record.id, paused.id, RecoveryDecision.ABORT_ACTION)
@@ -970,7 +1015,7 @@ class TestMultiActionRecovery:
         f = await _build_two_action_failing_system()
         await f.runtime.start()
 
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         paused = await wait_for_paused_thread(f.runtime, record.id)
 
         f.device.should_fail = False
@@ -988,7 +1033,7 @@ class TestMultiActionRecovery:
         f = await _build_two_action_failing_system()
         await f.runtime.start()
 
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         paused = await wait_for_paused_thread(f.runtime, record.id)
 
         f.runtime.recover_thread(record.id, paused.id, RecoveryDecision.ABORT_METHOD)
@@ -1000,7 +1045,7 @@ class TestMultiActionRecovery:
 
 
 _DECISION_EVENTS: dict[RecoveryDecision, ThreadEvent] = {
-    RecoveryDecision.RETRY: ThreadEvent.RECOVERY_RETRY,
+    RecoveryDecision.RETRY_ACTION: ThreadEvent.RECOVERY_RETRY,
     RecoveryDecision.CONTINUE: ThreadEvent.RECOVERY_SKIP,
     RecoveryDecision.ABORT_ACTION: ThreadEvent.RECOVERY_SKIP,
     RecoveryDecision.ABORT_METHOD: ThreadEvent.RECOVERY_SKIP,
@@ -1025,12 +1070,12 @@ class TestRecoveryEventMapping:
     ) -> None:
         assert _recovery_event_for(decision) is event
 
-    def test_retry_op_raises_rather_than_advancing_past_the_action(self) -> None:
-        with pytest.raises(ValueError, match="RETRY_OP"):
-            _recovery_event_for(RecoveryDecision.RETRY_OP)
+    def test_the_step_retry_raises_rather_than_advancing_past_the_action(self) -> None:
+        with pytest.raises(ValueError, match="RETRY is settled"):
+            _recovery_event_for(RecoveryDecision.RETRY)
 
     def test_a_new_recovery_decision_must_be_mapped_here_explicitly(self) -> None:
-        accounted = set(_DECISION_EVENTS) | {RecoveryDecision.RETRY_OP}
+        accounted = set(_DECISION_EVENTS) | {RecoveryDecision.RETRY}
         assert accounted == set(RecoveryDecision)
 
 
@@ -1049,7 +1094,7 @@ class TestContinuePastErroredAction:
         await f.runtime.start()
 
         record = await f.runtime.submit_workflow(
-            f.workflow.name, mode=WorkflowRunMode.PURE_SIM,
+            f.workflow.name, mode=WorkflowRunMode.CHECK_RUN,
         )
         paused = await wait_for_paused_thread(f.runtime, record.id)
 
@@ -1067,7 +1112,7 @@ class TestContinuePastErroredAction:
         await f.runtime.start()
 
         record = await f.runtime.submit_workflow(
-            f.workflow.name, mode=WorkflowRunMode.PURE_SIM,
+            f.workflow.name, mode=WorkflowRunMode.CHECK_RUN,
         )
         paused = await wait_for_paused_thread(f.runtime, record.id)
         f.runtime.recover_thread(record.id, paused.id, RecoveryDecision.CONTINUE)
@@ -1093,7 +1138,7 @@ class TestContinuePastErroredAction:
         await f.runtime.start()
 
         record = await f.runtime.submit_workflow(
-            f.workflow.name, mode=WorkflowRunMode.PURE_SIM,
+            f.workflow.name, mode=WorkflowRunMode.CHECK_RUN,
         )
         paused = await wait_for_paused_thread(f.runtime, record.id)
         f.runtime.recover_thread(record.id, paused.id, RecoveryDecision.CONTINUE)
@@ -1126,7 +1171,7 @@ class TestContinuePastErroredAction:
         await f.runtime.start()
 
         record = await f.runtime.submit_workflow(
-            f.workflow.name, mode=WorkflowRunMode.PURE_SIM,
+            f.workflow.name, mode=WorkflowRunMode.CHECK_RUN,
         )
         paused = await wait_for_paused_thread(f.runtime, record.id)
         f.runtime.recover_thread(record.id, paused.id, RecoveryDecision.ABORT_ACTION)
@@ -1164,7 +1209,7 @@ class TestContinuePastErroredAction:
         await f.runtime.start()
 
         record = await f.runtime.submit_workflow(
-            f.workflow.name, mode=WorkflowRunMode.PURE_SIM,
+            f.workflow.name, mode=WorkflowRunMode.CHECK_RUN,
         )
         paused = await wait_for_paused_thread(f.runtime, record.id)
         f.runtime.recover_thread(record.id, paused.id, RecoveryDecision.CONTINUE)
@@ -1196,7 +1241,7 @@ class TestContinuePastErroredAction:
         await f.runtime.start()
 
         record = await f.runtime.submit_workflow(
-            f.workflow.name, mode=WorkflowRunMode.PURE_SIM,
+            f.workflow.name, mode=WorkflowRunMode.CHECK_RUN,
         )
         status = await asyncio.wait_for(f.runtime.wait(record.id), timeout=10.0)
 
@@ -1218,7 +1263,7 @@ class TestContinuePastErroredAction:
         await f.runtime.start()
 
         record = await f.runtime.submit_workflow(
-            f.workflow.name, mode=WorkflowRunMode.PURE_SIM,
+            f.workflow.name, mode=WorkflowRunMode.CHECK_RUN,
         )
         paused = await wait_for_paused_thread(f.runtime, record.id)
         f.runtime.recover_thread(record.id, paused.id, RecoveryDecision.CONTINUE)
@@ -1255,7 +1300,7 @@ class TestContinuePastErroredAction:
         await f.runtime.start()
 
         record = await f.runtime.submit_workflow(
-            f.workflow.name, mode=WorkflowRunMode.PURE_SIM,
+            f.workflow.name, mode=WorkflowRunMode.CHECK_RUN,
         )
         paused = await wait_for_paused_thread(f.runtime, record.id)
 
@@ -1281,7 +1326,7 @@ class TestContinuePastErroredAction:
         await f.runtime.start()
 
         record = await f.runtime.submit_workflow(
-            f.workflow.name, mode=WorkflowRunMode.PURE_SIM,
+            f.workflow.name, mode=WorkflowRunMode.CHECK_RUN,
         )
         paused = await wait_for_paused_thread(f.runtime, record.id)
         assert paused.labware_id is not None
@@ -1318,7 +1363,7 @@ class TestContinuePastErroredAction:
         await f.runtime.start()
 
         record = await f.runtime.submit_workflow(
-            f.workflow.name, mode=WorkflowRunMode.PURE_SIM,
+            f.workflow.name, mode=WorkflowRunMode.CHECK_RUN,
         )
         paused = await wait_for_paused_thread(f.runtime, record.id)
         assert "shaker1" in f.res_mgr.reservations
@@ -1345,7 +1390,7 @@ class TestDoublePauseRecovery:
         f = await _build_failing_system(FailurePolicy.PAUSE)
         await f.runtime.start()
 
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
 
         # First failure + retry (still failing)
         paused1 = await wait_for_paused_thread(f.runtime, record.id)
@@ -1386,7 +1431,7 @@ class TestStatusAfterResume:
         f = await _build_failing_system(FailurePolicy.PAUSE)
         await f.runtime.start()
 
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         paused = await wait_for_paused_thread(f.runtime, record.id)
 
         f.device.should_fail = False
@@ -1413,7 +1458,7 @@ class TestStatusAfterResume:
         f = await _build_failing_system(FailurePolicy.PAUSE)
         await f.runtime.start()
 
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         paused = await wait_for_paused_thread(f.runtime, record.id)
 
         f.device.should_fail = False
@@ -1442,7 +1487,7 @@ class TestRetryReservationLifecycle:
         f = await _build_failing_system()
         await f.runtime.start()
 
-        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await f.runtime.submit_workflow(f.workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         paused = await wait_for_paused_thread(f.runtime, record.id)
 
         f.device.should_fail = False
@@ -1471,7 +1516,7 @@ class FailingRecordingShakeCall:
 
 
 class FailingRecordingDevice(UniversalMockDevice):
-    """Device that fails once, records all shake arguments."""
+    """Records every shake's arguments. `should_fail` makes the action's own code fail after the shake."""
 
     def __init__(self, name: str) -> None:
         super().__init__(name)
@@ -1479,15 +1524,12 @@ class FailingRecordingDevice(UniversalMockDevice):
         self.shake_calls: list[FailingRecordingShakeCall] = []
 
     async def shake(self, duration: int, speed: int) -> None:
-        if self.should_fail:
-            self.shake_calls.append(FailingRecordingShakeCall(duration, speed, succeeded=False))
-            raise RuntimeError("Simulated shake failure")
         await super().shake(duration, speed)
         self.shake_calls.append(FailingRecordingShakeCall(duration, speed, succeeded=True))
 
 
 async def _build_variable_failing_system() -> tuple["SystemRuntime", "WorkflowTemplate", "FailingRecordingDevice", "EventBus"]:
-    """Build system with a Var-parameterized shake that fails on first attempt."""
+    """Build system with a Var-parameterized shake whose own code fails on the first attempt."""
     from orca.variables import Var, VariableDefinition
 
     device = FailingRecordingDevice("shaker1")
@@ -1507,6 +1549,8 @@ async def _build_variable_failing_system() -> tuple["SystemRuntime", "WorkflowTe
     async def shake(ctx: object) -> None:
         duration = await ctx.param("shake_time")
         await ctx.device().shake(duration=duration, speed=800)
+        if device.should_fail:
+            raise ZeroDivisionError("the action's own code failed after the shake")
 
     async def _var_shake_gen(ctx: object) -> AsyncGenerator[ActionTemplate, None]:
         yield shake
@@ -1528,38 +1572,40 @@ async def _build_variable_failing_system() -> tuple["SystemRuntime", "WorkflowTe
     builder = SdkToSystemBuilder(
         name="test_system", description="", labwares=[plate],
         resources_registry=registry, system_map=system_map,
-        workflows=[workflow], event_bus=event_bus,
+        workflows=[workflow], event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     system = builder.get_system()
-    runtime = SystemRuntime(system, event_bus=event_bus)
+    runtime = await memory_runtime(system, event_bus=event_bus)
     return runtime, workflow, device, event_bus
 
 
 class TestRetryReResolvesVariables:
-    """Action-level RETRY after failure re-resolves variables from the store."""
+    """RETRY_ACTION after the action's own code failed re-resolves variables from the store."""
 
     async def test_retry_uses_updated_variable_value(self) -> None:
-        """Change variable while paused, action-level RETRY picks up the new value."""
+        """Change variable while paused, RETRY_ACTION picks up the new value."""
         runtime, workflow, device, _ = await _build_variable_failing_system()
         await runtime.start()
 
-        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         paused = await wait_for_paused_thread(runtime, record.id)
 
-        # First attempt used default=100 and failed
+        # First attempt used default=100, then the action's own code failed
         assert len(device.shake_calls) == 1
         assert device.shake_calls[0].duration == 100
-        assert device.shake_calls[0].succeeded is False
 
         # Change the variable while paused
         entry = runtime._executions[record.id]
         wf_instance_id = entry.system.executing_threads[0].context.execution_id
         entry.system.variable_store.set("shake_time", 9999, wf_instance_id)
 
-        # Action-level RETRY re-runs the whole action, re-resolving to 9999
+        # RETRY_ACTION re-runs the whole action, re-resolving to 9999
         device.should_fail = False
-        runtime.recover_thread(record.id, paused.id, RecoveryDecision.RETRY)
+        runtime.recover_thread(record.id, paused.id, RecoveryDecision.RETRY_ACTION)
         status = await asyncio.wait_for(runtime.wait(record.id), timeout=10.0)
         assert status.status == ExecutionState.COMPLETED
 
@@ -1576,13 +1622,13 @@ class TestRetryReResolvesVariables:
         runtime, workflow, device, _ = await _build_variable_failing_system()
         await runtime.start()
 
-        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         paused = await wait_for_paused_thread(runtime, record.id)
 
         assert device.shake_calls[0].duration == 100
 
         device.should_fail = False
-        runtime.recover_thread(record.id, paused.id, RecoveryDecision.RETRY)
+        runtime.recover_thread(record.id, paused.id, RecoveryDecision.RETRY_ACTION)
         status = await asyncio.wait_for(runtime.wait(record.id), timeout=10.0)
         assert status.status == ExecutionState.COMPLETED
 
@@ -1606,7 +1652,7 @@ class TestActionFailureSurfacing:
         await f.runtime.start()
 
         record = await f.runtime.submit_workflow(
-            f.workflow.name, mode=WorkflowRunMode.PURE_SIM,
+            f.workflow.name, mode=WorkflowRunMode.CHECK_RUN,
         )
         await wait_for_paused_threads(f.runtime, record.id)
 
@@ -1634,7 +1680,7 @@ class TestActionFailureSurfacing:
         await f.runtime.start()
 
         record = await f.runtime.submit_workflow(
-            f.workflow.name, mode=WorkflowRunMode.PURE_SIM,
+            f.workflow.name, mode=WorkflowRunMode.CHECK_RUN,
         )
         paused_thread = await wait_for_paused_thread(f.runtime, record.id)
 
@@ -1645,10 +1691,9 @@ class TestActionFailureSurfacing:
         incident = incidents[0]
         assert incident.execution_id == record.id
         assert incident.thread_id == paused_thread.id
-        # The action failed inside ctx.device().shake(), so the advised verb is
-        # the op-level retry: the whole-action one re-drives the body with no
-        # hardware reconcile.
-        assert incident.recovery_action == RecoveryAction.THREAD_RECOVER_RETRY_OP
+        # The action failed inside ctx.device().shake(), so the advised verb
+        # repeats that call.
+        assert incident.recovery_action == RecoveryAction.THREAD_RECOVER_RETRY
         assert incident.detail.device_command == "shake"
         assert "Simulated shake failure" in incident.message
 
@@ -1668,7 +1713,7 @@ class TestActionFailureSurfacing:
         await f.runtime.start()
 
         record = await f.runtime.submit_workflow(
-            f.workflow.name, mode=WorkflowRunMode.PURE_SIM,
+            f.workflow.name, mode=WorkflowRunMode.CHECK_RUN,
         )
         try:
             await asyncio.wait_for(f.runtime.wait(record.id), timeout=10.0)
@@ -1697,7 +1742,7 @@ class TestActionFailureSurfacing:
         await f.runtime.start()
 
         record = await f.runtime.submit_workflow(
-            f.workflow.name, mode=WorkflowRunMode.PURE_SIM,
+            f.workflow.name, mode=WorkflowRunMode.CHECK_RUN,
         )
         paused_thread = await wait_for_paused_thread(f.runtime, record.id)
         assert paused_thread.status == "PAUSED"
@@ -1729,7 +1774,7 @@ class TestRecoverMutationLock:
         f = await _build_failing_system(FailurePolicy.PAUSE)
         await f.runtime.start()
         record = await f.runtime.submit_workflow(
-            f.workflow.name, mode=WorkflowRunMode.PURE_SIM,
+            f.workflow.name, mode=WorkflowRunMode.CHECK_RUN,
         )
         paused = await wait_for_paused_thread(f.runtime, record.id)
 

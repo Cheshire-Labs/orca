@@ -1,18 +1,23 @@
 """Finishing does not move an execution to the store.
 
-`GetExecutionDetailOperation` asks the runtime first and only reads the persisted
-record when the runtime no longer holds the execution. That matters to every
+`ExecutionReader` asks the runtime first and only reads the persisted record
+when the runtime no longer holds the execution. The detail read and the read of
+one thread both answer through it. That matters to every
 operator surface: the store keeps `pause_reason` and `last_error` per thread and
 nothing else, so a surface that assumed a failed run answers from the store would
 tell an operator there was no `pause_message` and no method when both are there.
 """
 
+from collections.abc import Awaitable, Callable
 from unittest.mock import MagicMock
 
 import pytest
 
-from orca.operations.execution import GetExecutionDetailOperation
+from orca.operations.execution import ExecutionReader, GetExecutionDetailOperation
 from orca.operations.execution_models import GetExecutionDetailRequest
+from orca.operations.protocol import OperationError
+from orca.operations.runtime_read_models import GetThreadRequest
+from orca.operations.runtime_reads import GetThreadOperation
 from orca.runtime.status_models import ExecutionDetail, MethodSnapshot, ThreadSnapshot
 
 
@@ -49,7 +54,7 @@ def _stored_detail() -> ExecutionDetail:
         id="t1",
         name="plate_1-abcd",
         status="PAUSED",
-        current_location="",
+        current_location=None,
         current_method=None,
         completed_method_count=0,
         last_error="RuntimeError: shaker_1 is not connected",
@@ -72,7 +77,28 @@ def _runtime_holding() -> MagicMock:
 def _runtime_that_let_go() -> MagicMock:
     runtime = MagicMock()
     runtime.get_execution_detail.side_effect = KeyError("exec-1")
+    runtime.threads.get.side_effect = KeyError("t1")
     return runtime
+
+
+async def _no_check_runs() -> set[str]:
+    return set()
+
+
+def _reader(
+    runtime: MagicMock,
+    lookup: Callable[[str], Awaitable[ExecutionDetail | None]],
+    check_run_executions: Callable[[], Awaitable[set[str]]] = _no_check_runs,
+) -> ExecutionReader:
+    return ExecutionReader(runtime, terminal_detail_lookup=lookup, check_run_executions=check_run_executions)
+
+
+async def _stored(execution_id: str) -> ExecutionDetail | None:
+    return _stored_detail()
+
+
+async def _nowhere(execution_id: str) -> ExecutionDetail | None:
+    return None
 
 
 @pytest.mark.asyncio
@@ -83,9 +109,7 @@ async def test_a_finished_execution_the_runtime_still_holds_answers_live() -> No
         store_reads.append(execution_id)
         return _stored_detail()
 
-    op = GetExecutionDetailOperation(
-        runtime=_runtime_holding(), terminal_detail_lookup=lookup,
-    )
+    op = GetExecutionDetailOperation(_reader(_runtime_holding(), lookup))
     resp = await op.run(GetExecutionDetailRequest(execution_id="exec-1"))
 
     assert store_reads == [], "the store was read for an execution the runtime still holds"
@@ -100,9 +124,7 @@ async def test_only_an_execution_the_runtime_dropped_is_read_from_the_store() ->
     async def lookup(execution_id: str) -> ExecutionDetail | None:
         return _stored_detail()
 
-    op = GetExecutionDetailOperation(
-        runtime=_runtime_that_let_go(), terminal_detail_lookup=lookup,
-    )
+    op = GetExecutionDetailOperation(_reader(_runtime_that_let_go(), lookup))
     resp = await op.run(GetExecutionDetailRequest(execution_id="exec-1"))
 
     thread = resp.threads[0]
@@ -111,3 +133,57 @@ async def test_only_an_execution_the_runtime_dropped_is_read_from_the_store() ->
     assert thread.pause_message is None
     assert thread.paused_device_command is None
     assert thread.current_method is None
+
+
+@pytest.mark.asyncio
+async def test_a_runs_thread_answers_from_the_store_after_a_restart() -> None:
+    """A restart empties the live runtime; one thread reads the stored record, as the detail does."""
+    runtime = _runtime_that_let_go()
+    thread = await GetThreadOperation(runtime, _reader(runtime, _stored)).run(
+        GetThreadRequest(execution_id="exec-1", thread_id="t1"),
+    )
+
+    assert thread.id == "t1"
+    assert thread.last_error == "RuntimeError: shaker_1 is not connected"
+
+
+@pytest.mark.asyncio
+async def test_a_thread_the_runtime_holds_answers_live() -> None:
+    runtime = _runtime_holding()
+    runtime.threads.get.return_value = _live_detail().threads[0]
+
+    thread = await GetThreadOperation(runtime, _reader(runtime, _nowhere)).run(
+        GetThreadRequest(execution_id="exec-1", thread_id="t1"),
+    )
+
+    assert thread.pause_message == "device call failed: shake"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("lookup", "thread_id"), [(_nowhere, "t1"), (_stored, "t9")], ids=["no_run", "no_thread"])
+async def test_a_thread_nothing_knows_is_not_found(
+    lookup: Callable[[str], Awaitable[ExecutionDetail | None]], thread_id: str,
+) -> None:
+    runtime = _runtime_that_let_go()
+    with pytest.raises(OperationError) as refused:
+        await GetThreadOperation(runtime, _reader(runtime, lookup)).run(
+            GetThreadRequest(execution_id="exec-1", thread_id=thread_id),
+        )
+
+    assert refused.value.surface_code() == "thread_not_found"
+
+
+@pytest.mark.asyncio
+async def test_the_detail_says_whether_the_execution_was_a_check_run() -> None:
+    async def one_check_run() -> set[str]:
+        return {"exec-1"}
+
+    check_run = await GetExecutionDetailOperation(_reader(_runtime_holding(), _stored, one_check_run)).run(
+        GetExecutionDetailRequest(execution_id="exec-1"),
+    )
+    real = await GetExecutionDetailOperation(_reader(_runtime_holding(), _stored)).run(
+        GetExecutionDetailRequest(execution_id="exec-1"),
+    )
+
+    assert check_run.check_run is True
+    assert real.check_run is False

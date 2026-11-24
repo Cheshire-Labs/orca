@@ -11,18 +11,19 @@ design + serialization effort; the facade intentionally does not expose
 those surfaces until that work lands.
 """
 
-from typing import Callable, List
+from typing import Awaitable, Callable, List
 
-from orca.gateway.adhoc import fault_summary
-from orca.resource_models.deck_site import DeckSite
+from orca.gateway.operator_commands import fault_summary
 from orca.resource_models.devices import Device
 from orca.resource_models.transporter_base import TransporterBase
 from orca.runtime.danger import DangerLevel, dangerous
 from orca.runtime.registries.device_link import DeviceLinkReader
-from orca.runtime.run_modes import OPERATOR_DEVICE_WRITE_BASE
-from orca.runtime.runtime_interface import IDeviceConnectionSource, IRegistryFacade
+from orca.modes.run_modes import WorkflowRunMode
+from orca.runtime.registry_protocols import IDeviceConnectionSource, IDeviceFaultSource
+from orca.runtime.facade_interfaces import IRegistryFacade
 from orca.runtime.status_models import (
     DeviceSnapshot,
+    EngineDeviceState,
     LabwareTemplateSnapshot,
     LocationSnapshot,
     MethodTemplateSnapshot,
@@ -36,6 +37,7 @@ from orca.runtime.status_models import (
 )
 from orca.system.system_interface import ISystem
 from orca.workflow_models.method_template import MethodTemplate
+from orca.workflow_models.thread_template import ThreadTemplate
 from orca.workflow_models.workflow_templates import WorkflowTemplate
 
 
@@ -59,32 +61,68 @@ class RegistryFacade(IRegistryFacade):
         list_reservations_fn: ReservationLister,
         cancel_reservation_fn: ReservationCanceller,
         connections: IDeviceConnectionSource,
+        faults: IDeviceFaultSource,
+        base_mode: Callable[[], WorkflowRunMode],
+        on_workflow_added: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
+        self._faults = faults
+        self._on_workflow_added = on_workflow_added
         self._system = system
         self._list_reservations_fn = list_reservations_fn
         self._cancel_reservation_fn = cancel_reservation_fn
-        self._links = DeviceLinkReader(connections, system)
+        self._base_mode = base_mode
+        self._links = DeviceLinkReader(connections, system, base_mode)
 
     # -- System-level --------------------------------------------------------
 
     def system_info(self) -> SystemInfoSnapshot:
-        # Sim-hierarchy v3.4: per-submission run_mode supersedes a
-        # system-wide "is_simulating" flag. SystemInfoSnapshot is now
-        # identity-only; operators query effective_mode on per-device or
-        # per-submission snapshots.
         return SystemInfoSnapshot(
             name=self._system.name,
             description=self._system.description,
             version=self._system.version,
+            device_count=len(self._system.devices),
+            transporter_count=len(self._system.transporters),
+            workflow_count=len(self.list_workflow_templates()),
+            method_count=len(self.list_method_templates()),
         )
 
     # -- Resources -----------------------------------------------------------
 
-    def list_devices(self) -> List[DeviceSnapshot]:
-        return [self._device_snapshot(d) for d in self._system.devices]
-
     def list_transporters(self) -> List[TransporterSnapshot]:
         return [self._transporter_snapshot(t) for t in self._system.transporters]
+
+    async def engine_state(self, name: str) -> EngineDeviceState | None:
+        for d in self._system.devices:
+            if d.name == name:
+                snap = await self._device_snapshot(d)
+                return EngineDeviceState(
+                    type_name=snap.type_name,
+                    is_busy=snap.is_busy,
+                    effective_mode=snap.effective_mode,
+                    setting=snap.setting,
+                    position_ids=snap.position_ids,
+                    loaded_labware_ids=snap.loaded_labware_ids,
+                    held_labware_id=d.held_labware_id(),
+                    under_external_control=snap.under_external_control,
+                    external_control_hold=snap.external_control_hold,
+                    bring_up_error=self._faults.bring_up_error(name),
+                )
+        for t in self._system.transporters:
+            if t.name == name:
+                arm = self._transporter_snapshot(t)
+                return EngineDeviceState(
+                    type_name=arm.type_name,
+                    is_busy=arm.is_busy,
+                    effective_mode=await t.mode_under(self._base_mode()),
+                    setting=await t.setting(),
+                    position_ids=arm.position_ids,
+                    loaded_labware_ids=(),
+                    held_labware_id=arm.current_labware_id,
+                    under_external_control=arm.under_external_control,
+                    external_control_hold=arm.external_control_hold,
+                    bring_up_error=self._faults.bring_up_error(name),
+                )
+        return None
 
     def list_movers(self) -> List[MoverSnapshot]:
         return [self._mover_snapshot(m) for m in self._system.movers]
@@ -125,7 +163,7 @@ class RegistryFacade(IRegistryFacade):
                 if lw.id not in seen:
                     seen.add(lw.id)
                     ordered.append(lw.id)
-            # Discovery surface for site-qualified names (CLI / REST / MCP /
+            # Discovery surface for site-qualified names (CLI / REST /
             # KB): the device's owned sites, listed on its mutex row.
             deck_sites = tuple(
                 site.position_id
@@ -205,6 +243,8 @@ class RegistryFacade(IRegistryFacade):
         # checks for bundled methods/threads stay in one place.
         from orca.sdk.build import add_workflow_template as _add_wf_to_system
         await _add_wf_to_system(self._system, template)
+        if self._on_workflow_added is not None:
+            await self._on_workflow_added()
 
     @dangerous(
         name="workflow_template.remove",
@@ -247,9 +287,21 @@ class RegistryFacade(IRegistryFacade):
                 labware_template_name=t.labware_template.name,
                 start_position_id=t.start_position_id,
                 end_position_ids=tuple(t.end_position_ids),
+                labware_type=t.labware_template.labware_type,
+                placed_before_run=self._placed_before_run(workflow_name, t),
+                initial_state=t.labware_template.initial_state,
             )
             for (workflow_name, _name), t in self._system.get_labware_thread_templates().items()
         ]
+
+    def _placed_before_run(self, workflow_name: str, thread: ThreadTemplate) -> bool:
+        """Reused labware, and an entry thread's plate (which the run adopts), must be on its start position at submit."""
+        if thread.start_location.is_plate_source:
+            return False
+        if thread.start_reuse_existing:
+            return True
+        entries = self._system.get_workflow_template(workflow_name).entry_thread_templates
+        return not thread.start_dispense and any(e is thread for e in entries)
 
     # -- Reservations --------------------------------------------------------
 
@@ -273,22 +325,23 @@ class RegistryFacade(IRegistryFacade):
 
     # -- Snapshot builders ---------------------------------------------------
 
-    def _device_snapshot(self, d: Device) -> DeviceSnapshot:
+    async def _device_snapshot(self, d: Device) -> DeviceSnapshot:
         # One world per row: the same base the link flags beside it resolve.
-        effective_mode = d.mode_under(OPERATOR_DEVICE_WRITE_BASE)
+        effective_mode = await d.mode_under(self._base_mode())
         return DeviceSnapshot(
             name=d.name,
             type_name=type(d).__name__,
             # Sourced through the link reader so this row cannot contradict
             # the registry route's answer for the same device.
-            is_initialized=self._links.is_initialized(d.name),
+            is_initialized=await self._links.is_initialized(d.name),
             is_busy=d.in_use,
             effective_mode=effective_mode,
+            setting=await d.setting(),
             position_ids=tuple(loc.name for loc in d.locations),
             loaded_labware_ids=d.all_loaded_labware_ids,
             under_external_control=d.under_external_control,
             external_control_hold=d.external_control_hold,
-            fault=fault_summary(d.name),
+            fault=fault_summary(self._faults, d.name),
         )
 
     @staticmethod

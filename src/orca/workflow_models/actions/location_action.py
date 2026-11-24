@@ -14,12 +14,11 @@ from orca.workflow_models.pause_checkpoint import IPauseCheckpoint
 
 from orca.resource_models.devices import Device
 from orca.resource_models.labware import LabwareInstance, LabwareTemplate
-from orca.state.records import DeclaredTracking, OperationRecord
-from orca.resource_models.tracking_interpreter import IOperationInterpreter
+from orca.state.records import DeclaredTracking
 from orca.resource_models.well_selector import WellSelector
 from orca.resource_models.location import ILabwareLocationObserver, LabwareLocationEvent, Location
 from orca.system.reservation_manager.location_reservation import LocationReservation
-from orca.workflow_models.actions.device_call_dispatcher import DeviceCallDispatcher
+from orca.workflow_models.actions.device_call_dispatcher import CommandRecorder, DeviceCallDispatcher
 from orca.workflow_models.actions.util import AssignedLabwareManager
 
 orca_logger = logging.getLogger("orca")
@@ -352,8 +351,7 @@ class ActionBodyLocationAction(LocationAction):
         self._pause_checkpoint: IPauseCheckpoint | None = None
         self._user_task: asyncio.Task[None] | None = None
         self._action_queue: asyncio.Queue[ActionRequest | None] | None = None
-        self._operation_log: list[OperationRecord] = []
-        self._interpreter: IOperationInterpreter | None = None
+        self._recorder: CommandRecorder | None = None
 
     @property
     def description(self) -> str | None:
@@ -383,23 +381,8 @@ class ActionBodyLocationAction(LocationAction):
         self._pool_indices = pool_indices or {}
         self._pause_checkpoint = pause_checkpoint
 
-    def set_interpreter(self, interpreter: IOperationInterpreter) -> None:
-        self._interpreter = interpreter
-
-    @property
-    def pending_operations(self) -> list[OperationRecord]:
-        """What this action has done that is not in the record yet.
-
-        Every op is recorded the moment its call returns; the fold happens once
-        the action finishes, so an action that failed halfway is holding real
-        operations no read can see.
-        """
-        return self._operation_log
-
-    def drain_operation_log(self) -> list[OperationRecord]:
-        log = self._operation_log
-        self._operation_log = []
-        return log
+    def set_recorder(self, recorder: CommandRecorder) -> None:
+        self._recorder = recorder
 
     def _build_labware_dict(self) -> dict[str, LabwareInstance]:
         if self._assigned_labware_manager is None:
@@ -443,7 +426,6 @@ class ActionBodyLocationAction(LocationAction):
                 "set_execution_context() being called first; execution_id and "
                 "thread_id are unset."
             )
-        thread_id = self._thread_id
         queue: asyncio.Queue[ActionRequest | None] = asyncio.Queue()
         self._action_queue = queue
         ctx = ActionContext(
@@ -476,14 +458,17 @@ class ActionBodyLocationAction(LocationAction):
                 return
             await queue.put(None)
 
+        if self._recorder is None:
+            raise RuntimeError(
+                f"action '{self.command}' has no recorder, and a device command must never run without saving"
+            )
         self._user_task = asyncio.create_task(run_user_function())
 
         dispatcher = DeviceCallDispatcher(
             device=self.device,
-            interpreter=self._interpreter,
-            operation_log=self._operation_log,
+            recorder=self._recorder,
+            pipeline=self.device.engine_commands.pipeline,
             action_id=self._id,
-            thread_id=thread_id,
             execution_id=self._execution_id,
             pause_checkpoint=self._pause_checkpoint,
         )
@@ -493,10 +478,11 @@ class ActionBodyLocationAction(LocationAction):
                 request = await queue.get()
                 if request is None:
                     break
-                instances = list(self._build_labware_dict().values())
-                affected = [inst.name for inst in instances]
-                affected_ids = [inst.id for inst in instances]
-                await dispatcher.dispatch(request, affected, affected_ids, instances)
+                # The rule an operator's command follows too: a command naming no labware is about what stands at the device.
+                standing = self.device.engine_commands.pipeline.labware_at(self.device.name)
+                affected = [inst.name for inst in standing]
+                affected_ids = [inst.id for inst in standing]
+                await dispatcher.dispatch(request, affected, affected_ids, list(self._build_labware_dict().values()))
         finally:
             # Drain the user task and clear the queue handle. The inner
             # per-request ``try/except/finally`` above guarantees that

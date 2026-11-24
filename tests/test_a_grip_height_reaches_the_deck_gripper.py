@@ -16,11 +16,13 @@ import pytest
 from cheshire_drivers.liquid_handler_models import MovePlateRequest
 from cheshire_drivers.move_parameters import MoveParameterPatch
 
+from orca.gateway.controller.command_pipeline import DeviceCommandPipeline
 from orca.devices.deck_gripper_transporter import DeckGripperTransporter
 from orca.devices.devices import LiquidHandler
 from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.location import Location
 from orca.resource_models.plate_pad import PlatePad
+from orca.resource_models.resources import EngineCommandLog
 from orca.resource_models.tracked_lock import TrackedLock
 
 PLATE_TYPE = "Cor_96_wellplate_360ul_Fb"
@@ -81,12 +83,17 @@ class _RecordingDriver:
 
 
 class _FakeHandler:
-    """Only the two members the deck gripper touches on a place."""
+    """Only the members the deck gripper touches on a place."""
 
     def __init__(self) -> None:
         self.name = "flex_1"
         self.driver = _RecordingDriver()
         self.lock = TrackedLock("lh device lock")
+        self.engine_commands = EngineCommandLog(self.name)
+        self.engine_commands.save_with(self._save_nowhere, DeviceCommandPipeline(()))
+
+    async def _save_nowhere(self, command: str) -> None:
+        return None
 
 
 async def _gripper_holding(

@@ -6,6 +6,7 @@ other threads from stealing it. This must coexist with the deadlock detector
 which needs reservations released to break cross-device cycles.
 """
 
+from orca.config import OrcaConfig
 import asyncio
 from typing import AsyncGenerator
 from unittest.mock import patch
@@ -14,7 +15,6 @@ import pytest
 
 import orca.orca as orca
 from orca.resource_models.resource_pool import ResourcePool
-from orca.runtime.system_runtime import SystemRuntime
 from orca.sdk.events import EventBus
 from orca.system.SdkToSystemBuilder import SdkToSystemBuilder
 from orca.sdk.system import ResourceRegistry, SystemMap
@@ -26,9 +26,13 @@ from orca.workflow_models.method_context import MethodContext
 from orca.workflow_models.method_template import IMethodTemplate, MethodTemplate
 from orca.workflow_models.thread_context import ThreadContext
 from orca.workflow_models.thread_template import ThreadTemplate
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from tests.mock import UniversalMockDevice
 from tests.test_helpers import create_test_plate_template, create_test_transporter, execution_outcome, wire_system_map
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 
 class TestReservationHoldover:
@@ -80,11 +84,14 @@ class TestReservationHoldover:
             name="test_system", description="",
             labwares=[plate], resources_registry=registry,
             system_map=system_map,
-            workflows=[workflow], event_bus=event_bus,
+            workflows=[workflow], event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+            labware_catalog=bundled_labware_catalog(),
+            labware_service=memory_labware_service(),
+            unsaved_positions=memory_unsaved_positions(),
         )
         await builder.bind_labwares()
         system = builder.get_system()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
 
         call_log: list[int] = []
         original_shake = device.shake
@@ -96,7 +103,7 @@ class TestReservationHoldover:
         device.shake = tracking_shake  # type: ignore[method-assign]
 
         await runtime.start()
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
         status = await execution_outcome(runtime, submission, timeout=10.0)
 
         assert status.status == "completed", f"Expected completed, got {status.status}"
@@ -159,11 +166,14 @@ class TestReservationHoldover:
             name="test_system", description="",
             labwares=[plate], resources_registry=registry,
             system_map=system_map,
-            workflows=[workflow], event_bus=event_bus,
+            workflows=[workflow], event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+            labware_catalog=bundled_labware_catalog(),
+            labware_service=memory_labware_service(),
+            unsaved_positions=memory_unsaved_positions(),
         )
         await builder.bind_labwares()
         system = builder.get_system()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
 
         # Track order of releases and action executions
         event_log: list[str] = []
@@ -188,7 +198,7 @@ class TestReservationHoldover:
 
         with patch.object(LocationReservation, "release_reservation", tracking_release):
             await runtime.start()
-            submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+            submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
             status = await execution_outcome(runtime, submission, timeout=10.0)
 
         assert status.status == "completed", f"Expected completed, got {status.status}"
@@ -280,11 +290,14 @@ class TestReservationHoldover:
             name="test_system", description="",
             labwares=[plate_a, plate_b], resources_registry=registry,
             system_map=system_map,
-            workflows=[workflow], event_bus=event_bus,
+            workflows=[workflow], event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+            labware_catalog=bundled_labware_catalog(),
+            labware_service=memory_labware_service(),
+            unsaved_positions=memory_unsaved_positions(),
         )
         await builder.bind_labwares()
         system = builder.get_system()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
 
         # Track which thread holds the device at each action execution
         action_sequence: list[str] = []
@@ -297,7 +310,7 @@ class TestReservationHoldover:
         device.shake = tracking_shake  # type: ignore[method-assign]
 
         await runtime.start()
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
         status = await execution_outcome(runtime, submission, timeout=15.0)
 
         assert status.status == "completed", f"Expected completed, got {status.status}"
@@ -360,14 +373,17 @@ class TestReservationHoldover:
             name="test_system", description="",
             labwares=[plate], resources_registry=registry,
             system_map=system_map,
-            workflows=[workflow], event_bus=event_bus,
+            workflows=[workflow], event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+            labware_catalog=bundled_labware_catalog(),
+            labware_service=memory_labware_service(),
+            unsaved_positions=memory_unsaved_positions(),
         )
         await builder.bind_labwares()
         system = builder.get_system()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
 
         await runtime.start()
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
         status = await execution_outcome(runtime, submission, timeout=10.0)
 
         assert status.status == "completed", (

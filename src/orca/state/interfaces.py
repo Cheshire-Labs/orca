@@ -14,7 +14,6 @@ from orca.state.records import (
     OperationRecord,
 )
 from orca.state.placement import Placement, Reach
-from orca.state.provenance import Provenance
 
 
 class IOccupancyReader(Protocol):
@@ -71,16 +70,6 @@ class IContentsReader(Protocol):
     """
 
     async def ops_of(self, labware: LabwareRef) -> list[OperationRecord]: ...
-
-    def provenance_of(
-        self, ops: list[OperationRecord], labware_name: str,
-    ) -> Provenance: ...
-
-    def went_unobserved(
-        self, ops: list[OperationRecord], labware_name: str,
-    ) -> bool: ...
-
-    def is_behind(self, labware_name: str) -> bool: ...
 
     async def wire_contents(
         self, labware: LabwareRef,

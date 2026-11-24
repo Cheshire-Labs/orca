@@ -19,17 +19,18 @@ import asyncio
 from tests.test_helpers import execution_outcome, named_for_template
 import pytest
 
-from examples.hamilton_smc.hamilton_smc_example import WORKFLOW_NAME, build_hamilton_smc
+from tests.example_builds import HAMILTON_SMC_WORKFLOW as WORKFLOW_NAME, build_hamilton_smc
 
 from orca.state.records import (
     AspirateDetails,
     DispenseDetails,
     OperationRecord,
 )
-from orca.runtime.labware_group import LabwareGroup, LabwareGroupMember
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.submission import BatchMode
+from orca.workflow_models.labware_group import LabwareGroup, LabwareGroupMember
+from orca.modes.run_modes import WorkflowRunMode
+from orca.workflow_models.submission import BatchMode
 from orca.runtime.system_runtime import SystemRuntime
+from tests.memory_activity import memory_runtime
 
 
 _PLATE_COUNT = 4
@@ -95,19 +96,19 @@ async def _run_join_existing_batch(
     n: int, timeout: float = 900.0
 ) -> tuple[list[OperationRecord], int]:
     build = await build_hamilton_smc()
-    runtime = SystemRuntime(build.system, event_bus=build.event_bus)
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
     template = build.system.get_workflow_template(WORKFLOW_NAME)
     await runtime.start()
 
     first = await runtime.submit(
         template, groups=[_plate_group("grp-1")],
-        batch_mode=BatchMode.JOIN_EXISTING, mode=WorkflowRunMode.PURE_SIM,
+        batch_mode=BatchMode.JOIN_EXISTING, mode=WorkflowRunMode.CHECK_RUN,
     )
     await _wait_for_workflow_boot(runtime, first.execution_id)
     for i in range(2, n + 1):
         sub = await runtime.submit(
             template, groups=[_plate_group(f"grp-{i}")],
-            batch_mode=BatchMode.JOIN_EXISTING, mode=WorkflowRunMode.PURE_SIM,
+            batch_mode=BatchMode.JOIN_EXISTING, mode=WorkflowRunMode.CHECK_RUN,
         )
         assert sub.execution_id == first.execution_id, (
             f"submission {i} must join the in-flight execution, not boot a new one"

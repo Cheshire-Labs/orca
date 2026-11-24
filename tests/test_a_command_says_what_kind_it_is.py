@@ -33,9 +33,6 @@ CONTROLLER = (
 ALLOWED_BOOLEANS = frozenset({
     # A person answered this call. Not a property of the command.
     "confirm",
-    # The driver class's own disconnect policy, plumbed down because the
-    # controller dispatches by id and holds no driver to ask.
-    "resend_on_reconnect",
 })
 """Booleans `execute_command` may take, each with the reason it is not a kind.
 

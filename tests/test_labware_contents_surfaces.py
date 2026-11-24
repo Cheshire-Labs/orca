@@ -8,6 +8,7 @@ Shares the system builder with ``test_labware_contents_are_ledger_owned``,
 which pins the engine behaviour underneath these surfaces.
 """
 
+from tests.ephemeral_ops_store import EphemeralOpsHistoryStore
 import time
 
 import pytest
@@ -23,7 +24,6 @@ from orca.state.records import (
     TrackingRecord,
     TrackingSource,
 )
-from orca.state.jsonl_store import JsonlOpsHistoryStore
 from orca.system.system_interface import ISystem
 from tests.test_labware_contents_are_ledger_owned import (
     _COLUMN_1,
@@ -84,7 +84,7 @@ class TestProvenanceSaysHowWellItKnows:
 
     async def test_a_restart_makes_it_stale_and_an_operator_clears_it(self) -> None:
         labware_store = _RowMintingStore()
-        ops_store = JsonlOpsHistoryStore.ephemeral()
+        ops_store = EphemeralOpsHistoryStore()
 
         _system_a, runtime_a = await _started(labware_store, ops_store)
         snap = await runtime_a.labware.register(

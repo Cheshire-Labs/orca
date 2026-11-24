@@ -3,6 +3,7 @@
 TDD: These tests define the expected API. Implementation follows.
 """
 
+from orca.config import OrcaConfig
 import asyncio
 from collections.abc import AsyncGenerator
 
@@ -15,19 +16,31 @@ from orca.sdk.system import ResourceRegistry, SystemMap
 from orca.sdk.workflow import MethodTemplate, ThreadTemplate, WorkflowTemplate
 from orca.system.system_interface import ISystem
 import orca.orca as orca
-from orca.runtime.system_runtime import SystemRuntime, RuntimeState, ExecutionRecord, ExecutionState
+from orca.spawn import LEAVE_IN_PLACE
+from orca.runtime.system_runtime import RuntimeState, ExecutionRecord, ExecutionState
 from orca.runtime.execution import ExecutionPhase
 from orca.runtime.status_models import ExecutionDetail, ThreadSnapshot
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from tests.test_helpers import (
     wire_system_map,
     create_test_device,
     create_test_plate_template,
     create_test_transporter,
 )
+from orca.state.ops_store import IOpsHistoryStore
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from orca.resource_models.labware_service_interface import ILabwareService
+from tests.memory_activity import memory_labware_service
 
 
-async def _build_simple_system() -> tuple[ISystem, WorkflowTemplate]:
+async def _build_simple_system(
+    ops_store: IOpsHistoryStore | None = None,
+    leave_in_place: bool = False,
+    *,
+    labware_service: ILabwareService | None = None,
+) -> tuple[ISystem, WorkflowTemplate]:
     """Build a minimal sim system with one device, one transporter, two workflows.
 
     The primary workflow shakes a plate at pad1 once and returns it. The
@@ -77,7 +90,7 @@ async def _build_simple_system() -> tuple[ISystem, WorkflowTemplate]:
     pad_loc = system_map.get_location("pad1")
     pad2_loc = system_map.get_location("pad2")
 
-    @orca.thread(labware=plate, start=pad_loc, end=pad_loc)
+    @orca.thread(labware=plate, start=pad_loc, end=(pad_loc, LEAVE_IN_PLACE) if leave_in_place else pad_loc)
     async def plate_thread(ctx: object) -> AsyncGenerator[MethodTemplate, None]:
         yield shake_method
     thread = plate_thread
@@ -101,7 +114,11 @@ async def _build_simple_system() -> tuple[ISystem, WorkflowTemplate]:
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow, workflow_b],
-        event_bus=event_bus,
+        event_bus=event_bus, config=OrcaConfig(), ops_history_store=ops_store or memory_ops_store(),
+        variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=labware_service or memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     system = builder.get_system()
@@ -114,19 +131,19 @@ class TestRuntimeLifecycleEnforcement:
     async def test_cannot_submit_before_start(self) -> None:
         """Submitting a workflow on a CREATED runtime must fail."""
         system, workflow = await _build_simple_system()
-        runtime = SystemRuntime(system)
+        runtime = await memory_runtime(system)
         with pytest.raises(RuntimeError, match="not running"):
-            await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+            await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
 
     async def test_cannot_submit_after_stop(self) -> None:
         """Submitting a workflow on a STOPPED runtime must fail."""
         system, workflow = await _build_simple_system()
-        runtime = SystemRuntime(system)
+        runtime = await memory_runtime(system)
         await runtime.start()
         await runtime.shutdown()
         assert runtime.state == RuntimeState.STOPPED
         with pytest.raises(RuntimeError, match="not running"):
-            await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+            await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
 
 
 class TestWorkflowExecution:
@@ -135,10 +152,10 @@ class TestWorkflowExecution:
     async def test_submit_and_wait_completes(self) -> None:
         """The fundamental happy path: submit a workflow and wait for completion."""
         system, workflow = await _build_simple_system()
-        runtime = SystemRuntime(system)
+        runtime = await memory_runtime(system)
         await runtime.start()
 
-        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         assert isinstance(record, ExecutionRecord)
         assert record.workflow_name == workflow.name
 
@@ -150,10 +167,10 @@ class TestWorkflowExecution:
     async def test_execution_tracking(self) -> None:
         """Verify executions are tracked and queryable by ID and via list."""
         system, workflow = await _build_simple_system()
-        runtime = SystemRuntime(system)
+        runtime = await memory_runtime(system)
         await runtime.start()
 
-        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
 
         # Can query by ID immediately after submit
         status = runtime.get_execution(record.id)
@@ -175,10 +192,10 @@ class TestWorkflowExecution:
         thinking cleanup was safe.
         """
         system, workflow = await _build_simple_system()
-        runtime = SystemRuntime(system)
+        runtime = await memory_runtime(system)
         await runtime.start()
 
-        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         # Precondition: the workflow shape (transporter move + shake_action
         # + move-back) is slow enough that submit returns with the task
         # still mid-flight. Guard against a future scheduler tick that
@@ -225,10 +242,10 @@ class TestWorkflowExecution:
         phase.
         """
         system, workflow = await _build_simple_system()
-        runtime = SystemRuntime(system)
+        runtime = await memory_runtime(system)
         await runtime.start()
 
-        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         await runtime.wait(record.id)
         execution = runtime._executions[record.id]
         assert execution.task.done()
@@ -249,10 +266,10 @@ class TestWorkflowExecution:
         a follow-up stop request.
         """
         system, workflow = await _build_simple_system()
-        runtime = SystemRuntime(system)
+        runtime = await memory_runtime(system)
         await runtime.start()
 
-        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         await runtime.wait(record.id)
         terminal = runtime.get_execution_status(record.id)
         assert terminal.status is ExecutionPhase.COMPLETED
@@ -267,7 +284,7 @@ class TestWorkflowExecution:
     async def test_nonexistent_execution_raises(self) -> None:
         """Querying a non-existent execution ID raises KeyError."""
         system, _ = await _build_simple_system()
-        runtime = SystemRuntime(system)
+        runtime = await memory_runtime(system)
         await runtime.start()
 
         with pytest.raises(KeyError):
@@ -282,10 +299,10 @@ class TestStatusQueries:
     async def test_list_threads_during_execution(self) -> None:
         """Threads are visible shortly after submit."""
         system, workflow = await _build_simple_system()
-        runtime = SystemRuntime(system)
+        runtime = await memory_runtime(system)
         await runtime.start()
 
-        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
 
         # Poll until at least one thread appears (the background task needs a
         # turn on the event loop to create threads before they are queryable).
@@ -304,10 +321,10 @@ class TestStatusQueries:
     async def test_execution_detail_after_completion(self) -> None:
         """After completion, all threads show COMPLETED status."""
         system, workflow = await _build_simple_system()
-        runtime = SystemRuntime(system)
+        runtime = await memory_runtime(system)
         await runtime.start()
 
-        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         await asyncio.wait_for(runtime.wait(record.id), timeout=30.0)
 
         detail = runtime.get_execution_detail(record.id)
@@ -324,10 +341,10 @@ class TestStatusQueries:
     async def test_get_thread_detail_by_id(self) -> None:
         """Can query an individual thread by ID."""
         system, workflow = await _build_simple_system()
-        runtime = SystemRuntime(system)
+        runtime = await memory_runtime(system)
         await runtime.start()
 
-        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         await asyncio.wait_for(runtime.wait(record.id), timeout=30.0)
 
         threads = runtime.list_threads(record.id)
@@ -342,10 +359,10 @@ class TestStatusQueries:
     async def test_thread_detail_not_found_raises(self) -> None:
         """KeyError for a bad thread ID."""
         system, workflow = await _build_simple_system()
-        runtime = SystemRuntime(system)
+        runtime = await memory_runtime(system)
         await runtime.start()
 
-        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         await asyncio.wait_for(runtime.wait(record.id), timeout=30.0)
 
         with pytest.raises(KeyError, match="Thread"):
@@ -356,7 +373,7 @@ class TestStatusQueries:
     async def test_execution_detail_not_found_raises(self) -> None:
         """KeyError for a bad execution ID."""
         system, _ = await _build_simple_system()
-        runtime = SystemRuntime(system)
+        runtime = await memory_runtime(system)
         await runtime.start()
 
         with pytest.raises(KeyError, match="Execution"):
@@ -367,10 +384,10 @@ class TestStatusQueries:
     async def test_thread_snapshot_has_method_info(self) -> None:
         """After completion, thread snapshot reflects completed methods."""
         system, workflow = await _build_simple_system()
-        runtime = SystemRuntime(system)
+        runtime = await memory_runtime(system)
         await runtime.start()
 
-        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         await asyncio.wait_for(runtime.wait(record.id), timeout=30.0)
 
         threads = runtime.list_threads(record.id)

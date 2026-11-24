@@ -31,12 +31,12 @@ def _help(argv: list[str]) -> str:
 @pytest.mark.parametrize(
     ("argv", "says"),
     [
-        (["start"], "Run it from your project root"),
-        (["topology", "mount"], "imports from the directory `orca start` ran in"),
-        (["workflow", "load"], "imports from the directory `orca start` ran in"),
+        (["start"], "Run it from your package folder, or set `ORCA_PACKAGE_DIR`"),
+        (["topology", "mount"], "The daemon builds its package folder, `ORCA_PACKAGE_DIR` or the folder `orca start` ran in"),
+        (["workflow", "load"], "builds every `workflows/<name>.py` in its package folder when it mounts"),
     ],
 )
-def test_help_says_the_daemon_imports_specs_from_where_orca_start_ran(
+def test_help_says_which_folder_the_daemon_builds(
     argv: list[str], says: str,
 ) -> None:
     assert says in _help(argv)

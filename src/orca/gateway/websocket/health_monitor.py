@@ -1,10 +1,9 @@
 """Periodic stale-connection sweep for device-bridge WebSocket connections.
 
 Owns the sweep task lifecycle (start / stop / tick cadence) and the
-threshold the dispatcher uses to decide a connection is dead. The actual
-prune of dead connections stays on :class:`ConnectionManager` because the
-connection map and its lock live there -- this class just schedules the
-call and forwards the dropped pairs to the on-dropped callback.
+threshold that decides a connection is dead. Closing a dead connection is
+:class:`ConnectionManager`'s; the router's cleanup for that socket unregisters
+the client and reports its devices disconnected.
 
 Split from :class:`ConnectionManager` so wire-health concerns
 (heartbeat-driven liveness) are testable in isolation from connection
@@ -14,24 +13,22 @@ has a single home for "is the wire alive?" decisions.
 
 import asyncio
 import logging
-from typing import Awaitable, Callable, List, Optional, Tuple
+from typing import Optional
 
-from orca.gateway.websocket.manager import ConnectionManager
+from orca.gateway.registry.connection_tracker import HEARTBEAT_TOLERANCE_SECONDS
+from orca.gateway.websocket.manager import IConnectionManager
 
 logger = logging.getLogger(__name__)
 
-
-WireHealthCallback = Callable[
-    [List[Tuple[str, List[str]]]], Awaitable[None],
-]
+SWEEP_INTERVAL_SECONDS: float = 5.0
 
 
 class WireHealthMonitor:
     """Periodic stale-connection sweep over a :class:`ConnectionManager`.
 
-    Each tick calls :meth:`ConnectionManager.cleanup_stale_connections`
-    with the configured threshold and forwards the dropped client/device
-    pairs to ``on_dropped`` so callers can emit device-disconnected events.
+    Each tick calls :meth:`ConnectionManager.close_stale_connections`
+    with the configured threshold. By default a socket is closed one interval before
+    `HEARTBEAT_TOLERANCE_SECONDS`, so it is closed by the time the registry calls its devices offline.
 
     Lifecycle is idempotent on both start and stop -- a second call is a
     no-op. The sweep runs on the loop that called ``start``.
@@ -39,14 +36,14 @@ class WireHealthMonitor:
 
     def __init__(
         self,
-        manager: ConnectionManager,
+        manager: IConnectionManager,
         *,
-        interval_seconds: float = 30.0,
-        timeout_seconds: int = 90,
+        interval_seconds: float = SWEEP_INTERVAL_SECONDS,
+        timeout_seconds: Optional[float] = None,
     ) -> None:
         self._manager = manager
         self._interval_seconds = interval_seconds
-        self._timeout_seconds = timeout_seconds
+        self._timeout_seconds = HEARTBEAT_TOLERANCE_SECONDS - interval_seconds if timeout_seconds is None else timeout_seconds
         self._task: Optional[asyncio.Task[None]] = None
         self._stop_event: Optional[asyncio.Event] = None
         self._sweep_count = 0
@@ -56,7 +53,7 @@ class WireHealthMonitor:
         return self._interval_seconds
 
     @property
-    def timeout_seconds(self) -> int:
+    def timeout_seconds(self) -> float:
         return self._timeout_seconds
 
     @property
@@ -69,7 +66,7 @@ class WireHealthMonitor:
         task = self._task
         return task is not None and not task.done()
 
-    def start(self, on_dropped: WireHealthCallback) -> None:
+    def start(self) -> None:
         """Schedule the periodic sweep. Idempotent."""
         if self.is_running:
             logger.debug("WireHealthMonitor already running; skipping start")
@@ -88,11 +85,7 @@ class WireHealthMonitor:
                 except asyncio.TimeoutError:
                     pass
                 try:
-                    dropped = await self._manager.cleanup_stale_connections(
-                        timeout_seconds=self._timeout_seconds,
-                    )
-                    if dropped:
-                        await on_dropped(dropped)
+                    await self._manager.close_stale_connections(timeout_seconds=self._timeout_seconds)
                 except asyncio.CancelledError:
                     raise
                 except Exception:

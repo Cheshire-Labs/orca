@@ -18,7 +18,7 @@ no membership list to keep consistent under concurrent joins.
 import asyncio
 from dataclasses import dataclass
 
-from orca.workflow_models.status_enums import RecoveryDecision
+from orca.workflow_models.status_enums import PauseSite, RecoveryDecision
 
 
 @dataclass(frozen=True)
@@ -26,9 +26,9 @@ class ActionResolution:
     """Terminal outcome of one shared action, published exactly once and read by
     every participant. ``decision is None`` means the action completed cleanly; a
     non-None decision is a terminal decision (CONTINUE / ABORT_ACTION /
-    ABORT_METHOD / ABORT_THREAD), usually an operator's, but a co-labware timeout
-    or a cooperative stop publishes ABORT_THREAD with no operator involved. RETRY
-    is never an outcome: it re-drives in place, so the outcome future stays
+    ABORT_METHOD / ABORT_THREAD), usually an operator's, but a cooperative stop
+    publishes ABORT_THREAD with no operator involved. RETRY
+    and RETRY_ACTION are never an outcome: they re-drive in place, so the outcome future stays
     pending."""
 
     decision: RecoveryDecision | None
@@ -42,9 +42,10 @@ class SharedActionCoordination:
 
     - ``action_paused``: set when the owner fails the action, so every thread pauses
       as a unit (the operator sees the whole action stuck, not just one thread).
-    - ``op_paused_command``: the device op the group is suspended on, or None. Set only
-      on the op-level seam, so a RETRY_OP decision fed via ANY participant is valid --
-      not just the owner that physically drives the op.
+    - ``step_paused_site``: DEVICE_OP, COMMAND_SAVE or ACTION_WAIT while the group is suspended on one
+      step inside the action, else None; ``op_paused_command`` names the device op at the first two.
+      Set only on the step seam, so a RETRY decision fed via ANY participant is valid --
+      not just the owner that physically drives the step.
     - ``decision`` (set-once via ``submit_decision``, first wins): the single
       authoritative recovery decision, fed by ANY participant and consumed by the owner.
       Recovering more than one paused participant is idempotent; none can half-resume.
@@ -57,6 +58,7 @@ class SharedActionCoordination:
         self.decision_ready: asyncio.Event = asyncio.Event()
         self._decision: RecoveryDecision | None = None
         self._op_paused_command: str | None = None
+        self._step_paused_site: PauseSite | None = None
         self._outcome: asyncio.Future[ActionResolution] = (
             asyncio.get_running_loop().create_future()
         )
@@ -65,19 +67,24 @@ class SharedActionCoordination:
         """Owner-driven: the action failed, so signal every participant to pause."""
         self.action_paused.set()
 
-    def mark_op_paused(self, command: str) -> None:
-        """Record that the group is suspended on a specific device op, so a RETRY_OP
-        decision fed via ANY participant (not only the owner) is valid."""
-        self._op_paused_command = command
+    def mark_step_paused(self, site: PauseSite, device_command: str | None) -> None:
+        """Record the step inside the action the group is suspended on, so a RETRY decision fed via ANY
+        participant (not only the owner) is judged against it."""
+        self._step_paused_site = site
+        self._op_paused_command = device_command
 
-    def clear_op_paused(self) -> None:
-        """Clear the op-pause context once the owner leaves the op seam (a decision was
-        applied or the op re-drives)."""
+    def clear_step_paused(self) -> None:
+        """Clear it once the owner leaves the step seam (a decision was applied or the step re-drives)."""
+        self._step_paused_site = None
         self._op_paused_command = None
 
     @property
     def op_paused_command(self) -> str | None:
         return self._op_paused_command
+
+    @property
+    def step_paused_site(self) -> PauseSite | None:
+        return self._step_paused_site
 
     def submit_decision(self, decision: RecoveryDecision) -> None:
         """Feed the single authoritative recovery decision from ANY participant.

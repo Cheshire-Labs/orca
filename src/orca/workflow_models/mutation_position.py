@@ -1,8 +1,6 @@
 """Where to place a method/action inserted via the mutation coordinator.
 
-Replaces the old `position: int` parameter, which was effectively binary
-(0 = insert next, anything else = append at end) and misleading about
-intermediate indices. A generator-backed queue has no meaningful index,
+A generator-backed queue has no meaningful index,
 so placement is either relative to the consumption head (AtHead/AtTail)
 or anchored to a named peer (Before/After).
 

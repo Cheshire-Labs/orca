@@ -3,6 +3,7 @@
 from orca.variables.deployment_profile import DeploymentProfile
 from orca.variables.errors import (
     OptionValue,
+    SubmissionInputsRefusedError,
     UndefinedVariableError,
     VariableTypeError,
     VariableValidationError,
@@ -18,6 +19,7 @@ from orca.variables.variable_definition import VariableDefinition
 from orca.variables.variable_ref import LiteralRef, NamedRef, Var, VariableParam, VariableRef
 from orca.variables.variable_store import (
     IVariableResolver,
+    IVariableService,
     IVariableStore,
     NullVariableResolver,
     VariableService,
@@ -28,11 +30,13 @@ __all__ = [
     "DeploymentProfile",
     "ExpressionError",
     "IVariableResolver",
+    "IVariableService",
     "IVariableStore",
     "LiteralRef",
     "NamedRef",
     "NullVariableResolver",
     "OptionValue",
+    "SubmissionInputsRefusedError",
     "SubmissionOverride",
     "UndefinedVariableError",
     "Var",

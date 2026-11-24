@@ -18,7 +18,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from orca.daemon.schemas import IncidentDTO
+from orca.operations.wire_models import IncidentResponse
 from orca.runtime.incident_store import (
     IncidentCategory,
     IncidentSeverity,
@@ -27,21 +27,22 @@ from orca.runtime.incident_store import (
     SystemIncident,
 )
 from orca.runtime.system_runtime import SystemRuntime
+from tests.memory_activity import memory_runtime
 
 
 class TestRecoverableTimeoutContext:
     def test_survives_incident_dto_serialization(self) -> None:
-        """The context reaches operators only through ``IncidentDTO``
+        """The context reaches operators only through ``IncidentResponse``
         (``GET /api/incidents`` and the MCP/CLI mirrors), which flattens
         ``SystemIncident.detail`` via ``dataclasses.asdict`` + JsonValue
-        normalization. Pin that the five fields survive that real wire
+        normalization. Pin that the fields survive that real wire
         boundary, not just a self-construct."""
         ctx = RecoverableTimeoutContext(
             device_id="shaker_1",
             command="shake",
             command_id="cmd-abc-123",
             elapsed_seconds=7250.0,
-            max_seconds=7200.0,
+            max_seconds=7200.0, unheld=None,
         )
         incident = SystemIncident(
             id="inc-1",
@@ -56,7 +57,7 @@ class TestRecoverableTimeoutContext:
             acknowledged=False,
         )
 
-        dto = IncidentDTO.from_incident(incident)
+        dto = IncidentResponse.from_incident(incident)
 
         assert dto.detail == {
             "device_id": "shaker_1",
@@ -64,6 +65,7 @@ class TestRecoverableTimeoutContext:
             "command_id": "cmd-abc-123",
             "elapsed_seconds": 7250.0,
             "max_seconds": 7200.0,
+            "unheld": None,
         }
 
     def test_frozen(self) -> None:
@@ -72,7 +74,7 @@ class TestRecoverableTimeoutContext:
             command="shake",
             command_id="cmd-1",
             elapsed_seconds=10.0,
-            max_seconds=5.0,
+            max_seconds=5.0, unheld=None,
         )
         with pytest.raises(dataclasses.FrozenInstanceError):
             ctx.device_id = "other"  # type: ignore[misc]
@@ -101,13 +103,13 @@ class TestDeclareRecoverableTimeoutRecordsIncident:
     covered by the hosted-side integration test.
     """
 
-    def _make_runtime(self) -> tuple[SystemRuntime, MagicMock]:
+    async def _make_runtime(self) -> tuple[SystemRuntime, MagicMock]:
         """Build a runtime with pause_all_threads stubbed so the
         fan-out doesn't require a registered execution. The pause
         behavior itself is covered by ``TestDeclareRecoverableTimeoutPausesExecution``
         below + the existing pause_all_threads tests."""
         system = MagicMock()
-        runtime = SystemRuntime(system)
+        runtime = await memory_runtime(system)
         # Replace the bound method with a MagicMock for fan-out assertions.
         runtime.pause_all_threads = MagicMock(  # type: ignore[method-assign]
             return_value={
@@ -116,14 +118,14 @@ class TestDeclareRecoverableTimeoutRecordsIncident:
         )
         return runtime, system
 
-    def test_records_incident_with_recoverable_timeout_category(self) -> None:
-        runtime, _system = self._make_runtime()
+    async def test_records_incident_with_recoverable_timeout_category(self) -> None:
+        runtime, _system = await self._make_runtime()
         ctx = RecoverableTimeoutContext(
             device_id="shaker_1",
             command="shake",
             command_id="cmd-abc-123",
             elapsed_seconds=7300.0,
-            max_seconds=7200.0,
+            max_seconds=7200.0, unheld=None,
         )
 
         incident: SystemIncident = runtime.declare_recoverable_timeout(
@@ -136,14 +138,14 @@ class TestDeclareRecoverableTimeoutRecordsIncident:
         assert incident.execution_id == "exec-1"
         assert incident.recovery_action is RecoveryAction.NONE
 
-    def test_records_human_readable_message(self) -> None:
-        runtime, _system = self._make_runtime()
+    async def test_records_human_readable_message(self) -> None:
+        runtime, _system = await self._make_runtime()
         ctx = RecoverableTimeoutContext(
             device_id="centrifuge_1",
             command="centrifuge",
             command_id="cmd-xyz",
             elapsed_seconds=11000.0,
-            max_seconds=10800.0,
+            max_seconds=10800.0, unheld=None,
         )
 
         incident = runtime.declare_recoverable_timeout(
@@ -155,10 +157,10 @@ class TestDeclareRecoverableTimeoutRecordsIncident:
         assert "operator" in incident.message.lower()
 
     async def test_incident_is_retrievable_from_store(self) -> None:
-        runtime, _system = self._make_runtime()
+        runtime, _system = await self._make_runtime()
         ctx = RecoverableTimeoutContext(
             device_id="shaker_1", command="shake", command_id="cmd-1",
-            elapsed_seconds=10.0, max_seconds=5.0,
+            elapsed_seconds=10.0, max_seconds=5.0, unheld=None,
         )
 
         recorded = runtime.declare_recoverable_timeout(
@@ -171,11 +173,11 @@ class TestDeclareRecoverableTimeoutRecordsIncident:
         assert fetched.id == recorded.id
         assert fetched.detail == ctx
 
-    def test_multiple_invocations_record_distinct_incidents(self) -> None:
-        runtime, _system = self._make_runtime()
+    async def test_multiple_invocations_record_distinct_incidents(self) -> None:
+        runtime, _system = await self._make_runtime()
         ctx = RecoverableTimeoutContext(
             device_id="shaker_1", command="shake", command_id="cmd-1",
-            elapsed_seconds=10.0, max_seconds=5.0,
+            elapsed_seconds=10.0, max_seconds=5.0, unheld=None,
         )
 
         a = runtime.declare_recoverable_timeout(
@@ -193,9 +195,9 @@ class TestDeclareRecoverableTimeoutPausesExecution:
     pause_all_threads(execution_id) so siblings of the blocked thread
     don't race ahead while the operator deliberates."""
 
-    def test_pauses_threads_for_given_execution(self) -> None:
+    async def test_pauses_threads_for_given_execution(self) -> None:
         system = MagicMock()
-        runtime = SystemRuntime(system)
+        runtime = await memory_runtime(system)
 
         # Stub pause_all_threads to record the call without standing up
         # a registered execution; the real method is covered separately.
@@ -209,7 +211,7 @@ class TestDeclareRecoverableTimeoutPausesExecution:
 
         ctx = RecoverableTimeoutContext(
             device_id="shaker_1", command="shake", command_id="cmd-1",
-            elapsed_seconds=10.0, max_seconds=5.0,
+            elapsed_seconds=10.0, max_seconds=5.0, unheld=None,
         )
 
         incident = runtime.declare_recoverable_timeout(

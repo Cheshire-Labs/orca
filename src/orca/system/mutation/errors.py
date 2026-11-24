@@ -3,8 +3,10 @@
 Each error subclasses both `MutationError` (so wire layers can catch the
 family with one `except` clause) and `ValueError` (so existing
 `except ValueError` callers continue to work). Carrying typed attributes
-avoids brittle string-match-on-message in REST/MCP error envelopes.
+avoids brittle string-match-on-message in REST error envelopes.
 """
+
+from orca.workflow_models.status_enums import LabwareThreadStatus
 
 
 class MutationError(ValueError):
@@ -28,7 +30,7 @@ class ThreadNotPausedError(MutationError):
     """
 
     _TERMINAL_STATUSES: frozenset[str] = frozenset(
-        {"COMPLETED", "STOPPED", "ABORTED", "FAILED"}
+        status.value for status in LabwareThreadStatus if status.is_terminal()
     )
 
     def __init__(self, thread_name: str, current_status: str) -> None:

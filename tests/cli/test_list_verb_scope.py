@@ -22,12 +22,13 @@ import pytest
 from typer.testing import CliRunner
 
 from orca.cli.app import app
-from orca.daemon.schemas import (
-    CrossExecVariableDTO,
+from orca.operations.wire_models import (
     DeckLayoutSummaryDTO,
     ReservationSnapshotDTO,
     TeachpointDTO,
 )
+from orca.operations.variable_models import CrossExecVariableDTO
+from tests.memory_activity import memory_daemon_system
 
 
 runner = CliRunner()
@@ -82,14 +83,13 @@ class TestTeachpointsListVerb:
 class TestDeckLayoutsListVerb:
     def test_no_arg_calls_list_all(self) -> None:
         with patch("orca.cli.deck_layout.get_client") as mock_local:
-            mock_local.return_value.deck_layouts_list_all.return_value = [
+            mock_local.return_value.deck_layouts_list.return_value = [
                 _layout(device_id="lh1", name="layoutA"),
                 _layout(device_id="lh2", name="layoutB"),
             ]
             result = runner.invoke(app, ["deck-layouts", "list"])
         assert result.exit_code == 0, result.output
-        mock_local.return_value.deck_layouts_list_all.assert_called_once()
-        mock_local.return_value.deck_layouts_list.assert_not_called()
+        mock_local.return_value.deck_layouts_list.assert_called_once_with(None)
         assert "lh1" in result.output
         assert "lh2" in result.output
 
@@ -101,7 +101,6 @@ class TestDeckLayoutsListVerb:
             result = runner.invoke(app, ["deck-layouts", "list", "lh1"])
         assert result.exit_code == 0, result.output
         mock_local.return_value.deck_layouts_list.assert_called_once_with("lh1")
-        mock_local.return_value.deck_layouts_list_all.assert_not_called()
 
 
 class TestReservationListMutex:
@@ -151,10 +150,10 @@ class TestReservationsListVerb:
             ),
         ]
         with patch("orca.cli.reservation.get_client") as mock_local:
-            mock_local.return_value.reservations_list_all.return_value = rows
+            mock_local.return_value.reservations_list.return_value = rows
             result = runner.invoke(app, ["reservation", "list", "--all"])
         assert result.exit_code == 0, result.output
-        mock_local.return_value.reservations_list_all.assert_called_once()
+        mock_local.return_value.reservations_list.assert_called_once_with()
         assert "exec-A12" in result.output
         assert "rsv-aaaa" in result.output
         assert "pad1" in result.output
@@ -181,10 +180,10 @@ class TestReservationListDefaultsToLastExecution:
             mock_local.return_value.list_executions.return_value = [
                 _StubExec("exec-A1234567"),
             ]
-            mock_local.return_value.list_reservations.return_value = []
+            mock_local.return_value.reservations_list.return_value = []
             result = runner.invoke(app, ["reservation", "list"])
         assert result.exit_code == 0, result.output
-        mock_local.return_value.list_reservations.assert_called_once_with(
+        mock_local.return_value.reservations_list.assert_called_once_with(
             "exec-A1234567",
         )
         assert "using latest execution exec-A12" in result.output
@@ -201,7 +200,7 @@ class TestReservationListDefaultsToLastExecution:
             result = runner.invoke(app, ["reservation", "list"])
         assert result.exit_code != 0
         assert "no longer known to runtime" in result.output
-        mock_local.return_value.list_reservations.assert_not_called()
+        mock_local.return_value.reservations_list.assert_not_called()
 
     def test_no_last_recorded_fails_with_usage_exit(self) -> None:
         with patch("orca.cli.reservation.get_client") as mock_local, \
@@ -214,7 +213,7 @@ class TestReservationListDefaultsToLastExecution:
         from orca.cli.output import EXIT_USAGE
         assert result.exit_code == EXIT_USAGE
         assert "no 'last' execution recorded" in result.output
-        mock_local.return_value.list_reservations.assert_not_called()
+        mock_local.return_value.reservations_list.assert_not_called()
 
 
 class TestVarListDefaultsToLastExecution:
@@ -283,21 +282,21 @@ class TestDaemonNoArgRoutesAreReachable:
         from httpx import ASGITransport, AsyncClient
 
         from orca.daemon.app import create_app
-        from orca.runtime.system_runtime import SystemRuntime
         from tests.test_system_runtime import _build_simple_system
 
         system, _ = await _build_simple_system()
-        rt = SystemRuntime(system)
+        injected = await memory_daemon_system(system)
+        rt = injected.runtime
         await rt.start()
-        app_obj = create_app(initial_system_runtime=rt)
+        app_obj = create_app(injected=injected)
         try:
             async with AsyncClient(
                 transport=ASGITransport(app=app_obj),
                 base_url="http://daemon.test",
             ) as c:
                 for path in (
-                    "/teachpoints", "/deck-layouts",
-                    "/reservations", "/variables",
+                    "/api/teachpoints", "/api/deck-layouts",
+                    "/api/reservations", "/api/variables",
                 ):
                     resp = await c.get(path)
                     assert resp.status_code == 200, (
@@ -326,7 +325,7 @@ class TestCrossExecDTORoundTrip:
         route populates it. Default None ensures existing test fixtures
         and per-execution responses still validate.
         """
-        from orca.daemon.schemas import ReservationSnapshotDTO
+        from orca.operations.wire_models import ReservationSnapshotDTO
 
         dto = ReservationSnapshotDTO(
             position_id="pad1",

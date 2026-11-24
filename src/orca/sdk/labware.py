@@ -10,7 +10,9 @@ from orca.resource_models.labware import (
     TroughTemplate,
     TroughInstance,
 )
-from orca.state.records import LabwareInitialState
+from orca.resource_models.sharing import GroupSharing, SubmissionBatching
+from orca.resource_models.sim_labware import SimPlateTemplate, SimTipRackTemplate
+from orca.state.records import DeclaredTracking, DeclaredVolumeTransfer, LabwareInitialState
 
 __all__ = [
     "IPlate",
@@ -22,10 +24,16 @@ __all__ = [
     "AnyLabwareTemplate",
     "LabwareInitialState",
     "PlateTemplate",
+    "SimPlateTemplate",
+    "SimTipRackTemplate",
     "PlateInstance",
     "TipRackTemplate",
     "TipRackInstance",
     "TroughTemplate",
     "TroughInstance",
     "LabwareInstance",
+    "GroupSharing",
+    "SubmissionBatching",
+    "DeclaredTracking",
+    "DeclaredVolumeTransfer",
 ]

@@ -13,16 +13,21 @@ Tests cover:
 - Integration: actual resolved values reach the device
 """
 
+from orca.config import OrcaConfig
 from collections.abc import AsyncGenerator
 
 import pytest
 from tests.mock import UniversalMockDevice
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from orca.workflow_models.action_context import ActionContext
 from orca.workflow_models.action_template import ActionTemplate
 from orca.workflow_models.method_context import MethodContext
 from orca.workflow_models.method_template import IMethodTemplate
 from orca.workflow_models.thread_context import ThreadContext
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 
 # ===========================================================================
@@ -686,7 +691,7 @@ class TestVariableIntegration:
         import orca.orca as orca
         from orca.variables import Var, VariableDefinition
         from orca.resource_models.resource_pool import ResourcePool
-        from orca.runtime.system_runtime import ExecutionState, SystemRuntime
+        from orca.runtime.system_runtime import ExecutionState
         from orca.sdk.events import EventBus
         from orca.system.SdkToSystemBuilder import SdkToSystemBuilder
         from orca.sdk.system import ResourceRegistry, SystemMap
@@ -734,14 +739,17 @@ class TestVariableIntegration:
         builder = SdkToSystemBuilder(
             name="test_system", description="", labwares=[plate],
             resources_registry=registry, system_map=system_map,
-            workflows=[workflow], event_bus=event_bus,
+            workflows=[workflow], event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+            labware_catalog=bundled_labware_catalog(),
+            labware_service=memory_labware_service(),
+            unsaved_positions=memory_unsaved_positions(),
         )
         await builder.bind_labwares()
         system = builder.get_system()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
 
         await runtime.start()
-        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         status = await asyncio.wait_for(runtime.wait(record.id), timeout=10.0)
         assert status.status == ExecutionState.COMPLETED
 
@@ -758,7 +766,7 @@ class TestVariableIntegration:
         import orca.orca as orca
         from orca.variables import Var, VariableDefinition
         from orca.resource_models.resource_pool import ResourcePool
-        from orca.runtime.system_runtime import ExecutionState, SystemRuntime
+        from orca.runtime.system_runtime import ExecutionState
         from orca.sdk.events import EventBus
         from orca.system.SdkToSystemBuilder import SdkToSystemBuilder
         from orca.sdk.system import ResourceRegistry, SystemMap
@@ -804,7 +812,10 @@ class TestVariableIntegration:
         builder = SdkToSystemBuilder(
             name="test_system", description="", labwares=[plate],
             resources_registry=registry, system_map=system_map,
-            workflows=[workflow], event_bus=event_bus,
+            workflows=[workflow], event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+            labware_catalog=bundled_labware_catalog(),
+            labware_service=memory_labware_service(),
+            unsaved_positions=memory_unsaved_positions(),
         )
         await builder.bind_labwares()
         system = builder.get_system()
@@ -812,17 +823,17 @@ class TestVariableIntegration:
         system.variable_store.register_global_definitions({
             "shake_time": VariableDefinition(type="int", default=7200)
         })
-        system.variable_store.set_global("shake_time", 0)
+        system.variable_store.set_global("shake_time", 5)
 
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
         await runtime.start()
-        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
         status = await asyncio.wait_for(runtime.wait(record.id), timeout=10.0)
         assert status.status == ExecutionState.COMPLETED
 
         assert len(device.shake_calls) == 1
         duration, speed = device.shake_calls[0]
-        assert duration == 0, f"Expected duration=0 (global override), got {duration}"
+        assert duration == 5, f"Expected duration=5 (global override), got {duration}"
         assert speed == 800
 
         await runtime.shutdown()
@@ -834,7 +845,7 @@ class TestVariableIntegration:
         import orca.orca as orca
         from orca.variables import Var, VariableDefinition
         from orca.resource_models.resource_pool import ResourcePool
-        from orca.runtime.system_runtime import ExecutionState, SystemRuntime
+        from orca.runtime.system_runtime import ExecutionState
         from orca.sdk.events import EventBus
         from orca.system.SdkToSystemBuilder import SdkToSystemBuilder
         from orca.sdk.system import ResourceRegistry, SystemMap
@@ -843,7 +854,7 @@ class TestVariableIntegration:
         from orca.workflow_models.thread_context import ThreadContext
         from orca.workflow_models.thread_template import ThreadTemplate
         from tests.mutation_helpers import wait_for_threads, pause_and_wait
-        from tests.test_helpers import create_test_plate_template, create_test_transporter, wire_system_map
+        from tests.test_helpers import create_test_plate_template, create_test_transporter, wait_for_runtime_condition, wire_system_map
 
         device = RecordingMockDevice("device1")
         transporter = create_test_transporter("robot1", ["device1", "pad1"])
@@ -894,16 +905,23 @@ class TestVariableIntegration:
         builder = SdkToSystemBuilder(
             name="test_system", description="", labwares=[plate],
             resources_registry=registry, system_map=system_map,
-            workflows=[workflow], event_bus=event_bus,
+            workflows=[workflow], event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+            labware_catalog=bundled_labware_catalog(),
+            labware_service=memory_labware_service(),
+            unsaved_positions=memory_unsaved_positions(),
         )
         await builder.bind_labwares()
         system = builder.get_system()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
 
         await runtime.start()
-        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
 
         threads = await wait_for_threads(runtime, record.id)
+        # A pause lands before the next instrument command, so ask for it once the first shake has run.
+        await wait_for_runtime_condition(
+            runtime, lambda: len(device.shake_calls) == 1, timeout=10.0, message="the first shake never ran",
+        )
         await pause_and_wait(runtime, record.id, threads[0].id)
 
         # First shake used default=100

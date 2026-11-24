@@ -22,7 +22,7 @@ from cheshire_drivers.gantry_models import GantryBusyError, ParkGantryRequest
 from cheshire_drivers.sims import SimLiquidHandlerDriver
 
 from orca.devices import devices as devices_module
-from orca.devices.devices import CannotStepAsideError, LiquidHandler
+from orca.devices.devices import GantryWillNotParkError, LiquidHandler
 from orca.resource_models.device_deck_site import DeviceDeckSite
 from orca.resource_models.device_error import DeviceUnderExternalControlError
 from orca.resource_models.location import Location
@@ -31,7 +31,6 @@ from orca.resource_models.transporter_base import (
     MoverAlreadyHoldingError,
     TransporterBase,
 )
-from orca.runtime.device_factory_context import use_device_factory
 from orca.state.ops_history import OpsHistory
 from orca.system.reservation_manager.location_reservation import LocationReservation
 from orca.workflow_models.actions.move_action import (
@@ -42,13 +41,15 @@ from orca.workflow_models.actions.move_action import (
 from orca.workflow_models.status_enums import ActionStatus
 
 from tests.test_helpers import (
+    kept_engine_commands,
     no_source_hold,
-    _SingleDriverFactory,
     bind_ledger,
     create_test_labware_instance,
     create_test_transporter,
-    make_labware_placer,
+    make_command_pipeline,
 )
+from tests.memory_activity import memory_ops_store
+from tests.real_device_path import the_real_device_path
 
 pytestmark = pytest.mark.asyncio
 
@@ -71,7 +72,7 @@ class _Handler(SimLiquidHandlerDriver):
 @pytest.fixture(autouse=True)
 def _dont_actually_wait(monkeypatch: pytest.MonkeyPatch) -> None:
     """Retry cadence is wall-clock; these pin the waiting, not the clock."""
-    monkeypatch.setattr(devices_module, "_STEP_ASIDE_RETRY_SECONDS", 0.01)
+    monkeypatch.setattr(devices_module, "_REACH_IN_RETRY_SECONDS", 0.01)
 
 
 def _a_status_manager() -> Mock:
@@ -87,6 +88,7 @@ def _a_thread_context() -> Mock:
     context.thread_id = "thread_1"
     context.thread_name = "thread1"
     context.template_name = "tmpl_1"
+    context.group_id = None
     return context
 
 
@@ -106,10 +108,11 @@ async def _a_move_out_of(driver: _Handler) -> ExecutableMoveAction:
 
 
 async def _a_move(driver: _Handler, *, handler_at_source: bool) -> ExecutableMoveAction:
-    with use_device_factory(_SingleDriverFactory(driver)):
-        handler = LiquidHandler("flex")
+    the_real_device_path().simulate_with("flex", driver)
+    handler = LiquidHandler("flex")
+    kept_engine_commands(handler)
     labware = await create_test_labware_instance("plate_1")
-    bind_ledger(labware, OpsHistory())
+    bind_ledger(labware, OpsHistory(store=memory_ops_store()))
     pad = PlatePad("pad_1")
     site = DeviceDeckSite("flex/C4-slot", handler)
     (site if handler_at_source else pad).initialize_labware(labware)
@@ -118,6 +121,7 @@ async def _a_move(driver: _Handler, *, handler_at_source: bool) -> ExecutableMov
     )
     source, target = ends if handler_at_source else ends[::-1]
     mover = create_test_transporter("arm", ["pad_1", "flex/C4-slot"])
+    await the_real_device_path().connect_devices(handler, mover)
     move = MoveAction(labware, source, target, mover)
     reservation = LocationReservation(requested_location=target, labware=labware)
     reservation.set_location(target)
@@ -127,7 +131,7 @@ async def _a_move(driver: _Handler, *, handler_at_source: bool) -> ExecutableMov
         context=_a_thread_context(),
         action=move,
         labware_location_service=Mock(),
-        labware_placer=make_labware_placer(Mock()),
+        command_pipeline=make_command_pipeline(Mock()),
         slot_holder=no_source_hold(),
     )
 
@@ -250,13 +254,13 @@ async def test_a_target_that_never_frees_up_fails_before_the_pick(
     """A method that ended with tips on leaves the handler permanently
     unwilling. The move still has to fail, and failing here beats failing after
     the pick: the plate is on its pad and there is nothing to put back."""
-    monkeypatch.setattr(devices_module, "STEP_ASIDE_PATIENCE_SECONDS", 0.0)
+    monkeypatch.setattr(devices_module, "REACH_IN_PATIENCE_SECONDS", 0.0)
     driver = _Handler()
     driver.busy.set()
     move = await _a_move_into(driver)
 
     with _without_actuating(move.transporter) as pick:
-        with pytest.raises(CannotStepAsideError):
+        with pytest.raises(GantryWillNotParkError):
             await move.execute()
 
     assert pick.await_count == 0
@@ -299,7 +303,7 @@ async def test_a_move_behind_another_still_waits_for_its_own_target() -> None:
     driver = _Handler()
     move = await _a_move_into(driver)
     stranger = await create_test_labware_instance("plate_2")
-    bind_ledger(stranger, OpsHistory())
+    bind_ledger(stranger, OpsHistory(store=memory_ops_store()))
     await move.transporter.gripper_location.place_labware(stranger)
 
     with _without_actuating(move.transporter):

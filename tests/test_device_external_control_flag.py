@@ -17,12 +17,18 @@ history + the pause UI; the flag itself is just a bool.
 
 from __future__ import annotations
 
+from tests.mock import outside_any_system
+
+from orca.config import OrcaConfig
+
+
 import asyncio
 
 import pytest
 
 from orca.resource_models.device_error import DeviceUnderExternalControlError
-from tests.test_helpers import create_test_device, create_test_transporter
+from tests.test_helpers import command_recorder, create_test_device, create_test_transporter
+from tests.labware_catalog import bundled_labware_catalog
 
 
 def test_device_flag_starts_clear() -> None:
@@ -111,7 +117,7 @@ def test_device_under_external_control_error_carries_name() -> None:
     assert "mlstar_1" in str(err)
 
 
-async def test_registry_list_devices_surfaces_under_external_control() -> None:
+async def test_the_engine_state_surfaces_under_external_control() -> None:
     """Round-7 review L1: the C2 fix added
     ``under_external_control=`` to ``RegistryFacade._device_snapshot``,
     but the original test exercised ``DeviceFacade._snapshot`` instead.
@@ -121,8 +127,7 @@ async def test_registry_list_devices_surfaces_under_external_control() -> None:
     field from ``_device_snapshot`` fails loud.
     """
     from orca.resource_models.resource_pool import ResourcePool
-    from orca.runtime.system_runtime import SystemRuntime
-    from orca.runtime.registries import NullGatewayRegistry
+    from tests.no_devices import NullGatewayRegistry
     from orca.sdk.events import EventBus
     from orca.sdk.system import ResourceRegistry, SystemMap
     from orca.system.SdkToSystemBuilder import SdkToSystemBuilder
@@ -143,19 +148,22 @@ async def test_registry_list_devices_surfaces_under_external_control() -> None:
     builder = SdkToSystemBuilder(
         name="registry_list_test", description="",
         labwares=[plate], resources_registry=registry,
-        system_map=system_map, workflows=[], event_bus=EventBus(),
+        system_map=system_map, workflows=[], event_bus=EventBus(), config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
-    runtime = SystemRuntime(builder.get_system(), gateway_registry=NullGatewayRegistry())
+    runtime = await memory_runtime(builder.get_system(), gateway_registry=NullGatewayRegistry())
 
     # Pre-take: registry list reports False.
-    pre = next(d for d in runtime.registry.list_devices() if d.name == "shaker1")
-    assert pre.under_external_control is False
+    pre = await runtime.registry.engine_state("shaker1")
+    assert pre is not None and pre.under_external_control is False
 
     device.take_external_control()
 
-    post = next(d for d in runtime.registry.list_devices() if d.name == "shaker1")
-    assert post.under_external_control is True
+    post = await runtime.registry.engine_state("shaker1")
+    assert post is not None and post.under_external_control is True
 
 
 async def test_registry_list_transporters_surfaces_under_external_control() -> None:
@@ -166,8 +174,7 @@ async def test_registry_list_transporters_surfaces_under_external_control() -> N
     the unified DeviceFacade path, not this one).
     """
     from orca.resource_models.resource_pool import ResourcePool
-    from orca.runtime.system_runtime import SystemRuntime
-    from orca.runtime.registries import NullGatewayRegistry
+    from tests.no_devices import NullGatewayRegistry
     from orca.sdk.events import EventBus
     from orca.sdk.system import ResourceRegistry, SystemMap
     from orca.system.SdkToSystemBuilder import SdkToSystemBuilder
@@ -188,10 +195,13 @@ async def test_registry_list_transporters_surfaces_under_external_control() -> N
     builder = SdkToSystemBuilder(
         name="registry_list_transporter_test", description="",
         labwares=[plate], resources_registry=registry,
-        system_map=system_map, workflows=[], event_bus=EventBus(),
+        system_map=system_map, workflows=[], event_bus=EventBus(), config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
-    runtime = SystemRuntime(builder.get_system(), gateway_registry=NullGatewayRegistry())
+    runtime = await memory_runtime(builder.get_system(), gateway_registry=NullGatewayRegistry())
 
     pre = next(t for t in runtime.registry.list_transporters() if t.name == "robot1")
     assert pre.under_external_control is False
@@ -210,8 +220,7 @@ async def test_snapshot_surfaces_under_external_control() -> None:
     polling a separate endpoint.
     """
     from orca.resource_models.resource_pool import ResourcePool
-    from orca.runtime.registries import NullGatewayRegistry
-    from orca.runtime.system_runtime import SystemRuntime
+    from tests.no_devices import NullGatewayRegistry
     from orca.sdk.events import EventBus
     from orca.sdk.system import ResourceRegistry, SystemMap
     from orca.system.SdkToSystemBuilder import SdkToSystemBuilder
@@ -232,25 +241,28 @@ async def test_snapshot_surfaces_under_external_control() -> None:
     builder = SdkToSystemBuilder(
         name="ext_ctrl_snap_test", description="",
         labwares=[plate], resources_registry=registry,
-        system_map=system_map, workflows=[], event_bus=EventBus(),
+        system_map=system_map, workflows=[], event_bus=EventBus(), config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     system = builder.get_system()
-    runtime = SystemRuntime(system, gateway_registry=NullGatewayRegistry())
+    runtime = await memory_runtime(system, gateway_registry=NullGatewayRegistry())
 
     # Before take: snapshot reports False on both kinds.
-    pre_device = runtime.devices.get_device_status("shaker1")
+    pre_device = await runtime.devices.get_device_status("shaker1")
     assert pre_device.under_external_control is False
-    pre_transporter = runtime.devices.get_device_status("robot1")
+    pre_transporter = await runtime.devices.get_device_status("robot1")
     assert pre_transporter.under_external_control is False
 
     # Take on both, then re-snapshot.
     device.take_external_control()
     transporter.take_external_control()
 
-    post_device = runtime.devices.get_device_status("shaker1")
+    post_device = await runtime.devices.get_device_status("shaker1")
     assert post_device.under_external_control is True
-    post_transporter = runtime.devices.get_device_status("robot1")
+    post_transporter = await runtime.devices.get_device_status("robot1")
     assert post_transporter.under_external_control is True
 
 
@@ -276,8 +288,8 @@ from cheshire_drivers import SimShakerDriver
 from orca.devices.shaker import Shaker
 from orca.resource_models.devices import Device
 from orca.resource_models.location import Location
-from orca.runtime.device_factory_context import use_device_factory
-from orca.runtime.device_factory_protocol import DriverPairElement
+from orca.driver_management.device_factory_context import use_device_factory
+from orca.driver_management.device_factory_protocol import DeviceDriver
 from orca.system.reservation_manager.location_reservation import (
     LocationReservation,
 )
@@ -286,6 +298,9 @@ from orca.workflow_models.actions.location_action import (
     ActionBodyLocationAction,
 )
 from orca.workflow_models.action_context import ActionContext
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.memory_activity import memory_labware_service
 
 
 class _RecordingShaker(SimShakerDriver):
@@ -311,11 +326,11 @@ class _RecordingShakerFactory:
     def __init__(self, driver: _RecordingShaker) -> None:
         self._d = driver
 
-    def build_drivers(
+    def build_driver(
         self, device_type: str, name: str,
-    ) -> tuple[DriverPairElement, DriverPairElement]:
+    ) -> DeviceDriver:
         del device_type, name
-        return self._d, self._d
+        return self._d
 
 
 def _wire_action_to_device(action: ActionBodyLocationAction, device: Device) -> None:
@@ -347,7 +362,7 @@ async def test_action_loop_refuses_when_under_external_control() -> None:
     """
     driver = _RecordingShaker()
     with use_device_factory(_RecordingShakerFactory(driver)):
-        shaker = Shaker("test_shaker")
+        shaker = outside_any_system(Shaker("test_shaker"))
 
     shaker.take_external_control()
 
@@ -356,6 +371,7 @@ async def test_action_loop_refuses_when_under_external_control() -> None:
 
     action = ActionBodyLocationAction(func=user_func, command="shake")
     action.set_execution_context(variable_store=NullVariableResolver(), execution_id="t", thread_id="t-thread")
+    action.set_recorder(command_recorder())
     _wire_action_to_device(action, shaker)
 
     with pytest.raises(DeviceUnderExternalControlError) as excinfo:
@@ -375,7 +391,7 @@ async def test_action_loop_proceeds_after_release() -> None:
     and the driver IS invoked. Counterpart to the refuse-test."""
     driver = _RecordingShaker()
     with use_device_factory(_RecordingShakerFactory(driver)):
-        shaker = Shaker("test_shaker")
+        shaker = outside_any_system(Shaker("test_shaker"))
 
     shaker.take_external_control()
     shaker.release_external_control()
@@ -385,6 +401,7 @@ async def test_action_loop_proceeds_after_release() -> None:
 
     action = ActionBodyLocationAction(func=user_func, command="shake")
     action.set_execution_context(variable_store=NullVariableResolver(), execution_id="t", thread_id="t-thread")
+    action.set_recorder(command_recorder())
     _wire_action_to_device(action, shaker)
 
     await action.execute()  # no raise
@@ -409,7 +426,7 @@ async def test_action_loop_gate_does_not_leak_user_task() -> None:
     """
     driver = _RecordingShaker()
     with use_device_factory(_RecordingShakerFactory(driver)):
-        shaker = Shaker("test_shaker")
+        shaker = outside_any_system(Shaker("test_shaker"))
 
     shaker.take_external_control()
 
@@ -418,6 +435,7 @@ async def test_action_loop_gate_does_not_leak_user_task() -> None:
 
     action = ActionBodyLocationAction(func=user_func, command="shake")
     action.set_execution_context(variable_store=NullVariableResolver(), execution_id="t", thread_id="t-thread")
+    action.set_recorder(command_recorder())
     _wire_action_to_device(action, shaker)
 
     # A non-hanging path completes in milliseconds; a 2-second deadline
@@ -456,11 +474,11 @@ class _DriverRaisesShakerFactory:
     def __init__(self, driver: _DriverRaisesShaker) -> None:
         self._d = driver
 
-    def build_drivers(
+    def build_driver(
         self, device_type: str, name: str,
-    ) -> tuple[DriverPairElement, DriverPairElement]:
+    ) -> DeviceDriver:
         del device_type, name
-        return self._d, self._d
+        return self._d
 
 
 @pytest.mark.asyncio
@@ -477,7 +495,7 @@ async def test_action_loop_method_raise_surfaces_in_user_task() -> None:
     """
     driver = _DriverRaisesShaker()
     with use_device_factory(_DriverRaisesShakerFactory(driver)):
-        shaker = Shaker("test_shaker")
+        shaker = outside_any_system(Shaker("test_shaker"))
 
     observed: dict[str, BaseException | None] = {"exc": None}
 
@@ -490,6 +508,7 @@ async def test_action_loop_method_raise_surfaces_in_user_task() -> None:
 
     action = ActionBodyLocationAction(func=user_func, command="shake")
     action.set_execution_context(variable_store=NullVariableResolver(), execution_id="t", thread_id="t-thread")
+    action.set_recorder(command_recorder())
     _wire_action_to_device(action, shaker)
 
     with pytest.raises(RuntimeError, match="driver shake failed"):
@@ -511,7 +530,7 @@ async def test_action_loop_unknown_method_surfaces_in_user_task() -> None:
     """
     driver = _RecordingShaker()
     with use_device_factory(_RecordingShakerFactory(driver)):
-        shaker = Shaker("test_shaker")
+        shaker = outside_any_system(Shaker("test_shaker"))
 
     observed: dict[str, BaseException | None] = {"exc": None}
 
@@ -524,6 +543,7 @@ async def test_action_loop_unknown_method_surfaces_in_user_task() -> None:
 
     action = ActionBodyLocationAction(func=user_func, command="not_a_real_method")
     action.set_execution_context(variable_store=NullVariableResolver(), execution_id="t", thread_id="t-thread")
+    action.set_recorder(command_recorder())
     _wire_action_to_device(action, shaker)
 
     with pytest.raises(AttributeError, match="not_a_real_method"):

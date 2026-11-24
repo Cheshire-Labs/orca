@@ -1,7 +1,7 @@
 """Frozen snapshot dataclasses for querying runtime state.
 
 These are point-in-time, read-only views of the live execution object graph.
-Consumers (CLI, future REST/MCP) import ONLY these types; they must not
+Consumers (CLI, future REST) import ONLY these types; they must not
 import live internal objects like `ExecutingLabwareThread`, `LabwareInstance`,
 `Device`, etc. That one-way coupling shields UIs from internal refactors.
 
@@ -22,13 +22,12 @@ from orca.state.provenance import Provenance
 from pydantic import BaseModel, ConfigDict, JsonValue
 
 from orca.state.placement import PlacementState
+from orca.state.records import LabwareInitialState
 from orca.runtime.danger import ActionDescriptor, DangerLevel, ParamSpec
 from orca.runtime.execution_phase import ExecutionPhase
-from orca.runtime.run_modes import (
-    WorkflowRunMode,
-    resolve_effective_mode_for_device,
-)
-from orca.runtime.submission_modes import BatchMode, SubmissionStatus
+from orca.modes.device_modes import DeviceMode
+from orca.modes.run_modes import WorkflowRunMode
+from orca.workflow_models.submission_modes import BatchMode, SubmissionStatus
 from orca.workflow_models.status_enums import FailurePolicy
 
 
@@ -56,7 +55,7 @@ class ThreadSnapshot:
     id: str
     name: str
     status: str
-    current_location: str
+    current_location: str | None              # None when the record tracks no position for the thread's labware
     current_method: MethodSnapshot | None
     completed_method_count: int
     last_error: str | None                    # set when status is PAUSED due to action error
@@ -65,7 +64,8 @@ class ThreadSnapshot:
     labware_template_name: str | None = None  # the labware this thread carries; None for threads without a labware (e.g. join-only/synthetic threads). Operator surfaces use this to pre-validate insert-method against the method's action inputs.
     labware_id: str | None = None             # identity of the carried instance, so an operator surface can act on it (discharge a manual-remove park) without knowing that a thread's id IS its labware's id. Equal to `id` by construction; named separately so a client never has to rely on that.
     labware_name: str | None = None           # display name of the carried instance; equal to `name` for the same reason
-    paused_device_command: str | None = None  # the device call the thread is suspended inside, from the op-level recovery seam (the group's when it is a contributor to a paused shared action). None at every other pause, which is exactly when the runtime refuses RETRY_OP.
+    group_id: str | None = None               # the labware group this thread serves; None when shared across groups or submitted without groups
+    paused_device_command: str | None = None  # the device call the thread is suspended inside, or whose save it is suspended at, from the op-level recovery seam (the group's when it is a contributor to a paused shared action). None at every other pause.
     pause_message: str | None = None          # what the thread was doing when it stopped, in words: which seam raised and, for a device call, which call, on an error pause; the system's own cause (stall, deadlock, timeout, quarantine) on a system pause. `last_error` is the exception alone and cannot say.
     pause_site: str | None = None             # WHERE this thread stopped, or None when it is not error-paused. See `PauseSite`.
     honoured_decisions: tuple[str, ...] = ()  # the recovery decisions this thread will accept right now, and the only ones to offer. Empty when it is not error-paused. Anything else is refused on the call and the thread stays paused. Derived from `pause_site` via `HONOURED_DECISIONS`, so a surface never has to know the rule.
@@ -130,18 +130,20 @@ class ExecutionDetail:
     abort_armed: bool = False
     """Whether a second confirmed stop would abort. Set by the first stop
     call, cleared by resume."""
-    sim_time_scale: float | None = None
-    """Wall seconds per real second of a simulated step: 1 is real time, 0 is
-    no pacing. None for a LIVE run, which the hardware paces, and for a
-    finished run read back from the store, which does not keep it."""
+    simulated: bool = False
+    """Whether the run is simulated (CHECK_RUN or SIM), so its speed-up can be set.
+    False for a LIVE run and for a finished run read back from the store."""
+    sim_speedup: float | None = None
+    """The sim speed-up in force: 1 is real time. None when a simulated run does not wait at all,
+    for a LIVE run, and for a finished run read back from the store, which does not keep it."""
 
 
 @dataclass
 class ExecutionStatus:
     """Immutable snapshot of an execution's state for external consumers.
 
-    ``status`` is an ``ExecutionPhase`` (str-backed enum); equality against
-    legacy lowercase strings like ``"completed"`` still works. Used by
+    ``status`` is an ``ExecutionPhase`` (str-backed enum), so it compares
+    equal to lowercase strings like ``"completed"``. Used by
     surfaces that want the rich phase without paying for thread snapshots
     (``ExecutionDetail`` builds those eagerly).
     """
@@ -157,9 +159,12 @@ class ExecutionStatus:
     runtime paused itself. None when not paused."""
     abort_armed: bool = False
     """Whether a second confirmed stop would abort."""
-    sim_time_scale: float | None = None
-    """The simulated time scale. None for a LIVE run,
-    and for a finished run read back from the store, which does not keep it."""
+    simulated: bool = False
+    """Whether the run is simulated (CHECK_RUN or SIM), so its speed-up can be set.
+    False for a LIVE run and for a finished run read back from the store."""
+    sim_speedup: float | None = None
+    """The sim speed-up in force: 1 is real time. None when a simulated run does not wait at all,
+    for a LIVE run, and for a finished run read back from the store, which does not keep it."""
 
 
 # -- Labware + location --------------------------------------------------
@@ -171,7 +176,7 @@ class LabwareSnapshot:
     name: str
     template_name: str
     labware_type: str
-    """The catalog key, the one the daemon's ``GET /labware/{labware_type}`` takes. A sim
+    """The catalog key, the one the daemon's ``GET /api/labware-catalog/{labware_type}`` takes. A sim
     template's placeholder, such as ``_sim_plate``, and ``unknown`` are not in the catalog."""
     barcode: str | None
     current_location: str | None
@@ -205,7 +210,7 @@ class TipStateSnapshot:
 class WellVolumesSnapshot:
     """A labware's per-well volumes, and how well the record knows them.
 
-    The volumes used to travel on their own. A bare number looks equally sure
+    A bare number looks equally sure
     whether an operator stated it a minute ago or a restart left it describing
     a plate somebody has since emptied, which is the whole reason provenance
     rides every other contents read.
@@ -248,27 +253,25 @@ class DeviceSnapshot:
     """Per-device snapshot for operator reads.
 
     Every field describes ONE world, the one an operator's own verbs act in.
-    `effective_mode` resolves against `OPERATOR_DEVICE_WRITE_BASE` whatever run
-    may be in force, because `is_initialized` beside it comes from
+    `effective_mode` resolves against the operator base (an active run's mode,
+    else live), because `is_initialized` beside it comes from
     `DeviceLinkReader`, which resolves that same base so a `connect` or
     `initialize` moves flags the reader can see. Resolving the mode against
     anything else puts a sim-world mode next to a live-world flag in one row,
     and a reader believes whichever half they looked at.
 
-    A topology `sim_override` ratchets the answer toward sim on top of that
-    base, so a device declared sim reads sim. Toward-live overrides are inert
-    per the v3.4 resolver.
+    Under that base each device runs as its own `setting`, so a device set to sim reads sim.
 
     What this does NOT answer is what a WORKFLOW will do. A submission carries
-    its own `run_mode`, so a PURE_SIM submission dispatches PURE_SIM to a
-    device this row reports LIVE for. Read `sim_override` to learn how a device
-    is configured, and the submission's `run_mode` for what a run will do.
+    its own `run_mode`, so a CHECK_RUN or SIM submission runs a device this row
+    reports LIVE for as CHECK_RUN or SIM.
     """
     name: str
     type_name: str                            # class name, e.g. "Shaker", "Sealer"
     is_initialized: bool
     is_busy: bool                             # device lock currently held
     effective_mode: WorkflowRunMode           # resolved against a base mode; see class doc
+    setting: DeviceMode                       # the device's sim or live setting
     position_ids: tuple[str, ...]           # where this device is mounted on the system map
     loaded_labware_ids: tuple[str, ...]
     # True when a hosted device-integration gateway holds the device for
@@ -301,9 +304,8 @@ class DeviceIntrospection:
     Sources `interfaces`, `capabilities` (auto-derived vendor extras), and the
     per-method `methods` dict from cheshire-drivers' `driver_introspection`
     helpers, plus `provides_state` from the driver class. Drives the
-    `orca device capabilities <id>` CLI subcommand and the daemon's NEW
-    `GET /devices/{name}/introspection` route -- the daemon-side mirror of
-    a hosted deployment's existing `GET /api/devices/{id}/capabilities`.
+    `orca device capabilities <id>` CLI subcommand and the
+    `GET /api/devices/{device_id}/introspection` route both servers serve.
 
     Field shapes match a hosted deployment's payload byte-for-byte so the same CLI rendering
     works against either backend. `name` is the device identity; there is no
@@ -321,22 +323,16 @@ class DeviceIntrospection:
 class TopologyDeviceEntry:
     """What `topology.py` declared for a device.
 
-    Built by `SystemTopologyRegistry` from `system.resource_registry`. Carries
+    Built by `SystemTopologyRegistry` from `resource_models.resource_registry`. Carries
     the operator-visible identity (name) plus the contract the deployment
     expects: the driver class that should serve this device, and the
     capability interfaces declared on the driver. Used by the topology x
     gateway collision validator to refuse mismatched gateway connections.
-
-    `sim_override` carries the per-device run-mode override declared at
-    construction time (e.g. `Shaker(name=..., sim_override=PURE_SIM)`). Used
-    by the unified DeviceRegistry to populate `TopologyCard.topology_sim_override`
-    so the mode resolver can pick it up in the override hierarchy.
     """
     name: str
     kind: str
     interfaces: tuple[str, ...]
     position_ids: tuple[str, ...]
-    sim_override: WorkflowRunMode | None = None
     # True when `interfaces` is the driver class's default set rather than what
     # this device advertised. Required, not defaulted: a construction path that
     # forgot it would read as a real declaration and narrow a dispatch gate.
@@ -368,15 +364,7 @@ class TopologyCard(BaseModel):
 
     Built from the System resource graph at registry-query time. Carries the
     operator-visible identity (name) plus the contract the deployment expects
-    (declared kind, declared interface set, mounting locations) plus the
-    optional per-device sim override (`topology_sim_override`) that lets a
-    deployment force a specific device into sim under a non-PURE_SIM base
-    mode.
-
-    `disconnect_timeout_seconds` configures the per-device pause-and-wait
-    timeout for the disconnect policy; carried here so topology authors
-    can tune it per device. None means "use the runtime default for
-    the device kind."
+    (declared kind, declared interface set, mounting locations).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -385,8 +373,6 @@ class TopologyCard(BaseModel):
     declared_kind: str
     declared_interfaces: frozenset[str]
     mounting_locations: tuple[str, ...]
-    topology_sim_override: WorkflowRunMode | None = None
-    disconnect_timeout_seconds: float | None = None
     # See `TopologyDeviceEntry.interfaces_are_class_defaults`. Dispatch reads
     # this to tell "declared narrower on purpose" from "nothing declared yet".
     declared_interfaces_are_class_defaults: bool
@@ -396,12 +382,10 @@ class ReportedDeviceLink(BaseModel):
     """One device's link state, as answered by whoever is driving it.
 
     `mode` names which of the device's drivers answered, and reading it is not
-    optional. An open DEVICE_SIM link reported as plain "connected" is a
+    optional. An open SIM link reported as plain "connected" is a
     simulator read as the instrument; an open LIVE link reported that way on a
-    bench dispatching DEVICE_SIM is the instrument's answer shown for commands
-    that will never reach it. PURE_SIM says the answer came from orca's own
-    in-process simulator, which is where a device the topology declares sim
-    lands however the caller asks.
+    bench dispatching SIM is the instrument's answer shown for commands
+    that will never reach it.
 
     `mode` is None only when nobody can answer: a device bridge has advertised
     the device but not reported yet, or it advertised it and went away, leaving
@@ -440,14 +424,16 @@ class ConnectionCard(BaseModel):
     device_is_connected: bool = False
     device_is_initialized: bool = False
     device_link_mode: EffectiveMode | None = None
+    device_is_busy: bool = False
+    """The device bridge reports a command running on the device, whoever sent it."""
 
 
 class _DeviceLiveQueryProvider(Protocol):
     """Narrow surface DeviceRegistryEntry uses to answer live-state queries.
 
-    Lives here (instead of runtime_interface) to avoid an import cycle: this
-    module is imported by runtime_interface, so the cycle would loop back.
-    `IDeviceRegistry` in runtime_interface.py satisfies this Protocol
+    Lives here (instead of registry_protocols) to avoid an import cycle: this
+    module is imported by registry_protocols, so the cycle would loop back.
+    `IDeviceRegistry` in registry_protocols.py satisfies this Protocol
     structurally; tests can pass a fake.
     """
 
@@ -458,8 +444,8 @@ class DeviceRegistryEntry:
     """Two-card view of a device: topology + connection, aligned by name.
 
     Either card may be present alone. Topology-only entries support
-    PURE_SIM only (per R1 in the device-registry-reconciliation plan).
-    Connection-only entries are accepted for direct REST/MCP dispatch but
+    CHECK_RUN only (per R1 in the device-registry-reconciliation plan).
+    Connection-only entries are accepted for direct REST dispatch but
     excluded from workflow scheduling because workflows reference devices
     declared in topology.
 
@@ -477,8 +463,11 @@ class DeviceRegistryEntry:
         connection_card: ConnectionCard | None,
         registry: _DeviceLiveQueryProvider,
         device_link: ReportedDeviceLink,
+        interface_mismatch: str | None = None,
     ) -> None:
         self.name = name
+        self.interface_mismatch = interface_mismatch
+        """Set when the connection advertises fewer interfaces than the topology declares."""
         self.topology_card = topology_card
         self.connection_card = connection_card
         self._registry = registry
@@ -530,38 +519,31 @@ class DeviceRegistryEntry:
             return None
         return self.connection_card.advertised_kind
 
-    def effective_interfaces(self) -> frozenset[str]:
-        """Operative interface set for capability dispatch.
+    def effective_interfaces(self) -> frozenset[str] | None:
+        """The interfaces a command to this device is checked against, whoever sends it. None with neither card.
 
-        When both cards are present, returns the connection's advertised set
-        (verified to be a superset of the topology's declared set per C2 at
-        composition time). When only one card is present, returns that card's
-        interfaces.
+        Both cards: what the topology declares AND the client advertises, so a driver advertising more than was
+        declared cannot run what was not declared. When the topology holds only the driver class's defaults (built
+        before the client connected), the advertised set, since intersecting with those defaults refuses every
+        command past the base kind. One card: that card's set.
         """
+        if self.topology_card is not None and self.connection_card is not None:
+            if self.topology_card.declared_interfaces_are_class_defaults:
+                return self.connection_card.advertised_interfaces
+            return self.topology_card.declared_interfaces & self.connection_card.advertised_interfaces
         if self.connection_card is not None:
             return self.connection_card.advertised_interfaces
         if self.topology_card is not None:
             return self.topology_card.declared_interfaces
-        return frozenset()
-
-    def topology_sim_override(self) -> WorkflowRunMode | None:
-        if self.topology_card is None:
-            return None
-        return self.topology_card.topology_sim_override
+        return None
 
     async def supports_mode(self, mode: WorkflowRunMode) -> bool:
         """True iff this entry can run a workflow submitted under `mode`.
 
-        Resolves the per-device effective mode first: a topology `sim_override`
-        can ratchet a device to PURE_SIM under a LIVE / DEVICE_SIM submission,
-        in which case it dispatches to its sim driver and needs no connection.
-        PURE_SIM-resolved requires a topology card; DEVICE_SIM / LIVE-resolved
-        requires both cards AND a live connection.
+        A check run needs only the topology card. A sim or live run goes over the wire, so it also needs a
+        live connection.
         """
-        resolved = resolve_effective_mode_for_device(
-            mode, self.topology_sim_override(),
-        ).resolved
-        if resolved is WorkflowRunMode.PURE_SIM:
+        if mode is WorkflowRunMode.CHECK_RUN:
             return self.topology_card is not None
         if self.topology_card is None or self.connection_card is None:
             return False
@@ -569,34 +551,19 @@ class DeviceRegistryEntry:
 
 
 @dataclass(frozen=True)
-class DeviceUnionEntry:
-    """Union view of a device across topology and gateway.
-
-    `in_topology=True, gateway_connected=True` -> the happy path: a
-    declared device is reachable. `in_topology=True, gateway_connected=False`
-    -> declared but not yet connected (normal at boot). `in_topology=False,
-    gateway_connected=True` -> the gateway connected with a name not declared
-    in topology; surfaced so operators can spot misconfigurations.
-    `topology_kind` and `gateway_kind` may differ when an operator has
-    swapped a device class on-prem; that is logged as kind drift but
-    accepted, so both labels surface here for operator visibility.
-    """
-    name: str
-    in_topology: bool
-    gateway_connected: bool
-    last_heartbeat: datetime | None
-    topology_kind: str | None
-    gateway_kind: str | None
-    interfaces: tuple[str, ...]
+class EngineDeviceState:
+    """What the engine knows about one device or transporter."""
+    type_name: str
+    is_busy: bool
+    effective_mode: WorkflowRunMode
+    setting: DeviceMode
     position_ids: tuple[str, ...]
-    status: str | None
-    faulted: bool = False
-    """Whether a command left this device part-way through something.
-
-    A flag, not the record: one stop can fault several devices at once, and
-    this is what says which ones to read. The fault itself (what command,
-    what error, whether it may still be moving) is on the per-device status.
-    """
+    loaded_labware_ids: tuple[str, ...]
+    held_labware_id: str | None
+    under_external_control: bool
+    external_control_hold: str | None
+    bring_up_error: str | None = None
+    """Why a switch between sim and live could not bring it up; commands to it are refused until it comes up."""
 
 
 @dataclass(frozen=True)
@@ -661,7 +628,7 @@ class LabwareTemplateSnapshot:
     type_name: str
     """The template's Python class, e.g. ``PlateTemplate``."""
     labware_type: str
-    """The catalog key, the one the daemon's ``GET /labware/{labware_type}`` takes. A sim
+    """The catalog key, the one the daemon's ``GET /api/labware-catalog/{labware_type}`` takes. A sim
     template's placeholder, such as ``_sim_plate``, is not in the catalog."""
 
 
@@ -685,6 +652,10 @@ class ThreadTemplateSnapshot:
     labware_template_name: str
     start_position_id: str
     end_position_ids: tuple[str, ...]
+    labware_type: str
+    placed_before_run: bool
+    """True when an operator puts this labware on its start position before the run starts."""
+    initial_state: LabwareInitialState | None
 
 
 # -- System-level --------------------------------------------------------
@@ -695,13 +666,15 @@ class SystemInfoSnapshot:
     name: str
     description: str
     version: str
+    device_count: int
+    transporter_count: int
+    workflow_count: int
+    method_count: int
 
 
 @dataclass(frozen=True)
 class PluginSnapshot:
     type_name: str
-    disabled: bool
-    exposed_command_names: tuple[str, ...]
 
 
 # -- Device capability introspection -------------------------------------
@@ -713,7 +686,7 @@ class SubmissionSnapshot:
 
     ``run_mode`` is the resolved ``WorkflowRunMode`` stamped on the
     underlying ``Submission`` at submit time. Operators / AI agents
-    use this to confirm "this submission ran in PURE_SIM" without
+    use this to confirm "this submission ran in CHECK_RUN" without
     deriving from deployment defaults.
     """
     id: str
@@ -765,7 +738,6 @@ __all__ = [
     "DeviceIntrospection",
     "TopologyDeviceEntry",
     "GatewayDeviceEntry",
-    "DeviceUnionEntry",
     "TopologyCard",
     "ConnectionCard",
     "DeviceRegistryEntry",

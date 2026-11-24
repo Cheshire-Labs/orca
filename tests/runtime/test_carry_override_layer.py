@@ -11,10 +11,12 @@ from cheshire_drivers.move_parameters import MoveParameterPatch
 from cheshire_drivers.teachpoints import AccessConfig, CartesianCoordinates, Teachpoint
 
 from orca.resource_models.labware import LabwareInstance
+from orca.runtime.labware_service import LabwareService
 from orca.runtime.labware_store import InMemoryLabwareStore
-from orca.runtime.move_parameters import resolve_move_parameters
+from orca.resource_models.move_parameters import resolve_move_parameters
 from orca.runtime.system_runtime import SystemRuntime
 from tests.test_system_runtime import _build_simple_system
+from tests.memory_activity import memory_runtime
 
 
 def _teachpoint(clearance: float = 20.0) -> Teachpoint:
@@ -173,12 +175,12 @@ class TestSayingItThroughTheVerbAnOperatorReaches:
     async def _runtime_holding_a_plate(
         self,
     ) -> tuple[SystemRuntime, _StoreThatRemembersBeingTold, LabwareInstance]:
-        system, _ = await _build_simple_system()
         store = _StoreThatRemembersBeingTold()
+        system, _ = await _build_simple_system(labware_service=LabwareService(store))
         plate = LabwareInstance("plate_96", "96_well")
         system.add_labware(plate)
         await store.register(plate)
-        runtime = SystemRuntime(system, labware_store=store)
+        runtime = await memory_runtime(system)
         try:
             await runtime.start()
         except Exception:

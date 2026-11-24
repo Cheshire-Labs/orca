@@ -11,9 +11,8 @@ from collections.abc import AsyncIterator
 import pytest
 import pytest_asyncio
 
-from orca.runtime.labware_store import InMemoryLabwareStore
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.runtime_interface import BarcodeInUseError
+from orca.modes.run_modes import WorkflowRunMode
+from orca.runtime.errors import BarcodeInUseError
 from orca.runtime.system_runtime import SystemRuntime
 
 from tests.runtime.test_register_adopts_the_expected_labware import (
@@ -21,12 +20,13 @@ from tests.runtime.test_register_adopts_the_expected_labware import (
     _manual_place_runtime,
 )
 from tests.test_system_runtime import _build_simple_system
+from tests.memory_activity import memory_runtime
 
 
 @pytest_asyncio.fixture
 async def runtime() -> AsyncIterator[SystemRuntime]:
     system, _ = await _build_simple_system()
-    rt = SystemRuntime(system, labware_store=InMemoryLabwareStore())
+    rt = await memory_runtime(system)
     await rt.start()
     try:
         yield rt

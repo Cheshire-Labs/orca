@@ -2,7 +2,7 @@
 
 Grammar:
   orca <lifecycle-verb> [args...]         -- start, shutdown, unload, run, version
-  orca <noun> <verb>   [args...]          -- topology mount, workflow load,
+  orca <noun> <verb>   [args...]          -- topology mount,
                                              execution, thread, var, device, ...
 
 Global flags (parsed in the root callback and stashed on a singleton context):
@@ -10,7 +10,6 @@ Global flags (parsed in the root callback and stashed on a singleton context):
   --quiet, -q             suppress stdout (only exit code matters)
   --force, --yes, -y      skip confirmation prompts
   --no-color              disable ANSI (honors NO_COLOR env)
-  --system-module SPEC    legacy loader; the daemon owns system loading now (ignored)
   --verbose               show full tracebacks on errors
 
 Lifecycle verbs in this module:
@@ -20,14 +19,19 @@ Lifecycle verbs in this module:
 Noun sub-apps are registered at import time at the bottom of the file.
 """
 
+from orca.modes.sim_pacing import SIM_SPEEDUP_RANGE
 import os
 import sys
 import time
 
 import typer
+from pydantic import ValidationError
+from typer.core import TyperGroup
+# typer vendors click; this is the Context type TyperGroup.invoke takes.
+from typer._click import Context as ClickContext
 
 from orca.cli import output, resolve
-from orca.cli.backend import cloud_help
+from orca.cli.control_plane import ControlPlaneError
 from orca.cli.output import OutputMode
 from orca.variables.errors import OptionValue
 
@@ -133,7 +137,30 @@ def _argv_is_help_invocation() -> bool:
     return any(arg in ("--help", "-h") for arg in sys.argv[1:])
 
 
+def _refused_request_message(exc: ValidationError) -> str:
+    """What a server's 422 for the same request says: the first field and why it was refused."""
+    first = exc.errors()[0]
+    where = ".".join(str(part) for part in first["loc"]) or "<request>"
+    return f"validation_error: {where}: {first['msg']}"
+
+
+class _OrcaGroup(TyperGroup):
+    """Turns a failed client call into its message and exit code."""
+
+    def invoke(self, ctx: ClickContext) -> None:
+        try:
+            super().invoke(ctx)
+        except ControlPlaneError as exc:
+            code = exc.exit_code
+            if code is None:
+                code = output.exit_code_for_status(exc.http_status)
+            output.fail(str(exc), code=code)
+        except ValidationError as exc:
+            output.fail(_refused_request_message(exc), code=output.exit_code_for_status(422))
+
+
 app = typer.Typer(
+    cls=_OrcaGroup,
     name="orca",
     help="Orca lab automation CLI.",
     no_args_is_help=True,
@@ -148,7 +175,6 @@ app = typer.Typer(
 class _GlobalState:
     force: bool = False
     verbose: bool = False
-    system_module: str | None = None
     backend: str | None = None  # None = use precedence (env/config/auto); else "local" or "cloud"
 
 
@@ -161,20 +187,14 @@ def _main(
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Suppress stdout; only exit code."),
     force: bool = typer.Option(False, "--force", "--yes", "-y", help="Skip confirmation prompts."),
     no_color: bool = typer.Option(False, "--no-color", help="Disable ANSI color."),
-    system_module: str = typer.Option(
-        "",
-        "--system-module",
-        envvar="ORCA_SYSTEM_MODULE",
-        help="module:factory of a builder returning .system/.workflow/.event_bus.",
-    ),
     verbose: bool = typer.Option(False, "--verbose", help="Show full tracebacks."),
     backend: str = typer.Option(
         "",
         "--backend",
         help=(
-            "Control-plane backend: 'local' (the loopback daemon)"
-            + cloud_help(" or 'cloud' (a cloud deployment's REST API)")
-            + ". Defaults follow ORCA_BACKEND -> ~/.orca/config.json -> "
+            "Control-plane backend: 'local' (the loopback daemon) or 'cloud' "
+            "(a hosted deployment, at ORCA_CLOUD_URL with ORCA_CLOUD_API_KEY). "
+            "Defaults follow ORCA_BACKEND -> ~/.orca/config.json -> "
             "auto-detect (loopback daemon if reachable)."
         ),
     ),
@@ -190,7 +210,6 @@ def _main(
         output.set_mode(OutputMode.TABLE)
     STATE.force = force
     STATE.verbose = verbose
-    STATE.system_module = system_module or None
     STATE.backend = backend or None
 
 
@@ -209,8 +228,7 @@ from orca.cli import status as _status  # noqa: E402
 
 app.command(
     "status",
-    help="Show backend health: daemon snapshot"
-    + cloud_help(" (local) or runtime status (cloud)") + ".",
+    help="Show backend health: daemon snapshot (local) or runtime status (cloud).",
 )(_status.status)
 
 
@@ -228,7 +246,7 @@ def version() -> None:
         typer.echo(f"orca {v}")
 
 
-def _parse_vars(vars_str: str) -> dict[str, OptionValue]:
+def parse_vars(vars_str: str) -> dict[str, OptionValue]:
     """Parse `--vars KEY=VAL,KEY2=VAL2` into a dict. Best-effort value typing."""
     if not vars_str.strip():
         return {}
@@ -257,7 +275,7 @@ def _parse_vars(vars_str: str) -> dict[str, OptionValue]:
     return result
 
 
-_TERMINAL_STATES = {"completed", "failed", "aborted"}
+_TERMINAL_STATES = {"completed", "partial_completed", "failed", "aborted"}
 
 
 @app.command()
@@ -268,55 +286,38 @@ def run(
     profile: str = typer.Option(
         "",
         "--profile",
-        help="Path to a JSON deployment profile; loaded into the new execution "
-             "before any thread runs its first tick.",
+        help="Name of a saved deployment profile; its values load into the new "
+             "execution before any thread starts. See `orca profiles`.",
     ),
     timeout: float = typer.Option(300.0, "--timeout", help="Seconds to wait (with --wait)."),
     poll: float = typer.Option(0.5, "--poll", help="Polling interval for --wait, seconds."),
     run_mode: str = typer.Option(
         "", "--run-mode",
-        help="PURE_SIM | DEVICE_SIM | LIVE. REQUIRED per submission: there "
+        help="CHECK_RUN | SIM | LIVE. REQUIRED per submission: there "
              "is no deployment-level fallback.",
     ),
-    confirm: bool = typer.Option(
-        False, "--confirm",
-        help="Acknowledge a LIVE submission against devices whose topology "
-             "declares a sim-direction sim_override (the "
-             "LIVE_SUBMISSION_WITH_SIM_OVERRIDES_UNACKNOWLEDGED gate).",
-    ),
-    time_scale: float | None = typer.Option(
-        None, "--time-scale", min=0.0,
-        help="Simulated time scale: 1 is real time, 0.1 ten times faster, 0 no "
-             "pacing. Omit for the deployment default. Not for LIVE.",
-    ),
-    reason: str | None = typer.Option(
-        None, "--reason", help="Why, for the audit trail.",
+    speedup: float | None = typer.Option(
+        None, "--sim-speedup", min=SIM_SPEEDUP_RANGE[0], max=SIM_SPEEDUP_RANGE[1],
+        help="How many times faster than real time, 0.1 to 1000: 1 is real time. "
+             "Omit for the deployment default. Sim runs only.",
     ),
 ) -> None:
     """Submit a workflow for execution. Fire-and-forget by default; use --wait to block.
 
     Submits against the currently-loaded system in the running daemon.
 
-    `--profile <path>`: the CLI validates the file exists locally, then passes
-    the path to the daemon. Because the daemon binds 127.0.0.1 only, it reads
-    from the same filesystem the CLI sees. `--profile` is local-only -- the
-    cloud REST surface does not accept a profile path; passing it with
-    `--backend cloud` exits non-zero with a clean redirect.
+    `--profile <name>`: picks a profile saved on the server, the same way on
+    the daemon and on a hosted server. `orca profiles` manages them.
 
-    `--run-mode`: required PURE_SIM / DEVICE_SIM / LIVE selector. The 12-row
-    v3.4 resolver combines this with each device's topology sim_override at
-    dispatch time.
-
-    `--confirm`: required when submitting LIVE with any device whose topology
-    declares a sim-direction sim_override. The runtime refuses the submission;
-    pass `--confirm` after reviewing the override list.
+    `--run-mode`: required CHECK_RUN / SIM / LIVE selector. Under LIVE each
+    device runs as its own sim or live setting (`orca device mode`).
     """
-    from orca.daemon.schemas import RunModeStr, is_run_mode_str
+    from orca.operations.wire_models import RunModeStr, is_run_mode_str
     run_mode_value: RunModeStr
     if not run_mode:
         output.fail(
             "--run-mode is required; pass one of "
-            "PURE_SIM, DEVICE_SIM, or LIVE.",
+            "CHECK_RUN, SIM, or LIVE.",
             code=output.EXIT_USAGE,
         )
         return  # unreachable: output.fail exits, but satisfies pyright
@@ -324,49 +325,19 @@ def run(
         run_mode_value = run_mode
     else:
         output.fail(
-            f"--run-mode must be PURE_SIM, DEVICE_SIM, or LIVE; got {run_mode!r}",
+            f"--run-mode must be CHECK_RUN, SIM, or LIVE; got {run_mode!r}",
             code=output.EXIT_USAGE,
         )
         return  # unreachable: output.fail exits, but satisfies pyright
-    from orca.cli.backend import active_backend, get_client
-    from orca.cli.client import LocalDaemonClient
+    from orca.cli.backend import get_client
 
-    profile_path: str | None = None
-    if profile:
-        if active_backend() != "local":
-            output.fail(
-                "--profile is local-only; rerun with --backend local or drop the flag",
-                code=output.EXIT_USAGE,
-            )
-        import os
-        abs_path = os.path.abspath(profile)
-        if not os.path.isfile(abs_path):
-            output.fail(
-                f"--profile path {abs_path!r} does not exist or is not a file",
-                code=output.EXIT_USAGE,
-            )
-        profile_path = abs_path
-
-    variables: dict[str, OptionValue] | None = _parse_vars(vars_) or None
-    if profile_path is not None:
-        # Daemon-only path: profile_path requires the LocalDaemonClient impl.
-        local_client = LocalDaemonClient()
-        record = local_client.submit_workflow(
-            workflow, variables, run_mode=run_mode_value,
-            profile_path=profile_path,
-            acknowledge_warnings=confirm,
-            reason=reason,
-            sim_time_scale=time_scale,
-        )
-        client = local_client
-    else:
-        client = get_client()
-        record = client.submit_workflow(
-            workflow, variables, run_mode=run_mode_value,
-            acknowledge_warnings=confirm,
-            reason=reason,
-            sim_time_scale=time_scale,
-        )
+    variables: dict[str, OptionValue] | None = parse_vars(vars_) or None
+    client = get_client()
+    record = client.submit_workflow(
+        workflow, variables, run_mode=run_mode_value,
+        deployment_profile=profile or None,
+        sim_speedup=speedup,
+    )
     resolve.record_last_execution(record.id)
     output.info(
         f"submitted execution [cyan]{record.id[:8]}[/cyan] ({record.workflow_name})",
@@ -400,10 +371,10 @@ def run(
                 f"execution {record.id[:8]} has an error-paused thread "
                 f"{t.id[:8]} ({t.name}){in_call}: {t.last_error or '(no detail)'}. "
                 f"Recover with `orca execution thread recover {record.id} "
-                f"{t.id} <retry|retry-op|continue|abort-action|abort-method|abort-thread>`.",
+                f"{t.id} <retry|retry-action|continue|abort-action|abort-method|abort-thread>`.",
                 code=output.EXIT_INVALID_STATE,
             )
-        # ExecutionDetailDTO.status is a string (dataclass source is str).
+        # .status is a string (dataclass source is str).
         if final.status in _TERMINAL_STATES:
             break
         time.sleep(poll)
@@ -443,12 +414,16 @@ from orca.cli import audit as _audit  # noqa: E402
 from orca.cli import deck_layout as _deck_layout  # noqa: E402
 from orca.cli import describe as _describe  # noqa: E402
 from orca.cli import device as _device  # noqa: E402
+from orca.cli import events as _events
 from orca.cli import execution as _execution  # noqa: E402
 from orca.cli import incident as _incident
+from orca.cli import intervention as _intervention  # noqa: E402
 from orca.cli import state as _state  # noqa: E402
 from orca.cli import labware as _labware  # noqa: E402
 from orca.cli import manual_step as _manual_step  # noqa: E402
 from orca.cli import ops_history as _ops_history  # noqa: E402
+from orca.cli import plugin as _plugin  # noqa: E402
+from orca.cli import profile as _profile  # noqa: E402
 from orca.cli import registry as _registry  # noqa: E402
 from orca.cli import reservation as _reservation  # noqa: E402
 from orca.cli import runtime as _runtime  # noqa: E402
@@ -465,17 +440,21 @@ _HIDE_LOCAL = _hide_local_verbs_in_help()
 
 app.add_typer(_execution.app, name="execution")
 app.add_typer(_audit.app, name="audit")
+app.add_typer(_events.app, name="events")
 app.add_typer(_var.app, name="var", hidden=_HIDE_LOCAL)
 app.add_typer(_labware.app, name="labware")
 app.add_typer(_device.app, name="device")
 app.add_typer(_reservation.app, name="reservation", hidden=_HIDE_LOCAL)
+app.add_typer(_plugin.app, name="plugin")
 app.add_typer(_incident.app, name="incident")
+app.add_typer(_intervention.app, name="intervention")
 app.add_typer(_state.app, name="state")
 app.add_typer(_manual_step.app, name="manual-step")
 app.add_typer(_submission.app, name="submission", hidden=_HIDE_LOCAL)
 app.add_typer(_teachpoint.app, name="teachpoints", hidden=_HIDE_LOCAL)
 app.add_typer(_access_config.app, name="access-configs", hidden=_HIDE_LOCAL)
 app.add_typer(_grip_profiles.app, name="grip-profiles")
+app.add_typer(_profile.app, name="profiles")
 app.add_typer(_move_defaults.app, name="move-defaults")
 app.add_typer(_deck_layout.app, name="deck-layouts", hidden=_HIDE_LOCAL)
 app.add_typer(_registry.workflow_app, name="workflow")

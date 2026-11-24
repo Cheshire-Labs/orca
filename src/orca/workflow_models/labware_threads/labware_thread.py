@@ -11,8 +11,8 @@ from orca.workflow_models.thread_template import ThreadFunc, ThreadTemplate
 
 from orca.workflow_models.method import ExecutingMethod
 from orca.workflow_models.status_enums import ActionStatus
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.submission_modes import BatchMode
+from orca.modes.run_modes import WorkflowRunMode
+from orca.workflow_models.submission_modes import BatchMode
 
 orca_logger = logging.getLogger("orca")
 
@@ -36,6 +36,9 @@ class LabwareThreadInstance(ILabwareThread):
         self._thread_template: ThreadTemplate | None = None
         self._shared_executing_method: ExecutingMethod | None = None
         self._group_id: str | None = group_id
+        self._named_barcode: str | None = None
+        self._named_partners: dict[str, str] = {}
+        self._left_out: dict[str, str] = {}
         self._submission_id: str | None = submission_id
         self._batch_mode: BatchMode = batch_mode
         self._run_mode: WorkflowRunMode = run_mode
@@ -48,8 +51,32 @@ class LabwareThreadInstance(ILabwareThread):
     @property
     def group_id(self) -> str | None:
         """Identifies which LabwareGroup this thread serves, or None if it
-        is a cross-group (SHARED_ACROSS_GROUPS) thread or a pre-T6 thread."""
+        is a cross-group (SHARED_ACROSS_GROUPS) thread or an untagged one."""
         return self._group_id
+
+    @property
+    def named_barcode(self) -> str | None:
+        """The barcode this thread's labware was asked for by, when a partner constraint named it."""
+        return self._named_barcode
+
+    def set_named_barcode(self, barcode: str) -> None:
+        self._named_barcode = barcode
+
+    @property
+    def named_partners(self) -> dict[str, str]:
+        """Labware template name to barcode: the partner labware this thread's submission named for its group."""
+        return dict(self._named_partners)
+
+    def set_named_partners(self, named: dict[str, str]) -> None:
+        self._named_partners = dict(named)
+
+    @property
+    def left_out(self) -> dict[str, str]:
+        """Labware template name to thread function name: the optional threads this thread's group left out."""
+        return dict(self._left_out)
+
+    def set_left_out(self, left_out: dict[str, str]) -> None:
+        self._left_out = dict(left_out)
 
     def set_group_id(self, group_id: str | None) -> None:
         """Auto-spawned threads inherit group_id from the firing contributor.
@@ -59,7 +86,7 @@ class LabwareThreadInstance(ILabwareThread):
     @property
     def submission_id(self) -> str | None:
         """Identifies the Submission that produced this thread. None for
-        pre-T6 threads (e.g. no-submission paths)."""
+        threads started without a submission."""
         return self._submission_id
 
     def set_submission_id(self, submission_id: str | None) -> None:

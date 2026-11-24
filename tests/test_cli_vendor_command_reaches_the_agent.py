@@ -33,13 +33,20 @@ except TypeError:
 
 DEVICE = "flex_vendor_1"
 
-CONNECT = {
-    "type": "connect",
+HELLO = {
+    "type": "hello",
     "payload": {
         "protocol_version": PROTOCOL_VERSION,
+        "client_id": "vendor_pc",
         "site": "vendor",
         "lab": "surface",
         "workcell": None,
+    },
+}
+
+BUILT = {
+    "type": "assignment_result",
+    "payload": {
         "devices": [
             {
                 "type": "liquid_handler",
@@ -50,6 +57,7 @@ CONNECT = {
                 "methods": {},
             }
         ],
+        "errors": {},
     },
 }
 
@@ -81,7 +89,15 @@ class _Agent:
 
     async def _serve(self) -> None:
         async with websockets.connect(self._url) as socket:
-            await socket.send(json.dumps(CONNECT))
+            await socket.send(json.dumps(HELLO))
+            # The server sends what this client runs; it reports a device the package never assigned.
+            assignment = json.loads(await asyncio.wait_for(socket.recv(), timeout=10))
+            assert assignment["type"] == "assignment", assignment
+            # The server ignores a result that does not name the assignment it answers.
+            built = {**BUILT, "payload": {
+                **BUILT["payload"], "assignment_id": assignment["payload"]["assignment_id"],
+            }}
+            await socket.send(json.dumps(built))
             self._ready.set()
             while not self._stop:
                 try:
@@ -153,15 +169,6 @@ def test_cli_send_carries_the_arguments(agent) -> None:
 
     assert result.exit_code == 0, result.stdout + result.stderr
     assert agent.commands == [{"command": "gripper.grip", "params": {"force": 12.0}}]
-
-
-def test_cli_invoke_reaches_the_same_command(agent) -> None:
-    """`invoke` and `send` are both operator entry points for one command, and
-    an operator who reaches for the other one must not be refused."""
-    result = runner.invoke(app, ["--json", "device", "invoke", DEVICE, "gripper.ungrip"])
-
-    assert result.exit_code == 0, result.stdout + result.stderr
-    assert agent.names == ["gripper.ungrip"]
 
 
 def test_cli_lists_the_command_it_will_accept(agent) -> None:

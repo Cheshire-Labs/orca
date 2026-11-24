@@ -13,10 +13,9 @@ runner = CliRunner()
 EID = "11111111-2222-3333-4444-555555555555"
 
 CASES: list[tuple[str, list[str], str]] = [
-    ("orca.cli.backend.get_client", ["run", "wf", "--run-mode", "PURE_SIM"], "submit_workflow"),
     ("orca.cli.execution.get_client", ["execution", "stop", EID], "stop_execution"),
     ("orca.cli.execution.get_client", ["execution", "remove", EID], "execution_remove"),
-    ("orca.cli.manual_step.local_client", ["manual-step", "confirm", "s1", "--execution", EID],
+    ("orca.cli.manual_step.get_client", ["manual-step", "confirm", "s1", "--execution", EID],
      "manual_step_confirm"),
     ("orca.cli.incident.get_client",
      ["incident", "recoverable-timeout", "extend", "inc-1", "--additional-seconds", "30"],
@@ -33,7 +32,6 @@ def test_the_reason_reaches_the_client(target: str, argv: list[str], method: str
     client = MagicMock()
     client.list_executions.return_value = [SimpleNamespace(id=EID)]
     with patch(target, return_value=client), \
-            patch("orca.cli.manual_step.active_backend", return_value="local"), \
             patch("orca.cli.resolve.record_last_execution"):
         result = runner.invoke(app, ["--force", *argv, "--reason", "why"])
 

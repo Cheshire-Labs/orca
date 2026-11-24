@@ -5,12 +5,13 @@ reality; the belief is one orca projected onto it, so the record is the side
 that can be checked.
 """
 
+from tests.ephemeral_ops_store import EphemeralOpsHistoryStore
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from orca.state.confirm_refusals import NothingToConfirmError, WorkLostError
-from orca.operations.device import GetMountedTipsOperation
+from orca.operations.device import GetMountedTipsOperation, SetMountedTipsOperation
 from orca.operations.device_models import (
     GetMountedTipsRequest,
     GetMountedTipsResponse,
@@ -18,9 +19,10 @@ from orca.operations.device_models import (
     MountedTipReadDTO,
     SetMountedTipsRequest,
 )
-from orca.state.jsonl_store import JsonlOpsHistoryStore
 from orca.state.mounted import (
+    Head,
     MalformedTipRecord,
+    head_a_failed_command_leaves_unknown,
     MountedTip,
     MountedTips,
     MountedTipsLedger,
@@ -30,6 +32,7 @@ from orca.state.ops_history import OpsHistory
 from orca.state.provenance import Provenance
 from orca.state.records import (
     DeviceOperation,
+    GenericOperationDetails,
     MountedTipsAssertedDetails,
     HeadObservationGapDetails,
     ObservationGapCause,
@@ -37,7 +40,9 @@ from orca.state.records import (
     TrackingRecord,
     TrackingSource,
     TipDiscardDetails,
+    TipDrop96Details,
     TipDropDetails,
+    TipPickUp96Details,
     TipPickUpDetails,
 )
 
@@ -156,6 +161,139 @@ class TestPuttingThemBack:
             ),
         ]
         assert list(fold_mounted(ops, _LH).by_channel) == [0]
+
+
+class TestThe96Head:
+    """The 96 head is its own head: a 96-head command changes only it, and a channel command never touches it."""
+
+    def _picked_96(self, at: float = 1.0) -> OperationRecord:
+        return _op(TipPickUp96Details(tip_rack="tips_96"), DeviceOperation.PICK_UP_TIPS96, at=at)
+
+    def _dropped_96(self, to_waste: bool, at: float = 2.0) -> OperationRecord:
+        return _op(
+            TipDrop96Details(tip_rack=None if to_waste else "tips_96", to_waste=to_waste),
+            DeviceOperation.DROP_TIPS96, at=at,
+        )
+
+    def test_a_pick_up_loads_every_channel_of_the_96_head(self) -> None:
+        mounted = fold_mounted([self._picked_96()], _LH)
+        assert len(mounted.head96) == 96
+        assert mounted.head96[0] == MountedTip("tips_96", "A1", channel_is_inferred=False, head=Head.HEAD96)
+        assert mounted.head96[8] == MountedTip("tips_96", "A2", channel_is_inferred=False, head=Head.HEAD96)
+        assert mounted.head96[95] == MountedTip("tips_96", "H12", channel_is_inferred=False, head=Head.HEAD96)
+        assert mounted.by_channel == {}, "the channel head took nothing"
+        assert mounted.provenance is Provenance.KNOWN
+
+    @pytest.mark.parametrize("to_waste", [True, False])
+    def test_a_drop_empties_the_96_head(self, to_waste: bool) -> None:
+        mounted = fold_mounted([self._picked_96(), self._dropped_96(to_waste)], _LH)
+        assert mounted.head96 == {}
+        assert mounted.provenance is Provenance.KNOWN
+
+    def test_a_return_empties_the_96_head(self) -> None:
+        returned = _op(
+            GenericOperationDetails(command="return_tips96", args_repr="()"), DeviceOperation.RETURN_TIPS96, at=2.0,
+        )
+        mounted = fold_mounted([self._picked_96(), returned], _LH)
+        assert mounted.head96 == {}
+        assert mounted.provenance is Provenance.KNOWN
+
+    def test_a_plain_command_recorded_by_name_does_not_touch_the_head(self) -> None:
+        homed = _op(GenericOperationDetails(command="home", args_repr="()"), DeviceOperation.COMMAND, at=2.0)
+        assert len(fold_mounted([self._picked_96(), homed], _LH).head96) == 96
+
+    def test_a_channel_discard_leaves_the_96_head_loaded(self) -> None:
+        discarded = _op(TipDiscardDetails(use_channels=None), DeviceOperation.DISCARD_TIPS, at=2.0)
+        mounted = fold_mounted([self._picked_96(), discarded], _LH)
+        assert len(mounted.head96) == 96
+        assert mounted.by_channel == {}
+
+    def test_a_96_drop_leaves_the_channel_head_loaded(self) -> None:
+        ops = [_picked(["A1", "B1"], [0, 1], at=1.0), self._picked_96(at=2.0), self._dropped_96(True, at=3.0)]
+        mounted = fold_mounted(ops, _LH)
+        assert sorted(mounted.by_channel) == [0, 1], "the 8-channel tips are still on"
+        assert mounted.head96 == {}
+
+    def test_an_operator_can_state_both_heads(self) -> None:
+        stated = _op(
+            MountedTipsAssertedDetails(by_channel={3: ("tips_a", "A1")}, head96={0: ("tips_96", "A1")}),
+            DeviceOperation.SET_MOUNTED_TIPS, at=1.0,
+        )
+        mounted = fold_mounted([stated], _LH)
+        assert mounted.on(3) == MountedTip("tips_a", "A1", channel_is_inferred=False)
+        assert mounted.head96 == {0: MountedTip("tips_96", "A1", channel_is_inferred=False, head=Head.HEAD96)}
+
+    def test_a_cut_off_command_leaves_a_loaded_96_head_in_doubt_until_it_drops(self) -> None:
+        cut_off = _op(
+            HeadObservationGapDetails(device_name=_LH, cause=ObservationGapCause.OPERATIONS_DROPPED),
+            DeviceOperation.OBSERVATION_GAP, at=2.0,
+        )
+        discarded = _op(TipDiscardDetails(use_channels=None), DeviceOperation.DISCARD_TIPS, at=3.0)
+        still_in_doubt = fold_mounted([self._picked_96(), cut_off, discarded], _LH)
+        assert still_in_doubt.provenance is Provenance.STALE, "a channel discard says nothing about the 96 head"
+
+        settled = fold_mounted([self._picked_96(), cut_off, discarded, self._dropped_96(True, at=4.0)], _LH)
+        assert settled.provenance is Provenance.KNOWN
+
+    def test_a_cut_off_96_head_command_keeps_a_never_mentioned_96_head_in_doubt(self) -> None:
+        """The record never mentioned the 96 head. A 96-head pick-up is cut off, so the head may hold 96 tips.
+        A channel discard then settles the channels and must not make the whole read known."""
+        cut_off = _op(
+            HeadObservationGapDetails(
+                device_name=_LH, cause=ObservationGapCause.OPERATIONS_DROPPED, head=Head.HEAD96.value,
+            ),
+            DeviceOperation.OBSERVATION_GAP, at=1.0,
+        )
+        discarded = _op(TipDiscardDetails(use_channels=None), DeviceOperation.DISCARD_TIPS, at=2.0)
+
+        after_the_discard = fold_mounted([cut_off, discarded], _LH)
+        assert after_the_discard.provenance is Provenance.STALE
+        assert ObservationGapCause.OPERATIONS_DROPPED in after_the_discard.gaps
+
+        dropped = self._dropped_96(True, at=3.0)
+        assert fold_mounted([cut_off, discarded, dropped], _LH).provenance is Provenance.KNOWN
+
+    def test_a_cut_off_channel_command_does_not_put_the_96_head_in_doubt(self) -> None:
+        cut_off = _op(
+            HeadObservationGapDetails(
+                device_name=_LH, cause=ObservationGapCause.OPERATIONS_DROPPED, head=Head.CHANNELS.value,
+            ),
+            DeviceOperation.OBSERVATION_GAP, at=2.0,
+        )
+        discarded = _op(TipDiscardDetails(use_channels=None), DeviceOperation.DISCARD_TIPS, at=3.0)
+        mounted = fold_mounted([self._picked_96(), cut_off, discarded], _LH)
+        assert mounted.provenance is Provenance.KNOWN
+        assert len(mounted.head96) == 96
+
+    @pytest.mark.parametrize("command, head", [
+        ("pick_up_tips96", Head.HEAD96), ("drop_tips96", Head.HEAD96), ("return_tips96", Head.HEAD96),
+        ("pick_up_tips", Head.CHANNELS), ("drop_tips", Head.CHANNELS), ("discard_tips", Head.CHANNELS),
+        ("aspirate96", None), ("dispense96", None), ("aspirate", None), ("dispense", None), ("mix", None),
+        ("initialize", None), ("move_plate", None), ("a_vendor_command", None),
+    ])
+    def test_only_a_failed_tip_command_leaves_its_head_unknown(self, command: str, head: Head | None) -> None:
+        assert head_a_failed_command_leaves_unknown(command) is head
+
+    async def test_the_read_says_which_head_each_tip_is_on(self) -> None:
+        runtime = MagicMock()
+        runtime.devices.get_mounted_tips = AsyncMock(return_value=fold_mounted(
+            [_picked(["A1"], [0], at=1.0), self._picked_96(at=2.0)], _LH,
+        ))
+        answer = await GetMountedTipsOperation(runtime).run(GetMountedTipsRequest(device_id=_LH))
+        assert isinstance(answer, GetMountedTipsResponse)
+        assert [(tip.head, tip.channel) for tip in answer.mounted[:2]] == [("channels", 0), ("head96", 0)]
+        assert len(answer.mounted) == 97
+
+    async def test_stating_the_head_keeps_the_two_heads_apart(self) -> None:
+        runtime = MagicMock()
+        runtime.devices.set_mounted_tips = AsyncMock()
+        await SetMountedTipsOperation(runtime).run(SetMountedTipsRequest(device_id=_LH, mounted=[
+            MountedTipDTO(channel=0, tip_rack="tips_a", position="A1"),
+            MountedTipDTO(channel=0, tip_rack="tips_96", position="A1", head="head96"),
+        ]))
+        runtime.devices.set_mounted_tips.assert_awaited_once_with(
+            _LH, {0: ("tips_a", "A1")}, head96={0: ("tips_96", "A1")}, reason=None, confirm=True,
+        )
 
 
 class TestNobodyWasWatching:
@@ -295,7 +433,7 @@ class TestConfirmingDoesNotTurnAGuessIntoAnObservation:
 
     @staticmethod
     async def _ledger_after_a_guessed_pick() -> MountedTipsLedger:
-        history = OpsHistory(JsonlOpsHistoryStore.ephemeral())
+        history = OpsHistory(EphemeralOpsHistoryStore())
         await history.for_execution("exec-1").append_record(TrackingRecord(
             execution_id="exec-1", action_id="a1", thread_id="t1",
             method_id=None, source=TrackingSource.OBSERVED, timestamp=1.0,
@@ -350,7 +488,7 @@ class TestAReadEntryCanBePostedBack:
             channel=0, tip_rack="tips_96", position="A1", channel_is_inferred=True,
         )
         request = SetMountedTipsRequest(
-            device_name=_LH,
+            device_id=_LH,
             mounted=[MountedTipDTO.model_validate(read.model_dump())],
         )
         assert request.mounted[0].position == "A1"
@@ -373,7 +511,7 @@ class TestTheLedgerReadsEveryExecution:
     catch that coming back."""
 
     async def test_a_pick_written_by_a_run_is_read_back(self) -> None:
-        history = OpsHistory(JsonlOpsHistoryStore.ephemeral())
+        history = OpsHistory(EphemeralOpsHistoryStore())
         ledger = MountedTipsLedger(history)
         pick = _picked(["A1"], [0], at=1.0)
         await history.for_execution("exec-1").append_record(TrackingRecord(
@@ -393,7 +531,7 @@ class TestTheLedgerReadsEveryExecution:
         """Agreeing writes the read back as an operator's word. After an abort
         the head may be carrying tips the read does not know about, so agreeing
         would put that down as checked."""
-        history = OpsHistory(JsonlOpsHistoryStore.ephemeral())
+        history = OpsHistory(EphemeralOpsHistoryStore())
         ledger = MountedTipsLedger(history)
         await history.for_execution("exec-1").append_record(TrackingRecord(
             execution_id="exec-1", action_id="a1", thread_id="t1",
@@ -414,7 +552,7 @@ class TestTheLedgerReadsEveryExecution:
     async def test_a_confirm_is_refused_on_a_head_nobody_has_stated(
         self,
     ) -> None:
-        history = OpsHistory(JsonlOpsHistoryStore.ephemeral())
+        history = OpsHistory(EphemeralOpsHistoryStore())
         ledger = MountedTipsLedger(history)
 
         with pytest.raises(NothingToConfirmError) as refusal:
@@ -424,7 +562,7 @@ class TestTheLedgerReadsEveryExecution:
         assert (await ledger.of(_LH)).provenance is Provenance.UNKNOWN
 
     async def test_picks_from_two_executions_fold_as_one_head(self) -> None:
-        history = OpsHistory(JsonlOpsHistoryStore.ephemeral())
+        history = OpsHistory(EphemeralOpsHistoryStore())
         ledger = MountedTipsLedger(history)
         for execution, channel, at in (("exec-1", 0, 1.0), ("exec-2", 1, 2.0)):
             await history.for_execution(execution).append_record(TrackingRecord(
@@ -455,7 +593,7 @@ class TestTheReadSurfaceCarriesTheSameAnswer:
             Provenance.KNOWN,
         ))
         response = await GetMountedTipsOperation(rt).run(
-            GetMountedTipsRequest(device_name=_LH)
+            GetMountedTipsRequest(device_id=_LH)
         )
         assert response.mounted[0].channel_is_inferred is False
 
@@ -465,7 +603,7 @@ class TestTheReadSurfaceCarriesTheSameAnswer:
             Provenance.KNOWN,
         ))
         response = await GetMountedTipsOperation(rt).run(
-            GetMountedTipsRequest(device_name=_LH)
+            GetMountedTipsRequest(device_id=_LH)
         )
         assert response.mounted[0].channel_is_inferred is True
 

@@ -19,6 +19,7 @@ verb that FULFILS a wait is never refused for the claim that wait is holding, or
 the plate an operator was asked for could never be put down.
 """
 
+from orca.config import OrcaConfig
 import asyncio
 import contextlib
 from collections.abc import AsyncGenerator
@@ -27,10 +28,9 @@ from dataclasses import dataclass
 import orca.orca as orca
 from orca.resource_models.resource_pool import ResourcePool
 from orca.resource_models.transporter import Transporter
-from orca.runtime.labware_group import LabwareGroup, LabwareGroupMember
-from orca.runtime.labware_store import InMemoryLabwareStore
-from orca.runtime.registries import NullGatewayRegistry
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.workflow_models.labware_group import LabwareGroup, LabwareGroupMember
+from tests.no_devices import NullGatewayRegistry
+from orca.modes.run_modes import WorkflowRunMode
 from orca.runtime.system_runtime import SystemRuntime
 from orca.sdk.events import EventBus
 from orca.sdk.system import ResourceRegistry, SystemMap
@@ -58,6 +58,10 @@ from tests.test_helpers import (
     wait_until,
     wire_system_map,
 )
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 PADS = ["pad1", "pad2"]
 THREAD_NAME = "journey"
@@ -133,13 +137,15 @@ async def _build_bench(
     builder = SdkToSystemBuilder(
         name="shared_pad_system", description="", labwares=[plate],
         resources_registry=registry, system_map=system_map,
-        workflows=[workflow], event_bus=event_bus,
+        workflows=[workflow], event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     return Bench(
-        runtime=SystemRuntime(
+        runtime=await memory_runtime(
             builder.get_system(),
-            labware_store=InMemoryLabwareStore(),
             event_bus=event_bus,
             gateway_registry=NullGatewayRegistry(),
             connection_source=_live_connection_source(),

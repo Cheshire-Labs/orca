@@ -33,6 +33,12 @@ from tests.test_helpers import create_test_labware_instance, create_test_transpo
 # 1. Staged and loaded are one record at two reaches
 # ---------------------------------------------------------------------------
 
+@pytest.mark.positions_bound_by_the_build
+def test_a_position_no_build_has_bound_refuses_to_answer() -> None:
+    with pytest.raises(RuntimeError, match="in no built system"):
+        PositionOccupancy("dev/slot").labware
+
+
 class TestStagedVsLoaded:
     """The two-phase staging model, now a reach on one placement rather than a
     staged field and a loaded list that could disagree."""

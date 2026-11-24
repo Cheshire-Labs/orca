@@ -5,12 +5,10 @@ exclusive access through a tracking dictionary and handling command
 routing to device-bridge instances.
 
 A disconnect-policy state machine layers over the command flow: when a
-device disconnects mid-command, the future is held (not failed), a
-disconnect timer is started, and on reconnect within the timeout the
-command is re-sent transparently. On timeout, the future fails with
-DeviceOfflineError. Disconnect grace is resolved through
-:class:`DisconnectGrace` -- topology-card override first, then a single
-conservative fallback.
+device disconnects mid-command, the future is held and a disconnect
+timer is started. A reconnect, or the timer running out, fails the future
+with DeviceOfflineError. No command is ever sent a second time.
+The timer runs for the injected disconnect grace, the same for every device.
 
 Recoverable timeouts are owned by the engine, not the controller. A
 workflow command (one carrying an ``execution_id``) is bounded by the
@@ -27,13 +25,17 @@ the engine already settled.
 import uuid
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Set
+from typing import Dict, Optional, Protocol, Set
 
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.gateway.controller.command_events import current_command
+from orca.events.emitter import IEventEmitter
+from orca.modes.run_modes import WorkflowRunMode
+from orca.gateway.step_pacer_adapter import wire_budget
+from orca.modes.sim_pacing import current_sim_pacer
 
-from orca.runtime.danger import DangerLevel, audit_logger
+from orca.runtime.danger import DangerLevel, write_audit
 from cheshire_drivers.driver_errors import InstrumentOutcome
 from orca.gateway.device_fault import (
     DeviceFault,
@@ -46,48 +48,28 @@ from orca.gateway.controller.exceptions import (
     ConfirmationRequiredError,
     DeviceError,
     DeviceFaultedError,
+    DeviceNotBroughtUpError,
     DeviceLockedError,
     DeviceOfflineError,
     CommandTimeoutError,
     InvalidCommandError,
     instrument_outcome_of,
 )
-from cheshire_drivers.centrifuge_request_validation import validate_centrifuge_payload
-from cheshire_drivers.delidder_request_validation import validate_delidder_payload
-from cheshire_drivers.lh_motion_request_validation import validate_lh_motion_payload
-from cheshire_drivers.lh_request_validation import (
-    validate_lh_payload,
-    validate_liquid_probe_payload,
-)
-from cheshire_drivers.protocol_runner_request_validation import validate_protocol_runner_payload
-from cheshire_drivers.reader_request_validation import validate_reader_payload
-from cheshire_drivers.sealer_request_validation import validate_sealer_payload
-from cheshire_drivers.shaker_request_validation import validate_shaker_payload
-from cheshire_drivers.transporter_request_validation import validate_transporter_payload
+from cheshire_drivers.command_table import COMMANDS
 from pydantic import JsonValue, ValidationError as _PydanticValidationError
 
-from orca.gateway.controller.command_clock import DeviceCommandClock
-from orca.gateway.controller.disconnect_grace import DisconnectGrace
+from orca.gateway.controller.command_clock import ICommandClock
+from orca.resource_models.reach_in import ARM_REACH_IN_COMMANDS, mover_reaching_in
+from orca.gateway.controller.disconnect_grace import IDisconnectGrace
 from orca.gateway.registry.capabilities import validate_capability_for_device
-from orca.gateway.registry import DeviceSnapshot, device_connection_tracker
-from orca.gateway.websocket.manager import connection_manager
-from cheshire_drivers.gateway_protocol import CancelMessage, CommandMessage, LabwareDefinitionDTO, ResponseMessage, MessageEnvelope
+from orca.gateway.registry import DeviceSnapshot, IDeviceConnectionTracker
+from orca.gateway.websocket.manager import IClientChannel
+from cheshire_drivers.gateway_protocol import CancelMessage, CommandMessage, ResponseMessage, MessageEnvelope
 
 logger = logging.getLogger(__name__)
 
-# The manual-control interfaces whose commands share one payload validator. A device advertising
-# any of them gets its motion params checked against the motion request models.
-_LH_MOTION_INTERFACES = frozenset(
-    {
-        "IPipetteMotion",
-        "IGripperMotion",
-        "IGripperPosition",
-        "IForceGripperJaw",
-        "IWidthGripperJaw",
-        "IGripperRotation",
-    }
-)
-
+InterfaceSource = Callable[[str], Awaitable[Optional[frozenset[str]]]]
+"""A device's name to the interfaces its commands are checked against; None when it knows no such device."""
 
 def _outcome_of(error: BaseException) -> DeviceFaultOutcome:
     """What state to record the device in, once a fault is owed.
@@ -100,6 +82,10 @@ def _outcome_of(error: BaseException) -> DeviceFaultOutcome:
     if instrument_outcome_of(error) is InstrumentOutcome.UNKNOWN:
         return DeviceFaultOutcome.UNKNOWN
     return DeviceFaultOutcome.FAILED
+
+
+Taken = Callable[[float | None, float | None], None]
+"""Told when a device takes a command: the run's speed-up and the seconds budgeted for the command."""
 
 
 def _moved_nothing(error: BaseException) -> bool:
@@ -129,15 +115,7 @@ class _PendingCommand:
     reconnect. ``command_timer`` and ``disconnect_timer`` are mutually
     exclusive: only one is active at a time. ``command_timer`` runs
     while the device is connected; on disconnect it's cancelled and
-    ``disconnect_timer`` takes its place. On reconnect, the reverse.
-
-    ``resend_on_reconnect`` is the per-command opt-out for the default
-    disconnect-recovery resend behavior. Drivers whose commands
-    are non-idempotent (notably liquid handlers: aspirate / dispense /
-    tip ops) pass ``False`` so the reconnect listener fails the future
-    with ``DeviceOfflineError`` instead of double-executing on the
-    physical device. Defaults to ``True`` to preserve the legacy
-    transparent-resend behavior for safe drivers.
+    ``disconnect_timer`` takes its place. A reconnect fails the command.
 
     ``execution_id`` is the ad-hoc-vs-workflow discriminator: set when the
     caller is a workflow thread (the engine's recoverable-timeout
@@ -149,15 +127,71 @@ class _PendingCommand:
     command_id: str
     device_id: str
     command: str
-    params: Dict[str, JsonValue]
-    effective_mode: WorkflowRunMode
     timeout_seconds: float
     future: "asyncio.Future[JsonValue]"
     command_timer: Optional["asyncio.Task[None]"] = None
     disconnect_timer: Optional["asyncio.Task[None]"] = None
-    resend_on_reconnect: bool = True
-    labware: Optional[LabwareDefinitionDTO] = None
     execution_id: Optional[str] = None
+
+
+class IDeviceController(Protocol):
+    """Runs commands on connected devices, one at a time per device, and latches their faults."""
+
+    @property
+    def command_events(self) -> IEventEmitter:
+        """Where each command's COMMAND events go."""
+        ...
+
+    def set_fault_listener(
+        self, listener: Optional[Callable[[str, Optional[DeviceFault]], None]],
+    ) -> None: ...
+
+    def check_interfaces_with(self, source: InterfaceSource) -> None: ...
+
+    def clear_fault_listener(
+        self, listener: Callable[[str, Optional[DeviceFault]], None],
+    ) -> None: ...
+
+    def fault(self, device_id: str) -> Optional[DeviceFault]: ...
+
+    async def clear_fault(self, device_id: str) -> Optional[DeviceFault]: ...
+
+    def bring_up_error(self, device_id: str) -> Optional[str]: ...
+
+    def mark_not_brought_up(self, device_id: str, error: str) -> None: ...
+
+    async def execute_command(
+        self,
+        device_id: str,
+        command: str,
+        params: Optional[Dict[str, JsonValue]] = None,
+        timeout_seconds: Optional[float] = None,
+        *,
+        effective_mode: WorkflowRunMode,
+        effective_interfaces: Optional[frozenset[str]] = None,
+        kind: CommandKind = CommandKind.ACTUATION,
+        execution_id: Optional[str] = None,
+        confirm: bool = False,
+    ) -> JsonValue: ...
+
+    async def on_device_disconnected(self, device_id: str) -> None: ...
+
+    async def on_device_reconnected(self, device_id: str) -> None: ...
+
+    async def handle_response(self, response_msg: ResponseMessage) -> None: ...
+
+    async def await_cancels_sent(self) -> None: ...
+
+
+def _nothing(sim_speedup: float | None, nominal_seconds: float | None) -> None:
+    return None
+
+
+def _why_offline(tracker: IDeviceConnectionTracker, device_id: str) -> str:
+    build_error = tracker.build_error(device_id)
+    if build_error is None:
+        return f"Device {device_id} disconnected"
+    return f"Device {device_id} is offline: its orca-client could not build it: {build_error}"
 
 
 class DeviceController:
@@ -168,8 +202,26 @@ class DeviceController:
     a device at a time. Provides atomic check-and-set for device reservation.
     """
 
-    def __init__(self):
-        """Initialize the device controller."""
+    def __init__(
+        self,
+        tracker: IDeviceConnectionTracker,
+        connections: IClientChannel,
+        disconnect_grace: IDisconnectGrace,
+        command_clock: ICommandClock,
+        *,
+        events: IEventEmitter,
+        serves_check_runs: bool = False,
+        default_sim_speedup: float | None = None,
+    ) -> None:
+        self._tracker = tracker
+        # What a simulated device waits at when no run paces its command; None waits for nothing.
+        self._default_sim_speedup = default_sim_speedup
+        self._events = events
+        # Only a check run's own gateway, whose orca-client runs inside Orca, may be sent CHECK_RUN.
+        self._serves_check_runs = serves_check_runs
+        self._connections = connections
+        self._disconnect_grace = disconnect_grace
+        self._command_clock = command_clock
         # Single source of truth for "device is busy / which command owns
         # it": device_id -> in-flight record. Created at reservation (before
         # the wire dispatch) so a disconnect caught while the command is in
@@ -180,17 +232,11 @@ class DeviceController:
         # by it and world-sync ops register a future with no _pending record.
         self._command_futures: Dict[str, asyncio.Future] = {}
         self._lock = asyncio.Lock()  # Protects all controller state below
-        # Disconnect-grace resolver. Defaults to a fresh DisconnectGrace
-        # with no topology resolver; main.py wires the runtime topology
-        # lookup once the system is built.
-        self._disconnect_grace = DisconnectGrace()
-        # Per-command timeout source. Reads driver-advertised
-        # MethodInfo.duration; falls back to a single conservative default
-        # when no duration was advertised.
-        self._command_clock = DeviceCommandClock()
         # device_id -> the command that did not come back clean, latched
         # until an operator clears it. See `device_fault`.
         self._faults: Dict[str, DeviceFault] = {}
+        # device_id -> why a mode switch could not bring it up; cleared by a clean initialize.
+        self._not_brought_up: Dict[str, str] = {}
         # None until the runtime wires itself up: the controller runs
         # standalone in tests and must not need an observer.
         self._fault_listener: Optional[
@@ -199,12 +245,21 @@ class DeviceController:
         # Cancel sends in flight. They are scheduled rather than awaited, so
         # nothing else holds them: an unheld task can be collected mid-send.
         self._cancel_sends: Set[asyncio.Task[None]] = set()
+        self._interfaces: InterfaceSource | None = None
+
+    @property
+    def command_events(self) -> IEventEmitter:
+        return self._events
 
     def set_fault_listener(
         self, listener: Optional[Callable[[str, Optional[DeviceFault]], None]],
     ) -> None:
         """Watch faults arriving and clearing. Second argument is None on a clear."""
         self._fault_listener = listener
+
+    def check_interfaces_with(self, source: InterfaceSource) -> None:
+        """Where a command that names no interfaces gets the ones it is checked against: a run's, an engine's."""
+        self._interfaces = source
 
     def clear_fault_listener(
         self, listener: Callable[[str, Optional[DeviceFault]], None],
@@ -227,10 +282,6 @@ class DeviceController:
             self._fault_listener(device_id, fault)
         except Exception:
             logger.exception("device fault listener raised for %s", device_id)
-
-    def set_command_clock(self, clock: DeviceCommandClock) -> None:
-        """Inject a custom DeviceCommandClock (tests + per-deployment overrides)."""
-        self._command_clock = clock
 
     def fault(self, device_id: str) -> Optional[DeviceFault]:
         """The unresolved fault on this device, or None.
@@ -292,6 +343,14 @@ class DeviceController:
         logger.error("Device %s faulted: %s", device_id, latched.describe())
         self._tell_fault_listener(device_id, latched)
 
+    def bring_up_error(self, device_id: str) -> Optional[str]:
+        """Why the device did not come up after a switch between sim and live, or None."""
+        return self._not_brought_up.get(device_id)
+
+    def mark_not_brought_up(self, device_id: str, error: str) -> None:
+        """Refuse operator commands to the device until a clean initialize."""
+        self._not_brought_up[device_id] = error
+
     async def _refuse_if_faulted(self, device_id: str) -> None:
         """Keep the engine off a device whose last command left it unchecked."""
         fault = self._faults.get(device_id)
@@ -319,51 +378,6 @@ class DeviceController:
                 "Device %s fault cleared by a clean %r", device_id, command,
             )
 
-    def set_disconnect_grace(self, grace: DisconnectGrace) -> None:
-        """Inject the DisconnectGrace instance (tests + main.py wiring).
-
-        Replaces the previous ``set_disconnect_timeout_resolver`` API:
-        callers now construct a ``DisconnectGrace`` (optionally with a
-        topology resolver) and inject it as a unit.
-        """
-        self._disconnect_grace = grace
-
-    async def is_locked(self, device_id: str) -> bool:
-        """
-        Check if device is currently executing a command.
-
-        This is a best-effort hint - the device might become locked
-        between this check and subsequent operations. For guaranteed
-        exclusive access, use execute_command() which performs atomic
-        check-and-set.
-
-        Args:
-            device_id: Device to check
-
-        Returns:
-            True if device is currently locked, False otherwise
-        """
-        async with self._lock:
-            return device_id in self._pending
-
-    async def get_available_devices(
-        self, device_type: Optional[str] = None
-    ) -> List[DeviceSnapshot]:
-        """Get list of devices that are online AND not locked."""
-        all_devices = await device_connection_tracker.list_devices(
-            device_type=device_type, status="ready"
-        )
-
-        # Filter out locked devices
-        async with self._lock:
-            available = [
-                device
-                for device in all_devices
-                if device.name not in self._pending
-            ]
-
-        return available
-
     async def execute_command(
         self,
         device_id: str,
@@ -373,11 +387,51 @@ class DeviceController:
         *,
         effective_mode: WorkflowRunMode,
         effective_interfaces: Optional[frozenset[str]] = None,
-        resend_on_reconnect: bool = True,
         kind: CommandKind = CommandKind.ACTUATION,
-        labware: Optional[LabwareDefinitionDTO] = None,
         execution_id: Optional[str] = None,
         confirm: bool = False,
+    ) -> JsonValue:
+        """Execute a command on a device.
+
+        The sender's `one_command` block sends the command's COMMAND events: STARTED once the device is reserved
+        for it, and the end one after its records. A command outside a block sends none.
+        """
+        async def run(command_id: str, taken: Taken) -> JsonValue:
+            return await self._execute_command(
+                command_id, device_id, command, params, timeout_seconds,
+                effective_mode=effective_mode, effective_interfaces=effective_interfaces,
+                kind=kind,
+                execution_id=execution_id, confirm=confirm, taken=taken,
+            )
+
+        block = current_command()
+        if block is None:
+            return await run(str(uuid.uuid4()), _nothing)
+        if block.events is None:
+            block.events = self._events
+        result = await run(
+            block.wire_id(),
+            lambda sim_speedup, nominal_seconds: block.reached(
+                self._events, effective_mode.value, params or {}, sim_speedup, nominal_seconds,
+            ),
+        )
+        block.answered(result)
+        return result
+
+    async def _execute_command(
+        self,
+        command_id: str,
+        device_id: str,
+        command: str,
+        params: Optional[Dict[str, JsonValue]],
+        timeout_seconds: Optional[float],
+        *,
+        effective_mode: WorkflowRunMode,
+        effective_interfaces: Optional[frozenset[str]],
+        kind: CommandKind,
+        execution_id: Optional[str],
+        confirm: bool,
+        taken: Taken,
     ) -> JsonValue:
         """Execute a command on a device.
 
@@ -398,30 +452,20 @@ class DeviceController:
         ``_command_futures`` entry, which routes the response, is kept. See
         :class:`CommandKind`.
 
-        ``effective_mode`` is the per-dispatch run-mode resolution from the
-        orca-core hierarchy (deployment_base -> topology_sim_override ->
-        submit_override). Inlined into the wire ``CommandMessage`` so the
-        device bridge can pick between LIVE and DEVICE_SIM. PURE_SIM must
-        never reach this method; an InvalidCommandError is raised before
-        any wire send when it does.
+        ``effective_mode`` is what the device runs as for this command: the run
+        mode, or under LIVE the device's own sim or live setting. Inlined into the wire ``CommandMessage`` so the
+        device bridge can pick between LIVE and SIM. CHECK_RUN is refused
+        unless this controller serves a check run's own gateway.
 
-        ``effective_interfaces`` is the dispatch contract resolved from the
-        unified ``runtime.device_registry``. When provided it overrides the
-        connection-tracker's advertised set so capability drift (advertised
-        broader than topology declared) is blocked at the controller. When
-        ``None`` (direct callers without runtime context), validation falls
-        back to the connection tracker's advertised set.
-
-        ``resend_on_reconnect`` controls the disconnect-recovery policy for
-        THIS command. Default ``True`` preserves the transparent-resend
-        behavior. Pass ``False`` for non-idempotent commands (e.g. LH
-        aspirate / dispense / tip ops); on reconnect the controller fails
-        the future with ``DeviceOfflineError`` instead of resending.
+        ``effective_interfaces`` is what the command is checked against. When
+        None, the source set by ``check_interfaces_with`` answers, so every
+        sender gets the same check. When that has no answer either, the
+        connection's advertised set is used.
 
         Raises:
             DeviceOfflineError: Device not connected.
             InvalidCommandError: Command not supported by device type, or
-                ``effective_mode`` is PURE_SIM.
+                CHECK_RUN sent to a gateway that serves no check run.
             DeviceLockedError: Device is busy with another command.
             CommandTimeoutError: No response within timeout.
         """
@@ -432,6 +476,9 @@ class DeviceController:
         # device gets looked at, so they are never refused here.
         if execution_id is not None and kind.occupies_the_device:
             await self._refuse_if_faulted(device_id)
+        not_brought_up = self._not_brought_up.get(device_id)
+        if not_brought_up is not None and kind.occupies_the_device and command != "initialize":
+            raise DeviceNotBroughtUpError(not_brought_up)
 
         device = await self._validate_command(
             device_id, command, params, effective_mode, effective_interfaces,
@@ -439,44 +486,46 @@ class DeviceController:
         )
 
         if timeout_seconds is None:
-            timeout_seconds = self._command_clock.timeout_for(device, command)
+            timeout_seconds = self._command_clock.timeout_for(device, command, params)
 
         method_info = device.methods.get(command)
         flagged_dangerous = method_info is not None and method_info.requires_confirm
 
-        command_id = str(uuid.uuid4())
         command_future: asyncio.Future[JsonValue] = asyncio.Future()
+        pacer = current_sim_pacer.get()
+        # A device set to sim is paced by its simulator whoever sent the command, a LIVE run included.
+        # A live device is never paced.
+        sim_speedup = None
+        if effective_mode is WorkflowRunMode.SIM:
+            sim_speedup = self._default_sim_speedup if pacer is None else pacer.speedup
+        # Sent on every command: a sim the device bridge built stands in for hardware and spends it even on LIVE.
+        nominal_seconds = wire_budget(effective_interfaces or frozenset(device.interfaces), command, params)
 
         await self._reserve_device(
             command_id=command_id,
             device_id=device_id,
             command=command,
-            params=params,
-            effective_mode=effective_mode,
             timeout_seconds=timeout_seconds,
             command_future=command_future,
-            # A flagged command has unknown idempotency and a silent resend
-            # would dodge the audit; fail offline instead of re-driving hardware.
-            resend_on_reconnect=resend_on_reconnect and not flagged_dangerous,
-            labware=labware,
             execution_id=execution_id,
             kind=kind,
         )
+        taken(sim_speedup, nominal_seconds)
         # Nothing has reached the machine until the dispatch returns, so a
         # failure before that point leaves no fault behind.
         dispatched = False
         try:
             await self._dispatch_command(
-                device_id, command_id, command, params, effective_mode, labware,
+                device_id, command_id, command, params, effective_mode,
+                sim_speedup, nominal_seconds,
             )
             dispatched = True
             # The send is the auditable fact for hardware: a command that
             # later times out may still have moved the device.
             if flagged_dangerous:
-                audit_logger.info(
-                    "%s level=%s reason=%r args=%r",
+                write_audit(
                     f"device.{command}",
-                    DangerLevel.PHYSICAL.name,
+                    DangerLevel.PHYSICAL,
                     None,
                     {"device_id": device_id, "params": params},
                 )
@@ -490,6 +539,8 @@ class DeviceController:
                 kind,
             )
             await self._clear_fault_if_put_right(device_id, command, kind)
+            if command == "initialize":
+                self._not_brought_up.pop(device_id, None)
             return result
         except asyncio.CancelledError as exc:
             # Scheduled (not awaited): the cancel must not block the unwind.
@@ -514,6 +565,7 @@ class DeviceController:
                 and kind.occupies_the_device
                 and not _moved_nothing(exc)
             ):
+                exc.may_have_moved = True
                 await self._latch_fault(
                     device_id, command, command_id, exc,
                     _outcome_of(exc), execution_id,
@@ -541,20 +593,24 @@ class DeviceController:
         DeviceOfflineError exactly as the inline checks did. Returns the
         resolved device snapshot (the caller needs it for timeout lookup).
         """
-        if effective_mode is WorkflowRunMode.PURE_SIM:
+        if effective_mode is WorkflowRunMode.CHECK_RUN and not self._serves_check_runs:
             raise InvalidCommandError(
-                f"PURE_SIM commands must not reach the device gateway "
-                f"(device_id={device_id!r}, command={command!r})"
+                f"{command!r} on {device_id!r} is a check-run command, and a check run runs on its own "
+                f"gateway inside Orca, never on a lab PC."
+            )
+        if command in ARM_REACH_IN_COMMANDS and mover_reaching_in() is None:
+            raise InvalidCommandError(
+                f"{command!r} on {device_id!r} reaches into a device, so it is sent "
+                f"only through a transporter's reach-in, which opens the device and "
+                f"holds it while the arm is inside."
             )
 
-        device = await device_connection_tracker.get_device(device_id)
+        device = await self._tracker.get_device(device_id)
         if not device:
             raise DeviceOfflineError(f"Device {device_id} not found or offline")
 
-        # When the gateway resolved an entry in the unified registry it
-        # passes ``effective_interfaces`` = topology-declared INTERSECT
-        # advertised, which blocks capability drift. ``None`` (direct
-        # callers without runtime context) falls back to advertised.
+        if effective_interfaces is None and self._interfaces is not None:
+            effective_interfaces = await self._interfaces(device_id)
         if effective_interfaces is None:
             interfaces_advertised = frozenset(device.interfaces)
         else:
@@ -586,34 +642,14 @@ class DeviceController:
         interfaces_advertised: frozenset[str],
         device_id: str,
     ) -> None:
-        """Validate ``params`` shape at the wire boundary, gated per interface.
+        """Refuse params that do not fit the command's request model, before the WebSocket send.
 
-        Catches bad params server-side before the WebSocket send. Each
-        validator is gated on the device's advertised interface so a
-        cross-category command name never validates against the wrong
-        payload model.
+        A vendor extra has no model, so its params go through unchecked.
         """
         try:
-            if "ILiquidHandler" in interfaces_advertised:
-                validate_lh_payload(command, params)
-            if "ILiquidProbe" in interfaces_advertised:
-                validate_liquid_probe_payload(command, params)
-            if interfaces_advertised & _LH_MOTION_INTERFACES:
-                validate_lh_motion_payload(command, params)
-            if "ITransporter" in interfaces_advertised:
-                validate_transporter_payload(command, params)
-            if "IShaker" in interfaces_advertised:
-                validate_shaker_payload(command, params)
-            if "IDelidder" in interfaces_advertised:
-                validate_delidder_payload(command, params)
-            if "ISealer" in interfaces_advertised:
-                validate_sealer_payload(command, params)
-            if "ICentrifuge" in interfaces_advertised:
-                validate_centrifuge_payload(command, params)
-            if "IReader" in interfaces_advertised:
-                validate_reader_payload(command, params)
-            if "IProtocolRunner" in interfaces_advertised:
-                validate_protocol_runner_payload(command, params)
+            found = COMMANDS.find(interfaces_advertised, command)
+            if found is not None:
+                found.validate(params)
         except (ValueError, _PydanticValidationError) as e:
             raise InvalidCommandError(
                 f"Invalid params for {command!r} on device {device_id!r}: {e}"
@@ -624,12 +660,8 @@ class DeviceController:
         command_id: str,
         device_id: str,
         command: str,
-        params: Dict[str, JsonValue],
-        effective_mode: WorkflowRunMode,
         timeout_seconds: float,
         command_future: "asyncio.Future[JsonValue]",
-        resend_on_reconnect: bool,
-        labware: Optional[LabwareDefinitionDTO],
         execution_id: Optional[str],
         kind: CommandKind,
     ) -> None:
@@ -658,12 +690,8 @@ class DeviceController:
                     command_id=command_id,
                     device_id=device_id,
                     command=command,
-                    params=params,
-                    effective_mode=effective_mode,
                     timeout_seconds=timeout_seconds,
                     future=command_future,
-                    resend_on_reconnect=resend_on_reconnect,
-                    labware=labware,
                     execution_id=execution_id,
                 )
             self._command_futures[command_id] = command_future
@@ -675,17 +703,18 @@ class DeviceController:
         command: str,
         params: Dict[str, JsonValue],
         effective_mode: WorkflowRunMode,
-        labware: Optional[LabwareDefinitionDTO],
+        sim_speedup: Optional[float],
+        nominal_seconds: Optional[float],
     ) -> None:
         """Re-check online, resolve the client, send the command envelope.
 
         Raises ``DeviceOfflineError`` if the device dropped between
         reservation and send, has no client, or the wire send fails.
         """
-        if not await device_connection_tracker.is_device_online(device_id):
-            raise DeviceOfflineError(f"Device {device_id} disconnected")
+        if not await self._tracker.is_device_online(device_id):
+            raise DeviceOfflineError(_why_offline(self._tracker, device_id))
 
-        client_id = await device_connection_tracker.get_client_for_device(device_id)
+        client_id = await self._tracker.get_client_for_device(device_id)
         if client_id is None:
             raise DeviceOfflineError(f"Device {device_id} has no connected client")
 
@@ -695,10 +724,11 @@ class DeviceController:
             command=command,
             params=params,
             effective_mode=effective_mode.value,
-            labware=labware,
+            sim_speedup=sim_speedup,
+            nominal_seconds=nominal_seconds,
         )
         envelope = MessageEnvelope.wrap_command(command_msg)
-        success = await connection_manager.send_to_client(
+        success = await self._connections.send_to_client(
             client_id, envelope.model_dump_json()
         )
         if not success:
@@ -774,14 +804,18 @@ class DeviceController:
         """Release device state in the finally path; return the popped pending.
 
         ``_command_futures`` is always cleaned up (keyed by the unique
-        command_id). World-sync ops skip the ``_pending`` pop so they don't
-        clobber a workflow command's record for the same device.
+        command_id). Only this command's own record is popped, so a world-sync
+        op, or a command whose record a reconnect already dropped, never takes
+        another command's record for the same device.
         """
         async with self._lock:
             self._command_futures.pop(command_id, None)
             if not kind.occupies_the_device:
                 return None
-            return self._pending.pop(device_id, None)
+            pending = self._pending.get(device_id)
+            if pending is None or pending.command_id != command_id:
+                return None
+            return self._pending.pop(device_id)
 
     async def _command_timeout_watcher(self, pending: _PendingCommand) -> None:
         """Fail an ad-hoc command that overran its timeout + cancel the wire.
@@ -792,9 +826,7 @@ class DeviceController:
         bridge drops the in-flight command and a late response can't resolve
         a settled future.
 
-        Cancelled by the disconnect listener while the device is offline;
-        re-armed by the reconnect listener with a fresh timer when the
-        command is re-sent.
+        Cancelled by the disconnect listener while the device is offline.
         """
         try:
             await asyncio.sleep(pending.timeout_seconds)
@@ -849,21 +881,12 @@ class DeviceController:
         pending.command_timer = None
         pending.disconnect_timer = None
 
-    async def _resolve_disconnect_timeout(self, device_id: str) -> float:
-        """Resolve the disconnect grace for a device.
-
-        Delegates to :class:`DisconnectGrace`: topology-card override
-        first (when registered), then a single conservative fallback.
-        """
-        return await self._disconnect_grace.grace_for(device_id)
-
     async def on_device_disconnected(self, device_id: str) -> None:
         """Hold any in-flight command for this device, start the disconnect timer.
 
         Connection-event listener callable. Idempotent: a duplicate
         disconnect signal for an already-disconnected device is a no-op.
-        Wired in main.py via
-        ``connection_events.subscribe_disconnected(...)``.
+        Subscribed by ``orca.gateway.connection_handling``.
         """
         async with self._lock:
             pending = self._pending.get(device_id)
@@ -875,17 +898,11 @@ class DeviceController:
                 return
             cmd_timer = pending.command_timer
             pending.command_timer = None
-        if cmd_timer is not None and not cmd_timer.done():
-            cmd_timer.cancel()
-        timeout = await self._resolve_disconnect_timeout(device_id)
-        async with self._lock:
-            # Re-check: a response could have landed while we awaited the
-            # resolver; if so, do not arm the disconnect timer.
-            pending2 = self._pending.get(device_id)
-            if pending2 is None or pending2.future.done():
-                return
-            pending2.disconnect_timer = asyncio.create_task(
-                self._disconnect_timeout_watcher(pending2, timeout),
+            if cmd_timer is not None and not cmd_timer.done():
+                cmd_timer.cancel()
+            timeout = self._disconnect_grace.seconds
+            pending.disconnect_timer = asyncio.create_task(
+                self._disconnect_timeout_watcher(pending, timeout),
             )
         logger.info(
             "Device %s disconnected mid-command %s; holding for %ss",
@@ -893,108 +910,36 @@ class DeviceController:
         )
 
     async def on_device_reconnected(self, device_id: str) -> None:
-        """Resume an in-flight command after the device reconnected.
+        """Fail a command that was in flight when the device dropped, now that it is back.
 
-        Cancels the disconnect timer, re-sends the original command to
-        the new client, and re-arms the command timer. If no command was
-        pending (the disconnect happened between commands), this is a
-        no-op. Wired via ``connection_events.subscribe_connected(...)``
-        in main.py.
-
-        When the pending command opted out of resend (e.g. a
-        liquid-handler aspirate / dispense), fail the future with
-        ``DeviceOfflineError`` instead of resending. Resending a
-        non-idempotent command after a transient drop could double-
-        execute on the physical device when the on-prem driver already
-        completed the operation before the WebSocket dropped; the
-        operator is forced to recover manually instead.
+        No command is ever sent a second time: the device may have run it, and
+        only a person can say. A reconnect with nothing held is a no-op.
+        Subscribed by ``orca.gateway.connection_handling``.
         """
         async with self._lock:
             pending = self._pending.get(device_id)
             if pending is None or pending.future.done():
                 return
             if pending.disconnect_timer is None:
-                # Reconnect signal without a prior disconnect: nothing to
-                # resume. Likely the very first connect for this device.
+                # No disconnect came first: a first connect, nothing was held.
                 return
             disconnect_timer = pending.disconnect_timer
             pending.disconnect_timer = None
-        if disconnect_timer is not None and not disconnect_timer.done():
+            self._pending.pop(device_id, None)
+        if not disconnect_timer.done():
             disconnect_timer.cancel()
-
-        # Opt-out path. Fail the future with a clear LH-no-resend
-        # message and drop the pending entry so a follow-up operator
-        # command isn't blocked by stale state.
-        if not pending.resend_on_reconnect:
-            async with self._lock:
-                # Re-check under lock: response may have raced in.
-                pending2 = self._pending.get(device_id)
-                if pending2 is None or pending2.future.done():
-                    return
-                self._pending.pop(device_id, None)
-            logger.warning(
-                "Device %s reconnected mid-command %s (%s); refusing resend "
-                "because the command is non-idempotent. Manual recovery "
-                "required.",
-                device_id, pending.command_id, pending.command,
-            )
-            if not pending.future.done():
-                pending.future.set_exception(
-                    DeviceOfflineError(
-                        f"LH command lost during reconnect; manual recovery "
-                        f"required (device={device_id}, "
-                        f"command_id={pending.command_id}, "
-                        f"command={pending.command})"
-                    )
-                )
-            return
-
-        # Re-send the original command to the new client.
-        client_id = await device_connection_tracker.get_client_for_device(
-            device_id,
+        logger.warning(
+            "Device %s reconnected mid-command %s (%s); the command is not sent again. "
+            "Manual recovery required.",
+            device_id, pending.command_id, pending.command,
         )
-        if client_id is None:
-            logger.warning(
-                "Reconnect signal for %s but no client registered; "
-                "command %s remains pending",
-                device_id, pending.command_id,
+        pending.future.set_exception(
+            DeviceOfflineError(
+                f"Command lost during reconnect; manual recovery "
+                f"required (device={device_id}, "
+                f"command_id={pending.command_id}, "
+                f"command={pending.command})"
             )
-            return
-
-        command_msg = CommandMessage(
-            command_id=pending.command_id,
-            device_name=device_id,
-            command=pending.command,
-            params=pending.params,
-            effective_mode=pending.effective_mode.value,
-            labware=pending.labware,
-        )
-        envelope = MessageEnvelope.wrap_command(command_msg)
-        success = await connection_manager.send_to_client(
-            client_id, envelope.model_dump_json()
-        )
-        if not success:
-            logger.warning(
-                "Resend after reconnect failed for command %s on device %s; "
-                "treating as still-disconnected",
-                pending.command_id, device_id,
-            )
-            # Trigger the disconnect path again so the next reconnect
-            # gets another shot. Don't fail the future here.
-            await self.on_device_disconnected(device_id)
-            return
-
-        # Re-arm the fail-fast timer only for ad-hoc commands; a workflow
-        # command (execution_id set) stays bounded by the engine coordinator,
-        # so re-arming a gateway timer here would re-introduce a double bound.
-        if pending.execution_id is None:
-            async with self._lock:
-                pending.command_timer = asyncio.create_task(
-                    self._command_timeout_watcher(pending),
-                )
-        logger.info(
-            "Resent command %s on device %s after reconnect",
-            pending.command_id, device_id,
         )
 
     async def handle_response(self, response_msg: ResponseMessage) -> None:
@@ -1082,7 +1027,7 @@ class DeviceController:
         missing client or failed send is logged and swallowed -- the future
         is already settled either way.
         """
-        client_id = await device_connection_tracker.get_client_for_device(device_id)
+        client_id = await self._tracker.get_client_for_device(device_id)
         if client_id is None:
             logger.info(
                 "No client for device %s; cannot send cancel for command %s",
@@ -1092,7 +1037,7 @@ class DeviceController:
         envelope = MessageEnvelope.wrap_cancel(
             CancelMessage(command_id=command_id, reason="engine_cancelled"),
         )
-        success = await connection_manager.send_to_client(
+        success = await self._connections.send_to_client(
             client_id, envelope.model_dump_json(),
         )
         if not success:
@@ -1100,47 +1045,3 @@ class DeviceController:
                 "Failed to send cancel for command %s to device %s",
                 command_id, device_id,
             )
-
-    async def emergency_unlock(self, device_id: str) -> None:
-        """
-        Force unlock a device that is stuck in locked state.
-
-        🚨 EMERGENCY USE ONLY 🚨
-
-        This bypasses safety checks and forcibly releases the device lock.
-        Only use if you are certain the device is safe to unlock and no
-        operation is actually running.
-
-        Use cases:
-        - The driver on the device bridge crashed mid-operation
-        - Timeout occurred but lock wasn't released
-        - Manual recovery after device error
-
-        DO NOT use during normal operations!
-
-        Args:
-            device_id: Device to force unlock
-        """
-        async with self._lock:
-            pending = self._pending.pop(device_id, None)
-
-            if pending is None:
-                logger.info(f"Device {device_id} is not locked (nothing to unlock)")
-                return
-
-            command_id = pending.command_id
-            future = self._command_futures.pop(command_id, None)
-            if future and not future.done():
-                future.cancel()
-
-        # Cancel the record's timers outside the lock (cancel() doesn't
-        # await). Leaving them armed would fail / resend a command the
-        # operator just force-released.
-        self._cancel_timers(pending)
-        logger.warning(
-            f"EMERGENCY UNLOCK: Forcibly unlocked device {device_id} (was executing {command_id})"
-        )
-
-
-# Global device controller instance
-device_controller = DeviceController()

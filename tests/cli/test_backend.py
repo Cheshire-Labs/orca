@@ -3,7 +3,6 @@
 import json
 import os
 from collections.abc import Iterator
-from importlib.metadata import entry_points
 from pathlib import Path
 from unittest.mock import patch
 
@@ -20,12 +19,10 @@ from orca.cli.backend import (
     require_local,
     resolve_backend,
 )
-from orca.cli.client import LocalDaemonClient
-from orca.cli.control_plane import (
-    BackendNotResolvedError,
-    ControlPlaneError,
-    ICloudControlPlaneClient,
-)
+from orca.cli.client import OrcaClient
+from orca.cli.control_plane import BackendNotResolvedError, ControlPlaneError
+from orca.cli.output import EXIT_NOT_CONNECTED
+from orca.daemon.lifecycle import DaemonInfo
 
 
 @pytest.fixture(autouse=True)
@@ -74,13 +71,8 @@ def test_auto_falls_back_to_local_when_daemon_reachable() -> None:
 
 
 def test_daemon_reachable_returns_false_when_no_pid_file() -> None:
-    """Regression: `LocalDaemonClient.__init__` raises `typer.Exit` (NOT
-    `SystemExit`) when the PID file is missing. `_daemon_reachable` must
-    catch both so auto-detect can fall through to the helpful error message
-    instead of aborting the CLI on the typer.Exit.
-    """
-    # _isolate_state autouse fixture stubs Path.home() to an empty fake dir,
-    # so no daemon.json exists -> LocalDaemonClient.__init__ raises typer.Exit.
+    """No PID file reads as no daemon, so auto-detect can report it clearly."""
+    # _isolate_state autouse fixture stubs Path.home() to an empty fake dir.
     assert backend_mod._daemon_reachable() is False
 
 
@@ -109,10 +101,19 @@ def test_invalid_config_value_raises() -> None:
         resolve_backend(None)
 
 
-def test_make_client_local_returns_local_daemon_client() -> None:
-    with patch.object(LocalDaemonClient, "__init__", lambda self, *a, **k: None):
+def test_make_client_local_points_the_one_client_at_the_url_in_the_pid_file() -> None:
+    info = DaemonInfo(pid=1, port=8123, started_at=0.0)
+    with patch.object(backend_mod, "detect_live_daemon", return_value=info):
         client = make_client("local")
-    assert isinstance(client, LocalDaemonClient)
+    assert isinstance(client, OrcaClient)
+    assert client.base_url == "http://127.0.0.1:8123"
+
+
+def test_make_client_local_says_no_daemon_with_the_not_connected_exit_code() -> None:
+    with patch.object(backend_mod, "detect_live_daemon", return_value=None):
+        with pytest.raises(ControlPlaneError) as excinfo:
+            make_client("local")
+    assert excinfo.value.exit_code == EXIT_NOT_CONNECTED
 
 
 class _NeverBuilt:
@@ -144,22 +145,18 @@ def test_make_client_cloud_requires_url_and_key() -> None:
     assert "ORCA_CLOUD_API_KEY" in str(excinfo.value)
 
 
-def test_make_client_cloud_answers_for_whichever_build_this_is(
+def test_make_client_cloud_needs_only_the_url_and_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """With creds set, a build that registers a cloud backend constructs it,
-    and a build that registers none says so. Both are correct; which one you
-    get is the difference between the two builds."""
+    """Every generic verb reaches a hosted server, with or without the hosted-only package."""
+    monkeypatch.setattr(backend_mod, "entry_points", lambda **kwargs: ())
     monkeypatch.setenv("ORCA_CLOUD_URL", "https://example")
     monkeypatch.setenv("ORCA_CLOUD_API_KEY", "secret")
 
-    if list(entry_points(group="orca.cli_backends", name="cloud")):
-        client = make_client("cloud")
-        assert isinstance(client, ICloudControlPlaneClient)
-        assert client.base_url == "https://example"
-    else:
-        with pytest.raises(typer.Exit):
-            make_client("cloud")
+    client = make_client("cloud")
+
+    assert isinstance(client, OrcaClient)
+    assert client.base_url == "https://example"
 
 
 @pytest.mark.usefixtures("a_cloud_backend_is_installed")
@@ -237,18 +234,11 @@ def _no_backend_message(monkeypatch: pytest.MonkeyPatch, installed: bool) -> str
     return str(excinfo.value)
 
 
-def test_with_no_cloud_backend_the_no_backend_message_only_offers_orca_start(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("installed", [False, True])
+def test_the_no_backend_message_offers_both_paths_on_either_build(
+    monkeypatch: pytest.MonkeyPatch, installed: bool,
 ) -> None:
-    """Setting cloud credentials changes nothing on a build that has no cloud backend."""
-    message = _no_backend_message(monkeypatch, installed=False)
-    assert "orca start" in message
-    assert "ORCA_CLOUD_URL" not in message
-
-
-def test_with_a_cloud_backend_the_no_backend_message_offers_both_paths(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    message = _no_backend_message(monkeypatch, installed=True)
+    """Every generic verb reaches a hosted server, so the cloud variables always apply."""
+    message = _no_backend_message(monkeypatch, installed=installed)
     assert "orca start" in message
     assert "ORCA_CLOUD_URL" in message

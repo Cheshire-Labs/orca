@@ -1,0 +1,9 @@
+{
+  "sealer_horizontal": {
+    "access_type": "horizontal",
+    "gripper_offset": 25.0,
+    "horizontal_clearance": 120.0,
+    "name": "sealer_horizontal",
+    "vertical_clearance": 30.0
+  }
+}

@@ -8,8 +8,6 @@ standing at the instrument sending one command at a time.
 
 import pytest
 
-from cheshire_drivers import RecordingLiquidHandlerDriver
-from cheshire_drivers.plr import ChatterboxLiquidHandlerDriver
 from orca.operations.device import (
     ReleaseDeviceControlOperation,
     TakeDeviceControlOperation,
@@ -18,10 +16,10 @@ from orca.operations.device_models import (
     ReleaseDeviceControlRequest,
     TakeDeviceControlRequest,
 )
-from orca.runtime.labware_store import InMemoryLabwareStore
-from orca.runtime.system_runtime import SystemRuntime
 from tests.test_helpers import create_test_device
 from tests.test_labware_state_reconciliation import _build
+from tests.memory_activity import memory_runtime
+from tests.recording_handler import RecordingHandler
 
 
 def test_a_per_command_release_does_not_end_an_operators_hold() -> None:
@@ -72,15 +70,15 @@ async def test_the_hold_and_its_reason_reach_the_operator_surface() -> None:
     calls, and reads the registry row, because that is what every surface
     answers from.
     """
-    recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    recorder = RecordingHandler()
     build, _ = await _build(recorder, wf_name="hold_surface")
-    runtime = SystemRuntime(
-        build.system, event_bus=build.event_bus, labware_store=InMemoryLabwareStore(),
+    runtime = await memory_runtime(
+        build.system, event_bus=build.event_bus
     )
     await runtime.start()
     try:
         await TakeDeviceControlOperation(runtime=runtime).run(
-            TakeDeviceControlRequest(device_name="arm", reason="jogging the arm"),
+            TakeDeviceControlRequest(device_id="arm", reason="jogging the arm"),
         )
         row = next(
             t for t in runtime.registry.list_transporters() if t.name == "arm"
@@ -89,7 +87,7 @@ async def test_the_hold_and_its_reason_reach_the_operator_surface() -> None:
         assert row.external_control_hold == "jogging the arm"
 
         await ReleaseDeviceControlOperation(runtime=runtime).run(
-            ReleaseDeviceControlRequest(device_name="arm"),
+            ReleaseDeviceControlRequest(device_id="arm"),
         )
         row = next(
             t for t in runtime.registry.list_transporters() if t.name == "arm"

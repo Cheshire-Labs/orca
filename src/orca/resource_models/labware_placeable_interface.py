@@ -1,5 +1,6 @@
 from typing import List, Optional
 from orca.resource_models.labware import LabwareInstance
+from orca.resource_models.labware_directory import LabwarePlacements
 
 
 from abc import ABC, abstractmethod
@@ -40,6 +41,11 @@ class ILabwarePlaceable(ABC):
     def name(self) -> str:
         raise NotImplementedError
 
+    @abstractmethod
+    def bind_placements(self, placements: LabwarePlacements) -> None:
+        """The system build binds the ledger that records what is at this position."""
+        raise NotImplementedError
+
     @property
     def labware(self) -> Optional[LabwareInstance]:
         raise NotImplementedError
@@ -56,6 +62,10 @@ class ILabwarePlaceable(ABC):
         return []
 
     @property
+    def device_is_plate_source(self) -> bool:
+        return False
+
+    @property
     @abstractmethod
     def supports_deadlock_resolution(self) -> bool:
         """Returns True if this resource can be used as a parking location during deadlock resolution."""
@@ -65,19 +75,19 @@ class ILabwarePlaceable(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def prepare_for_pick(self, labware: LabwareInstance, mover: IPlateMover) -> None:
+    async def prepare_for_pick(self, labware: LabwareInstance | None, mover: IPlateMover) -> None:
         raise NotImplementedError
 
     @abstractmethod
-    async def prepare_for_place(self, labware: LabwareInstance, mover: IPlateMover) -> None:
+    async def prepare_for_place(self, labware: LabwareInstance | None, mover: IPlateMover) -> None:
         raise NotImplementedError
 
     @abstractmethod
-    async def notify_picked(self, labware: LabwareInstance, mover: IPlateMover) -> None:
+    async def notify_picked(self, labware: LabwareInstance | None, mover: IPlateMover) -> None:
         raise NotImplementedError
 
     @abstractmethod
-    async def notify_placed(self, labware: LabwareInstance, mover: IPlateMover) -> None:
+    async def notify_placed(self, labware: LabwareInstance | None, mover: IPlateMover) -> None:
         raise NotImplementedError
 
     async def dispose_labware(self, labware: LabwareInstance) -> None:

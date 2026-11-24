@@ -15,26 +15,31 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from orca.operations._protocol import OperationError
+from orca.operations.protocol import OperationError
+from orca.operations.error_codes import ErrorCode
 from orca.operations.labware import ReleaseMoverHoldOperation
 from orca.operations.labware_models import ReleaseMoverHoldRequest
 from orca.resource_models.device_error import SlotOccupiedError
 from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.transporter_base import TransporterBase
-from orca.runtime.labware_store import InMemoryLabwareStore
-from orca.runtime.runtime_interface import (
+from orca.runtime.errors import (
     ActiveExecutionRefusedError,
-    MoverHoldRelease,
+    LabwareInUseByThreadError,
     MoverHoldsNothingError,
 )
+from orca.runtime.facade_interfaces import (
+    MoverHoldRelease,
+)
 from orca.runtime.system_runtime import SystemRuntime
+from orca.workflow_models.status_enums import LabwareThreadStatus
 from tests.test_system_runtime import _build_simple_system
+from tests.memory_activity import memory_runtime
 
 
 @pytest.fixture
 async def runtime() -> AsyncGenerator[SystemRuntime, None]:
     system, _ = await _build_simple_system()
-    rt = SystemRuntime(system, labware_store=InMemoryLabwareStore())
+    rt = await memory_runtime(system)
     await rt.start()
     try:
         yield rt
@@ -49,7 +54,7 @@ async def _plate_in_the_jaws(
     mover = rt._system.movers[0]
     instance = LabwareInstance("plate_96", "96_well")
     rt._system.add_labware(instance)
-    await rt.labware._store.register(instance)
+    await rt.labware._labware_service.register(instance)
     await mover.gripper_location.place_labware(instance)
     mover._picked_from = "pad2"
     rt.labware._location_service.update(instance, mover.gripper_location)
@@ -183,6 +188,26 @@ class TestTheDischargeRefusalIsTheSameOne:
             runtime.labware._has_active_thread_for = original
 
 
+    async def test_stating_a_position_refuses_while_the_carrier_is_moving_it(
+        self, runtime: SystemRuntime,
+    ) -> None:
+        mover, instance = await _plate_in_the_jaws(runtime)
+        carrier = MagicMock()
+        carrier.status = LabwareThreadStatus.MOVING
+        carrier.name = "t-1"
+        original = runtime.labware._active_thread_for
+        runtime.labware._active_thread_for = lambda lw: carrier if lw is instance else None
+
+        try:
+            with pytest.raises(LabwareInUseByThreadError, match="is being moved by thread t-1"):
+                await runtime.labware.release_mover_hold(
+                    mover.name, "pad1", reason="taken out by hand", confirm=True,
+                )
+            assert mover.labware is instance
+        finally:
+            runtime.labware._active_thread_for = original
+
+
 class TestWhatTheOperatorReads:
     """The Operation is what REST, MCP and the CLI all raise through, so its
     message is the sentence the operator actually sees."""
@@ -197,11 +222,11 @@ class TestWhatTheOperatorReads:
 
         with pytest.raises(OperationError) as exc_info:
             await op.run(ReleaseMoverHoldRequest(
-                mover_name="pf400_1", reason="nothing to do",
+                device_id="pf400_1", reason="nothing to do",
             ))
 
         error = exc_info.value
-        assert error.wire_code == "mover_holds_nothing"
+        assert error.surface_code() == "mover_holds_nothing"
         assert error.message.startswith("The record has"), error.message
 
     async def test_a_release_comes_back_on_the_wire(self) -> None:
@@ -213,9 +238,25 @@ class TestWhatTheOperatorReads:
         op = ReleaseMoverHoldOperation(runtime=runtime)
 
         response = await op.run(ReleaseMoverHoldRequest(
-            mover_name="pf400_1", to_location="pad1", reason="taken out by hand",
+            device_id="pf400_1", to_location="pad1", reason="taken out by hand",
         ))
 
         assert response.labware_id == "lw-1"
         assert response.released_to == "pad1"
         assert response.discharged is False
+
+    async def test_a_thread_moving_the_plate_answers_a_conflict(self) -> None:
+        """A stated position is refused while a thread moves the plate. That is a conflict, never a crash."""
+        runtime = MagicMock()
+        runtime.labware.release_mover_hold = AsyncMock(side_effect=LabwareInUseByThreadError(
+            "plate_1 is being moved by thread t-1. Wait for that to finish, or pause the run, then record its position.",
+        ))
+        op = ReleaseMoverHoldOperation(runtime=runtime)
+
+        with pytest.raises(OperationError) as exc_info:
+            await op.run(ReleaseMoverHoldRequest(
+                device_id="pf400_1", to_location="pad1", reason="taken out by hand",
+            ))
+
+        assert exc_info.value.code is ErrorCode.CONFLICT
+        assert "is being moved" in exc_info.value.message

@@ -14,6 +14,7 @@ No site is a designated handoff: the arm reaches exactly the sites it teaches
 and the gripper meshes the deck, so entry/exit sites are derived, not declared.
 """
 
+from orca.events.event_bus import EventBus
 import pytest
 
 import orca.orca as orca
@@ -23,23 +24,24 @@ from cheshire_drivers import (
     DeckLayoutConfig, DeckResourceConfig,
     Teachpoint,
 )
-from cheshire_drivers.plr import ChatterboxLiquidHandlerDriver
 from cheshire_drivers import RecordingLiquidHandlerDriver
 from cheshire_drivers.liquid_handler_models import GetDeckStateRequest
 from orca.devices.device_interfaces import ILiquidHandler
 from orca.devices.devices import LiquidHandler, Storage
 from orca.resource_models.plate_pad import PlatePad
 from orca.resource_models.transporter import Transporter
-from orca.runtime.device_factory_protocol import DriverPairElement
-from orca.runtime.device_factory_context import use_device_factory
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.store_factory import InMemoryRuntimeStoreFactory
+from orca.modes.run_modes import WorkflowRunMode
 from orca.runtime.system_runtime import SystemRuntime
 from orca.sdk.build import SystemBuild, Topology
 from orca.sdk.labware import PlateTemplate, TipRackTemplate
 from orca.resource_models.labware import LabwareInitialState
 from orca.workflow_models.status_enums import FailurePolicy
 from tests.test_helpers import run_to_quiescence, named_for_template
+from tests.setup_package import package_stores, write_deck_layouts, write_teachpoints
+from tests.setup_package import with_teachpoints, with_deck_layouts
+from tests.memory_activity import memory_ops_store, memory_runtime
+from tests.real_device_path import the_real_device_path
+from tests.recording_handler import RecordingHandler
 
 # Carriers-only deck (structure). Occupancy is NOT declared here; transient
 # labware materializes via @orca.action(deck_positions=...) and leaves on depart.
@@ -63,7 +65,7 @@ async def build_deck_test_system(
 ) -> SystemBuild:
     """Minimal system with a LiquidHandler to test deck lifecycle."""
 
-    stores = InMemoryRuntimeStoreFactory()
+    stores = package_stores()
 
     sample_plate = PlateTemplate(
         "sample_plate",
@@ -72,44 +74,27 @@ async def build_deck_test_system(
     )
     tips = TipRackTemplate("tips", labware_type="hamilton_96_tiprack_10uL_filter", with_tips=True)
 
-    class _LhDeckFactory:
-        """Inject the recording LH; sim defaults for everything else."""
+    the_real_device_path().simulate_with("lh", recorder)
+    lh = with_deck_layouts(LiquidHandler(
+        "lh",
+        deck_layout="default",
+    ), write_deck_layouts(stores, "lh", {"default": DECK_CONFIG}))
+    stacker = Storage("stacker")
+    tip_stacker = Storage("tip_stacker")
+    waste = Storage("waste")
+    pad = PlatePad("pad")
 
-        def __init__(self, lh: RecordingLiquidHandlerDriver) -> None:
-            self._lh = lh
-            from orca.runtime.device_factory import SimDeviceFactory
-            self._fallback = SimDeviceFactory()
-
-        def build_drivers(
-            self, device_type: str, name: str, *, deck_modeling: bool = False,
-        ) -> tuple[DriverPairElement, DriverPairElement]:
-            if device_type == "liquid_handler":
-                return self._lh, self._lh
-            return self._fallback.build_drivers(device_type, name, deck_modeling=deck_modeling)
-
-    with use_device_factory(_LhDeckFactory(recorder)):
-        lh = LiquidHandler(
-            "lh",
-            deck_layout_store=stores.deck_layouts("lh", seed={"default": DECK_CONFIG}),
-            deck_layout="default",
-        )
-        stacker = Storage("stacker")
-        tip_stacker = Storage("tip_stacker")
-        waste = Storage("waste")
-        pad = PlatePad("pad")
-
-        c = CartesianCoordinates
-        arm = Transporter(
-            "arm",
-            teachpoint_store=stores.teachpoints("arm", seed=[
-                Teachpoint("stacker", c(0, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("tip_stacker", c(0, 400, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("pad", c(200, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("lh/carrier-7-2", c(400, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("lh/carrier-15-1", c(400, 400, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("waste", c(600, 200, 300, 0, 90, 180), orientation="right"),
-            ]),
-        )
+    c = CartesianCoordinates
+    arm = with_teachpoints(Transporter(
+        "arm",
+    ), write_teachpoints(stores, "arm", [
+            Teachpoint("stacker", c(0, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("tip_stacker", c(0, 400, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("pad", c(200, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("lh/carrier-7-2", c(400, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("lh/carrier-15-1", c(400, 400, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("waste", c(600, 200, 300, 0, 90, 180), orientation="right"),
+        ]))
 
     @orca.action(
         device=lh,
@@ -159,22 +144,18 @@ async def build_deck_test_system(
         name="Deck Test",
         workflow=deck_test_wf,
         topology=topology,
-        stores=stores,
+        stores=stores, event_bus=EventBus(), ops_history_store=memory_ops_store(),
     )
 
 
 async def _run_deck_workflow(
     recorder: RecordingLiquidHandlerDriver,
 ) -> tuple[SystemRuntime, LiquidHandler, dict[str, str]]:
-    """Build, start, submit, and drive the deck workflow to quiescence.
-
-    Uses SystemRuntime (not SystemBuild.run) because the resident tip rack
-    binds via start_reuse_existing, which needs the runtime's labware store.
-    """
+    """Build, start, submit, and drive the deck workflow to quiescence."""
     build = await build_deck_test_system(recorder)
-    runtime = SystemRuntime(build.system, event_bus=build.event_bus)
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
     await runtime.start()
-    record = await runtime.submit_workflow("deck_test", mode=WorkflowRunMode.PURE_SIM)
+    record = await runtime.submit_workflow("deck_test", mode=WorkflowRunMode.CHECK_RUN)
     statuses = await run_to_quiescence(runtime, record.id)
     lh = next(d for d in build.system.devices if isinstance(d, LiquidHandler))
     return runtime, lh, statuses
@@ -186,7 +167,7 @@ class TestLiquidHandlerDeckLifecycle:
     @pytest.mark.asyncio
     async def test_deck_lifecycle_runs_in_sim(self) -> None:
         """Full deck lifecycle: arrive -> gripper to slot -> pipette -> depart."""
-        recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+        recorder = RecordingHandler()
         _, _, statuses = await _run_deck_workflow(recorder)
 
         assert statuses, "no threads were created"
@@ -196,7 +177,7 @@ class TestLiquidHandlerDeckLifecycle:
     @pytest.mark.asyncio
     async def test_deck_move_plate_called_on_arrival(self) -> None:
         """move_plate is called when plate arrives at LH with deck_positions."""
-        recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+        recorder = RecordingHandler()
         await _run_deck_workflow(recorder)
 
         move_calls = [c for c in recorder.calls if c.method == "move_plate"]
@@ -213,7 +194,7 @@ class TestLiquidHandlerDeckLifecycle:
     async def test_deck_move_plate_called_on_departure(self) -> None:
         """move_plate is called when the plate departs the LH: the gripper relays
         it off its working site to a site the arm can actually reach."""
-        recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+        recorder = RecordingHandler()
         await _run_deck_workflow(recorder)
 
         move_calls = [c for c in recorder.calls if c.method == "move_plate"]
@@ -234,7 +215,7 @@ class TestLiquidHandlerDeckLifecycle:
     @pytest.mark.asyncio
     async def test_pipetting_commands_reach_driver(self) -> None:
         """Verify pipetting commands execute between gripper moves."""
-        recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+        recorder = RecordingHandler()
         await _run_deck_workflow(recorder)
 
         methods = [c.method for c in recorder.calls]
@@ -249,7 +230,7 @@ class TestLiquidHandlerDeckLifecycle:
         """The driver-deck projection materializes the transient plate on arrival
         (add_deck_labware) and un-materializes it on departure (remove_deck_labware);
         after the run the plate is gone from the deck while the carriers survive."""
-        recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+        recorder = RecordingHandler()
         _, lh, statuses = await _run_deck_workflow(recorder)
         assert all(s == "COMPLETED" for s in statuses.values()), statuses
 
@@ -280,7 +261,7 @@ class TestLiquidHandlerDeckLifecycle:
         arm-reachable site, and it is un-materialized on departure. Entry is not
         pinned to the rack's own carrier: no site is a designated handoff, so the
         router picks among the taught sites."""
-        recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+        recorder = RecordingHandler()
         _, lh, statuses = await _run_deck_workflow(recorder)
         assert all(s == "COMPLETED" for s in statuses.values()), statuses
 
@@ -326,7 +307,7 @@ class TestLiquidHandlerDeckLifecycle:
         departure path (the base contract), not only when nothing was on deck:
         every remove_deck_labware is immediately followed by a close so the
         gripper is never left open on hardware after a pick."""
-        recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+        recorder = RecordingHandler()
         _, _, statuses = await _run_deck_workflow(recorder)
         assert all(s == "COMPLETED" for s in statuses.values()), statuses
 
@@ -351,14 +332,14 @@ class TestLiquidHandlerDeckLifecycle:
         wells with zeros would strict-track every well and break the
         lenient-by-default behavior the rest of the deck relies on.
         """
-        recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+        recorder = RecordingHandler()
         build = await build_deck_test_system(
             recorder, sample_initial_state=LabwareInitialState(wells={"A1": 123.0}),
         )
-        runtime = SystemRuntime(build.system, event_bus=build.event_bus)
+        runtime = await memory_runtime(build.system, event_bus=build.event_bus)
         await runtime.start()
         try:
-            record = await runtime.submit_workflow("deck_test", mode=WorkflowRunMode.PURE_SIM)
+            record = await runtime.submit_workflow("deck_test", mode=WorkflowRunMode.CHECK_RUN)
             statuses = await run_to_quiescence(runtime, record.id)
             assert all(s == "COMPLETED" for s in statuses.values()), statuses
 
@@ -386,36 +367,34 @@ async def build_selected_deck_system() -> SystemBuild:
 
     This exercises the PR3a selection path itself. The deck-modeling
     ``LiquidHandler`` must resolve to a deck-modeling sim (Chatterbox composite,
-    ``provides_state=True``) under PURE_SIM rather than the no-op protocol sim,
+    ``provides_state=True``) under CHECK_RUN rather than the no-op protocol sim,
     so the in-process e2e is no longer a false positive.
     """
-    stores = InMemoryRuntimeStoreFactory()
+    stores = package_stores()
 
     sample_plate = PlateTemplate("sample_plate", labware_type="Cor_Falcon_96_wellplate_340ul_Fb_Black")
     tips = TipRackTemplate("tips", labware_type="hamilton_96_tiprack_10uL_filter", with_tips=True)
 
-    lh = LiquidHandler(
+    lh = with_deck_layouts(LiquidHandler(
         "lh",
-        deck_layout_store=stores.deck_layouts("lh", seed={"default": DECK_CONFIG}),
         deck_layout="default",
-    )
+    ), write_deck_layouts(stores, "lh", {"default": DECK_CONFIG}))
     stacker = Storage("stacker")
     tip_stacker = Storage("tip_stacker")
     waste = Storage("waste")
     pad = PlatePad("pad")
 
     c = CartesianCoordinates
-    arm = Transporter(
+    arm = with_teachpoints(Transporter(
         "arm",
-        teachpoint_store=stores.teachpoints("arm", seed=[
+    ), write_teachpoints(stores, "arm", [
             Teachpoint("stacker", c(0, 200, 300, 0, 90, 180), orientation="right"),
             Teachpoint("tip_stacker", c(0, 400, 300, 0, 90, 180), orientation="right"),
             Teachpoint("pad", c(200, 200, 300, 0, 90, 180), orientation="right"),
             Teachpoint("lh/carrier-7-2", c(400, 200, 300, 0, 90, 180), orientation="right"),
             Teachpoint("lh/carrier-15-1", c(400, 400, 300, 0, 90, 180), orientation="right"),
             Teachpoint("waste", c(600, 200, 300, 0, 90, 180), orientation="right"),
-        ]),
-    )
+        ]))
 
     @orca.action(
         device=lh,
@@ -457,37 +436,38 @@ async def build_selected_deck_system() -> SystemBuild:
         name="Selected Deck Test",
         workflow=deck_test_wf,
         topology=topology,
-        stores=stores,
+        stores=stores, event_bus=EventBus(), ops_history_store=memory_ops_store(),
     )
 
 
-class TestPureSimDeckModelingSelection:
-    """PR3a: a deck-modeling LiquidHandler under PURE_SIM is no longer a no-op."""
+class TestCheckRunDeckModelingSelection:
+    """PR3a: a deck-modeling LiquidHandler under CHECK_RUN is no longer a no-op."""
 
     @pytest.mark.slow
     @pytest.mark.asyncio
-    async def test_deck_modeling_lh_selected_under_pure_sim(self) -> None:
+    async def test_deck_modeling_lh_selected_under_check_run(self) -> None:
         """The factory selects a deck-modeling sim (provides_state True) for a
         LiquidHandler, and after configure_deck self-initializes during lazy
         init the driver reports a REAL deck state (carriers present, transient
-        plate materialized and reconciled), proving PURE_SIM exercises a deck."""
+        plate materialized and reconciled), proving CHECK_RUN exercises a deck."""
         build = await build_selected_deck_system()
-        runtime = SystemRuntime(build.system, event_bus=build.event_bus)
+        runtime = await memory_runtime(build.system, event_bus=build.event_bus)
         await runtime.start()
         try:
             lh = next(d for d in build.system.devices if isinstance(d, LiquidHandler))
 
-            # Selection proof: the sim slot is the deck-modeling composite, not
-            # the no-op SimLiquidHandlerWithProtocolDriver.
-            assert lh.driver.provides_state is True, (
-                f"PURE_SIM LH wired a no-op sim ({type(lh.driver).__name__}); "
+            # Selection proof: the check run's simulator is the deck-modeling composite,
+            # not the no-op SimLiquidHandlerWithProtocolDriver.
+            simulator = the_real_device_path().simulator(lh.name)
+            assert simulator.provides_state is True, (
+                f"CHECK_RUN LH wired a no-op sim ({type(simulator).__name__}); "
                 f"expected a deck-modeling sim with provides_state=True"
             )
-            assert type(lh.driver).__name__ == "ChatterboxLiquidHandlerWithProtocolDriver", (
-                f"unexpected sim driver: {type(lh.driver).__name__}"
+            assert type(simulator).__name__ == "ChatterboxLiquidHandlerWithProtocolDriver", (
+                f"unexpected sim driver: {type(simulator).__name__}"
             )
 
-            record = await runtime.submit_workflow("deck_test", mode=WorkflowRunMode.PURE_SIM)
+            record = await runtime.submit_workflow("deck_test", mode=WorkflowRunMode.CHECK_RUN)
             statuses = await run_to_quiescence(runtime, record.id)
             assert all(s == "COMPLETED" for s in statuses.values()), statuses
 

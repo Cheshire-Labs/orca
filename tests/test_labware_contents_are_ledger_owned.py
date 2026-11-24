@@ -13,6 +13,8 @@ opening entry. It is never a read-time fallback, so nothing can re-mint a
 consumed rack as full.
 """
 
+from orca.config import OrcaConfig
+from orca.state.ops_store import IOpsHistoryStore
 import time
 
 import pytest
@@ -34,9 +36,9 @@ from orca.state.records import (
     TrackingRecord,
     TrackingSource,
 )
-from orca.state.jsonl_store import JsonlOpsHistoryStore
+from orca.runtime.labware_service import LabwareService
 from orca.runtime.labware_store import InMemoryLabwareStore
-from orca.runtime.sim_labware import SimPlateTemplate, SimTipRackTemplate
+from orca.resource_models.sim_labware import SimPlateTemplate, SimTipRackTemplate
 from orca.runtime.system_runtime import SystemRuntime
 from orca.sdk.events import EventBus
 from orca.sdk.system import ResourceRegistry, SystemMap
@@ -54,6 +56,12 @@ from tests.test_helpers import (
     create_test_transporter,
     wire_system_map,
 )
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.ephemeral_ops_store import EphemeralOpsHistoryStore
+from tests.labware_catalog import bundled_labware_catalog
+from orca.resource_models.labware_service_interface import ILabwareService
+from tests.memory_activity import memory_labware_service
 
 
 _RACK_POSITIONS = ["A1", "B1", "A2", "B2"]
@@ -96,7 +104,7 @@ class _RowMintingStore(InMemoryLabwareStore):
         )
 
 
-async def _build_system() -> ISystem:
+async def _build_system(ops_store: IOpsHistoryStore | None = None, *, labware_service: ILabwareService | None = None) -> ISystem:
     device = create_test_device("shaker1")
     transporter = create_test_transporter("robot1", ["shaker1", "pad1", "pad2"])
     plate = _DeclaredPlateTemplate("plate_96", _PLATE_WELLS)
@@ -149,7 +157,11 @@ async def _build_system() -> ISystem:
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=EventBus(),
+        event_bus=EventBus(), config=OrcaConfig(), ops_history_store=ops_store or memory_ops_store(),
+        variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=labware_service or memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     return builder.get_system()
@@ -202,13 +214,11 @@ async def _record_aspirate(
 
 async def _started(
     labware_store: InMemoryLabwareStore | None = None,
-    ops_store: JsonlOpsHistoryStore | None = None,
+    ops_store: IOpsHistoryStore | None = None,
 ) -> tuple[ISystem, SystemRuntime]:
-    system = await _build_system()
-    if ops_store is not None:
-        system.ops_history.bind_store(ops_store)
-    runtime = SystemRuntime(
-        system, labware_store=labware_store or InMemoryLabwareStore(),
+    system = await _build_system(ops_store, labware_service=LabwareService(labware_store or InMemoryLabwareStore()))
+    runtime = await memory_runtime(
+        system,
     )
     await runtime.start()
     return system, runtime
@@ -304,7 +314,7 @@ class TestARestartKeepsTheLayout:
 
     async def test_a_restarted_rack_keeps_its_consumed_layout(self) -> None:
         labware_store = _RowMintingStore()
-        ops_store = JsonlOpsHistoryStore.ephemeral()
+        ops_store = EphemeralOpsHistoryStore()
 
         system_a, runtime_a = await _started(labware_store, ops_store)
         snap = await runtime_a.labware.register(
@@ -328,7 +338,7 @@ class TestARestartKeepsTheLayout:
 
     async def test_a_restarted_plate_keeps_its_drawn_down_volumes(self) -> None:
         labware_store = _RowMintingStore()
-        ops_store = JsonlOpsHistoryStore.ephemeral()
+        ops_store = EphemeralOpsHistoryStore()
 
         system_a, runtime_a = await _started(labware_store, ops_store)
         snap = await runtime_a.labware.register(

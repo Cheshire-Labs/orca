@@ -21,7 +21,7 @@ import pytest
 from typer.testing import CliRunner
 
 from orca.cli.app import app
-from orca.daemon.schemas import IncidentDTO, SubmissionDTO
+from orca.operations.wire_models import IncidentResponse, SubmissionDTO
 
 
 runner = CliRunner()
@@ -31,10 +31,10 @@ runner = CliRunner()
 def _force_local_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     """Incident prefix-resolution is backend-aware; pin it local so
     these local-path tests don't trip backend auto-resolution."""
-    monkeypatch.setattr("orca.cli.incident.active_backend", lambda: "local")
+    monkeypatch.setattr("orca.cli.backend.active_backend", lambda: "local")
 
 
-def _incident(**overrides: Any) -> IncidentDTO:
+def _incident(**overrides: Any) -> IncidentResponse:
     base: dict[str, Any] = {
         "id": "7faedeec-1234-4abc-9def-000000000001",
         "timestamp": 1700000000.0,
@@ -48,7 +48,7 @@ def _incident(**overrides: Any) -> IncidentDTO:
         "acknowledged": False,
     }
     base.update(overrides)
-    return IncidentDTO(**base)
+    return IncidentResponse(**base)
 
 
 def _submission(**overrides: Any) -> SubmissionDTO:
@@ -60,7 +60,7 @@ def _submission(**overrides: Any) -> SubmissionDTO:
         "status": "ACCEPTED",
         "batch_mode": "STANDALONE",
         "submitted_at": "2026-05-26T12:00:00+00:00",
-        "run_mode": "PURE_SIM",
+        "run_mode": "CHECK_RUN",
         "operator_id": None,
         "deployment_profile": None,
     }
@@ -74,7 +74,7 @@ def _submission(**overrides: Any) -> SubmissionDTO:
 class TestIncidentGetPrefix:
     def test_full_id_resolves_and_calls_get(self) -> None:
         inc = _incident()
-        with patch("orca.cli.incident.local_client") as mock_local:
+        with patch("orca.cli.incident.get_client") as mock_local:
             mock_local.return_value.incidents_list.return_value = [inc]
             mock_local.return_value.incidents_get.return_value = inc
             result = runner.invoke(app, ["incident", "get", inc.id])
@@ -83,7 +83,7 @@ class TestIncidentGetPrefix:
 
     def test_unique_prefix_resolves(self) -> None:
         inc = _incident()
-        with patch("orca.cli.incident.local_client") as mock_local:
+        with patch("orca.cli.incident.get_client") as mock_local:
             mock_local.return_value.incidents_list.return_value = [inc]
             mock_local.return_value.incidents_get.return_value = inc
             result = runner.invoke(app, ["incident", "get", "7faedeec"])
@@ -93,7 +93,7 @@ class TestIncidentGetPrefix:
     def test_ambiguous_prefix_fails_locally(self) -> None:
         a = _incident(id="abcdeeee-1111-4abc-9def-000000000001")
         b = _incident(id="abcdffff-2222-4abc-9def-000000000002")
-        with patch("orca.cli.incident.local_client") as mock_local:
+        with patch("orca.cli.incident.get_client") as mock_local:
             mock_local.return_value.incidents_list.return_value = [a, b]
             result = runner.invoke(app, ["incident", "get", "abcd"])
         assert result.exit_code != 0
@@ -102,7 +102,7 @@ class TestIncidentGetPrefix:
         mock_local.return_value.incidents_get.assert_not_called()
 
     def test_unknown_id_fails_not_found(self) -> None:
-        with patch("orca.cli.incident.local_client") as mock_local:
+        with patch("orca.cli.incident.get_client") as mock_local:
             mock_local.return_value.incidents_list.return_value = []
             result = runner.invoke(app, ["incident", "get", "deadbeef-9999"])
         assert result.exit_code != 0
@@ -115,7 +115,7 @@ class TestIncidentGetPrefix:
 class TestIncidentAckPrefix:
     def test_unique_prefix_resolves_and_acks(self) -> None:
         inc = _incident()
-        with patch("orca.cli.incident.local_client") as mock_local:
+        with patch("orca.cli.incident.get_client") as mock_local:
             mock_local.return_value.incidents_list.return_value = [inc]
             result = runner.invoke(
                 app, ["--force", "incident", "ack", "7faedeec"],
@@ -126,7 +126,7 @@ class TestIncidentAckPrefix:
     def test_ambiguous_prefix_does_not_ack(self) -> None:
         a = _incident(id="abcdeeee-1111-4abc-9def-000000000001")
         b = _incident(id="abcdffff-2222-4abc-9def-000000000002")
-        with patch("orca.cli.incident.local_client") as mock_local:
+        with patch("orca.cli.incident.get_client") as mock_local:
             mock_local.return_value.incidents_list.return_value = [a, b]
             result = runner.invoke(
                 app, ["--force", "incident", "ack", "abcd"],
@@ -138,7 +138,7 @@ class TestIncidentAckPrefix:
     def test_full_id_acks_without_resolution_drift(self) -> None:
         """Full id matches exactly; resolver returns it untouched."""
         inc = _incident()
-        with patch("orca.cli.incident.local_client") as mock_local:
+        with patch("orca.cli.incident.get_client") as mock_local:
             mock_local.return_value.incidents_list.return_value = [inc]
             result = runner.invoke(
                 app, ["--force", "incident", "ack", inc.id],

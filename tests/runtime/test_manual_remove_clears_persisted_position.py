@@ -10,22 +10,25 @@ in-memory slot, persisted store, and the next boot's rehydrate.
 """
 
 import asyncio
+from tests.thread_builder import build_executing_thread
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from orca.resource_models.labware import LabwareInstance
+from tests.placements_for_tests import this_tests_placements
 from orca.resource_models.labware_location_service import (
     InMemoryLabwareLocationService,
     PlacementState,
 )
-from orca.resource_models.labware_state import InMemoryLabwareRegistry
+from orca.workflow_models.labware_state import InMemoryLabwareRegistry
 from orca.events.execution_context import WorkflowExecutionContext
 from orca.resource_models.location import Location
 from orca.resource_models.plate_pad import PlatePad
+from orca.runtime.labware_service import LabwareService
 from orca.runtime.labware_store import InMemoryLabwareStore
-from orca.runtime.registries import NullGatewayRegistry
-from orca.runtime.run_modes import WorkflowRunMode
+from tests.no_devices import NullGatewayRegistry
+from orca.modes.run_modes import WorkflowRunMode
 from orca.workflow_models.status_enums import LabwareThreadStatus
 from orca.runtime.system_runtime import SystemRuntime
 from orca.workflow_models.labware_threads.executing_labware_thread import (
@@ -38,7 +41,9 @@ from tests.runtime.manual_place_fixtures import (
     _build_manual_place_system,
     _live_connection_source,
 )
-from tests.test_helpers import create_test_plate_template
+from orca.resource_models.labware_service_interface import ILabwareService
+from tests.test_helpers import command_pipeline_over, create_test_plate_template, make_labware_placer
+from tests.memory_activity import memory_labware_service, memory_runtime
 
 
 async def _await_thread_status(
@@ -64,11 +69,10 @@ async def _await_thread_status(
 
 
 async def test_manual_remove_clears_the_persisted_position() -> None:
-    system = await _build_manual_place_system("wf_manual_remove_persist")
     store = InMemoryLabwareStore()
-    runtime = SystemRuntime(
+    system = await _build_manual_place_system("wf_manual_remove_persist", labware_service=LabwareService(store))
+    runtime = await memory_runtime(
         system,
-        labware_store=store,
         gateway_registry=NullGatewayRegistry(),
         connection_source=_live_connection_source(),
     )
@@ -90,7 +94,6 @@ async def test_manual_remove_clears_the_persisted_position() -> None:
         labware_id = await _await_thread_status(
             runtime, execution_id, LabwareThreadStatus.AWAITING_MANUAL_REMOVE,
         )
-        await runtime.flush_labware_location_writes()
         active = dict(await store.list_active_locations())
         assert active.get(labware_id) == "pad1", (
             f"precondition: the parked plate's position must be persisted; "
@@ -103,7 +106,6 @@ async def test_manual_remove_clears_the_persisted_position() -> None:
         execution = runtime._executions[execution_id]
         await asyncio.wait_for(asyncio.shield(execution.task), timeout=15.0)
 
-        await runtime.flush_labware_location_writes()
         assert await store.list_active_locations() == [], (
             "the discharged plate's active position must clear, or the next "
             "boot re-seeds a ghost onto the pad"
@@ -140,10 +142,8 @@ async def test_a_foreign_plate_in_the_slot_does_not_bind_the_waiting_thread() ->
     )
     thread.set_labware_template(create_test_plate_template("plate_expected"))
 
-    loc_service = InMemoryLabwareLocationService()
+    loc_service = InMemoryLabwareLocationService(this_tests_placements())
     et = _executing_thread_for(thread, loc_service, "exec-wrong", "wf-wrong")
-    persisted: list[str] = []
-    loc_service.add_update_listener(lambda lw, loc: persisted.append(lw.id))
 
     acquire = asyncio.create_task(et.initialize_labware())
     await _await_parked(et)
@@ -156,7 +156,7 @@ async def test_a_foreign_plate_in_the_slot_does_not_bind_the_waiting_thread() ->
     assert loc_service.placement(expected) is PlacementState.EXPECTED
     assert not acquire.done()
     assert thread.labware is expected
-    assert persisted == [], "nothing the thread expects has been placed yet"
+    assert len(loc_service.get_history(expected)) == 0, "nothing the thread expects has been placed yet"
 
     et.stop()
     await asyncio.wait_for(acquire, timeout=5.0)
@@ -178,25 +178,26 @@ async def test_stop_before_operator_place_leaves_no_trace_of_the_labware() -> No
     )
     thread.set_labware_template(create_test_plate_template("plate_stop"))
 
-    loc_service = InMemoryLabwareLocationService()
-    et = _executing_thread_for(thread, loc_service, "exec-stop", "wf-stop")
-    persisted: list[str] = []
+    loc_service = InMemoryLabwareLocationService(this_tests_placements())
+    saved = memory_labware_service()
+    et = _executing_thread_for(thread, loc_service, "exec-stop", "wf-stop", saved)
     dropped: list[LabwareInstance] = []
-    loc_service.add_update_listener(lambda lw, loc: persisted.append(lw.id))
     loc_service.add_expectation_dropped_listener(dropped.append)
 
     acquire = asyncio.create_task(et.initialize_labware())
     await _await_parked(et)
     assert not acquire.done()
     assert location.labware is None
+    assert len(loc_service.get_history(expected)) == 0, "an unplaced labware must never reach the store"
 
     et.stop()
     await asyncio.wait_for(acquire, timeout=5.0)
 
-    assert persisted == [], "an unplaced labware must never reach the store"
     assert dropped == [expected]
     with pytest.raises(KeyError):
         loc_service.get(expected)
+    assert await saved.get_by_id(expected.id) is None, "an unplaced labware must never reach the store"
+    assert await saved.list_active_locations() == []
 
 
 def _executing_thread_for(
@@ -204,6 +205,7 @@ def _executing_thread_for(
     loc_service: InMemoryLabwareLocationService,
     execution_id: str,
     workflow_name: str,
+    saved: ILabwareService | None = None,
 ) -> ExecutingLabwareThread:
     """A thread wired with a status stub that echoes real enum names, because
     `status` reads back through the manager as a name string."""
@@ -227,7 +229,7 @@ def _executing_thread_for(
     move_handler.try_acquire_placement_reservation = AsyncMock(
         return_value=MagicMock(is_released=False, is_displaced=False),
     )
-    et = ExecutingLabwareThread(
+    et = build_executing_thread(
         thread=thread,
         event_bus=MagicMock(),
         move_handler=move_handler,
@@ -235,6 +237,7 @@ def _executing_thread_for(
         actions_resolver=MagicMock(),
         context=context,
         labware_location_service=loc_service,
+        command_pipeline=command_pipeline_over(make_labware_placer(loc_service, saved)),
     )
     et.set_labware_registry(InMemoryLabwareRegistry())
     return et

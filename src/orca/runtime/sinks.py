@@ -1,6 +1,6 @@
 """Built-in event sinks for SystemRuntime.
 
-LogSink: logs RuntimeEvents as structured JSON via Python logging.
+LogSink: logs each stored RuntimeEvent to the `orca.events` logger, where the server stores it.
 CollectorSink: collects events in a list for testing.
 """
 
@@ -9,15 +9,18 @@ import logging
 from types import TracebackType
 
 from orca.events.runtime_event import RuntimeEvent
+from orca.runtime.event_store import EVENT_ATTR, EVENT_LOGGER_NAME, is_stored
 
-logger = logging.getLogger("orca.events")
+logger = logging.getLogger(EVENT_LOGGER_NAME)
 
 
 class LogSink:
-    """Logs each RuntimeEvent as a structured JSON line."""
+    """Logs each stored RuntimeEvent as a JSON line, with the event attached for a storing handler."""
 
     def on_event(self, event: RuntimeEvent) -> None:
-        logger.info(json.dumps(event.to_dict(), default=str))
+        if not is_stored(event):
+            return
+        logger.info(json.dumps(event.to_dict(), default=str), extra={EVENT_ATTR: event})
 
 
 class CollectorSink:

@@ -19,19 +19,20 @@ import pytest
 
 from tests.test_helpers import execution_outcome
 
-from orca.runtime.labware_group import (
+from orca.workflow_models.labware_group import (
     AcquisitionValidationError,
     BarcodeAcquisition,
     LabwareGroup,
     LabwareGroupMember,
     LocationAcquisition,
 )
+from orca.runtime.labware_service import LabwareService
 from orca.runtime.labware_store import InMemoryLabwareStore
-from orca.runtime.system_runtime import SystemRuntime
 from orca.resource_models.labware import LabwareInstance
 from orca.variables import VariableDefinition
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from tests.test_system_runtime import _build_simple_system
+from tests.memory_activity import memory_runtime
 
 
 class TestSubmissionVariables:
@@ -41,10 +42,10 @@ class TestSubmissionVariables:
         system.variable_store.register_workflow_definitions(
             workflow.name, {"shake_time": VariableDefinition(type="int", default=60)}
         )
-        runtime = SystemRuntime(system)
+        runtime = await memory_runtime(system)
         await runtime.start()
 
-        submission = await runtime.submit(workflow, variables={"shake_time": 120}, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, variables={"shake_time": 120}, mode=WorkflowRunMode.CHECK_RUN)
         status = await execution_outcome(runtime, submission, timeout=30.0)
         assert status.status == "completed"
         await runtime.shutdown()
@@ -60,10 +61,10 @@ class TestSubmissionVariables:
         system.variable_store.register_workflow_definitions(
             workflow.name, {"shake_time": VariableDefinition(type="int", default=60)}
         )
-        runtime = SystemRuntime(system)
+        runtime = await memory_runtime(system)
         await runtime.start()
 
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
         status = await execution_outcome(runtime, submission, timeout=30.0)
         assert status.status == "completed"
         await runtime.shutdown()
@@ -89,7 +90,7 @@ class TestAcquisitionValidation:
 
     async def test_barcode_acquisition_rejects_unknown_barcode(self) -> None:
         system, workflow = await _build_simple_system()
-        runtime = SystemRuntime(system, labware_store=InMemoryLabwareStore())
+        runtime = await memory_runtime(system)
         await runtime.start()
 
         group = LabwareGroup(
@@ -102,16 +103,17 @@ class TestAcquisitionValidation:
             ),
         )
         with pytest.raises(AcquisitionValidationError, match="MISSING-123"):
-            await runtime.submit(workflow, groups=[group], mode=WorkflowRunMode.PURE_SIM)
+            await runtime.submit(workflow, groups=[group], mode=WorkflowRunMode.CHECK_RUN)
         await runtime.shutdown()
 
     async def test_barcode_acquisition_accepts_registered_barcode(self) -> None:
-        system, workflow = await _build_simple_system()
         store = InMemoryLabwareStore()
-        instance = LabwareInstance("plate_96", "96_well")
+        system, workflow = await _build_simple_system(labware_service=LabwareService(store))
+        instance = LabwareInstance("plate_96", "_sim_plate")
         instance.barcode = "BC-42"
+        system.add_labware(instance)
         await store.register(instance)
-        runtime = SystemRuntime(system, labware_store=store)
+        runtime = await memory_runtime(system)
         await runtime.start()
 
         group = LabwareGroup(
@@ -123,13 +125,13 @@ class TestAcquisitionValidation:
                 ),
             ),
         )
-        submission = await runtime.submit(workflow, groups=[group], mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, groups=[group], mode=WorkflowRunMode.CHECK_RUN)
         assert submission.id is not None
         await runtime.shutdown()
 
     async def test_location_acquisition_rejects_unknown_location(self) -> None:
         system, workflow = await _build_simple_system()
-        runtime = SystemRuntime(system)
+        runtime = await memory_runtime(system)
         await runtime.start()
 
         group = LabwareGroup(
@@ -142,12 +144,12 @@ class TestAcquisitionValidation:
             ),
         )
         with pytest.raises(AcquisitionValidationError, match="ghost_slot"):
-            await runtime.submit(workflow, groups=[group], mode=WorkflowRunMode.PURE_SIM)
+            await runtime.submit(workflow, groups=[group], mode=WorkflowRunMode.CHECK_RUN)
         await runtime.shutdown()
 
     async def test_location_acquisition_accepts_known_location(self) -> None:
         system, workflow = await _build_simple_system()
-        runtime = SystemRuntime(system)
+        runtime = await memory_runtime(system)
         await runtime.start()
 
         group = LabwareGroup(
@@ -159,7 +161,7 @@ class TestAcquisitionValidation:
                 ),
             ),
         )
-        submission = await runtime.submit(workflow, groups=[group], mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, groups=[group], mode=WorkflowRunMode.CHECK_RUN)
         assert submission.id is not None
         await runtime.shutdown()
 
@@ -168,18 +170,19 @@ class TestAcquisitionAttachment:
     """Regression tests for member-Acquisition wiring in the thread factory.
 
     - BarcodeAcquisition: entry thread attaches the LabwareInstance already
-      registered in the store (same identity), not a freshly-minted instance.
+      registered and held by the system (same identity), not a freshly-minted instance.
     - LocationAcquisition: entry thread's start_location is overridden to the
       member's source_location, not the thread template's default start.
     """
 
     async def test_barcode_acquisition_attaches_existing_instance(self) -> None:
-        system, workflow = await _build_simple_system()
         store = InMemoryLabwareStore()
-        existing = LabwareInstance("plate_96", "96_well")
+        system, workflow = await _build_simple_system(labware_service=LabwareService(store))
+        existing = LabwareInstance("plate_96", "_sim_plate")
         existing.barcode = "BC-99"
+        system.add_labware(existing)
         await store.register(existing)
-        runtime = SystemRuntime(system, labware_store=store)
+        runtime = await memory_runtime(system)
         await runtime.start()
 
         group = LabwareGroup(
@@ -191,11 +194,11 @@ class TestAcquisitionAttachment:
                 ),
             ),
         )
-        submission = await runtime.submit(workflow, groups=[group], mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, groups=[group], mode=WorkflowRunMode.CHECK_RUN)
         resolved = submission.resolved_acquisitions.get(("grp-barcode", "plate_96"))
         assert resolved is not None, "submission must record the resolved acquisition"
         assert resolved.labware_instance is existing, (
-            "BarcodeAcquisition must attach the exact instance from the store"
+            "BarcodeAcquisition must attach the exact instance the system holds"
         )
 
         status = await execution_outcome(runtime, submission, timeout=30.0)
@@ -239,7 +242,7 @@ class TestAcquisitionAttachment:
 
     async def test_location_acquisition_overrides_thread_start(self) -> None:
         system, workflow = await _build_simple_system()
-        runtime = SystemRuntime(system)
+        runtime = await memory_runtime(system)
         await runtime.start()
 
         group = LabwareGroup(
@@ -251,7 +254,7 @@ class TestAcquisitionAttachment:
                 ),
             ),
         )
-        submission = await runtime.submit(workflow, groups=[group], mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, groups=[group], mode=WorkflowRunMode.CHECK_RUN)
         resolved = submission.resolved_acquisitions.get(("grp-location", "plate_96"))
         assert resolved is not None, "submission must record the resolved acquisition"
         assert resolved.start_location is not None

@@ -138,7 +138,7 @@ def delete_access_config(
         None, "--reason", help="Why, for the audit trail.",
     ),
 ) -> None:
-    """Delete an access config. 409 if protected or still referenced."""
+    """Delete an access config. 409 if a teachpoint still names it."""
     client = get_client()
     client.access_configs_delete(name, reason=reason)
     output.info(f"deleted access_config [cyan]{name}[/cyan]")

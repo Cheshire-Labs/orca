@@ -107,12 +107,9 @@ async def test_branch_step_takes_else_branch_on_unmatched_value() -> None:
 
     else_method.schedule = _fake_schedule
 
-    channel = MagicMock()
-    channel.wait = AsyncMock(return_value=(1, "no_match", {}))
     registry = MagicMock()
-    registry.get_or_create = MagicMock(return_value=channel)
-
     ctx = MagicMock()
+    ctx.wait_for_event = AsyncMock(return_value="no_match")
     yielded = [em async for em in template.schedule(ctx, registry)]
 
     assert yielded == [sentinel_em]
@@ -129,12 +126,9 @@ async def test_branch_step_raises_when_no_match_and_no_else() -> None:
         branches={"a": []},
     )
 
-    channel = MagicMock()
-    channel.wait = AsyncMock(return_value=(1, "no_match", {}))
     registry = MagicMock()
-    registry.get_or_create = MagicMock(return_value=channel)
-
     ctx = MagicMock()
+    ctx.wait_for_event = AsyncMock(return_value="no_match")
     with pytest.raises(ValueError, match="no matching branch and no 'else' fallback"):
         async for _ in template.schedule(ctx, registry):
             pass

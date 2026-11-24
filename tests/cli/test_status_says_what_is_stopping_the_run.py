@@ -7,11 +7,13 @@ runtime was up, the run was going nowhere, and the CLI said nothing was wrong.
 import pytest
 
 from orca.cli import output
-from orca.cli.control_plane import (
+from orca.operations.blocker_models import (
     BlockerDTO,
     RemedyDTO,
     RemedyStepDTO,
-    RuntimeStatusResponseDTO,
+)
+from orca.operations.wire_models import (
+    RuntimeStatusResponse,
 )
 from orca.cli.status import _render_blockers
 
@@ -25,18 +27,22 @@ CLEAR_FAULT = RemedyDTO(
         verb="device.clear_fault",
         label="Clear the fault",
         cli="orca device clear-fault pf400_1",
+        action="clear-device-fault", args={}, rest="POST /operations/clear-device-fault",
     )],
 )
 
 FIND_THE_PLATE = RemedyDTO(
     id="correct_the_source_then_retry",
     label="Say where the plate is, then retry",
+    explain="Retries once the plate is placed.",
     recommended=True,
     steps=[
         RemedyStepDTO(verb="labware.edit_location", label="Say where it is",
+                      action="edit-labware-location", args={}, rest="POST /operations/edit-labware-location",
                       cli="orca labware edit-location p1 pad_1"),
         RemedyStepDTO(verb="thread.recover.RETRY", label="Retry",
-                      cli="orca thread recover e1 t1 --decision RETRY"),
+                      action="recover-thread", args={}, rest="POST /operations/recover-thread",
+                      cli="orca execution thread recover e1 t1 retry"),
     ],
 )
 
@@ -52,6 +58,7 @@ def a_blocker(
         kind=kind,
         severity="error",
         headline="pf400_1: 'initialize' did not come back clean.",
+        since=None,
         remedies=[CLEAR_FAULT] if remedies is None else remedies,
         may_still_be_moving=may_still_be_moving,
     )
@@ -61,9 +68,9 @@ def status(
     *,
     blockers: list[BlockerDTO] | None = None,
     blockers_known: bool = True,
-) -> RuntimeStatusResponseDTO:
+) -> RuntimeStatusResponse:
     rows = blockers or []
-    return RuntimeStatusResponseDTO(
+    return RuntimeStatusResponse(
         built=True,
         blockers=rows,
         blocker_count=len(rows),
@@ -99,8 +106,8 @@ def test_a_multi_step_remedy_prints_its_commands_in_order(capsys):
     ]))
     printed = rendered(capsys)
     assert "edit-location" in printed
-    assert "RETRY" in printed
-    assert printed.index("edit-location") < printed.index("RETRY")
+    assert "thread recover" in printed
+    assert printed.index("edit-location") < printed.index("thread recover")
 
 
 def test_nothing_in_the_way_says_so(capsys):

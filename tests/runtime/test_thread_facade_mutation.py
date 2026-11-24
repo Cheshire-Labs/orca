@@ -14,8 +14,10 @@ from orca.runtime.danger import ConfirmationRequired
 from orca.runtime.facades.threads import ThreadFacade
 from orca.workflow_models.action_context import ActionContext
 
+from tests.audit_capture import AuditCapture
 from tests.mock import UniversalMockDevice
 from tests.test_helpers import wait_until
+from tests.memory_activity import memory_runtime
 
 
 def _make_facade(thread_ids: list[str]) -> tuple[ThreadFacade, MagicMock, MagicMock]:
@@ -51,18 +53,7 @@ class TestAbortMethod:
             reason="bench requested abort", confirm=True,
         )
 
-        system.abort_method.assert_awaited_once_with("t1", None, "incubate")
-
-    @pytest.mark.asyncio
-    async def test_abort_method_by_id_calls_system(self) -> None:
-        facade, _runtime, system = _make_facade(["t1"])
-
-        await facade.abort_method(
-            "exec-1", "t1", method_id="m-42",
-            reason="bench requested abort", confirm=True,
-        )
-
-        system.abort_method.assert_awaited_once_with("t1", "m-42", None)
+        system.abort_method.assert_awaited_once_with("t1", "incubate")
 
     @pytest.mark.asyncio
     async def test_abort_method_requires_confirm(self) -> None:
@@ -217,11 +208,10 @@ class TestLockEviction:
         proves the subscribe call is in place, not just the listener
         method.
         """
-        from orca.runtime.system_runtime import SystemRuntime
         from tests.test_system_runtime import _build_simple_system
 
         system, _ = await _build_simple_system()
-        rt = SystemRuntime(system)
+        rt = await memory_runtime(system)
         try:
             rt.threads._lock_for("t-stale")
             assert "t-stale" in rt.threads._mutation_locks
@@ -291,7 +281,7 @@ class TestPerThreadSerialization:
         entered = asyncio.Event()
         release = asyncio.Event()
 
-        async def slow_abort(thread_id: str, mid: str | None, mname: str | None) -> None:
+        async def slow_abort(thread_id: str, mname: str) -> None:
             nonlocal in_flight, max_observed
             in_flight += 1
             max_observed = max(max_observed, in_flight)
@@ -329,7 +319,7 @@ class TestPerThreadSerialization:
         in_flight = 0
         max_observed = 0
 
-        async def slow_abort(thread_id: str, mid: str | None, mname: str | None) -> None:
+        async def slow_abort(thread_id: str, mname: str) -> None:
             nonlocal in_flight, max_observed
             in_flight += 1
             max_observed = max(max_observed, in_flight)
@@ -416,21 +406,16 @@ class TestTypedMutationErrors:
         assert err.current_status == "QUEUED"
 
 
-class TestReasonAuditTrail:
-    """`reason` flows through @dangerous to the audit ring buffer.
+class TestReasonOnTheAuditRow:
+    """`reason` flows through @dangerous onto the audit row.
 
-    The audit channel for runtime mutations is the existing
-    @dangerous AuditTrail (see src/orca/runtime/danger.py). When a wire
-    caller supplies `reason`, it lands in the AuditEntry's reason field
-    and (with a configured handler) the orca.audit logger emit. No
+    When a wire caller supplies `reason`, it lands on the AuditEntry logged
+    to orca.audit, which the server's audit store keeps. No
     bespoke ops-history wiring is needed — the decorator handles it.
     """
 
     @pytest.mark.asyncio
-    async def test_skip_method_records_reason(self) -> None:
-        from orca.runtime.danger import clear_audit_trail, list_audit_entries
-
-        clear_audit_trail()
+    async def test_skip_method_records_reason(self, audit: AuditCapture) -> None:
         facade, _runtime, _system = _make_facade(["t1"])
 
         await facade.skip_method(
@@ -438,16 +423,13 @@ class TestReasonAuditTrail:
             reason="rerunning to capture extra read", confirm=True,
         )
 
-        entries = list_audit_entries()
+        entries = audit.rows()
         skip_entries = [e for e in entries if e.action_name == "thread.skip_method"]
         assert len(skip_entries) == 1
         assert skip_entries[0].reason == "rerunning to capture extra read"
 
     @pytest.mark.asyncio
-    async def test_abort_method_records_reason(self) -> None:
-        from orca.runtime.danger import clear_audit_trail, list_audit_entries
-
-        clear_audit_trail()
+    async def test_abort_method_records_reason(self, audit: AuditCapture) -> None:
         facade, _runtime, _system = _make_facade(["t1"])
 
         await facade.abort_method(
@@ -455,22 +437,19 @@ class TestReasonAuditTrail:
             reason="device hung mid-shake", confirm=True,
         )
 
-        entries = list_audit_entries()
+        entries = audit.rows()
         abort_entries = [e for e in entries if e.action_name == "thread.abort_method"]
         assert len(abort_entries) == 1
         assert abort_entries[0].reason == "device hung mid-shake"
 
     @pytest.mark.asyncio
-    async def test_reason_is_required_when_decorator_requires_it(self) -> None:
+    async def test_reason_is_required_when_decorator_requires_it(self, audit: AuditCapture) -> None:
         """`requires_reason=True` (L4 tightening) on the mutation decorators
         means callers MUST supply reason in addition to confirm=True. The
         @dangerous wrapper raises ValueError before the function body runs;
         the system layer is never touched, so no half-applied mutation can
         slip through audit-less.
         """
-        from orca.runtime.danger import clear_audit_trail, list_audit_entries
-
-        clear_audit_trail()
         facade, _runtime, system = _make_facade(["t1"])
 
         with pytest.raises(ValueError, match="requires reason"):
@@ -481,22 +460,22 @@ class TestReasonAuditTrail:
         # Mutation never reached the system layer.
         system.skip_pending_method.assert_not_called()
         # And no audit entry was recorded for the rejected call.
-        entries = list_audit_entries()
+        entries = audit.rows()
         skip_entries = [e for e in entries if e.action_name == "thread.skip_method"]
         assert skip_entries == []
 
     @pytest.mark.asyncio
-    async def test_replace_action_audits_the_injected_source_not_a_repr(self) -> None:
+    async def test_replace_action_audits_the_injected_source_not_a_repr(
+        self, audit: AuditCapture,
+    ) -> None:
         """Defect 3 from the 2026-08-28 bench incident: replace_action's
         audit entry recorded a bare repr of the compiled template, so there
         was no way after the fact to answer "what did we actually inject
         into that run". Action.to_dict() now gives @dangerous's JSON-safe
         capture something real to read instead of falling back to repr()."""
         from orca.orca import action as orca_action
-        from orca.runtime.danger import clear_audit_trail, list_audit_entries
         from orca.sdk.labware import AnyLabwareTemplate
 
-        clear_audit_trail()
         facade, _runtime, _system = _make_facade(["t1"])
         source = (
             "@orca.action(device=topology.device('shaker_1', IShaker), "
@@ -516,7 +495,7 @@ class TestReasonAuditTrail:
             reason="rack column 1 is spent", confirm=True,
         )
 
-        entries = list_audit_entries()
+        entries = audit.rows()
         replace_entries = [e for e in entries if e.action_name == "thread.replace_action"]
         assert len(replace_entries) == 1
         recorded_template = replace_entries[0].call_args["template"]

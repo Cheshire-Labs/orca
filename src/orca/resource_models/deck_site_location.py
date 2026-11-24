@@ -26,14 +26,22 @@ class DeckSiteLocation(Location):
         owner: ISiteOwner,
         resource: Optional[ILabwarePlaceable] = None,
         mutex_position_id: Optional[str] = None,
+        *,
+        site_name: str,
     ) -> None:
         super().__init__(position_id, resource if resource is not None else DeckSite(position_id))
         self._owner = owner
         self._mutex_position_id = mutex_position_id if mutex_position_id is not None else owner.name
+        self._site_name = site_name
 
     @property
     def owner(self) -> ISiteOwner:
         return self._owner
+
+    @property
+    def site_name(self) -> str:
+        """The site's name on its device (a deck site, or one of the device's `site_names`)."""
+        return self._site_name
 
     @property
     def owner_mutex_id(self) -> Optional[str]:

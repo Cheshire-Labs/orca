@@ -13,13 +13,17 @@ build tests never used a gateway, so the two halves were never exercised
 together.
 """
 
+from orca.events.event_bus import EventBus
 import pytest
 
 from cheshire_drivers import AccessConfig, CartesianCoordinates, Teachpoint
 from orca.resource_models.plate_pad import PlatePad
 from orca.resource_models.transporter import Transporter
-from orca.runtime.store_factory import InMemoryRuntimeStoreFactory
-from orca.sdk.build import SystemBuild, Topology, build_system
+from orca.sdk.build import SystemBuild, Topology
+from orca.sdk.package import build_system
+from tests.setup_package import package_stores, write_teachpoints
+from tests.setup_package import with_teachpoints
+from tests.memory_activity import memory_ops_store
 
 _c = CartesianCoordinates
 _ACCESS = AccessConfig(name="vert", access_type="vertical")
@@ -27,10 +31,10 @@ _ACCESS = AccessConfig(name="vert", access_type="vertical")
 
 async def _build_with_waypoint() -> SystemBuild:
     """Two pads that both route through a shared transit pose."""
-    stores = InMemoryRuntimeStoreFactory()
-    arm = Transporter(
+    stores = package_stores()
+    arm = with_teachpoints(Transporter(
         "arm",
-        teachpoint_store=stores.teachpoints("arm", seed=[
+    ), write_teachpoints(stores, "arm", [
             Teachpoint("safe_transit", _c(300, 0, 400, 0, 90, 180), orientation="right"),
             Teachpoint(
                 "pad_1", _c(100, 200, 300, 0, 90, 180),
@@ -40,13 +44,12 @@ async def _build_with_waypoint() -> SystemBuild:
                 "pad_2", _c(500, 200, 300, 0, 90, 180),
                 orientation="right", access=_ACCESS, gateway="safe_transit",
             ),
-        ]),
-    )
+        ]))
     topology = Topology(
         locations={"pad_1": PlatePad("pad_1"), "pad_2": PlatePad("pad_2")},
         transporters=[arm],
     )
-    return await build_system("gateway-waypoint-build", topology, stores)
+    return await build_system("gateway-waypoint-build", topology, stores, event_bus=EventBus(), ops_history_store=memory_ops_store())
 
 
 async def test_a_transit_waypoint_does_not_fail_the_build() -> None:
@@ -82,15 +85,14 @@ async def test_the_real_destinations_still_route_to_each_other() -> None:
 
 async def test_a_name_that_is_neither_a_location_nor_a_waypoint_still_fails_loud() -> None:
     """The loud-teachpoint guard stays: only transit poses are exempt."""
-    stores = InMemoryRuntimeStoreFactory()
-    arm = Transporter(
+    stores = package_stores()
+    arm = with_teachpoints(Transporter(
         "arm",
-        teachpoint_store=stores.teachpoints("arm", seed=[
+    ), write_teachpoints(stores, "arm", [
             Teachpoint("pad_1", _c(100, 200, 300, 0, 90, 180), orientation="right"),
             Teachpoint("typo_nest", _c(500, 200, 300, 0, 90, 180), orientation="right"),
-        ]),
-    )
+        ]))
     topology = Topology(locations={"pad_1": PlatePad("pad_1")}, transporters=[arm])
 
     with pytest.raises(ValueError, match="neither a registered location"):
-        await build_system("loud-teachpoint-build", topology, stores)
+        await build_system("loud-teachpoint-build", topology, stores, event_bus=EventBus(), ops_history_store=memory_ops_store())

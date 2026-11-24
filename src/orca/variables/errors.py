@@ -26,3 +26,9 @@ class VariableValidationError(Exception):
         super().__init__(f"Variable '{name}' = {value!r}: {reason}")
         self.variable_name = name
         self.value = value
+
+
+class SubmissionInputsRefusedError(ValueError):
+    def __init__(self, refusals: list[str]) -> None:
+        super().__init__(" ".join(refusals))
+        self.refusals = refusals

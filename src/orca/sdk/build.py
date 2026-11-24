@@ -1,9 +1,11 @@
 """High-level system builder for the Python SDK."""
 
 from dataclasses import dataclass, field
-from typing import Callable, Iterable, List, Mapping, Sequence, TypeVar
+from typing import Iterable, List, Mapping, Sequence, TypeVar
 
-from orca.events.event_bus import EventBus
+from orca.config import OrcaConfig
+from orca.resource_models.labware_placement import IUnsavedPositions
+from orca.resource_models.labware_service_interface import ILabwareService
 from orca.events.event_bus_interface import IEventBus
 from orca.devices.device_interfaces import ITrackedDevice
 from orca.devices.devices import LiquidHandler
@@ -16,28 +18,33 @@ from orca.resource_models.devices import Device
 from orca.resource_models.labware import LabwareTemplate
 from orca.resource_models.labware_placeable_interface import ILabwarePlaceable
 from orca.resource_models.location import Location
+from orca.resource_models.site_rack import SiteRack
+from orca.runtime.device_assignment import assign_devices
+from cheshire_drivers.gateway_protocol import AssignedDevice
 from orca.resource_models.resource_pool import ResourcePool
 from orca.resource_models.resources import IResource
-from orca.resource_models.tracking_interpreter import (
-    DefaultInterpreter,
-    resolve_operation_interpreter,
-)
+from orca.resource_models.tracking_interpreter import DefaultInterpreter
+from orca.devices.interpreter_resolution import resolve_operation_interpreter
 from orca.resource_models.transporter import Transporter
 from orca.state.ops_store import IOpsHistoryStore
-from orca.runtime.execution_phase import ExecutionPhase
-from orca.runtime.labware_group import LabwareGroup
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.status_models import ExecutionStatus
 from orca.runtime.store_factory import IRuntimeStoreFactory
-from orca.runtime.system_runtime import SystemRuntime
-from orca.sdk.logging_default import install_default_console_logging
+from orca.variables.variable_store import IVariableService
 from orca.system.deck_sites import enumerate_deck_sites
 from orca.system.SdkToSystemBuilder import SdkToSystemBuilder
-from orca.system.resource_registry import ResourceRegistry
+from orca.resource_models.resource_registry import ResourceRegistry
 from orca.system.system import System
+from orca.system.system_interface import ISystem
 from orca.system.system_map import SystemMap
 from orca.workflow_models.method_template import MethodTemplate
 from orca.workflow_models.workflow_templates import WorkflowTemplate
+
+
+__all__ = [
+    "Topology",
+    "SystemBuild",
+    "add_workflow_template",
+    "compile_workflow_code",
+]
 
 
 class TrackedDeviceInterpreterError(RuntimeError):
@@ -53,13 +60,10 @@ class TrackedDeviceInterpreterError(RuntimeError):
 
 
 
-
-LogConfig = bool | Callable[[], None]
-
 # Devices and passive placeables are both valid location values; Device is
 # not an ILabwarePlaceable on its own -- build_system wraps it in a
 # LabwareStagingBridge at runtime. We accept either shape here.
-LocationValue = Device | ILabwarePlaceable
+LocationValue = Device | ILabwarePlaceable | SiteRack
 
 _DeviceT = TypeVar("_DeviceT", bound=LocationValue)
 
@@ -73,7 +77,8 @@ class Topology:
 
     Args:
         locations: Named physical positions that can hold labware. Values are
-            devices (auto-wrapped in a gateway) or passive pads.
+            devices (auto-wrapped in a gateway), passive pads, or plate hotels,
+            whose shelves are each a pad at ``<hotel>/shelf_<n>``.
         transporters: Robotic arms and translators that move labware between
             locations.
         pools: Multi-device resource pools (e.g. a bank of 10 shakers treated
@@ -115,91 +120,75 @@ class Topology:
 class SystemBuild:
     """Top-level result of `build_system`.
 
-    `workflow` is the one workflow `SystemBuild.run()` runs. When `build_system`
-    is called without a workflow (multi-workflow deployments), this is None and
-    callers drive the system via `SystemRuntime.submit_workflow(name, ...)`
-    after registering templates through `runtime.workflow_templates.add(...)`.
+    `workflow` is the workflow passed to `build_system`, or None. Servers pass
+    none and register each workflow with `add_workflow_template`.
 
-    `topology` is the original Topology object passed in. Held on the
-    build so post-build workflow registrations (live submissions via
-    a hosted deployment's POST /api/workflows) can call build_workflow(topology) to
-    resolve device references the same way the cold-boot path does.
+    `topology` is the Topology passed in, so a workflow registered after the
+    build can call `build_workflow(topology)` against the same devices.
+
+    `config` is the settings the system was built with.
     """
     system: System
     workflow: WorkflowTemplate | None
-    event_bus: EventBus
-    stores: IRuntimeStoreFactory
+    event_bus: IEventBus
     topology: "Topology | None" = None
-
-    async def run(
-        self,
-        run_mode: WorkflowRunMode = WorkflowRunMode.PURE_SIM,
-        groups: Sequence[LabwareGroup] = (),
-    ) -> ExecutionStatus:
-        """Start a runtime, run the workflow once, and shut down. Raises unless the run completes."""
-        if self.workflow is None:
-            raise RuntimeError(
-                "SystemBuild.run() requires a workflow but none was provided "
-                "to build_system. For multi-workflow deployments, drive the "
-                "system through SystemRuntime.submit_workflow(name) instead."
-            )
-        runtime = SystemRuntime(self.system, event_bus=self.event_bus)
-        try:
-            await runtime.start()
-            submission = await runtime.submit(self.workflow, groups=groups, mode=run_mode)
-            status = await runtime.wait_for_execution(submission)
-        finally:
-            await runtime.shutdown()
-        if status.status is not ExecutionPhase.COMPLETED:
-            raise RuntimeError(f"{self.workflow.name} ended {status.status.value}: {status.error}")
-        return status
+    device_assignment: list[AssignedDevice] = field(default_factory=list)
+    config: OrcaConfig = field(default_factory=OrcaConfig)
 
 
-def _apply_log_config(config: LogConfig) -> None:
-    if config is False:
-        return
-    if callable(config):
-        config()
-        return
-    install_default_console_logging()
+def _attach_setup_files(topology: Topology, stores: IRuntimeStoreFactory) -> None:
+    for transporter in topology.transporters:
+        transporter.bind_teachpoints(stores.teachpoints(transporter.name))
+    for resource in topology.locations.values():
+        if isinstance(resource, LiquidHandler):
+            resource.bind_deck_layouts(stores.deck_layouts(resource.name))
 
 
-async def build_system(
+async def _with_global_variables(stores: IRuntimeStoreFactory) -> IVariableService:
+    variable_store = stores.variable_store()
+    entries = await stores.global_variables().read()
+    variable_store.register_global_definitions({name: e for name, e in entries.items() if e.is_declared})
+    for name, entry in entries.items():
+        if entry.value is not None:
+            variable_store.set_global(name, entry.value)
+    return variable_store
+
+
+async def build_system_over(
     name: str,
     topology: Topology,
     stores: IRuntimeStoreFactory,
     workflow: WorkflowTemplate | None = None,
     labwares: Sequence[LabwareTemplate] | None = None,
-    event_bus: IEventBus | None = None,
     description: str = "",
-    configure_logging: LogConfig = True,
-    ops_history_store: IOpsHistoryStore | None = None,
+    *,
+    event_bus: IEventBus,
+    ops_history_store: IOpsHistoryStore,
+    labware_service: ILabwareService,
+    unsaved_positions: IUnsavedPositions,
+    config: OrcaConfig | None = None,
 ) -> SystemBuild:
-    """Build a runnable system from a workflow and a physical topology.
+    """Build a system from a physical topology, and optionally one workflow, over a server's labware record.
 
-    This is the main entry point for SDK users. It handles all internal wiring:
-    ResourceRegistry, SystemMap, Location objects, and single-device pools.
+    `orca.build_system` is the same build over an in-memory labware record.
 
     Args:
         name: System name.
         topology: Physical layout (locations, transporters, multi-device pools).
-        stores: The same runtime store factory passed into ``build_topology``.
-            Held on the returned ``SystemBuild`` for downstream consumers
-            that need access to the calibration registries.
-        workflow: Optional initial workflow. Pass for source-available standalone runs that
-            use ``SystemBuild.run()``. Cloud / multi-workflow deployments
-            leave this None and register templates through
-            ``runtime.workflow_templates.add(...)`` after the system runtime
-            is constructed.
+        stores: The setup stores. The build attaches each transporter's
+            teachpoints and each liquid handler's deck layouts from them.
+        workflow: One workflow to register at build time. Servers leave it
+            None and register workflows with ``add_workflow_template``.
         labwares: Extra labware templates not owned by any thread (e.g., reservoirs).
-        event_bus: Custom event bus. Created automatically if not provided.
+        event_bus: The bus the system and its runtime share. `start_runtime` makes one per build.
         description: System description.
-        configure_logging: Controls SDK logging setup. ``True`` (default) installs
-            a stdout INFO handler on the ``orca`` logger if no handlers are
-            configured yet. ``False`` leaves logging untouched. A callable is
-            invoked for fully custom logging setup.
+        ops_history_store: Where the system records operations. The runtime reads the same store.
+        labware_service: The labware record in the database. The placer saves every position to it.
+        unsaved_positions: Where a position save goes when it fails after its caller was cancelled.
+        config: The system's settings. None reads them from ``stores.system_config()``.
     """
-    _apply_log_config(configure_logging)
+    settings = config if config is not None else stores.system_config()
+    _attach_setup_files(topology, stores)
     registry = ResourceRegistry()
     registry.add_resources(list(topology.transporters))
     system_map = SystemMap(registry)
@@ -212,6 +201,10 @@ async def build_system(
             if not registry.has_resource(resource.name):
                 registry.add_resource(resource)
             await add_device_sites(system_map, loc_name, resource)
+        elif isinstance(resource, SiteRack):
+            registry.add_resource(resource)
+            for site in resource.sites:
+                await system_map.add_location(Location(site.name, site))
         else:
             await system_map.add_location(Location(loc_name, resource))
 
@@ -235,29 +228,35 @@ async def build_system(
         for thread_template in wf.thread_templates:
             thread_template.resolve_locations(system_map.resolve_journey_location)
 
-    bus = event_bus or EventBus()
     builder = SdkToSystemBuilder(
         name, description,
         labwares=labwares,
         resources_registry=registry,
         system_map=system_map,
         workflows=workflows,
-        event_bus=bus,
+        event_bus=event_bus,
+        config=settings,
         ops_history_store=ops_history_store,
         labware_catalog=stores.labware_catalog(),
-        variable_store=stores.variable_store(),
+        variable_store=await _with_global_variables(stores),
+        labware_service=labware_service,
+        unsaved_positions=unsaved_positions,
     )
     await builder.bind_labwares()
-    actual_bus = bus if isinstance(bus, EventBus) else EventBus()
 
     _validate_tracked_device_interpreters(topology.locations.values())
 
+    resources = [
+        resource for resource in (*topology.locations.values(), *topology.transporters)
+        if isinstance(resource, Device | Transporter | SiteRack)
+    ]
     return SystemBuild(
         system=builder.get_system(),
         workflow=workflow,
-        event_bus=actual_bus,
-        stores=stores,
+        event_bus=event_bus,
         topology=topology,
+        device_assignment=assign_devices(resources, stores.device_setups()),
+        config=settings,
     )
 
 
@@ -281,7 +280,7 @@ async def add_device_sites(system_map: SystemMap, loc_name: str, device: Device)
                 deck_site = DeckSiteLocation(
                     node_id, owner=device,
                     resource=DeviceDeckSite(node_id, device),
-                    mutex_position_id=loc_name,
+                    mutex_position_id=loc_name, site_name=deck_site_name,
                 )
                 await system_map.add_site_location(deck_site)
                 device.add_site(deck_site)
@@ -292,7 +291,7 @@ async def add_device_sites(system_map: SystemMap, loc_name: str, device: Device)
         site_id = f"{loc_name}/{site_name}"
         bridge = LabwareStagingBridge(site_id, device)
         site = DeckSiteLocation(
-            site_id, owner=device, resource=bridge, mutex_position_id=loc_name,
+            site_id, owner=device, resource=bridge, mutex_position_id=loc_name, site_name=site_name,
         )
         await system_map.add_site_location(site)
         device.add_site(site)
@@ -361,7 +360,7 @@ def _validate_tracked_device_interpreters(resources: Iterable[LocationValue]) ->
 
 
 async def add_workflow_template(
-    system: System,
+    system: ISystem,
     workflow: WorkflowTemplate,
 ) -> None:
     """Register a workflow template (and its bundled methods + threads) on a built system.
@@ -427,7 +426,7 @@ def compile_workflow_code(
     """Compile a workflow source string into a ``WorkflowTemplate``.
 
     Used by a hosted submission pipeline when a workflow source string
-    arrives via REST/MCP and we need to extract the workflow without
+    arrives via REST and we need to extract the workflow without
     writing the file to disk first. The source must declare a top-level
     ``build_workflow(topology)`` function (the canonical shape a hosted
     submission checks for); this function execs the source in a fresh

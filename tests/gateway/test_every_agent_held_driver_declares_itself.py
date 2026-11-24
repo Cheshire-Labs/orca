@@ -17,35 +17,36 @@ operator that simulator's flags as the device's own.
 from typing import Optional, cast
 
 from orca.gateway.controller.controller import DeviceController
-from orca.gateway.remote_device_factory import _DRIVER_BUILDERS, RemoteDeviceFactory
+from orca.gateway.remote_device_factory import _REMOTE_DRIVER_BY_KIND, RemoteDeviceFactory
 from orca.runtime.registries.device_link import AGENT_HELD_ATTRIBUTE, _AgentHeld
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from pydantic import JsonValue
+from tests.gateway.mode_doubles import fixed_mode
 
 
 class _UncalledController:
     """Stands in for the controller. Building drivers must not dispatch."""
 
     async def execute_command(self, **kwargs: object) -> Optional[JsonValue]:
-        raise AssertionError("building a driver pair must not send a command")
+        raise AssertionError("building a driver must not send a command")
 
 
 def _factory() -> RemoteDeviceFactory:
     return RemoteDeviceFactory(
         controller=cast(DeviceController, _UncalledController()),
-        default_timeout=30.0,
-        mode_resolver=lambda _name: WorkflowRunMode.LIVE,
+        mode_resolver=fixed_mode(WorkflowRunMode.LIVE),
     )
 
 
 def test_every_device_type_the_factory_builds_is_stamped_agent_held() -> None:
     factory = _factory()
-    assert _DRIVER_BUILDERS, "the walk found no device types, so it pins nothing"
-
+    # The walk must find the factory's own table, or emptying it would leave this guard passing.
+    assert _REMOTE_DRIVER_BY_KIND, "the walk found no device types, so it pins nothing"
+    kinds = sorted([*_REMOTE_DRIVER_BY_KIND, "liquid_handler"])
     unstamped = [
         device_type
-        for device_type in sorted(_DRIVER_BUILDERS)
-        if not isinstance(factory.build_drivers(device_type, f"{device_type}_1")[0], _AgentHeld)
+        for device_type in kinds
+        if not isinstance(factory.build_driver(device_type, f"{device_type}_1"), _AgentHeld)
     ]
     assert not unstamped, (
         f"{unstamped} are built for an agent-held deployment but do not say so, "
@@ -54,13 +55,11 @@ def test_every_device_type_the_factory_builds_is_stamped_agent_held() -> None:
 
 
 def test_a_deck_modelling_liquid_handler_takes_the_same_stamp() -> None:
-    """The one type with its own branch in `build_drivers` must not skip it."""
-    live, _ = _factory().build_drivers("liquid_handler", "lh_1", deck_modeling=True)
-    assert isinstance(live, _AgentHeld)
+    """The one type with its own branch in `build_driver` must not skip it."""
+    assert isinstance(_factory().build_driver("liquid_handler", "lh_1", deck_modeling=True), _AgentHeld)
 
 
 def test_the_stamp_and_the_reader_name_the_same_attribute() -> None:
     """Renaming one side only must not leave this guard passing."""
     assert hasattr(_AgentHeld, AGENT_HELD_ATTRIBUTE)
-    live, _ = _factory().build_drivers("shaker", "shaker_1")
-    assert getattr(live, AGENT_HELD_ATTRIBUTE) is True
+    assert getattr(_factory().build_driver("shaker", "shaker_1"), AGENT_HELD_ATTRIBUTE) is True

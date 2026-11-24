@@ -1,3 +1,5 @@
+from unittest.mock import MagicMock
+
 import pytest
 
 from orca.state.records import (
@@ -7,6 +9,8 @@ from orca.state.records import (
 )
 from orca.resource_models.tracking_interpreter import DefaultInterpreter
 from orca.plugins.liquid_handler_interpreter import LiquidHandlerInterpreter
+from orca.resource_models.labware import TipRackInstance
+from orca.resource_models.tip_preflight import refuse_a_pick_from_empty_spots, tips_claimed_by
 
 
 class TestDefaultInterpreter:
@@ -31,7 +35,7 @@ class TestDefaultInterpreter:
         assert isinstance(record.details, GenericOperationDetails)
         assert record.details.command == "shake"
 
-    def test_unknown_command_records_nothing(self) -> None:
+    def test_a_command_with_no_operation_of_its_own_is_recorded_by_name(self) -> None:
         interpreter = DefaultInterpreter()
         records = interpreter.interpret(
             command="do_something_weird",
@@ -44,11 +48,13 @@ class TestDefaultInterpreter:
             action_id="a1",
             thread_id="t1",
         )
-        assert records == []
+        assert [(r.operation, r.details) for r in records] == [
+            (DeviceOperation.COMMAND, GenericOperationDetails(command="do_something_weird", args_repr="()")),
+        ]
 
-    def test_claimed_tip_positions_is_always_empty(self) -> None:
+    def test_it_has_no_typed_request_for_any_call(self) -> None:
         interpreter = DefaultInterpreter()
-        assert interpreter.claimed_tip_positions("pick_up_tips", (), {}) == {}
+        assert interpreter.request_of("pick_up_tips", (), {}) is None
 
 
 class _FakeWell:
@@ -63,6 +69,10 @@ class _FakeTipSpot:
     def __init__(self, parent_name: str, identifier: str) -> None:
         self.parent_name = parent_name
         self.identifier = identifier
+        self.has_tip = True
+
+    def set_tip(self, has_tip: bool) -> None:
+        self.has_tip = has_tip
 
 
 class _FakeTipRack96:
@@ -108,7 +118,7 @@ class TestLiquidHandlerInterpreter:
     def test_unknown_lh_command_falls_back_to_generic(self) -> None:
         interpreter = LiquidHandlerInterpreter()
         records = interpreter.interpret(
-            command="mix",
+            command="home",
             args=(),
             kwargs={},
             result=None,
@@ -120,8 +130,8 @@ class TestLiquidHandlerInterpreter:
         )
         assert len(records) == 1
         record = records[0]
-        assert record.operation == DeviceOperation.MIX
-        assert isinstance(record.details, GenericOperationDetails)
+        assert record.operation == DeviceOperation.COMMAND
+        assert record.details == GenericOperationDetails(command="home", args_repr="()")
 
     def test_pick_up_tips(self) -> None:
         interpreter = LiquidHandlerInterpreter()
@@ -141,35 +151,48 @@ class TestLiquidHandlerInterpreter:
         record = records[0]
         assert record.operation == DeviceOperation.PICK_UP_TIPS
 
-    def test_claimed_tip_positions_groups_by_rack(self) -> None:
+    def test_a_run_pick_claims_its_positions_grouped_by_rack(self) -> None:
         interpreter = LiquidHandlerInterpreter()
         tips = [
             _FakeTipSpot("tips_96", "A1"),
             _FakeTipSpot("tips_96", "A2"),
             _FakeTipSpot("tips_other", "B1"),
         ]
-        claimed = interpreter.claimed_tip_positions(
-            "pick_up_tips", (tips,), {},
-        )
-        assert claimed == {"tips_96": ["A1", "A2"], "tips_other": ["B1"]}
+        request = interpreter.request_of("pick_up_tips", (tips,), {})
+        assert tips_claimed_by(request, lambda name: None) == {"tips_96": ["A1", "A2"], "tips_other": ["B1"]}
 
-    def test_claimed_tip_positions_is_empty_for_non_pick_verbs(self) -> None:
+    def test_a_tip_drop_claims_nothing(self) -> None:
         interpreter = LiquidHandlerInterpreter()
         tips = [_FakeTipSpot("tips_96", "A1")]
-        assert interpreter.claimed_tip_positions("drop_tips", (tips,), {}) == {}
+        request = interpreter.request_of("drop_tips", (tips,), {})
+        assert tips_claimed_by(request, lambda name: None) == {}
 
-    def test_claimed_tip_positions_for_96_head_claims_the_whole_rack(self) -> None:
-        """A 96-channel pick has no positions arg to read -- it draws every
-        spot on the rack at once, so the pre-flight check must ask the rack
-        for its own layout or it silently skips 96-head picks entirely."""
+    def test_a_run_96_head_pick_claims_every_position_the_record_gives_the_rack(self) -> None:
+        """A 96-channel pick names no positions; it draws every spot of the rack, as the record lays it out."""
         interpreter = LiquidHandlerInterpreter()
-        rack = _FakeTipRack96("tips_96", ["A1", "A2", "B1"])
+        request = interpreter.request_of("pick_up_tips96", (_FakeTipRack96("tips_96", ["A1"]),), {})
+        rack = MagicMock()
+        rack.name = "tips_96"
+        rack.tip_spots.return_value = [_FakeTipSpot("tips_96", spot) for spot in ["A1", "A2", "B1"]]
+        recorded = TipRackInstance(rack, template_name="tips_96", labware_type="tip_rack")
+        assert tips_claimed_by(request, {"tips_96": recorded}.get) == {"tips_96": ["A1", "A2", "B1"]}
 
-        claimed = interpreter.claimed_tip_positions("pick_up_tips96", (rack,), {})
+    def test_a_pick_given_a_name_where_tip_spots_belong_says_so(self) -> None:
+        interpreter = LiquidHandlerInterpreter()
+        with pytest.raises(TypeError, match="tip_spots expected a list of tip spots, got str"):
+            interpreter.request_of("pick_up_tips", ("A1",), {})
+        with pytest.raises(TypeError, match="tip_spots expected a list of tip spots, got list"):
+            interpreter.request_of("pick_up_tips", (["A1"],), {})
 
-        assert claimed == {"tips_96": ["A1", "A2", "B1"]}
+    async def test_a_96_head_pick_on_a_rack_the_record_does_not_name_logs_that_the_check_did_not_run(
+        self, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        request = LiquidHandlerInterpreter().request_of("pick_up_tips96", (_FakeTipRack96("tips_96", ["A1"]),), {})
+        with caplog.at_level("WARNING", logger="orca"):
+            await refuse_a_pick_from_empty_spots(tips_claimed_by(request, lambda name: None), lambda name: None)
+        assert "the check did not run for it" in caplog.text
 
-    def test_claimed_tip_positions_for_96_head_rejects_untyped_labware(self) -> None:
+    def test_a_96_head_pick_refuses_a_name_where_a_rack_belongs(self) -> None:
         interpreter = LiquidHandlerInterpreter()
         with pytest.raises(TypeError):
-            interpreter.claimed_tip_positions("pick_up_tips96", ("not_a_rack",), {})
+            interpreter.request_of("pick_up_tips96", ("not_a_rack",), {})

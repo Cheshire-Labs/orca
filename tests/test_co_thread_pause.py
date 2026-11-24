@@ -41,6 +41,7 @@ async def test_co_labware_wait_returns_co_labware_when_peer_arrives() -> None:
         exit_event=exit_event,
         pause_event=pause_event,
         co_labware_event=co_event,
+        labware_lost_event=asyncio.Event(),
         timeout=1.0,
     )
     assert outcome == CoLabwareWaitOutcome.CO_LABWARE_PRESENT
@@ -59,6 +60,7 @@ async def test_co_labware_wait_returns_pause_when_pause_requested() -> None:
         exit_event=exit_event,
         pause_event=pause_event,
         co_labware_event=co_event,
+        labware_lost_event=asyncio.Event(),
         timeout=1.0,
     )
     assert outcome == CoLabwareWaitOutcome.PAUSE_REQUESTED
@@ -85,6 +87,7 @@ async def test_co_labware_wait_returns_pause_when_pause_set_during_wait() -> Non
             exit_event=exit_event,
             pause_event=pause_event,
             co_labware_event=co_event,
+            labware_lost_event=asyncio.Event(),
             timeout=1.0,
         )
         assert outcome == CoLabwareWaitOutcome.PAUSE_REQUESTED
@@ -105,6 +108,7 @@ async def test_co_labware_wait_returns_exit_when_method_aborts() -> None:
         exit_event=exit_event,
         pause_event=pause_event,
         co_labware_event=co_event,
+        labware_lost_event=asyncio.Event(),
         timeout=1.0,
     )
     assert outcome == CoLabwareWaitOutcome.METHOD_EXIT
@@ -121,6 +125,7 @@ async def test_co_labware_wait_returns_timeout_when_nothing_fires() -> None:
         exit_event=exit_event,
         pause_event=pause_event,
         co_labware_event=co_event,
+        labware_lost_event=asyncio.Event(),
         timeout=0.05,
     )
     assert outcome == CoLabwareWaitOutcome.TIMEOUT
@@ -146,6 +151,7 @@ async def test_co_labware_wait_exit_beats_co_labware_when_both_preset() -> None:
         exit_event=exit_event,
         pause_event=pause_event,
         co_labware_event=co_event,
+        labware_lost_event=asyncio.Event(),
         timeout=1.0,
     )
     assert outcome == CoLabwareWaitOutcome.METHOD_EXIT
@@ -174,6 +180,7 @@ async def test_co_labware_wait_pause_beats_co_labware_on_simultaneous_fire() -> 
             exit_event=exit_event,
             pause_event=pause_event,
             co_labware_event=co_event,
+            labware_lost_event=asyncio.Event(),
             timeout=1.0,
         )
         assert outcome == CoLabwareWaitOutcome.PAUSE_REQUESTED

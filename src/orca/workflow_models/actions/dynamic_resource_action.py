@@ -138,7 +138,7 @@ class UnresolvedLocationAction:
         if self._assigned is None:
             self._assigned_labware_manager.freeze()
             self._location_action.set_assigned_labware_manager(self._assigned_labware_manager)
-            self._assigned = AssignedLocationAction(self._location_action)
+            self._assigned = AssignedLocationAction(self._location_action, tag=self._tag)
         return self._assigned
     
 class DynamicResourceActionResolver:

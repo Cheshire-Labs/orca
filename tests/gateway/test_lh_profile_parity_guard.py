@@ -10,34 +10,21 @@ in several layers; this guard fails on drift, in the spirit of
 | protocol only  | {IProtocolRunner}                  | Agilent Bravo    |
 | plr + protocol | {ILiquidHandler, IProtocolRunner}  | Hamilton MLSTAR  |
 
-The guard is PROFILE-aware, not byte-identical: the live wire driver
-legitimately advertises a SUBSET of a composite sim (a protocol-only bravo's
-live driver advertises {IProtocolRunner} while its PURE_SIM slot is the
-composite SimLiquidHandlerWithProtocolDriver, a superset). What it pins:
+The guard is PROFILE-aware, not byte-identical. What it pins:
 
 - remote live driver classes advertise exactly their profile's interface set.
 - The orca facade interface bridge recognizes both ILiquidHandler and
   IProtocolRunner, so a driver advertising either surfaces its verbs.
-- The PURE_SIM sim slot the factory pairs per profile is a SUPERSET of
-  the live driver's advertised set, and supports run_protocol whenever the
-  profile does.
-- The orca-client driver classes that back each profile (read from
-  orca-client source) advertise a set consistent with the profile: a SUPERSET
-  of the live driver's advertised set.
+- The driver classes orca-client builds (cheshire-drivers' driver lookup)
+  advertise a set consistent with the profile: a SUPERSET of the live
+  driver's advertised set.
 - cheshire-drivers' reference driver classes carry the expected profile sets.
 """
 
-import importlib.util
-import os
-import sys
-from pathlib import Path
-from typing import Any
-
-import pytest
-
+from cheshire_drivers.device_setup import DeviceSetup
+from cheshire_drivers.driver_lookup import driver_interfaces
 from cheshire_drivers.plr_wrappers import PLRLiquidHandlerWrapper
 from cheshire_drivers.sims import (
-    SimLiquidHandlerDriver,
     SimLiquidHandlerWithProtocolDriver,
 )
 from cheshire_drivers.venus_driver import VenusProtocolDriver
@@ -94,31 +81,6 @@ def test_orca_facade_bridge_recognizes_lh_interfaces() -> None:
     assert "IProtocolRunner" in _INTERFACE_BRIDGE
 
 
-# -- PURE_SIM sim slot is a superset of the live driver --------------
-
-
-def test_sim_slot_supersets_live_per_profile() -> None:
-    """The factory pairs every LH profile's live driver with the composite sim.
-
-    The PURE_SIM sim slot is always `SimLiquidHandlerWithProtocolDriver` so
-    protocol-driven workflows run under PURE_SIM regardless of the live
-    profile. The sim legitimately advertises a SUPERSET of the live driver
-    (the operator surface + connect check read the LIVE driver, not the sim),
-    so a plr-only device whose sim can also run_protocol does not over-promise.
-    """
-    sim_interfaces = _interfaces(SimLiquidHandlerWithProtocolDriver)
-    assert _profile(SimLiquidHandlerWithProtocolDriver) == BOTH
-    assert callable(getattr(SimLiquidHandlerWithProtocolDriver, "run_protocol", None))
-    # The composite sim is a superset of every profile's live-driver set.
-    assert sim_interfaces >= _interfaces(RemoteLiquidHandlerDriver)
-    assert sim_interfaces >= _interfaces(RemoteProtocolOnlyLiquidHandlerDriver)
-    assert sim_interfaces >= _interfaces(RemoteLiquidHandlerWithProtocolDriver)
-    # The plr-only cheshire-drivers sim remains protocol-free (class invariant
-    # the composite is built to override); pin it so a future merge that adds
-    # run_protocol to the base sim surfaces here.
-    assert not hasattr(SimLiquidHandlerDriver, "run_protocol")
-
-
 # -- cheshire-drivers reference driver classes -----------------------------
 
 
@@ -127,78 +89,24 @@ def test_cheshire_reference_drivers_carry_profile_sets() -> None:
     assert _profile(PLRLiquidHandlerWrapper) == PLR_ONLY
     # protocol-only (Hamilton Venus, Agilent VWorks-style).
     assert _profile(VenusProtocolDriver) == PROTOCOL_ONLY
-    # composite plr+protocol sim (mlstar reference in PURE_SIM).
+    # composite plr+protocol sim (mlstar reference in CHECK_RUN).
     assert _profile(SimLiquidHandlerWithProtocolDriver) == BOTH
 
 
-# -- orca-client driver classes (read from orca-client source) -----------
-
-# orca-client is a separate repo. Look where the READMEs tell you to put it:
-# cloned next to this one. ORCA_CLIENT_REPO overrides for any other layout.
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-_CANDIDATE_ORCA_CLIENT_ROOTS: list[Path] = []
-_env_orca_client = os.environ.get("ORCA_CLIENT_REPO")
-if _env_orca_client:
-    _CANDIDATE_ORCA_CLIENT_ROOTS.append(Path(_env_orca_client))
-_CANDIDATE_ORCA_CLIENT_ROOTS.append(_REPO_ROOT.parent / "orca-client")
+# -- the drivers orca-client builds, read from cheshire-drivers' driver lookup ----
 
 
-def _find_orca_client_root() -> Path | None:
-    needle = "src/orca_client/devices/sim_driver_types.py"
-    for root in _CANDIDATE_ORCA_CLIENT_ROOTS:
-        if (root / needle).exists():
-            return root
-    return None
+def test_the_drivers_orca_client_builds_carry_each_profile() -> None:
+    """orca-client builds every driver through cheshire-drivers' driver lookup, so the server reads the same classes.
 
-
-def _load_orca_client_module(root: Path, dotted: str, rel: str) -> Any:
-    """Load an orca-client module by file path under a synthetic name.
-
-    Loaded under a synthetic name so it never shadows a real orca_client
-    install. cheshire_drivers (its only third-party dep here) is on the venv.
+    Each class must advertise at least what the matching remote live driver advertises.
     """
-    path = root / rel
-    spec = importlib.util.spec_from_file_location(dotted, path)
-    if spec is None or spec.loader is None:
-        pytest.fail(f"could not build import spec for {path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+    plr = DeviceSetup.model_validate({"client": "lab_pc", "real": {"type": "plr", "backend": "LiquidHandlerChatterboxBackend"}})
+    venus = DeviceSetup.model_validate({"client": "lab_pc", "real": {"type": "venus"}})
 
-
-def test_orca_client_lh_profiles_match_live_drivers() -> None:
-    """orca-client advertises the real registered driver class's interfaces
-    per instance. Verify the classes it builds for each LH profile advertise a
-    set that is a SUPERSET of the matching remote live driver's advertised set
-    (the live wire driver may advertise less than a composite sim).
-    """
-    root = _find_orca_client_root()
-    if root is None:
-        candidates = ", ".join(str(p) for p in _CANDIDATE_ORCA_CLIENT_ROOTS)
-        pytest.fail(
-            f"orca-client source not found in any of: {candidates}. The LH "
-            f"profile parity guard requires the orca-client sibling checkout: "
-            f"clone https://github.com/Cheshire-Labs/orca-client beside this "
-            f"repository, or set ORCA_CLIENT_REPO."
-        )
-
-    sim_types = _load_orca_client_module(
-        root,
-        "_oc_sim_driver_types_probe",
-        "src/orca_client/devices/sim_driver_types.py",
-    )
-    # lab_sim / sim liquid_handler -> plr-only sim, matching the plr-only
-    # live driver and the factory's plr-only default profile.
-    lab_sim_lh_cls = sim_types.SIM_DRIVER_CLS_BY_TYPE["liquid_handler"]
-    assert _interfaces(lab_sim_lh_cls) >= _interfaces(RemoteLiquidHandlerDriver)
-    assert _profile(lab_sim_lh_cls) == PLR_ONLY
-
-    # The PLR-backed + venus paths reuse the cheshire-drivers classes asserted
-    # above; orca-client's factory selects them per driver.type. Confirm the
-    # factory references them (source-level), so a future rename surfaces here.
-    factory_src = (
-        root / "src/orca_client/devices/factory.py"
-    ).read_text(encoding="utf-8")
-    assert "PLRLiquidHandlerWrapper" in factory_src
-    assert "VenusProtocolDriver" in factory_src
+    assert driver_interfaces("liquid_handler", plr) & PROFILE_NAMES == PLR_ONLY
+    assert driver_interfaces("liquid_handler", venus) & PROFILE_NAMES == PROTOCOL_ONLY
+    assert driver_interfaces("liquid_handler", plr) >= _interfaces(RemoteLiquidHandlerDriver)
+    assert driver_interfaces("liquid_handler", venus) >= _interfaces(RemoteProtocolOnlyLiquidHandlerDriver)
+    # A device with no real driver runs the sim, which can run protocols too.
+    assert driver_interfaces("liquid_handler", DeviceSetup()) >= _interfaces(RemoteLiquidHandlerWithProtocolDriver)

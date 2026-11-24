@@ -27,13 +27,12 @@ import pytest
 import orca.orca as orca
 from orca.events.event_bus import EventBus as CoreEventBus
 from orca.events.execution_context import WorkflowExecutionContext
-from orca.resource_models.labware_state import SLOT_CLOSED_SENTINEL, LabwareSlot
+from orca.workflow_models.labware_state import SLOT_CLOSED_SENTINEL, LabwareSlot
 from orca.runtime.incident_store import IncidentCategory, RecoveryAction
 from orca.workflow_models.method import ExecutingMethod, MethodInstance
 from orca.workflow_models.status_manager import StatusManager
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.submission import BatchMode
-from orca.runtime.system_runtime import SystemRuntime
+from orca.modes.run_modes import WorkflowRunMode
+from orca.workflow_models.submission import BatchMode
 from orca.sdk.events import EventBus
 from orca.sdk.workflow import MethodTemplate, ThreadTemplate, WorkflowTemplate
 from orca.system.system_interface import ISystem
@@ -51,6 +50,7 @@ from tests.closure_e2e_scaffold import (
     wait_for_boot,
 )
 from tests.test_helpers import wait_until
+from tests.memory_activity import memory_runtime
 
 
 class _Recorder:
@@ -187,14 +187,14 @@ async def test_dead_receiver_quarantines_then_resume_accepts_partial() -> None:
     pool_gate = _PoolGate()
     feeder_gate = _FeederGate()
     system, workflow, event_bus = await _build_system(recorder, pool_gate, feeder_gate)
-    runtime = SystemRuntime(system, event_bus=event_bus)
+    runtime = await memory_runtime(system, event_bus=event_bus)
     await runtime.start()
     try:
         sub = await runtime.submit(
             workflow,
             groups=[feeder_group("grp-1"), feeder_group("grp-2")],
             batch_mode=BatchMode.STANDALONE,
-            mode=WorkflowRunMode.PURE_SIM,
+            mode=WorkflowRunMode.CHECK_RUN,
         )
         eid = sub.execution_id
         await wait_for_boot(runtime, eid)
@@ -263,12 +263,12 @@ async def test_dead_receiver_quarantines_then_resume_accepts_partial() -> None:
         )
         assert pool_thread_count == 1, "fresh receiver minted into quarantine"
 
-        # Never-rebind extends to operator spawn-recovery.
+        # Never-rebind extends to a thread the operator spawns by hand.
         with pytest.raises(RuntimeError, match="orphaned backlog"):
             await runtime.spawn_thread_in_execution(eid, "pool")
         # JOIN_EXISTING refused while quarantined; checked once the feeders
         # have cleared feeder_pad so the occupancy guard cannot fire first.
-        from orca.runtime.runtime_interface import (
+        from orca.runtime.errors import (
             SubmissionBlockedByOrphanedBacklogError,
         )
         await wait_until(
@@ -284,7 +284,7 @@ async def test_dead_receiver_quarantines_then_resume_accepts_partial() -> None:
                 workflow,
                 groups=[feeder_group("grp-3")],
                 batch_mode=BatchMode.JOIN_EXISTING,
-                mode=WorkflowRunMode.PURE_SIM,
+                mode=WorkflowRunMode.CHECK_RUN,
             )
         # A bare resume_all_threads (the recoverable-timeout path) must NOT
         # dispose of the quarantine; only the execution-level resume does.
@@ -341,14 +341,14 @@ async def test_no_backlog_death_is_not_an_orphan() -> None:
     pool_gate = _PoolGate()
     feeder_gate = _FeederGate()
     system, workflow, event_bus = await _build_system(recorder, pool_gate, feeder_gate)
-    runtime = SystemRuntime(system, event_bus=event_bus)
+    runtime = await memory_runtime(system, event_bus=event_bus)
     await runtime.start()
     try:
         sub = await runtime.submit(
             workflow,
             groups=[feeder_group("grp-1"), feeder_group("grp-2")],
             batch_mode=BatchMode.STANDALONE,
-            mode=WorkflowRunMode.PURE_SIM,
+            mode=WorkflowRunMode.CHECK_RUN,
         )
         eid = sub.execution_id
         await wait_for_boot(runtime, eid)
@@ -412,14 +412,14 @@ async def test_in_flight_method_quarantines_and_executing_action_completes(
     system, workflow, event_bus = await _build_system(
         recorder, pool_gate, feeder_gate, b_body_gate=b_gate,
     )
-    runtime = SystemRuntime(system, event_bus=event_bus)
+    runtime = await memory_runtime(system, event_bus=event_bus)
     await runtime.start()
     try:
         sub = await runtime.submit(
             workflow,
             groups=[feeder_group("grp-1"), feeder_group("grp-2")],
             batch_mode=BatchMode.STANDALONE,
-            mode=WorkflowRunMode.PURE_SIM,
+            mode=WorkflowRunMode.CHECK_RUN,
         )
         eid = sub.execution_id
         await wait_for_boot(runtime, eid)
@@ -489,14 +489,14 @@ async def test_double_resume_is_idempotent() -> None:
     pool_gate = _PoolGate()
     feeder_gate = _FeederGate()
     system, workflow, event_bus = await _build_system(recorder, pool_gate, feeder_gate)
-    runtime = SystemRuntime(system, event_bus=event_bus)
+    runtime = await memory_runtime(system, event_bus=event_bus)
     await runtime.start()
     try:
         sub = await runtime.submit(
             workflow,
             groups=[feeder_group("grp-1"), feeder_group("grp-2")],
             batch_mode=BatchMode.STANDALONE,
-            mode=WorkflowRunMode.PURE_SIM,
+            mode=WorkflowRunMode.CHECK_RUN,
         )
         eid = sub.execution_id
         await wait_for_boot(runtime, eid)
@@ -569,20 +569,18 @@ class TestOrphanedBacklogWireShapes:
         ) == context
 
     def test_join_refusal_wire_code(self) -> None:
-        from orca.operations.submission import (
-            _raise_submission_blocked_by_orphaned_backlog,
-        )
-        from orca.runtime.runtime_interface import (
+        from orca.operations.submission import submit_refusal
+        from orca.runtime.errors import (
             SubmissionBlockedByOrphanedBacklogError,
         )
 
-        err = _raise_submission_blocked_by_orphaned_backlog(
+        err = submit_refusal(
             SubmissionBlockedByOrphanedBacklogError(
                 blocking_execution_id="e-1", blocking_workflow_name="wf",
             )
         )
-        assert err.wire_code == "submission_blocked_by_orphaned_backlog"
-        assert err.status_code == 409
+        assert err.surface_code() == "submission_blocked_by_orphaned_backlog"
+        assert err.http_status == 409
         assert err.extras is not None
         assert err.extras["blocking_execution_id"] == "e-1"
         assert err.extras["blocking_workflow_name"] == "wf"

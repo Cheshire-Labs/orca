@@ -1,9 +1,8 @@
-import asyncio
 import logging
+from collections.abc import Iterable
 from typing import ClassVar, List, Optional
 
 from cheshire_drivers.interfaces import ITransporterDriver
-from cheshire_drivers.sims import SimTransporterDriver
 from cheshire_drivers.labware_models import LabwareIdentity
 from cheshire_drivers.move_parameters import MoveParameterPatch
 from cheshire_drivers.teachpoints import Teachpoint
@@ -15,22 +14,21 @@ from cheshire_drivers.transporter_models import (
     ResetWorldRequest,
     UnseedPositionRequest,
 )
-from orca.resource_models.simulation_manager import SimulationManager
-from orca.resource_models.resources import IModeAware
+from orca.gateway.controller.exceptions import CommandNotSavedError
+from orca.modes.device_modes import DeviceMode, IDeviceModes
+from orca.resource_models.device_error import TeachpointNotFoundError
+from orca.resource_models.device_run_mode import DeviceRunMode
+from orca.resource_models.resources import EngineCommandLog, IModeAware, engine_time_limit
 from orca.resource_models.transporter_base import TransporterBase
 from orca.resource_models.labware import LabwareInstance
-from orca.resource_models.location import ILabwareLocationObserver, Location
-from orca.runtime.db import create_memory_engine
-from orca.runtime.device_factory_context import resolve_drivers
-from orca.runtime.interfaces import (
-    IGripProfileStore,
+from orca.resource_models.location import Location
+from orca.driver_management.device_factory_context import resolve_driver
+from orca.resource_models.store_interfaces import (
     IMoveDefaultsStore,
     ITeachpointStore,
 )
-from orca.runtime.move_parameters import ResolvedMoveParameters, resolve_move_parameters
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.sqlite_teachpoint_store import SqliteTeachpointStore
-from orca.runtime.teachpoint_service import TeachpointService
+from orca.resource_models.move_parameters import ResolvedMoveParameters, resolve_move_parameters
+from orca.modes.run_modes import BaseMode, WorkflowRunMode, mode_scope, out_of_run
 
 
 orca_logger = logging.getLogger("orca")
@@ -68,76 +66,36 @@ class Transporter(TransporterBase, IModeAware):
     """
 
     KIND: ClassVar[str] = "transporter"
-    # Driver the pure-sim path falls back to when no factory is bound. A
-    # subclass that means a different machine (see `Translator`) names its
-    # own, so the fallback cannot quietly hand it an arm.
-    DEFAULT_SIM_DRIVER: ClassVar[type[ITransporterDriver]] = SimTransporterDriver
 
-    def __init__(
-        self,
-        name: str,
-        teachpoint_store: Optional[ITeachpointStore] = None,
-        sim_override: WorkflowRunMode | None = None,
-    ) -> None:
+    def __init__(self, name: str) -> None:
         super().__init__(name)
-        live_driver, sim_driver_resolved = resolve_drivers(
-            self.KIND, name, self.DEFAULT_SIM_DRIVER,
-        )
-        # Per-device run-mode override declared at topology construction time.
-        # See `Device.sim_override` for the contract; the same field is read
-        # by `SystemTopologyRegistry` for both Devices and Transporters and
-        # threaded onto `SimulationManager` so dispatch routes through the
-        # v3.4 12-row resolver natively.
-        self._sim_override = sim_override
-        self._sim_manager = SimulationManager(
-            live_driver,
-            sim_driver_resolved,
-            sim_override=sim_override,
-        )
-        self._teachpoint_store: ITeachpointStore = (
-            teachpoint_store
-            or TeachpointService(SqliteTeachpointStore(create_memory_engine()))
-        )
+        self._driver = resolve_driver(self.KIND, name, ITransporterDriver)
+        self._run_mode = DeviceRunMode(name)
+        self._engine_commands = EngineCommandLog(name, self._engine_time_limit)
+        self._teachpoint_store: ITeachpointStore | None = None
         self._move_defaults_store: Optional[IMoveDefaultsStore] = None
         self._position_aliases: dict[str, str] = {}
 
     @property
     def driver(self) -> ITransporterDriver:
-        return self._sim_manager.driver
+        return self._driver
 
-    def mode_under(self, base: WorkflowRunMode) -> WorkflowRunMode:
-        """The run mode this transporter dispatches under given a base mode.
+    def _engine_time_limit(self, command: str) -> float | None:
+        return engine_time_limit(type(self._driver), command)
 
-        Same answer the driver swap uses; see `SimulationManager`.
-        """
-        return self._sim_manager.mode_under(base)
+    async def mode_under(self, base: WorkflowRunMode) -> WorkflowRunMode:
+        """The run mode this transporter dispatches under given a base mode; see `DeviceRunMode`."""
+        return await self._run_mode.mode_under(base)
 
-    def driver_under(self, base: WorkflowRunMode) -> ITransporterDriver:
-        """The driver a dispatch under `base` lands on; see `SimulationManager`."""
-        return self._sim_manager.driver_under(base)
-
-    @property
-    def effective_mode(self) -> WorkflowRunMode:
-        """The run mode this transporter is dispatching under right now.
-
-        Same answer the driver swap uses; see `SimulationManager`.
-        """
-        return self._sim_manager.effective_mode
-
-    @property
-    def live_driver(self) -> ITransporterDriver:
-        """Live driver, unconditionally - for metadata-only reads.
-
-        Mirror of `Device.live_driver`; see that contract.
-        """
-        return self._sim_manager.live_driver
+    async def effective_mode(self) -> WorkflowRunMode:
+        """The run mode this transporter is dispatching under right now; see `DeviceRunMode`."""
+        return await self._run_mode.effective_mode()
 
     @property
     def single_carriage(self) -> bool:
         """Sourced from the driver: the hardware's proxy owns the physical
-        truth (a translator driver declares it; a PF400/arm driver does not).
-        Metadata read via live_driver, mode-independent by contract."""
-        return self.live_driver.single_carriage
+        truth (a translator driver declares it; an arm driver does not)."""
+        return self.driver.single_carriage
 
     @property
     def is_initialized(self) -> bool:
@@ -167,64 +125,58 @@ class Transporter(TransporterBase, IModeAware):
         await self.driver.disconnect()
 
     @property
-    def sim_override(self) -> WorkflowRunMode | None:
-        """Per-device run-mode override declared at construction time.
+    def engine_commands(self) -> EngineCommandLog:
+        return self._engine_commands
 
-        Mirror of `Device.sim_override`. Surfaced on
-        `TopologyCard.topology_sim_override` via the topology registry.
-        """
-        return self._sim_override
+    def use_device_modes(self, modes: IDeviceModes, base_mode: BaseMode = out_of_run) -> None:
+        self._run_mode.use_device_modes(modes, base_mode)
+
+    async def setting(self) -> DeviceMode:
+        return await self._run_mode.setting()
 
     async def ensure_initialized(self) -> None:
-        """Bring this mover up if the run's bring-up walk did not.
+        """Before a pick, bring the arm up if this server session has not, or the orca-client session it brought up has ended.
 
-        The walk only covers what a workflow declares, so a thread body that
-        moves labware somewhere undeclared reaches a mover nobody brought up.
-        Doing it here rather than widening the walk keeps a run that never
-        touches the arm from driving it. PURE_SIM needs no bring-up, matching
-        the walk.
+        Sends connect when this session has not opened the link, then initialize, saved as one engine command.
         """
-        if self.effective_mode is WorkflowRunMode.PURE_SIM:
-            return
         if self.is_initialized:
             return
-        await self.initialize()
+        await self.engine_commands.run("initialize", self.initialize)
 
     async def _do_pick(self, location: Location) -> None:
-        assert location.labware is not None
+        labware = location.labware
         await self.ensure_initialized()
         teachpoint = await self._resolve_teachpoint(location.position_id)
         gateway_path = await self._resolve_gateway_path(teachpoint)
-        handling = await self.resolve_handling(
-            teachpoint, location.labware.labware_type,
-            location.labware.carry_override,
-            location.labware.size_z,
-        )
-        await self.driver.pick_at_coords(PickAtCoordsRequest(
+        handling = await self._handling_for(teachpoint, labware)
+        # No labware type with nothing on record: the driver grips with its own default.
+        request = PickAtCoordsRequest(
             teachpoint=teachpoint,
-            labware_type=location.labware.labware_type,
+            labware_type="" if labware is None else labware.labware_type,
             gateway_path=gateway_path,
-            expected_labware=_labware_identity(location.labware),
+            expected_labware=None if labware is None else _labware_identity(labware),
             handling=handling.parameters,
-        ))
+        )
+        await self.engine_commands.run("pick_at_coords", lambda: self.driver.pick_at_coords(request))
 
     async def _do_place(self, location: Location) -> None:
         held = self.labware
-        assert held is not None
         teachpoint = await self._resolve_teachpoint(location.position_id)
         gateway_path = await self._resolve_gateway_path(teachpoint)
-        handling = await self.resolve_handling(
-            teachpoint, held.labware_type,
-            held.carry_override,
-            held.size_z,
-        )
-        await self.driver.place_at_coords(PlaceAtCoordsRequest(
+        handling = await self._handling_for(teachpoint, held)
+        request = PlaceAtCoordsRequest(
             teachpoint=teachpoint,
-            labware_type=held.labware_type,
+            labware_type="" if held is None else held.labware_type,
             gateway_path=gateway_path,
-            expected_labware=_labware_identity(held),
+            expected_labware=None if held is None else _labware_identity(held),
             handling=handling.parameters,
-        ))
+        )
+        await self.engine_commands.run("place_at_coords", lambda: self.driver.place_at_coords(request))
+
+    async def _handling_for(self, teachpoint: Teachpoint, labware: LabwareInstance | None) -> ResolvedMoveParameters:
+        if labware is None:
+            return await self.resolve_handling(teachpoint)
+        return await self.resolve_handling(teachpoint, labware.labware_type, labware.carry_override, labware.size_z)
 
     def bind_move_defaults(self, store: IMoveDefaultsStore) -> None:
         """Inject the deployment's editable defaults for this transporter.
@@ -296,9 +248,9 @@ class Transporter(TransporterBase, IModeAware):
             return profile
         if profile is None:
             return MoveParameterPatch(resource_height=height)
-        fields = {"resource_height": height}
-        fields.update(profile.model_dump(exclude_none=True))
-        return MoveParameterPatch(**fields)
+        return MoveParameterPatch.model_validate(
+            {"resource_height": height, **profile.model_dump(exclude_none=True)},
+        )
 
 
     async def move_defaults(self) -> MoveParameterPatch:
@@ -318,25 +270,48 @@ class Transporter(TransporterBase, IModeAware):
         effective driver (real-hardware drivers no-op); also drops this
         transporter's own gripper-held identity.
         """
-        await self.driver.reset_world(ResetWorldRequest())
+        await self.engine_commands.keep_world("reset_world", lambda: self.driver.reset_world(ResetWorldRequest()))
         await super().reset_labware_state()
 
-    async def reset_labware_state_everywhere(self) -> None:
-        """The same clear against both driver worlds. Driven by clear-all.
+    async def rebuild_world_from(self, locations: Iterable[Location]) -> bool:
+        """Clear the world this mover dispatches in, then seed each position it watches that the ledger says holds labware.
 
-        An operator's clear-all resolves to LIVE while the seeds a sim run left
-        are in the sim driver's world, and the panic button exists to leave
-        neither behind. A driver that will not answer is logged and skipped, so
-        one dead arm cannot stop the others being cleared.
+        A mover holding a plate is left alone and False is returned: its world is mid-move, and a clear would drop
+        the plate it carries. It is rebuilt at a later command, once its jaws are empty.
         """
-        for driver in self._sim_manager.all_drivers:
-            try:
-                await driver.reset_world(ResetWorldRequest())
-            except Exception as exc:
-                orca_logger.warning(
-                    "%s: a world would not reset (%s); it may still hold seeds.",
-                    self.name, exc,
-                )
+        if self.labware is not None:
+            return False
+        await self.engine_commands.keep_world("reset_world", lambda: self.driver.reset_world(ResetWorldRequest()))
+        for location in locations:
+            labware = location.labware
+            if labware is not None and location.is_observed_by(self):
+                await self.notify_labware_location_change("rebuilt", location, labware)
+        return True
+
+    async def reset_labware_state_everywhere(self) -> None:
+        """The same clear in every world this transporter dispatches to: its simulator's and its real driver's.
+
+        An operator's clear-all resolves to LIVE while the seeds a sim run left are in the simulator's
+        world, and the panic button exists to leave neither behind. A world that will not answer is
+        logged and skipped, so one dead arm cannot stop the others being cleared.
+        """
+        reached: set[WorkflowRunMode] = set()
+        for base in (WorkflowRunMode.SIM, WorkflowRunMode.LIVE):
+            world = await self.mode_under(base)
+            if world in reached:
+                continue
+            with mode_scope(base):
+                try:
+                    await self.engine_commands.keep_world("reset_world", lambda: self.driver.reset_world(ResetWorldRequest()))
+                except CommandNotSavedError:
+                    raise
+                except Exception as exc:
+                    orca_logger.warning(
+                        "%s: its %s world would not reset (%s); it may still hold seeds.",
+                        self.name, world.value, exc,
+                    )
+                    continue
+            reached.add(world)
         await super().reset_labware_state()
 
     async def reset_labware_state(self) -> None:
@@ -363,14 +338,18 @@ class Transporter(TransporterBase, IModeAware):
         for the wire-source-of-truth contract. Raises if the store has no
         Teachpoint registered for `position_id` on this transporter.
         """
-        tp = await self._teachpoint_store.resolve(position_id)
+        tp = await self.teachpoint_store.resolve(position_id)
         if tp is None and position_id in self._position_aliases:
-            tp = await self._teachpoint_store.resolve(self._position_aliases[position_id])
+            tp = await self.teachpoint_store.resolve(self._position_aliases[position_id])
         if tp is None:
-            raise ValueError(
-                f"{self}: no teachpoint registered for position_id {position_id!r} on this transporter"
+            raise TeachpointNotFoundError(
+                f"No teachpoint registered for position_id {position_id!r} on device {self._name!r}",
+                available_teachpoints=[taught.position_id for taught in await self.teachpoint_store.list()],
             )
         return tp
+
+    async def refuse_unless_taught(self, position_id: str) -> None:
+        await self._resolve_teachpoint(position_id)
 
     async def _resolve_gateway_path(self, tp: Teachpoint) -> List[Teachpoint]:
         """Walk the gateway chain outermost-first.
@@ -392,7 +371,7 @@ class Transporter(TransporterBase, IModeAware):
                     f"{self}: circular gateway reference detected at {current!r}"
                 )
             visited.add(current)
-            gateway_tp = await self._teachpoint_store.resolve(current)
+            gateway_tp = await self.teachpoint_store.resolve(current)
             if gateway_tp is None:
                 raise ValueError(
                     f"{self}: gateway teachpoint {current!r} is not registered"
@@ -409,11 +388,20 @@ class Transporter(TransporterBase, IModeAware):
         returns the System-graph-builder view directly from the store; the
         driver does not maintain an independent working set.
         """
-        return await self._teachpoint_store.list()
+        return await self.teachpoint_store.list()
+
+    def bind_teachpoints(self, store: ITeachpointStore) -> None:
+        """The build attaches `teachpoints/<name>.json`; a topology never passes one."""
+        self._teachpoint_store = store
 
     @property
     def teachpoint_store(self) -> ITeachpointStore:
         """The registry that backs this transporter's named positions."""
+        if self._teachpoint_store is None:
+            raise RuntimeError(
+                f"transporter {self.name!r} has no teachpoints attached; "
+                "build_system attaches teachpoints/<name>.json",
+            )
         return self._teachpoint_store
 
     async def notify_labware_location_change(
@@ -443,21 +431,13 @@ class Transporter(TransporterBase, IModeAware):
         """
         identity = _labware_identity(labware)
         if location.accessible_labware is labware:
-            await self.driver.ensure_seeded(
-                EnsureSeededRequest(
-                    position_id=self._taught_name(location.position_id),
-                    labware=identity,
-                )
-            )
+            request = EnsureSeededRequest(position_id=self._taught_name(location.position_id), labware=identity)
+            await self.engine_commands.keep_world("ensure_seeded", lambda: self.driver.ensure_seeded(request))
         else:
             # Not at the approach point (picked away OR loaded inside the
             # device): the taught position no longer presents this plate.
-            await self.driver.unseed_position(
-                UnseedPositionRequest(
-                    position_id=self._taught_name(location.position_id),
-                    labware=identity,
-                )
-            )
+            removal = UnseedPositionRequest(position_id=self._taught_name(location.position_id), labware=identity)
+            await self.engine_commands.keep_world("unseed_position", lambda: self.driver.unseed_position(removal))
 
     def __str__(self) -> str:
         return f"Transporter: {self._name}"

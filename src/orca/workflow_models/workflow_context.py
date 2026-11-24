@@ -6,7 +6,7 @@ registrations, event handlers, and variables.
 
 from orca.events.event_bus_interface import EventHandlerType
 from orca.resource_models.capacity import CapacityPolicy
-from orca.resource_models.labware_state import IOverflowStrategy
+from orca.workflow_models.labware_state import IOverflowStrategy
 from orca.variables.variable_definition import VariableDefinition
 from orca.workflow_models.thread_template import ThreadTemplate
 from orca.workflow_models.workflow_templates import WorkflowTemplate

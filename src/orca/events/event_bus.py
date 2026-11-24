@@ -2,7 +2,7 @@ import logging
 from typing import Dict, List
 
 from orca.events.event_bus_interface import EventHandlerType, IEventBus
-from orca.events.event_handlers import SystemBoundEventHandler
+from orca.events.event_handlers import OneExecutionHandler, SystemBoundEventHandler
 from orca.events.execution_context import ExecutionContext
 from orca.system.system_interface import ISystem
 
@@ -35,6 +35,13 @@ class EventBus(IEventBus):
             ]
             if not self._subscribers[event_name]:
                 del self._subscribers[event_name]
+
+    def subscribe_to_one_execution(
+        self, event_name: str, execution_id: str, handler: EventHandlerType,
+    ) -> EventHandlerType:
+        one_execution = OneExecutionHandler(execution_id, handler)
+        self.subscribe(event_name, one_execution)
+        return one_execution
 
     def subscribe_all(self, handler: EventHandlerType) -> None:
         self._global_subscribers.append(handler)
@@ -89,6 +96,13 @@ class SystemBoundEventBus(IEventBus):
 
     def unsubscribe(self, event_name: str, handler: EventHandlerType) -> None:
         self._event_bus.unsubscribe(event_name, handler)
+
+    def subscribe_to_one_execution(
+        self, event_name: str, execution_id: str, handler: EventHandlerType,
+    ) -> EventHandlerType:
+        one_execution = OneExecutionHandler(execution_id, handler)
+        self.subscribe(event_name, one_execution)
+        return one_execution
 
     def subscribe_all(self, handler: EventHandlerType) -> None:
         self._event_bus.subscribe_all(handler)

@@ -30,7 +30,7 @@ from orca.system.reservation_manager.deadlock_manager import (
 from orca.system.reservation_manager.errors import UnresolvableDeadlockContext
 from orca.system.reservation_manager.interfaces import IReservationCollection
 from orca.system.reservation_manager.location_reservation import LocationReservation
-from orca.system.thread_registry_interface import IThreadRegistry
+from orca.system.reservation_manager.thread_registry_interface import IThreadRegistry
 from orca.workflow_models.labware_threads.labware_thread import LabwareThreadInstance
 
 
@@ -129,6 +129,7 @@ def _site(node_id: str, mutex_id: str) -> DeckSiteLocation:
         owner=_Owner(mutex_id),
         resource=DeckSite(node_id),
         mutex_position_id=mutex_id,
+        site_name=node_id,
     )
 
 
@@ -216,7 +217,7 @@ def test_a_self_held_mutex_still_falls_through_to_a_resident_plate_blocker() -> 
         _Collection("thread-a", [LocationReservation(site)]),
         _Collection("thread-b", [LocationReservation(Location("pad_1"))]),
     ]
-    labwares_in_queue = detector._get_labware_to_thread_map(queue)
+    labwares_in_queue = detector._labware_to_thread([collection.thread_id for collection in queue])
 
     assert detector._blocker_thread_ids(
         LocationReservation(site), labwares_in_queue, "thread-a"

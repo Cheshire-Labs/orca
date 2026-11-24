@@ -8,11 +8,10 @@ Single source of truth: every TrackingRecord append goes through the store;
 ``OpsHistory`` is a thin per-execution writer that calls
 ``store.append(execution_id, record)``. Reads happen through the facade
 (``runtime.ops_history.list(execution_id)`` / ``search(query)``) or directly
-via the store on the System (back-compat for ledger projections).
+via the store on the System (ledger projections do this).
 
 Cross-execution search is supported through OpsHistorySearchQuery (Pydantic).
-The source-available default appends JSONL files; a hosted deployment injects its own
-indexed store behind the same Protocol.
+Each server keeps the record in its activity database, behind this Protocol.
 """
 
 from typing import List, Optional, Protocol, Tuple
@@ -47,7 +46,7 @@ class OpsHistorySearchQuery(BaseModel):
 
     Empty query (all fields None) returns every record paired with its
     bucket's execution_id. Multiple non-None fields are AND-combined. This
-    model is the wire shape REST/MCP send.
+    model is the wire shape REST sends.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -88,9 +87,7 @@ class IOpsHistoryStore(Protocol):
     matches ordered by ascending ``record.timestamp`` across all execution
     buckets (ties retain a stable, implementation-defined order). Every impl
     must honor that ordering so consumers get one chronological merge no
-    matter which backing store answered. The source-available default appends JSONL files;
-    a hosted deployment injects its own indexed archive that survives runtime
-    restarts.
+    matter which backing store answered.
     """
 
     async def append(self, execution_id: str, record: TrackingRecord) -> None: ...

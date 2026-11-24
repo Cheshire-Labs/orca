@@ -8,7 +8,7 @@ from orca.resource_models.transporter_base import TransporterBase
 
 
 def _driver_site(position_id: str) -> str:
-    """'flex/C2-slot' -> 'C2-slot': the driver names sites without the owner."""
+    """'lh1/site_2' -> 'site_2': the driver names sites without the owner."""
     return position_id.split("/", 1)[1] if "/" in position_id else position_id
 
 
@@ -47,11 +47,7 @@ class DeckGripperTransporter(TransporterBase):
     def under_external_control(self) -> bool:
         """The paired device's interlock covers its own gripper, and the
         gripper can also be held in its own right."""
-        return (
-            self._device.under_external_control
-            or self._under_external_control
-            or self._external_control_hold is not None
-        )
+        return self._device.under_external_control or super().under_external_control
 
     async def _do_pick(self, location: Location) -> None:
         """Nothing to actuate: the base notes the source and ``_do_place``
@@ -61,30 +57,26 @@ class DeckGripperTransporter(TransporterBase):
     async def _do_place(self, location: Location) -> None:
         held = self.labware
         picked_from = self.picked_from_position_id
-        if held is None or picked_from is None:
-            raise ValueError(
-                f"{self} cannot place: holding {held}, picked from "
-                f"{picked_from!r}. Both are required to issue move_plate."
-            )
-        grip = await self._grip_distance_from_top(held.labware_type)
-        # Same lock the action dispatcher and reconcile hold, so the gripper
-        # cannot drive the device's driver concurrently with either.
-        async with self._device.lock.held_for("move_plate"):
-            await self._device.driver.move_plate(MovePlateRequest(
-                plate=held.name,
-                from_position=_driver_site(picked_from),
-                to_position=_driver_site(location.position_id),
-                grip_distance_from_top=grip,
-            ))
+        if picked_from is None:
+            raise ValueError(f"{self} cannot place: nothing says where it picked from, which move_plate needs.")
+        # No plate on record: the driver moves its default labware, its default grip.
+        grip = None if held is None else await self._grip_distance_from_top(held.labware_type)
+        # The reach-in lease on the target site already holds the device's lock.
+        request = MovePlateRequest(
+            plate=None if held is None else held.name,
+            from_position=_driver_site(picked_from),
+            to_position=_driver_site(location.position_id),
+            grip_distance_from_top=grip,
+        )
+        await self._device.engine_commands.run(
+            "move_plate", lambda: self._device.driver.move_plate(request), carries_out=(self.name, "place_at_coords"),
+        )
 
     async def _grip_distance_from_top(self, labware_type: str) -> float | None:
         """How far below its top this labware is gripped, if anyone has said.
 
-        None leaves the height to the robot's own labware definition, and a
-        definition that states none leaves an Opentrons Flex gripping at the
-        labware's mid-height. That is about 5 mm too low on a standard
-        flat-bottom microplate, so a plate that is not held where it should be
-        wants a grip profile, not a change here.
+        None leaves the height to the driver. A plate the driver does not hold
+        where it should wants a grip profile, not a change here.
         """
         profile = await self.grip_profile(labware_type)
         return profile.grip_distance_from_top if profile is not None else None

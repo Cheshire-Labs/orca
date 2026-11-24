@@ -1,0 +1,123 @@
+{
+  "liquid_handler/carrier-15-1": {
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 420.0,
+      "y": 200.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "liquid_handler/carrier-7-2": {
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 400.0,
+      "y": 200.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "pad_1": {
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 200.0,
+      "y": 200.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "pad_2": {
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 600.0,
+      "y": 200.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "reader": {
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 1100.0,
+      "y": 200.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "sealer": {
+    "access": "sealer_horizontal",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 1300.0,
+      "y": 200.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "shaker_1": {
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 800.0,
+      "y": 200.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "shaker_2": {
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 900.0,
+      "y": 200.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "stacker": {
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 0.0,
+      "y": 200.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "waste": {
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 1500.0,
+      "y": 200.0,
+      "yaw": 0.0,
+      "z": 200.0
+    },
+    "orientation": "right"
+  }
+}

@@ -13,6 +13,8 @@ then goes the way every other placement goes, through the chokepoint that writes
 the slot, the ledger and the driver deck together.
 """
 
+from orca.sdk.build import build_system_over
+from orca.events.event_bus import EventBus
 import pytest
 
 import orca.orca as orca
@@ -20,7 +22,6 @@ from cheshire_drivers import CartesianCoordinates as C
 from cheshire_drivers import DeckLayoutConfig, DeckResourceConfig, Teachpoint
 from cheshire_drivers import RecordingLiquidHandlerDriver
 from cheshire_drivers.liquid_handler_models import GetDeckStateRequest
-from cheshire_drivers.plr import ChatterboxLiquidHandlerDriver
 
 from orca.devices.devices import LiquidHandler, Storage
 from orca.resource_models.adhoc_labware import (
@@ -30,17 +31,26 @@ from orca.resource_models.adhoc_labware import (
 )
 from orca.resource_models.plate_pad import PlatePad
 from orca.resource_models.transporter import Transporter
-from orca.runtime.device_factory_context import use_device_factory
-from orca.runtime.labware_catalog_protocol import LabwareNotFound
+from orca.resource_models.labware_catalog_protocol import LabwareNotFound
 from orca.resource_models.labware import LabwareInstance, instance_name_for
+from orca.runtime.labware_service import LabwareService
 from orca.runtime.labware_store import InMemoryLabwareStore
-from orca.runtime.store_factory import InMemoryRuntimeStoreFactory
-from orca.runtime.system_runtime import SystemRuntime
 from orca.sdk.build import Topology
 from orca.sdk.labware import PlateTemplate
 from orca.workflow_models.action_context import ActionContext
 from orca.workflow_models.method_context import MethodContext
 from orca.workflow_models.thread_context import ThreadContext
+from tests.setup_package import package_stores, write_deck_layouts, write_teachpoints
+from tests.setup_package import with_teachpoints, with_deck_layouts
+from tests.memory_activity import memory_ops_store, memory_runtime
+from tests.memory_activity import memory_unsaved_positions
+from tests.real_device_path import real_device_path, the_real_device_path
+from tests.recording_handler import RecordingHandler
+from orca.resource_models.labware_service_interface import ILabwareService
+from tests.memory_activity import memory_labware_service
+
+# The system build must reach every position these runs touch.
+pytestmark = pytest.mark.positions_bound_by_the_build
 
 # The labware from the bench report. Nothing in this deployment declares a
 # trough template, which is the whole point.
@@ -60,68 +70,53 @@ DECK_CONFIG = DeckLayoutConfig(
 )
 
 
-async def _build(recorder: RecordingLiquidHandlerDriver, *, wf_name: str):
+async def _build(recorder: RecordingLiquidHandlerDriver, *, wf_name: str, labware_service: ILabwareService | None = None):
     """A one-liquid-handler deployment declaring a plate template and nothing else."""
-    stores = InMemoryRuntimeStoreFactory()
+    stores = package_stores()
     sample_plate = PlateTemplate(
         "sample_plate", labware_type="Cor_Falcon_96_wellplate_340ul_Fb_Black",
     )
 
-    class _LhDeckFactory:
-        def __init__(self, lh: RecordingLiquidHandlerDriver) -> None:
-            self._lh = lh
-            from orca.runtime.device_factory import SimDeviceFactory
-            self._fallback = SimDeviceFactory()
+    the_real_device_path().simulate_with("lh", recorder)
+    lh = with_deck_layouts(LiquidHandler(
+        "lh",
+        deck_layout="default",
+    ), write_deck_layouts(stores, "lh", {"default": DECK_CONFIG}))
+    stacker = Storage("stacker")
+    pad = PlatePad("pad")
+    arm = with_teachpoints(Transporter(
+        "arm",
+    ), write_teachpoints(stores, "arm", [
+            Teachpoint("stacker", C(0, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("pad", C(200, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("lh/carrier-7-2", C(400, 200, 300, 0, 90, 180), orientation="right"),
+        ]))
 
-        def build_drivers(
-            self, device_type: str, name: str, *, deck_modeling: bool = False,
-        ):
-            if device_type == "liquid_handler":
-                return self._lh, self._lh
-            return self._fallback.build_drivers(
-                device_type, name, deck_modeling=deck_modeling,
-            )
+    @orca.action(device=lh, inputs=[sample_plate])
+    async def touch_plate(ctx: ActionContext) -> None:
+        ctx.labware("sample_plate")
 
-    with use_device_factory(_LhDeckFactory(recorder)):
-        lh = LiquidHandler(
-            "lh",
-            deck_layout_store=stores.deck_layouts("lh", seed={"default": DECK_CONFIG}),
-            deck_layout="default",
-        )
-        stacker = Storage("stacker")
-        pad = PlatePad("pad")
-        arm = Transporter(
-            "arm",
-            teachpoint_store=stores.teachpoints("arm", seed=[
-                Teachpoint("stacker", C(0, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("pad", C(200, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("lh/carrier-7-2", C(400, 200, 300, 0, 90, 180), orientation="right"),
-            ]),
-        )
+    @orca.method
+    async def touch_method(ctx: MethodContext):
+        yield touch_plate
 
-        @orca.action(device=lh, inputs=[sample_plate])
-        async def touch_plate(ctx: ActionContext) -> None:
-            ctx.labware("sample_plate")
+    @orca.thread(labware=sample_plate, start="stacker", end="pad")
+    async def plate_journey(ctx: ThreadContext):
+        yield touch_method
 
-        @orca.method
-        async def touch_method(ctx: MethodContext):
-            yield touch_plate
+    @orca.workflow(name=wf_name)
+    def workflow(wf):
+        wf.start(plate_journey)
 
-        @orca.thread(labware=sample_plate, start="stacker", end="pad")
-        async def plate_journey(ctx: ThreadContext):
-            yield touch_method
-
-        @orca.workflow(name=wf_name)
-        def workflow(wf):
-            wf.start(plate_journey)
-
-        topology = Topology(
-            locations={"stacker": stacker, "pad": pad, "lh": lh},
-            transporters=[arm],
-        )
-        build = await orca.build_system(
-            name="Ad-hoc Labware", workflow=workflow, topology=topology, stores=stores,
-        )
+    topology = Topology(
+        locations={"stacker": stacker, "pad": pad, "lh": lh},
+        transporters=[arm],
+    )
+    build = await build_system_over(
+        name="Ad-hoc Labware", workflow=workflow, topology=topology, stores=stores, event_bus=EventBus(), ops_history_store=memory_ops_store(),
+        labware_service=labware_service or memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
+    )
     return build
 
 
@@ -156,16 +151,16 @@ class RehydratingLabwareStore(InMemoryLabwareStore):
 
 
 async def _runtime(recorder: RecordingLiquidHandlerDriver, *, wf_name: str, store):
-    build = await _build(recorder, wf_name=wf_name)
-    runtime = SystemRuntime(
-        build.system, event_bus=build.event_bus, labware_store=store,
+    build = await _build(recorder, wf_name=wf_name, labware_service=LabwareService(store))
+    runtime = await memory_runtime(
+        build.system, event_bus=build.event_bus,
     )
     await runtime.start()
     return runtime, build
 
 
 def _recorder() -> RecordingLiquidHandlerDriver:
-    return RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    return RecordingHandler()
 
 
 async def _deck_names(recorder: RecordingLiquidHandlerDriver) -> set[str]:
@@ -202,7 +197,7 @@ async def test_the_derived_template_comes_back_after_a_rebuild() -> None:
     """The assertion that rules out injecting a template into the live system only.
 
     A template that lives only in the running System is gone on the next
-    rebuild. Its labware then restores identity-only, the deck projection has no
+    rebuild. Its labware then restores identity-only, the deck rebuild has no
     catalog_ref to use and skips it, and the trough the ledger still remembers
     stops existing for the driver. Derived from the labware's own persisted
     labware_type, it comes back.
@@ -214,24 +209,27 @@ async def test_the_derived_template_comes_back_after_a_rebuild() -> None:
     )
     await runtime.shutdown(confirm=True)
 
-    # A rebuild: a brand-new System and a driver whose deck starts empty, over
-    # the store the first runtime wrote.
-    rebuilt_recorder = _recorder()
-    assert await _deck_names(rebuilt_recorder) == set()
-    _rebuilt, rebuilt_build = await _runtime(
-        rebuilt_recorder, wf_name="adhoc_rebuild_b", store=store,
-    )
+    # A rebuild: a brand-new System, and an orca-client whose driver deck starts
+    # empty, over the store the first runtime wrote.
+    async with real_device_path():
+        rebuilt_recorder = _recorder()
+        assert await _deck_names(rebuilt_recorder) == set()
+        _rebuilt, rebuilt_build = await _runtime(
+            rebuilt_recorder, wf_name="adhoc_rebuild_b", store=store,
+        )
 
-    resident = rebuilt_build.system.system_map.get_location(TROUGH_SITE).labware
-    assert resident is not None, "the trough did not survive the rebuild"
-    assert resident.id == snap.id, "the rebuild minted a different trough"
-    assert resident.has_plr_backing, (
-        "the trough came back identity-only, so its declared layout is "
-        "unreadable and the deck cannot model it"
-    )
-    assert resident.name in await _deck_names(rebuilt_recorder), (
-        "the trough is back in the ledger but not on the driver deck"
-    )
+        resident = rebuilt_build.system.system_map.get_location(TROUGH_SITE).labware
+        assert resident is not None, "the trough did not survive the rebuild"
+        assert resident.id == snap.id, "the rebuild minted a different trough"
+        assert resident.has_plr_backing, (
+            "the trough came back identity-only, so its declared layout is "
+            "unreadable and the deck cannot model it"
+        )
+        # A restart does not reach the device; the deck is rebuilt from the ledger before the next command.
+        await _rebuilt.system.device_worlds.bring_up_to_date(TROUGH_SITE.split("/")[0])
+        assert resident.name in await _deck_names(rebuilt_recorder), (
+            "the trough is back in the ledger but not on the driver deck"
+        )
 
 
 @pytest.mark.asyncio

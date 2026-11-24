@@ -4,15 +4,15 @@
 that device bridges have advertised over their open WebSocket. Reads are
 authoritative for "is this device reachable right now"; there is no
 cold storage. The connection state is purely in-memory, and on a fresh
-process the tracker repopulates itself from the next ``ConnectMessage``.
+process the tracker repopulates itself from the next ``AssignmentResult``.
 
-The unified ``DeviceRegistry`` reads from this tracker via
+Orca's ``IDeviceRegistry`` reads from this tracker via
 :class:`orca.gateway.connection_source.DeviceConnectionSource` to
 derive the "connection card" half of its two-card view. This tracker
 is intentionally NOT the registry of devices that workflows reference.
 
 Public read methods (:meth:`get_device`, :meth:`list_devices`) return typed
-:class:`DeviceSnapshot` instances rather than ``dict[str, Any]``; ``client_id``
+:class:`DeviceSnapshot` instances; ``client_id``
 is internal-only and tracked alongside the snapshot in
 :class:`_RegisteredDeviceState` (an internal-only state record) so it can
 never leak through the public read path. Callers needing the owning client
@@ -28,9 +28,9 @@ by a name-keyed dict join with no translation layer.
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Protocol
 
-from cheshire_drivers.gateway_protocol import DeviceConnectInfo, DeviceStatusInfo
+from cheshire_drivers.gateway_protocol import HEARTBEAT_INTERVAL_SECONDS, DeviceConnectInfo, DeviceStatusInfo
 from orca.gateway.registry.snapshot import (
     DeviceSnapshot,
     _ClientState,
@@ -39,27 +39,56 @@ from orca.gateway.registry.snapshot import (
 
 logger = logging.getLogger(__name__)
 
-# One number for "is this client still here": the roster owns it, and
-# `connection_source` reports reachability off the same value.
-HEARTBEAT_TOLERANCE_SECONDS: float = 30.0
+# How long a client may go unheard before it is gone: three heartbeat intervals, so one late or lost
+# heartbeat costs nothing. The registry's "offline", the router's takeover and the stale-socket sweep all use it.
+HEARTBEAT_TOLERANCE_SECONDS: float = 3 * HEARTBEAT_INTERVAL_SECONDS
 
 
-class DeviceNameConflictError(Exception):
-    """A client advertised a device another live client already holds.
+class IDeviceConnectionTracker(Protocol):
+    """The roster of devices the connected device bridges advertised."""
 
-    One instrument, one connection. Two device bridges claiming the same name
-    is a misconfiguration, not a handover: both sockets stay open, both believe
-    they own the device, and commands route to whichever registered last. The
-    handshake refuses the newcomer rather than letting that happen quietly.
-    """
+    async def register_client(
+        self,
+        client_id: str,
+        site: str,
+        lab: str,
+        workcell: Optional[str],
+        devices: List[DeviceConnectInfo],
+    ) -> None: ...
 
-    def __init__(self, conflicts: Dict[str, str]) -> None:
-        self.conflicts = conflicts
-        detail = ", ".join(
-            f"{name} (held by {owner})" for name, owner in sorted(conflicts.items())
-        )
-        super().__init__(f"device already claimed by another live client: {detail}")
+    async def unregister_client(self, client_id: str) -> None: ...
 
+    async def record_build_error(self, client_id: str, name: str, error: str) -> None: ...
+
+    def build_error(self, name: str) -> Optional[str]: ...
+
+    async def forget_devices(self, client_id: str, names: List[str]) -> List[str]: ...
+
+    async def get_device(self, name: str) -> Optional[DeviceSnapshot]: ...
+
+    async def get_client_for_device(self, name: str) -> Optional[str]: ...
+
+    async def get_device_with_client(
+        self, name: str,
+    ) -> Optional[tuple[DeviceSnapshot, str]]: ...
+
+    async def list_devices_with_clients(self) -> List[tuple[DeviceSnapshot, str]]: ...
+
+    async def list_devices(
+        self,
+        device_type: Optional[str] = None,
+        site: Optional[str] = None,
+        lab: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> List[DeviceSnapshot]: ...
+
+    async def apply_agent_report(self, client_id: str, name: str, reported: DeviceStatusInfo) -> bool: ...
+
+    def peek_snapshot(self, name: str) -> Optional[DeviceSnapshot]: ...
+
+    async def update_heartbeat(self, client_id: str) -> None: ...
+
+    async def is_device_online(self, name: str) -> bool: ...
 
 
 class DeviceConnectionTracker:
@@ -74,13 +103,14 @@ class DeviceConnectionTracker:
     - Hot state (authoritative): In-memory dicts, fed by WebSocket events,
       consulted directly for command routing.
     - No cold storage: connection state is purely in-memory, repopulated
-      from the next ``ConnectMessage`` on reconnect. orca-core has no
+      from the next ``AssignmentResult`` on reconnect. orca-core has no
       database dependency.
     """
 
     def __init__(self) -> None:
         self._clients: Dict[str, _ClientState] = {}
         self._devices: Dict[str, _RegisteredDeviceState] = {}
+        self._build_errors: Dict[str, tuple[str, str]] = {}
         self._lock = asyncio.Lock()
 
     async def register_client(
@@ -97,29 +127,9 @@ class DeviceConnectionTracker:
         capability advertisement (interfaces, auto-derived vendor extras,
         provides_state, and per-method introspection metadata) which the
         controller and introspection endpoints consult.
-
-        Raises:
-            DeviceNameConflictError: one of the names is already held by a
-                different client that is still heartbeating. Nothing is
-                registered in that case, so the incumbent keeps its devices.
         """
         async with self._lock:
             now = datetime.now(timezone.utc)
-
-            conflicts = {
-                info.name: held.client_id
-                for info in devices
-                if (held := self._devices.get(info.name)) is not None
-                and held.client_id != client_id
-                and now - held.snapshot.last_seen
-                <= timedelta(seconds=HEARTBEAT_TOLERANCE_SECONDS)
-            }
-            if conflicts:
-                logger.error(
-                    "Refusing client %s: %s",
-                    client_id, DeviceNameConflictError(conflicts),
-                )
-                raise DeviceNameConflictError(conflicts)
 
             self._clients[client_id] = _ClientState(
                 site=site,
@@ -130,6 +140,7 @@ class DeviceConnectionTracker:
             )
 
             for info in devices:
+                self._build_errors.pop(info.name, None)
                 snapshot = DeviceSnapshot(
                     name=info.name,
                     type=info.type,
@@ -152,12 +163,32 @@ class DeviceConnectionTracker:
                 f"(site={site}, lab={lab}, workcell={workcell})"
             )
 
+    async def record_build_error(self, client_id: str, name: str, error: str) -> None:
+        """Why the client could not build this device, kept until a build succeeds or the client leaves."""
+        async with self._lock:
+            self._build_errors[name] = (client_id, error)
+
+    def build_error(self, name: str) -> Optional[str]:
+        recorded = self._build_errors.get(name)
+        return None if recorded is None else recorded[1]
+
+    async def forget_devices(self, client_id: str, names: List[str]) -> List[str]:
+        """Take devices this client no longer runs off the roster, and return them. A device another client now holds stays."""
+        async with self._lock:
+            forgotten = [name for name in names if name in self._devices and self._devices[name].client_id == client_id]
+            for name in forgotten:
+                del self._devices[name]
+            return forgotten
+
     async def unregister_client(
         self,
         client_id: str,
     ) -> None:
         """Unregister a client and mark its devices as offline."""
         async with self._lock:
+            self._build_errors = {
+                name: recorded for name, recorded in self._build_errors.items() if recorded[0] != client_id
+            }
             names_to_remove: List[str] = [
                 name for name, state in self._devices.items()
                 if state.client_id == client_id
@@ -191,21 +222,6 @@ class DeviceConnectionTracker:
         async with self._lock:
             state = self._devices.get(name)
             return state.client_id if state else None
-
-    def peek_interfaces(self, name: str) -> Optional[frozenset[str]]:
-        """Synchronously read a device's advertised interface set, or None.
-
-        Sync because the device factory builds drivers while the package's
-        synchronous ``build_topology`` constructs devices, where awaiting is
-        not possible. A single dict lookup is atomic in CPython, so it needs
-        no lock: the worst-case race against a concurrent register/unregister
-        returns either the old or the new snapshot, never a torn read, and a
-        stale profile is healed on the next rebuild.
-        """
-        state = self._devices.get(name)
-        if state is None:
-            return None
-        return frozenset(state.snapshot.interfaces)
 
     async def get_device_with_client(
         self, name: str,
@@ -260,8 +276,10 @@ class DeviceConnectionTracker:
 
             return snapshots
 
-    async def apply_agent_report(self, name: str, reported: DeviceStatusInfo) -> None:
-        """Record what the device bridge sees on this device (StatusMessage).
+    async def apply_agent_report(self, client_id: str, name: str, reported: DeviceStatusInfo) -> bool:
+        """Record what the device bridge sees on this device (StatusMessage), and say whether it was recorded.
+
+        Only the client that owns the device is heard: a client the device moved away from may still report it.
 
         The device bridge owns the driver objects, so its report is the only
         truthful source for the device's own link state; the control plane's
@@ -269,19 +287,19 @@ class DeviceConnectionTracker:
 
         The report carries one link per run mode, and this roster answers reads
         that name no mode, so it takes `observed_link` instead of resolving
-        one. Resolving would land on the ambient run mode, which is PURE_SIM
-        whenever nothing seeded it, and PURE_SIM is not a key the device bridge
-        can report. `link_mode` records which driver did answer.
+        one. `link_mode` records which driver did answer.
         """
         observed = reported.observed_link
         async with self._lock:
             state = self._devices.get(name)
-            if state is not None:
-                state.snapshot.status = reported.status
-                state.snapshot.link_mode = observed.mode
-                state.snapshot.is_connected = observed.is_connected
-                state.snapshot.is_initialized = observed.is_initialized
-                state.snapshot.last_seen = datetime.now(timezone.utc)
+            if state is None or state.client_id != client_id:
+                return False
+            state.snapshot.status = reported.status
+            state.snapshot.link_mode = observed.mode
+            state.snapshot.is_connected = observed.is_connected
+            state.snapshot.is_initialized = observed.is_initialized
+            state.snapshot.last_seen = datetime.now(timezone.utc)
+            return True
 
     def peek_snapshot(self, name: str) -> Optional[DeviceSnapshot]:
         """Synchronously read a device's current snapshot, or None.
@@ -303,11 +321,9 @@ class DeviceConnectionTracker:
         """Refresh the client heartbeat AND every device's ``last_seen``.
 
         ``DeviceConnectionSource.is_connected`` compares per-device
-        ``last_seen`` against a 30s tolerance. Heartbeats are the
-        per-connection liveness signal -- without this per-device
-        fan-out, devices whose drivers never push a StatusMessage flip
-        to offline 30s after registration and every workflow dispatch
-        fails with DeviceOfflineError.
+        ``last_seen`` against ``HEARTBEAT_TOLERANCE_SECONDS``. Without this
+        per-device fan-out, a device whose driver never pushes a StatusMessage
+        reads offline once that tolerance passes after registration.
         """
         async with self._lock:
             if client_id not in self._clients:
@@ -329,6 +345,3 @@ class DeviceConnectionTracker:
     def get_active_device_count(self) -> int:
         return len(self._devices)
 
-
-# Global device-connection tracker singleton
-device_connection_tracker = DeviceConnectionTracker()
