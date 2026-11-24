@@ -67,17 +67,44 @@ class EventChannel:
     ) -> tuple[int, str | None, dict[str, JsonValue]]:
         """Wait until a publish occurs after seen_counter.
 
-        Returns (counter, value, data). Raises asyncio.TimeoutError
+        Returns (counter, value, data). Raises the builtin TimeoutError
         if timeout expires before a publish.
         """
         async with self._condition:
             while self._counter <= seen_counter:
                 self._waiter_count += 1
                 try:
-                    await asyncio.wait_for(self._condition.wait(), timeout=timeout)
+                    await self._wait_for_a_publish(timeout)
                 finally:
                     self._waiter_count -= 1
             return self._counter, self._latest_value, self._latest_data
+
+    async def _wait_for_a_publish(self, timeout: float | None) -> None:
+        """One bounded `Condition.wait`, entered and left with the lock held.
+
+        Not `asyncio.wait_for`: before 3.12 it returns normally when a cancel lands in the same
+        loop turn as the publish, and before 3.11 its timeout is not the builtin `TimeoutError`.
+        """
+        if timeout is None:
+            await self._condition.wait()
+            return
+        waiting = asyncio.ensure_future(self._condition.wait())
+        cancel: asyncio.CancelledError | None = None
+        try:
+            await asyncio.wait({waiting}, timeout=timeout)
+        except asyncio.CancelledError as first:
+            cancel = first
+        waiting.cancel()
+        # The inner wait takes the lock back before it ends, so leave only once it has ended.
+        while not waiting.done():
+            try:
+                await asyncio.wait({waiting})
+            except asyncio.CancelledError as later:
+                cancel = cancel or later
+        if cancel is not None:
+            raise cancel
+        if waiting.cancelled():
+            raise TimeoutError
 
 
 class EventChannelRegistry:

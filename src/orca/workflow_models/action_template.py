@@ -153,6 +153,19 @@ class Action(ActionTemplate):
         if tag is not None:
             self._tag = tag
         if deck_positions is not None:
+            named = [key for key in deck_positions if not isinstance(key, LabwareTemplate)]
+            if named:
+                raise TypeError(
+                    f"deck_positions on {func.__name__!r} is keyed by {named!r}; key it by the labware "
+                    f"template object itself, e.g. {{sample_plate: 'C2-slot'}}, not by its name"
+                )
+            handled = [*inputs, *(outputs or [])]
+            strangers = [key.name for key in deck_positions if not any(key is t for t in handled)]
+            if strangers:
+                raise TypeError(
+                    f"deck_positions on {func.__name__!r} names {strangers!r}, which are not among "
+                    f"its inputs or outputs; a deck position is only for labware the action handles"
+                )
             self._deck_positions = deck_positions
 
     @property

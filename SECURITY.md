@@ -15,8 +15,9 @@ check. A caller that reaches the port can move an arm, dispense a reagent, abort
 a run, and run arbitrary Python as the user who started the daemon.
 
 Workflows, methods and actions are Python source, and the daemon imports and runs
-them. `POST /operations/insert-method`, `/insert-action`, `/replace-method` and
-`/replace-action` accept source over the wire and execute it. The import and
+them. `POST /api/executions/{execution_id}/threads/{thread_id}/insert-method`,
+`/insert-action`, `/replace-method` and `/replace-action` accept source over the
+wire and execute it. The import and
 builtin restrictions in `orca/runtime/code_injection.py` catch a mistake, not an
 attacker, and they are not a sandbox. A deployment profile's `computed`
 expression is the same: it runs with the deployment's own reach.

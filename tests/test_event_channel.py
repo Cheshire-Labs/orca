@@ -7,6 +7,7 @@ Supports emit/on/branch patterns in V5.1 code-first execution model.
 import asyncio
 
 import pytest
+from pydantic import JsonValue
 
 from orca.events.event_channel import EventChannel, EventChannelRegistry
 from tests.test_helpers import wait_until
@@ -39,7 +40,7 @@ class TestPublishAndWait:
     @pytest.mark.asyncio
     async def test_multiple_waiters_all_receive(self) -> None:
         channel = EventChannel("test")
-        results: list[tuple[int, str, dict[str, object]]] = []
+        results: list[tuple[int, str | None, dict[str, JsonValue]]] = []
 
         async def waiter() -> None:
             result = await channel.wait(seen_counter=0, timeout=2.0)
@@ -61,8 +62,64 @@ class TestPublishAndWait:
     @pytest.mark.asyncio
     async def test_timeout_raises(self) -> None:
         channel = EventChannel("test")
-        with pytest.raises(asyncio.TimeoutError):
+        with pytest.raises(TimeoutError):
             await channel.wait(seen_counter=0, timeout=0.1)
+
+    @pytest.mark.asyncio
+    async def test_a_cancel_in_the_same_turn_as_a_publish_still_cancels(self) -> None:
+        """An abort that lands with a publish must end the waiter, or the aborted thread runs on."""
+        channel = EventChannel("test")
+        waiter = asyncio.create_task(channel.wait(seen_counter=0, timeout=30.0))
+        await wait_until(lambda: channel.waiter_count == 1)
+
+        await channel.publish("late")
+        waiter.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+
+    @pytest.mark.asyncio
+    async def test_a_cancel_while_the_lock_is_held_after_a_publish_ends_the_waiter_once_the_lock_is_free(self) -> None:
+        """The waiter has to take the lock back before it leaves, so it ends cancelled only once the lock is free."""
+        channel = EventChannel("test")
+        waiter = asyncio.create_task(channel.wait(seen_counter=0, timeout=30.0))
+        await wait_until(lambda: channel.waiter_count == 1)
+        release = asyncio.Event()
+
+        async def publish_and_hold_the_lock() -> None:
+            async with channel._condition:
+                channel._counter += 1
+                channel._condition.notify_all()
+                await release.wait()
+
+        holder = asyncio.create_task(publish_and_hold_the_lock())
+        for _ in range(5):
+            await asyncio.sleep(0)
+        waiter.cancel("abort")
+        for _ in range(5):
+            await asyncio.sleep(0)
+        waiter.cancel()
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert not waiter.done()
+
+        release.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(waiter, timeout=2.0)
+        await asyncio.wait_for(holder, timeout=2.0)
+        assert not channel._condition.locked()
+        assert channel.waiter_count == 0
+
+    @pytest.mark.asyncio
+    async def test_a_waiter_that_timed_out_leaves_the_channel_usable(self) -> None:
+        channel = EventChannel("test")
+        with pytest.raises(TimeoutError):
+            await channel.wait(seen_counter=0, timeout=0.05)
+
+        await channel.publish("after")
+
+        assert (await channel.wait(seen_counter=0, timeout=1.0))[1] == "after"
 
     @pytest.mark.asyncio
     async def test_publish_before_wait_not_missed(self) -> None:

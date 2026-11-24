@@ -20,14 +20,15 @@ import asyncio
 
 import pytest
 
-from tests.test_helpers import execution_outcome
+from tests.test_helpers import execution_outcome, state_every_liquid_handler_head_empty
 
-from examples.smc_assay.smc_assay_example import build_smc
-from orca.plugins import MethodTracker
-from orca.runtime.labware_group import LabwareGroup, LabwareGroupMember
-from orca.runtime.submission import BatchMode
+from tests.example_builds import build_smc
+from tests.thread_recorder import ThreadRecorder
+from orca.workflow_models.labware_group import LabwareGroup, LabwareGroupMember
+from orca.workflow_models.submission import BatchMode
 from orca.runtime.system_runtime import SystemRuntime
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
+from tests.memory_activity import memory_runtime
 
 
 def _plate_group(gid: str) -> LabwareGroup:
@@ -51,9 +52,9 @@ async def _wait_for_workflow_boot(runtime: SystemRuntime, execution_id: str) -> 
     raise RuntimeError("ExecutingWorkflow never attached to execution")
 
 
-def _thread_counts_by_prefix(tracker: MethodTracker) -> dict[str, int]:
+def _thread_counts_by_prefix(recorder: ThreadRecorder) -> dict[str, int]:
     counts: dict[str, int] = {}
-    for tid, name in tracker.thread_names.items():
+    for tid, name in recorder.thread_names.items():
         prefix = name.rsplit("-", 1)[0]
         counts[prefix] = counts.get(prefix, 0) + 1
     return counts
@@ -67,25 +68,28 @@ class TestAdaptiveSubmission:
     async def test_smc_adaptive_join_existing(self) -> None:
         """Two JOIN_EXISTING submissions collapse onto one final_plate receiver."""
         smc = await build_smc()
-        runtime = SystemRuntime(smc.system, event_bus=smc.event_bus)
-        tracker = MethodTracker()
-        runtime.register_plugin(tracker)
+        workflow = smc.workflow
+        assert workflow is not None
+        runtime = await memory_runtime(smc.system, event_bus=smc.event_bus)
+        recorder = ThreadRecorder()
+        runtime.register_plugin(recorder)
         await runtime.start()
+        await state_every_liquid_handler_head_empty(runtime)
 
         sub1 = await runtime.submit(
-            smc.workflow,
+            workflow,
             groups=[_plate_group("grp-1")],
             batch_mode=BatchMode.JOIN_EXISTING,
-            mode=WorkflowRunMode.PURE_SIM,
+            mode=WorkflowRunMode.CHECK_RUN,
         )
         await _wait_for_workflow_boot(runtime, sub1.execution_id)
 
         try:
             sub2 = await runtime.submit(
-                smc.workflow,
+                workflow,
                 groups=[_plate_group("grp-2")],
                 batch_mode=BatchMode.JOIN_EXISTING,
-                mode=WorkflowRunMode.PURE_SIM,
+                mode=WorkflowRunMode.CHECK_RUN,
             )
 
             assert sub1.execution_id == sub2.execution_id, (
@@ -98,17 +102,17 @@ class TestAdaptiveSubmission:
             # retry storm poisons every test that runs after it in the file.
             await runtime.shutdown()
 
-        counts = _thread_counts_by_prefix(tracker)
+        counts = _thread_counts_by_prefix(recorder)
         assert counts.get("plate_1") == 2, f"Expected 2 plate_1 threads: {counts}"
         assert counts.get("final_plate") == 1, (
             f"JOIN_EXISTING should collapse to ONE final_plate receiver; got {counts}"
         )
 
         final_tid = next(
-            tid for tid, name in tracker.thread_names.items()
+            tid for tid, name in recorder.thread_names.items()
             if name.startswith("final_plate")
         )
-        final_methods = tracker.all_completed_snapshots.get(final_tid, [])
+        final_methods = recorder.completed_methods.get(final_tid, [])
         combine_count = sum(1 for m in final_methods if m == "transfer_to_read_plate")
         assert combine_count == 2, (
             f"Shared final_plate receiver should process 2 transfer_to_read_plate contributions; "
@@ -137,25 +141,28 @@ class TestAdaptiveSubmission:
         across submissions).
         """
         smc = await build_smc()
-        runtime = SystemRuntime(smc.system, event_bus=smc.event_bus)
-        tracker = MethodTracker()
-        runtime.register_plugin(tracker)
+        workflow = smc.workflow
+        assert workflow is not None
+        runtime = await memory_runtime(smc.system, event_bus=smc.event_bus)
+        recorder = ThreadRecorder()
+        runtime.register_plugin(recorder)
         await runtime.start()
+        await state_every_liquid_handler_head_empty(runtime)
 
         sub1 = await runtime.submit(
-            smc.workflow,
+            workflow,
             groups=[_plate_group("grp-1")],
             batch_mode=BatchMode.STANDALONE,
-            mode=WorkflowRunMode.PURE_SIM,
+            mode=WorkflowRunMode.CHECK_RUN,
         )
         await _wait_for_workflow_boot(runtime, sub1.execution_id)
 
         try:
             sub2 = await runtime.submit(
-                smc.workflow,
+                workflow,
                 groups=[_plate_group("grp-2")],
                 batch_mode=BatchMode.STANDALONE,
-                mode=WorkflowRunMode.PURE_SIM,
+                mode=WorkflowRunMode.CHECK_RUN,
             )
 
             assert sub1.execution_id != sub2.execution_id, (
@@ -172,7 +179,7 @@ class TestAdaptiveSubmission:
             # retry storm poisons every test that runs after it in the file.
             await runtime.shutdown()
 
-        counts = _thread_counts_by_prefix(tracker)
+        counts = _thread_counts_by_prefix(recorder)
         assert counts.get("plate_1") == 2
         assert counts.get("final_plate") == 2, (
             f"STANDALONE keys should produce TWO disjoint final_plate receivers; "
@@ -180,11 +187,11 @@ class TestAdaptiveSubmission:
         )
 
         final_tids = [
-            tid for tid, name in tracker.thread_names.items()
+            tid for tid, name in recorder.thread_names.items()
             if name.startswith("final_plate")
         ]
         for tid in final_tids:
-            methods = tracker.all_completed_snapshots.get(tid, [])
+            methods = recorder.completed_methods.get(tid, [])
             combine_count = sum(1 for m in methods if m == "transfer_to_read_plate")
             assert combine_count == 1, (
                 f"Each STANDALONE receiver gets exactly 1 contribution; "

@@ -2,19 +2,21 @@
 
 Validates the verb parses input (typed scalar options + a coords JSON
 string or file) and calls the control-plane client with the right values.
-Wire-shape parity is pinned by ``test_teachpoint_write_clients``.
+The wire shape is pinned by ``test_teachpoint_write_clients``.
 """
 
 import json
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from pydantic import JsonValue
 from typer.testing import CliRunner
 
 from orca.cli.app import app
-from orca.daemon.schemas import TeachpointDTO
+from orca.operations.teachpoint_transfer_models import CreateTeachpointsResponse
+from orca.operations.wire_models import TeachpointDTO
 
 
 runner = CliRunner()
@@ -37,20 +39,13 @@ class _FakeClient:
         self.updated: dict | None = None
         self.deleted: tuple[str, str] | None = None
 
-    def teachpoints_add(
-        self, device_id: str, position_id: str, coord_type: str,
-        coords: dict, access_config_name: str | None,
-        gateway: str | None, orientation: str | None,
-        taught_with: str | None = None, *, reason: str | None = None,
-    ) -> TeachpointDTO:
-        self.added = {
-            "taught_with": taught_with,
-            "device_id": device_id, "position_id": position_id,
-            "coord_type": coord_type, "coords": coords,
-            "access_config_name": access_config_name,
-            "gateway": gateway, "orientation": orientation,
-        }
-        return _dto(position_id)
+    def teachpoints_create(
+        self, device_id: str, teachpoints: Sequence[dict[str, JsonValue]],
+        overwrite: bool = False, *, reason: str | None = None,
+    ) -> CreateTeachpointsResponse:
+        (row,) = teachpoints
+        self.added = {"device_id": device_id, **row}
+        return CreateTeachpointsResponse(total=1, created=1, updated=0, summary="1 created")
 
     def teachpoints_update(
         self, device_id: str, position_id: str, coords: dict,

@@ -12,10 +12,22 @@ racing on separate reads would each write a patch missing the other's field.
 
 import asyncio
 from collections.abc import Iterable
+from typing import Protocol
 
 from cheshire_drivers.move_parameters import MoveParameterField, MoveParameterPatch
 
-from orca.runtime.interfaces import IMoveDefaultsStore
+from orca.resource_models.store_interfaces import IMoveDefaultsStore
+
+
+class IMoveDefaultsService(IMoveDefaultsStore, Protocol):
+    """What a deployment has tuned about each transporter's moves. It is used wherever a store is."""
+
+    async def apply(
+        self,
+        transporter_name: str,
+        patch: MoveParameterPatch,
+        clear: Iterable[MoveParameterField] = (),
+    ) -> MoveParameterPatch: ...
 
 
 class MoveDefaultsService:

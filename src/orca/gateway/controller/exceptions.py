@@ -2,9 +2,12 @@
 
 import asyncio
 
+from typing_extensions import Self
+
 from cheshire_drivers.driver_errors import InstrumentOutcome, outcome_of
 
 from orca.gateway.device_fault import DeviceFault
+from orca.resource_models.error_policy_overrides import PausesUnderAnyPolicyError
 
 
 class DeviceError(Exception):
@@ -14,11 +17,16 @@ class DeviceError(Exception):
     one. The controller sets it at the moment it latches, so a caller holding
     only the exception can say which fault its pause is about instead of
     matching on a device name and hoping.
+
+    ``may_have_moved`` is true when the failure came after the device took the
+    command and nothing says it moved nothing. The controller sets it where it
+    decides the fault, and sets it even when an earlier fault already stands.
     """
 
     def __init__(self, *args: str) -> None:
         super().__init__(*args)
         self.device_fault: DeviceFault | None = None
+        self.may_have_moved = False
 
 
 class DeviceLockedError(DeviceError):
@@ -33,12 +41,13 @@ class DeviceLockedError(DeviceError):
     pass
 
 
-class DeviceOfflineError(DeviceError):
+class DeviceOfflineError(DeviceError, PausesUnderAnyPolicyError):
     """Device is not currently connected.
 
     Raised when attempting to execute a command on a device that is
     not connected to the platform. The device may have disconnected
-    or never connected in the first place.
+    or never connected in the first place. In a run it always pauses the
+    thread for a decision, whatever the method's failure policy.
     """
     pass
 
@@ -65,6 +74,14 @@ class CommandTimeoutError(DeviceError):
     pass
 
 
+class CommandOutcomeUnknownError(CommandTimeoutError):
+    """No answer came within the command's time limit, so what it did is unknown. An incident says so."""
+
+    def __init__(self, message: str, incident_id: str) -> None:
+        super().__init__(f"{message} What it did is unknown; incident {incident_id} says so.")
+        self.incident_id = incident_id
+
+
 class InvalidCommandError(DeviceError):
     """Device type does not support this command.
 
@@ -73,6 +90,26 @@ class InvalidCommandError(DeviceError):
     to a centrifuge.
     """
     pass
+
+
+class CommandNotSavedError(DeviceError):
+    """The command ran on the device, and saving what it did to the record failed.
+
+    Never resend it: the device has already done it. Check the device and state
+    what is there.
+    """
+
+    @classmethod
+    def of(cls, device_name: str, command: str, cause: Exception) -> Self:
+        return cls(
+            f"{command!r} ran on {device_name!r}, but saving it to the "
+            f"record failed ({cause}); do not send it again. Check the device "
+            f"and state what it holds."
+        )
+
+
+class MoveNotSavedError(CommandNotSavedError):
+    """A pick or place ran, so the plate moved, and saving the command failed."""
 
 
 class ConfirmationRequiredError(DeviceError):
@@ -85,6 +122,11 @@ class ConfirmationRequiredError(DeviceError):
     the acknowledgement; nothing about the device state changes it.
     """
     pass
+
+
+class DeviceNotBroughtUpError(DeviceError):
+    """A switch between sim and live could not bring the device up, so an operator command would reach a
+    device nobody brought up. Refused until an initialize or a run's start brings it up."""
 
 
 class DeviceFaultedError(DeviceError):

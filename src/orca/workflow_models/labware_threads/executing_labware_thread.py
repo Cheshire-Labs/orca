@@ -3,25 +3,25 @@ import logging
 import asyncio
 from typing import AsyncGenerator, Awaitable, Callable, Dict, List, Optional, NoReturn
 
-from pydantic import JsonValue
-
 from orca.events.custom_emit import EventEmitter
 from orca.events.event_bus_interface import IEventBus
-from orca.events.event_channel import EventChannelRegistry
+from orca.events.event_channel import EventChannel, EventChannelRegistry
 from orca.events.execution_context import (
     ManualInterventionContext,
     ThreadExecutionContext,
     WorkflowExecutionContext,
 )
 from orca.config import CoordinationConfig
+from orca.resource_models.device_error import LabwareDischargedError, PlateDispenseError
 from orca.resource_models.labware import AnyLabwareTemplate, LabwareInstance, LabwareTemplate
-from orca.resource_models.capacity import RecoverableCapacityExceededError
-from orca.resource_models.labware_state import (
+from orca.resource_models.capacity import CapacityExceededError
+from orca.workflow_models.labware_state import (
     ILabwareRegistry,
     IRegisteredThread,
     LabwareSlot,
     LabwareState,
 )
+from orca.gateway.controller.exceptions import DeviceOfflineError
 from orca.resource_models.device_deck_site import DeviceDeckSite
 from orca.resource_models.location import Location
 from orca.resource_models.tracked_lock import LockWait, current_lock_wait
@@ -29,23 +29,32 @@ from orca.system.reservation_manager.errors import (
     AcquisitionYieldRequested,
     ActionContinuedContext,
     ActionFailedContext,
+    AutoSpawnFailedDetail,
+    CoLabwareTimeoutDetail,
     IThreadIncidentDeclarer,
     MoveAbandonedError,
     MoveContinuedContext,
+    NoRouteError,
     MoveFailedContext,
+    ThreadDiedContext,
     UnresolvableDeadlockError,
 )
-from orca.system.reservation_manager.move_handler import MoveHandler
-from orca.system.reservation_manager.interfaces import IThreadReservationCoordinator
+from orca.system.system_map import RouteGraphMissingTeachpointError
+from orca.workflow_models.actions.move_handler import MoveHandler
+from orca.workflow_models.thread_status_recorder import IThreadStatusRecorder
 from orca.system.reservation_manager.location_reservation import LocationReservation
-from orca.system.system_map import SystemMap
 from orca.workflow_models.actions.dynamic_resource_action import DynamicResourceActionResolver, UnresolvedLocationAction
 from orca.workflow_models.actions.location_action import LocationAction
 from orca.workflow_models.actions.operation_recovery import (
     OperationDecisionSignal,
+    UnsavedResult,
     device_op_recovery_handler,
 )
-from orca.workflow_models.error_policy_overrides import OverrideWithPauseError
+from orca.resource_models.error_policy_overrides import (
+    OverrideWithPauseError,
+    PausesUnderAnyPolicyError,
+    WrongPartnerPlateError,
+)
 from orca.workflow_models.actions.executable_location_action import (
     ExecutableLocationAction,
 )
@@ -60,7 +69,7 @@ from orca.workflow_models.labware_threads.co_labware_coordinator import (
     CoLabwareWaitOutcome,
 )
 from orca.workflow_models.labware_threads.i_thread_context import IMySlotView, IThreadContext
-from orca.workflow_models.labware_threads.location_history import LocationHistory
+from orca.resource_models.location_history import LocationHistory
 from orca.workflow_models.actions.location_action import ResidencyCheck
 from orca.workflow_models.labware_threads.reservation_holdover import ReservationHoldover
 from orca.workflow_models.labware_threads.template_dispatch import schedule_action_template
@@ -71,11 +80,15 @@ from orca.workflow_models.labware_threads.thread_state_machine import (
 from orca.state.records import ObservationGapCause
 from orca.resource_models.labware_location_service import ILabwareLocationService
 from orca.state.placement import PlacementState
-from orca.resource_models.labware_placement import LabwarePlacer
+from orca.workflow_models.acquisition import StartDecision, StartFacts, decide_start
+from orca.resource_models.command_effects import SystemCommandPipeline
 from orca.workflow_models.merge_lane import DroppedAnchorInsert, MergeLane
 from orca.workflow_models.spawn_actions import (
+    DispenseSpawn,
     ManualPlaceSpawn,
+    RelocateByHandSpawn,
     SpawnAction,
+    SpawnWaitHooks,
     arrival_mechanism_for,
     select_end_spawn_action,
     select_spawn_action,
@@ -89,26 +102,29 @@ from orca.workflow_models.shared_action_coordination import (
 from orca.workflow_models.status_enums import ESCALATION_ORDER, HONOURED_DECISIONS, FailurePolicy, LabwareThreadStatus, MethodStatus, PauseSite, RecoveryDecision
 from orca.workflow_models.status_manager import StatusManager
 
-from orca.runtime.group_execution_context import GroupExecutionContext
-from orca.runtime.run_modes import (
+from orca.workflow_models.group_execution_context import GroupExecutionContext
+from orca.modes.run_modes import (
+    RunningThread,
     WorkflowRunMode,
     current_execution_id,
     current_run_mode,
+    current_thread,
 )
 from orca.runtime.recoverable_timeout import recoverable_timeout_coordinator
-from orca.runtime.sim_pacing import SimPacer, current_sim_pacer, pacer_for_run_mode
-from orca.system.interfaces import IMethodRegistry
+from orca.modes.sim_pacing import SimPacer, current_sim_pacer, pacer_for_run_mode
+from orca.workflow_models.workflows.registry_interfaces import IMethodRegistry
 from orca.variables.variable_store import IVariableResolver, NullVariableResolver
 from orca.workflow_models.method_context import MethodContext
 from orca.workflow_models.thread_context import ThreadContext
-from orca.workflow_models.workflows.workflow_factories import MethodActionFactory, MethodFactory
+from orca.workflow_models.actions.method_action_factory import MethodActionFactory
 from orca.workflow_models.workflows.workflow_registry import ExecutingMethodRegistry, IExecutingMethodRegistry, ThreadRegistry
+from orca.workflow_models.errors import CoLabwareLostError, AutoSpawnFailedError, SpawnDidNotPlaceError, TransitLabwareMissingDeckSiteError
 
 AutoSpawnCallback = Callable[[str, ExecutingMethod, WorkflowRunMode], Awaitable[None]]
-CapacityPrecheckCallback = Callable[[str, object | None, ExecutingMethod], Awaitable[None]]
+CapacityPrecheckCallback = Callable[[str, GroupExecutionContext | None, ExecutingMethod], Awaitable[None]]
 """Side-effect-free pre-check used before any spawn commits in a multi-input
-action. Raises RecoverableCapacityExceededError (and emits the AWAITING_DECISION
-event) if the spawn would overflow with OverflowAction.RECOVERABLE_REJECT;
+action. Raises CapacityExceededError (and emits the REJECTED
+event) if the spawn would overflow with OverflowAction.REJECT;
 otherwise returns silently. Prevents partial multi-input commits where one
 template's spawn lands in its slot queue while another pauses for operator."""
 
@@ -122,7 +138,7 @@ orca_logger = logging.getLogger("orca")
 
 def _recovery_event_for(decision: RecoveryDecision) -> ThreadEvent:
     """The TSM event that un-parks a paused thread for an operator's decision."""
-    if decision == RecoveryDecision.RETRY:
+    if decision == RecoveryDecision.RETRY_ACTION:
         return ThreadEvent.RECOVERY_RETRY
     # The aborts and CONTINUE all leave the action behind, so they share one
     # event; the abort raises out of the transient state it lands in.
@@ -134,7 +150,7 @@ def _recovery_event_for(decision: RecoveryDecision) -> ThreadEvent:
     ):
         return ThreadEvent.RECOVERY_SKIP
     raise ValueError(
-        f"RecoveryDecision.{decision.name} has no thread event. RETRY_OP is settled "
+        f"RecoveryDecision.{decision.name} has no thread event. RETRY is settled "
         "at the operation seam and never reaches action-level recovery; any new "
         "decision must be mapped here rather than defaulting to leaving the action "
         "behind."
@@ -155,11 +171,7 @@ class _ThreadAbortedSignal(Exception):
     execution at FAILED). The thread loop catches this in
     :meth:`ExecutingLabwareThread.start`, transitions the thread to
     ``LabwareThreadStatus.ABORTED``, and returns cleanly so the workflow
-    sees a terminal-but-non-failure thread state. Bug TTT regression:
-    pre-fix the original error was re-raised, leaving the thread stuck
-    in ``RESOLVING_ACTION_LOCATION`` (the transient state set just
-    before ``handle_recovery``) and the execution at ``failed`` instead
-    of ``completed``.
+    sees a terminal-but-non-failure thread state.
     """
 
 
@@ -185,12 +197,19 @@ class _SharedActionPausedError(Exception):
         self.action_command = action_command
 
 
+async def _settled(outcome: asyncio.Future[ActionResolution]) -> bool:
+    """True once ``outcome`` is done; cancelling this wait leaves ``outcome`` untouched."""
+    await asyncio.wait({outcome})
+    return True
+
+
 class ExecutingLabwareThread(ILabwareThread, IThreadContext):
 
     # Class-level default so test code that bypasses __init__ via __new__()
     # observes None rather than AttributeError. Real instances shadow this
     # via __init__'s instance assignment.
     _capacity_precheck_callback: CapacityPrecheckCallback | None = None
+    _status_recorder: IThreadStatusRecorder | None = None
 
     def __init__(self,
                  thread: LabwareThreadInstance,
@@ -206,10 +225,12 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
                  executing_method_registry: ExecutingMethodRegistry | None = None,
                  variable_store: IVariableResolver | None = None,
                  register_method_template: Callable[[str, MethodTemplate], None] | None = None,
-                 labware_placer: LabwarePlacer | None = None,
+                 command_pipeline: SystemCommandPipeline | None = None,
                  residency_check: ResidencyCheck | None = None,
+                 status_recorder: IThreadStatusRecorder | None = None,
                  ) -> None:
         self._thread = thread
+        self._status_recorder = status_recorder
         self._move_handler = move_handler
         self._status_manager = status_manager
         self._state_machine = ThreadStateMachine(initial=LabwareThreadStatus.CREATED)
@@ -217,12 +238,11 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         self._context: WorkflowExecutionContext = context
         self._event_bus = event_bus
         self._action_resolver = actions_resolver
-        # S3 Round 1.5: when set (by ExecutingThreadFactory, populated by
+        # When set (by ExecutingThreadFactory, populated by
         # SystemRuntime.__init__), the typed UnresolvableDeadlockError catch
         # below auto-records IncidentCategory.UNRESOLVABLE_DEADLOCK and fans
         # out pause_all_threads so the deadlock surfaces on every operator
-        # surface (orca incidents list / GET /api/incidents / incidents_list
-        # MCP). Optional so tests that build threads directly stay simple.
+        # surface (orca incidents list / GET /api/incidents). Optional so tests that build threads directly stay simple.
         self._thread_incident_declarer: IThreadIncidentDeclarer | None = thread_incident_declarer
         # Yield thread: MergeLane created lazily in start() after registry is set
         self._method_lane: MergeLane[ExecutingMethod] = MergeLane(
@@ -230,19 +250,16 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
             name_getter=lambda m: m.name,
         )
         self._assigned_method: ExecutingMethod | None = None
-        self._event_results: dict[str, tuple[str | None, dict[str, JsonValue]]] = {}
+        self._bound_to_bring_labware_to: IMethod | None = None
 
         self._completed_methods: List[ExecutingMethod] = []
         self._labware_location_service = labware_location_service
-        self._labware_placer = labware_placer
+        self._command_pipeline = command_pipeline
 
 
-        # Only a REUSE_EXISTING bind has already claimed the slot. Calling any
-        # other thread's not-yet-arrived labware present is what persisted it.
-        if self._thread.start_location.labware is self._thread.labware:
-            labware_location_service.update(self._thread.labware, self._thread.start_location)
-        else:
-            labware_location_service.expect(
+        # A bind already claimed the slot and its arrival wrote the ledger; everything else is expected until it arrives.
+        if self._thread.start_location.labware is not self._thread.labware:
+            self._require_pipeline().placer.expected(
                 self._thread.labware,
                 self._thread.start_location,
                 arrival_mechanism_for(self._thread),
@@ -252,8 +269,10 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         self._assigned_action: ExecutableLocationAction | None = None
         self._move_action: MoveAction | None = None
         self._labware_moved_event = asyncio.Event()
+        self._labware_discharged = False
         self._planned_from: Location | None = None
         self._following_peer_action = False
+        self._stopped_before_the_owners_abort = False
         self._lock_wait = LockWait(owner=self._thread.name)
         self._stop_event = asyncio.Event()
         # Bind the cooperative-stop event onto the value-object so LIVE-
@@ -267,7 +286,9 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         self._capacity_precheck_callback: CapacityPrecheckCallback | None = None
         self._work_finished_hook: Callable[..., None] | None = None
         self._auto_spawned: set[tuple[str, str]] = set()
-        self._partner_constraints: dict[str, dict[str, str]] = {}
+        self._partner_constraints: dict[str, dict[str, str]] = {
+            template_name: {"barcode": barcode} for template_name, barcode in thread.named_partners.items()
+        }
 
         # Park/wake lifecycle
         self._labware_registry: ILabwareRegistry | None = None
@@ -275,18 +296,22 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         # used up. Spent labware must not stay on its slot for the next
         # receiver to adopt, whatever the template's end disposition says.
         self._ended_spent: bool = False
+        self._stopped_taking_contributions: bool = False
+        self._handed_the_slot_on: bool = False
 
         # Error recovery pause/resume
         self._resume_event = asyncio.Event()
         self._resume_event.set()  # not paused initially
         self._recovery_decision: RecoveryDecision | None = None
+        # The group whose one decision this error pause waits on, fixed when the pause begins.
+        self._decided_by_group: SharedActionCoordination | None = None
         self._last_error: Exception | None = None
         # What the thread was doing when it stopped, in words. The exception
         # alone cannot say: "pf400_1 is not connected" fits a home or a pick.
         self._pause_message: str | None = None
         self._pause_site: PauseSite | None = None
         # The device command this thread is paused inside; None at every other
-        # pause. Names the call RETRY_OP re-runs.
+        # pause. Names the call RETRY re-runs.
         self._op_pause_command: str | None = None
 
         # Manual pause (cooperative). The event makes the request
@@ -296,6 +321,9 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         # they used the previous bool flag.
         self._pause_request_event: asyncio.Event = asyncio.Event()
         self._held_at_start = False
+        self._start_labware_never_arrived = False
+        self._reached_start = False
+        self._failed_under_abort_policy = False
         # Who asked for a non-error pause: "manual" (a person) or "system"
         # (the runtime protecting itself). Overwritten on every request.
         self._pause_reason: str = "manual"
@@ -303,7 +331,7 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         # Cross-thread error propagation
         self._event_channel_registry: EventChannelRegistry | None = None
 
-        # Round 5 S1-A: candidate locations the reservation retry loop is
+        # Candidate locations the reservation retry loop is
         # racing against. Populated by ``notify_awaiting_reservation`` once
         # the first reservation cycle fails to grant; ``derive_waiting_for``
         # reads it for the ``AWAITING_ACTION_RESERVATION`` snapshot. Cleared
@@ -355,12 +383,32 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         if self.status == LabwareThreadStatus.AWAITING_ACTION_RESERVATION:
             self._fire(ThreadEvent.RESERVATION_GRANTED)
 
+    async def _wait_for_the_owner_to_bind(self) -> ExecutableLocationAction:
+        """A contributor's wait for its owner's action; it pauses where it waits when the run pauses."""
+        assert self._assigned_method is not None
+        while True:
+            bound = asyncio.ensure_future(self._assigned_method.wait_for_current_action())
+            pause = asyncio.ensure_future(self._pause_request_event.wait())
+            try:
+                await asyncio.wait([bound, pause], return_when=asyncio.FIRST_COMPLETED)
+                if bound.done():
+                    return bound.result()
+            finally:
+                await drain_cancelled_waiters(bound, pause)
+            await self.hold_for_pause()
+
+    async def hold_for_pause(self) -> None:
+        """``IActionReservationStatusSink`` impl: pause while waiting for a device; a stop ends the thread."""
+        await self._handle_manual_pause()
+        if self._stop_event.is_set():
+            raise _ThreadStopSignal()
+
     @property
     def pending_reservation_candidates(self) -> List[str]:
         """Read-only view of the candidate locations the thread is waiting on.
 
-        Empty when the thread is not parked in
-        ``AWAITING_ACTION_RESERVATION``. ``derive_waiting_for`` reads
+        Empty unless the thread is parked in ``AWAITING_ACTION_RESERVATION``
+        or carrying its labware to its start. ``derive_waiting_for`` reads
         this directly; tests and snapshot consumers should treat the
         return as immutable.
         """
@@ -392,7 +440,7 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         Mirrors the auto-spawn callback's slot_key_for(template, ctx) call so
         the receiver, contributor, and handoff paths all address the same
         LabwareSlot under group-aware keying. Falls back to labware_name when
-        the thread isn't group/submission-tagged (pre-T6 paths).
+        the thread isn't group/submission-tagged.
         """
         assert self._labware_registry is not None
         tpl = self._thread.thread_template
@@ -409,7 +457,7 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
                 submission_id=self._thread.submission_id,
                 batch_mode=self._thread.batch_mode,
             )
-        return self._labware_registry.slot_key_for(tpl, ctx)
+        return self._labware_registry.slot_key_for(tpl, ctx, self._thread.named_barcode)
 
     @property
     def id(self) -> str:
@@ -435,6 +483,10 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
     def labware(self) -> LabwareInstance:
         return self._thread.labware
 
+    @property
+    def has_reached_its_start(self) -> bool:
+        return self._reached_start
+
     def append_method_sequence(self, method: IMethod) -> None:
         self._thread.append_method_sequence(method)
 
@@ -445,11 +497,6 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
     @property
     def method_lane(self) -> MergeLane[ExecutingMethod]:
         return self._method_lane
-
-    @property
-    def event_results(self) -> dict[str, tuple[str | None, dict[str, JsonValue]]]:
-        """Event values received by WaitStep/BranchStep resolution."""
-        return self._event_results
 
     @property
     def completed_methods(self) -> List[ExecutingMethod]:
@@ -487,15 +534,14 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         """
         return self._lock_wait.waiting_on
 
-    def _require_placer(self) -> LabwarePlacer:
-        """A move records through the chokepoint, so a thread that can move has
-        to have one."""
-        if self._labware_placer is None:
+    def _require_pipeline(self) -> SystemCommandPipeline:
+        """A move runs and records through the pipeline, so a thread that can move has to have one."""
+        if self._command_pipeline is None:
             raise RuntimeError(
-                f"thread {self._thread.name!r} has no labware placer, so a move "
+                f"thread {self._thread.name!r} has no command pipeline, so a move "
                 f"has nowhere to record what it did"
             )
-        return self._labware_placer
+        return self._command_pipeline
 
     @property
     def current_location(self) -> Location:
@@ -518,6 +564,47 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         new_status = self._state_machine.transition(event)
         self._publish_status_to_status_manager(new_status)
 
+    async def _take_labware_already_on_the_deck(self) -> bool:
+        """Get labware that is already on the deck to the start. False when it is not on the deck,
+        so the spawn brings it in."""
+        current = self._labware_location_service.present_location(self._thread.labware)
+        if current is None:
+            return False
+        start = self._thread.start_location
+        decision = decide_start(StartFacts(
+            present=True,
+            at_start=current.position_id == start.position_id,
+            reachable=self._move_handler.has_route(current, start),
+        ))
+        if decision is StartDecision.MOVE:
+            self._pending_reservation_candidates = [start.name]
+            try:
+                await self._fire_and_execute_move_to(ThreadEvent.MOVE_RESERVATION_REQUESTED, [start])
+            finally:
+                self._pending_reservation_candidates = []
+        elif decision is StartDecision.ASK_OPERATOR:
+            await self._have_the_operator_place_it(current, start)
+        return True
+
+    async def _have_the_operator_place_it(self, current: Location, start: Location) -> None:
+        spawn = RelocateByHandSpawn(
+            start, current, self._labware_location_service, self._require_pipeline().placer, self._move_handler,
+            SpawnWaitHooks(
+                blocked=lambda: self._fire_from(LabwareThreadStatus.CREATED, ThreadEvent.START_LOCATION_AWAITED),
+                cleared=lambda: self._fire_from(
+                    LabwareThreadStatus.AWAITING_START_LOCATION, ThreadEvent.START_LOCATION_CLEARED,
+                ),
+            ),
+        )
+        if self._thread.run_mode is WorkflowRunMode.LIVE:
+            self._fire(ThreadEvent.LIVE_MANUAL_PLACE_AWAITED)
+        await spawn.acquire(self._thread)
+
+    def _fire_from(self, status: LabwareThreadStatus, event: ThreadEvent) -> None:
+        """Fire ``event`` only while the thread is in ``status``; a pause or stop may have moved it on."""
+        if self._state_machine.current is status:
+            self._fire(event)
+
     def _manual_intervention_location(
         self, status: LabwareThreadStatus,
     ) -> str | None:
@@ -538,7 +625,7 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         last_error: str | None = None
         if status == LabwareThreadStatus.PAUSED:
             pause_reason = "error" if self._last_error is not None else self._pause_reason
-        # Terminal FAILED/ABORTED carry their cause too: the record sink
+        # Terminal FAILED/ABORTED carry their cause too: the run record
         # upserts every transition, and a None here would erase the stored WHY.
         if self._last_error is not None and status in (
             LabwareThreadStatus.PAUSED,
@@ -548,6 +635,18 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
             last_error = str(self._last_error)
         context: ThreadExecutionContext
         manual_location = self._manual_intervention_location(status)
+        changed = not self._status_manager.has_status(self._thread.id, status.name)
+        if changed and self._status_recorder is not None:
+            self._status_recorder.record_thread_status(
+                self._context.execution_id,
+                thread_id=self._thread.id,
+                name=self._thread.name,
+                template_name=self._thread.template_name,
+                status=status.name,
+                last_error=last_error,
+                pause_reason=pause_reason,
+                group_id=self._thread.group_id,
+            )
         if manual_location is not None:
             context = ManualInterventionContext(
                 execution_id=self._context.execution_id,
@@ -555,6 +654,7 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
                 thread_id=self._thread.id,
                 thread_name=self._thread.name,
                 template_name=self._thread.template_name,
+                group_id=self._thread.group_id,
                 pause_reason=pause_reason,
                 last_error=last_error,
                 labware_id=self._thread.labware.id,
@@ -573,22 +673,15 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
                 thread_id=self._thread.id,
                 thread_name=self._thread.name,
                 template_name=self._thread.template_name,
+                group_id=self._thread.group_id,
                 pause_reason=pause_reason,
                 last_error=last_error,
             )
         self._status_manager.set_status("THREAD", self._thread.id, status.name, context)
         # Terminal states: fire ``completed`` so anyone awaiting the thread
         # task unblocks regardless of whether the exit was natural completion,
-        # operator stop, or operator-initiated abort. Bug TTT regression:
-        # pre-fix the event fired only on COMPLETED, so an ABORTED thread
-        # left ``ThreadManager.async_execute``'s ``gather(*[t.completed.wait()])``
-        # hanging until the upstream 60s timeout marked the execution failed.
-        if status in (
-            LabwareThreadStatus.COMPLETED,
-            LabwareThreadStatus.ABORTED,
-            LabwareThreadStatus.STOPPED,
-            LabwareThreadStatus.FAILED,
-        ):
+        # operator stop, or operator-initiated abort.
+        if status.is_terminal():
             self.completed.set()
         # Work-finished hook: releases this thread from the feeder pool for
         # slot-close evaluation. It reads the same predicate the sweep does,
@@ -638,15 +731,14 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         peer's action. A contributor stamps its own once, when it first sees the
         group paused, and the group moves under it: the owner can fail inside a
         device call, take a RETRY, and fail again in the action body around it.
-        The stamp would still say the device call and offer RETRY_OP for one
+        The stamp would still say the device call and offer RETRY for one
         that is no longer suspended. Same reasoning as
         ``paused_device_command``, which has always read the group.
         """
         group = self._shared_action_group()
         if self._following_peer_action and group is not None and group.action_paused.is_set():
             return (
-                PauseSite.DEVICE_OP if group.op_paused_command is not None
-                else PauseSite.ACTION_BODY
+                group.step_paused_site or PauseSite.ACTION_BODY
             )
         return self._pause_site
 
@@ -671,7 +763,7 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
 
         The group's answer when this thread is part of a paused action group: a
         contributor never drives the call, so its own record is empty while the
-        group is suspended in one. This is what RETRY_OP is judged against, so
+        group is suspended in one. This is what RETRY at a device call is judged against, so
         an operator surface offering that verb reads the same answer the
         runtime will accept it on.
         """
@@ -781,21 +873,18 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         if self._last_error is None:
             raise ValueError(
                 f"Thread {self.name} is manually paused, not error-paused. "
-                f"Use resume_from_manual_pause() to resume."
+                f"Resume it instead of recovering it."
             )
         self._refuse_a_verb_this_site_does_not_honour(decision)
         if decision == RecoveryDecision.CONTINUE:
             self._refuse_continue_the_ledger_does_not_back()
-        # The same channel the pause is waiting on, chosen the same way. A
-        # thread paused somewhere other than the group's action -- its own move,
-        # its own spawn -- waits on its own event, so submitting to the group
-        # would leave it parked on a decision that had already been delivered
-        # somewhere else.
-        group = self._shared_action_group()
-        if (
-            group is not None and group.action_paused.is_set()
-            and self.pause_site in (PauseSite.ACTION_BODY, PauseSite.DEVICE_OP)
-        ):
+        self._deliver_decision(decision)
+
+    def _deliver_decision(self, decision: RecoveryDecision) -> None:
+        # The channel the pause is waiting on, as it was fixed when the pause began: a contributor
+        # leaving the group mid-pause must not move the decision onto a channel nobody waits on.
+        group = self._decided_by_group or self._group_deciding(self.pause_site)
+        if group is not None:
             group.submit_decision(decision)
             return
         self._recovery_decision = decision
@@ -824,12 +913,13 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         honoured = ", ".join(
             d.name for d in sorted(recovery.honours, key=ESCALATION_ORDER.index)
         )
-        # RETRY_OP is refused by every site but one, and the site's own reason
-        # is about actions, which would not answer the operator who sent it.
+        # RETRY_ACTION is refused everywhere but ACTION_BODY, and most sites'
+        # own reasons are about other verbs, which would not answer the operator.
         because = (
-            "it re-runs the device call the thread is suspended inside, and "
-            "no call is suspended here"
-            if decision is RecoveryDecision.RETRY_OP
+            "it re-runs an action whose own Python failed, and that is not "
+            "what failed here"
+            if decision is RecoveryDecision.RETRY_ACTION
+            and site not in (PauseSite.DEVICE_OP, PauseSite.COMMAND_SAVE)
             else recovery.because
         )
         raise ValueError(
@@ -894,13 +984,8 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         # ABORTED + STOPPED count as "thread is done with its lifecycle" so
         # ``ThreadManager.has_completed()`` returns True after operator
         # aborts, matching the intent of "all threads have finished" rather
-        # than "all threads ran their full method sequence" (Bug TTT).
-        return self.status in (
-            LabwareThreadStatus.COMPLETED,
-            LabwareThreadStatus.ABORTED,
-            LabwareThreadStatus.STOPPED,
-            LabwareThreadStatus.FAILED,
-        )
+        # than "all threads ran their full method sequence".
+        return self.status.is_terminal()
 
     def has_finished_its_work(self) -> bool:
         """True once this thread will neither feed a receiver nor ask for a
@@ -919,6 +1004,29 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
 
     def set_partner_constraint(self, template_name: str, constraints: dict[str, str]) -> None:
         self._partner_constraints[template_name] = constraints
+
+    async def _name_my_partners_or_pause(self) -> None:
+        """Name this thread's partners on the method it just took. RETRY checks again; it never skips the method."""
+        while True:
+            try:
+                self._name_my_partners_on(self._assigned_method)
+                return
+            except WrongPartnerPlateError as conflict:
+                decision = await self._pause_for_error(
+                    conflict, f"thread step failed: {type(conflict).__name__}: {conflict}",
+                    PauseSite.THREAD_STEP,
+                )
+                if decision == RecoveryDecision.RETRY:
+                    continue
+                self._check_abort_thread(decision, conflict)
+                raise conflict
+
+    def _name_my_partners_on(self, method: ExecutingMethod | None) -> None:
+        """Owner or contributor, what this thread named binds every method it takes part in."""
+        if method is None:
+            return
+        for template_name, constraints in self._partner_constraints.items():
+            method.set_partner_constraints(template_name, constraints)
 
     def get_partner_constraint(self, template_name: str) -> dict[str, str] | None:
         return self._partner_constraints.get(template_name)
@@ -964,18 +1072,16 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         already knows this thread correct, and a wait that ends any other way
         leaves only the expectation to drop.
         """
-        template = self._thread.thread_template
-        if (
-            template is not None
-            and template.start_reuse_existing
-            and self._thread.start_location.labware is self._thread.labware
-        ):
-            # Reuse-bind placed this labware before the thread existed; a spawn
-            # would self-collide on the bridge and wedge the thread at CREATED.
-            # A replacement receiver never reuse-bound, so it spawns normally.
+        if await self._take_labware_already_on_the_deck():
             return
         spawn = select_spawn_action(
-            self._thread, self._labware_location_service, self._move_handler,
+            self._thread, self._labware_location_service, self._require_pipeline().placer, self._move_handler,
+            SpawnWaitHooks(
+                blocked=lambda: self._fire_from(LabwareThreadStatus.CREATED, ThreadEvent.START_LOCATION_AWAITED),
+                cleared=lambda: self._fire_from(
+                    LabwareThreadStatus.AWAITING_START_LOCATION, ThreadEvent.START_LOCATION_CLEARED,
+                ),
+            ),
         )
         if (
             isinstance(spawn, ManualPlaceSpawn)
@@ -983,9 +1089,9 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         ):
             self._fire(ThreadEvent.LIVE_MANUAL_PLACE_AWAITED)
         try:
-            await spawn.acquire(self._thread)
+            await self._acquire_start_labware(spawn)
         except BaseException:
-            self._labware_location_service.stop_expecting(self._thread.labware)
+            self._give_up_on_the_start_labware()
             raise
         arrived = (
             self._labware_location_service.placement(self._thread.labware)
@@ -994,19 +1100,44 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         if not arrived and self._stop_event.is_set():
             # Cooperatively stopped mid-wait. Nothing physical exists to
             # project, and the expectation must not outlive the thread.
-            self._labware_location_service.stop_expecting(self._thread.labware)
+            self._give_up_on_the_start_labware()
             return
+        # The arrival told the device: a spawn's placement and an operator's register both go through the placer.
         self._assert_arrived(spawn)
-        # acquire wrote the slot + bridge loaded-list; project onto the LH deck
-        # so a deck-site start is pickable (no-op off a liquid handler).
-        # A stop that lands after the labware arrived still has to project it:
-        # a dispense or a sim place does not consult the stop event, so the
-        # plate is really on the slot and a driver deck that never heard about
-        # it fails later as an unexplained pick.
-        if self._labware_placer is not None:
-            await self._labware_placer.project_devices(
-                self._thread.labware, self._thread.start_location,
-            )
+
+    def _give_up_on_the_start_labware(self) -> None:
+        self._require_pipeline().placer.no_longer_expected(self._thread.labware)
+        self._start_labware_never_arrived = True
+
+    @property
+    def start_labware_never_arrived(self) -> bool:
+        """True once the thread ended its start with no labware: the record holds no position for it."""
+        return self._start_labware_never_arrived
+
+    async def _acquire_start_labware(self, spawn: SpawnAction) -> None:
+        """Run the spawn. A plate source that is offline, or whose dispense fails, pauses the thread: retry, or abort the thread."""
+        while True:
+            try:
+                await spawn.acquire(self._thread)
+                return
+            except (DeviceOfflineError, PlateDispenseError) as offline:
+                # Only the dispense: once the slot holds the plate, a second dispense would jam the output.
+                dispense_failed = self._thread.start_location.labware is not self._thread.labware
+                if not (isinstance(spawn, DispenseSpawn) and dispense_failed):
+                    raise
+                try:
+                    decision = await self._pause_for_error(
+                        offline, f"start dispense failed: {type(offline).__name__}: {offline}",
+                        PauseSite.THREAD_STEP,
+                    )
+                except asyncio.CancelledError:
+                    self._fire_thread_stopped_on_cancel()
+                    raise
+                if decision == RecoveryDecision.RETRY:
+                    self._fire(ThreadEvent.RECOVERY_RETRY)
+                    continue
+                self._check_abort_thread(decision, offline)
+                raise
 
     def _assert_arrived(self, spawn: SpawnAction) -> None:
         """A spawn that returns without a stop must have placed the labware.
@@ -1016,9 +1147,6 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         failure would surface later as an unexplained pick, far from the spawn
         that never wrote the slot.
         """
-        # Deferred: runtime_interface closes a cycle back through plugins/events.
-        from orca.runtime.runtime_interface import SpawnDidNotPlaceError
-
         placement = self._labware_location_service.placement(self._thread.labware)
         if placement is PlacementState.PRESENT:
             return
@@ -1035,16 +1163,12 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         # cleanup_parked_threads) iterate every thread unconditionally,
         # so the table-strict _fire(STOP_REQUESTED) must short-circuit
         # on threads already stopping or finalized.
-        if self.status in {
-            LabwareThreadStatus.STOPPING,
-            LabwareThreadStatus.STOPPED,
-            LabwareThreadStatus.COMPLETED,
-            LabwareThreadStatus.ABORTED,
-            LabwareThreadStatus.FAILED,
-        }:
+        if self.status is LabwareThreadStatus.STOPPING or self.status.is_terminal():
             return
-        # An error pause watches the recovery channel and nothing else, so end
-        # it the way a person would: the action gives its device back and says
+        if not self._owners_abort_published():
+            self._stopped_before_the_owners_abort = True
+        # An error pause already under way ends the way a person would end it
+        # (a pause that starts after this takes the stop event): the action gives its device back and says
         # what it dropped. A contributor following a peer is excluded -- its own
         # wait already races the stop event, and feeding it a decision would
         # take the one the owner is waiting for.
@@ -1066,6 +1190,29 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         self._stop_event.clear()
         self._fire(ThreadEvent.STOP_COMPLETE)
 
+    def _is_a_joiner_the_action_does_not_take(self, unresolved: UnresolvedLocationAction) -> bool:
+        """A joined plate stays where it is for an action of the shared method that does not take it as an input."""
+        assert self._assigned_method is not None and self._thread.labware_template is not None
+        if not self._assigned_method.shared_coord.is_contributor(self._thread.id):
+            return False
+        mine = self._thread.labware_template.name
+        return not any(
+            isinstance(template, AnyLabwareTemplate) or template.name == mine
+            for template in unresolved.expected_input_templates
+        )
+
+    def _inputs_with_no_thread(self, unresolved: UnresolvedLocationAction) -> list[LabwareTemplate]:
+        """The action's other labware no thread brings yet: what this thread spawns for. A filled input slot
+        already has a live thread (entry threads pre-bind their labware)."""
+        assert self._thread.labware_template is not None
+        mine = self._thread.labware_template.name
+        return [
+            template for template in unresolved.expected_input_templates
+            if not isinstance(template, AnyLabwareTemplate)
+            and template.name != mine
+            and not unresolved.is_input_assigned(template)
+        ]
+
     async def _auto_spawn_for_action(self, unresolved: UnresolvedLocationAction) -> None:
         if self._auto_spawn_callback is None:
             return
@@ -1074,26 +1221,12 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         # Only the owning thread spawns contributors for its actions.
         if self._assigned_method.shared_coord.is_contributor(self._thread.id):
             return
-        assert self._thread.labware_template is not None
-        my_labware_name = self._thread.labware_template.name
+        candidates = [
+            template for template in self._inputs_with_no_thread(unresolved)
+            if (unresolved.id, template.name) not in self._auto_spawned
+        ]
 
-        # Filter to the templates this iteration would actually spawn for.
-        candidates: list[LabwareTemplate] = []
-        for input_template in unresolved.expected_input_templates:
-            if isinstance(input_template, AnyLabwareTemplate):
-                continue
-            if input_template.name == my_labware_name:
-                continue
-            # A filled input slot already has a live thread (entry threads
-            # pre-bind their labware); spawn only inputs with no thread yet.
-            if unresolved.is_input_assigned(input_template):
-                continue
-            spawn_key = (unresolved.id, input_template.name)
-            if spawn_key in self._auto_spawned:
-                continue
-            candidates.append(input_template)
-
-        # Pre-check pass: for multi-input actions with RECOVERABLE_REJECT
+        # Pre-check pass: for multi-input actions with REJECT
         # policies, raise upfront so no template's spawn lands in its slot
         # queue while a later template pauses for operator. Without this,
         # the queued contribution's receiver would block waiting for the
@@ -1107,26 +1240,22 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
             )
         if self._capacity_precheck_callback is not None:
             for input_template in candidates:
-                # Raises RecoverableCapacityExceededError (and emits
-                # AWAITING_DECISION) if this spawn would overflow with that
-                # policy. Side-effect-free for committing — no queue puts,
+                # Raises CapacityExceededError (and emits
+                # REJECTED) if this spawn would overflow with that
+                # policy. Side-effect-free for committing -- no queue puts,
                 # no contribution increments.
                 await self._capacity_precheck_callback(
                     input_template.name, contributor_ctx, self._assigned_method,
                 )
 
-        # Commit pass: all candidates either lack a recoverable-overflow
-        # policy or have room, so no partial multi-input commit can occur
-        # via the recoverable path.
+        # Commit pass: all candidates either lack a REJECT policy or have
+        # room, so no partial multi-input commit can occur.
         for input_template in candidates:
             spawn_key = (unresolved.id, input_template.name)
             self._auto_spawned.add(spawn_key)
-            constraints = self._partner_constraints.get(input_template.name)
-            if constraints is not None:
-                self._assigned_method.set_partner_constraints(input_template.name, constraints)
             # Stash this thread's group/submission identity on the shared
             # method so the group-aware registry can compose per-group slot
-            # keys. None-safe: if this thread is pre-T6 (untagged), the
+            # keys. None-safe: if this thread is untagged, the
             # registry falls back to the labware_name-only key.
             if contributor_ctx is not None:
                 self._assigned_method.set_contributor_context(contributor_ctx)
@@ -1136,35 +1265,33 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
                     self._assigned_method,
                     self._thread.run_mode,
                 )
-            except RecoverableCapacityExceededError:
-                # Defensive backstop: pre-check should have caught this. If
-                # an active receiver completed between pre-check and commit
-                # (extremely narrow window — callback chain is sync), roll
-                # back so RETRY can re-attempt cleanly.
+            except Exception:
+                # A spawn that did not happen is not recorded as done, so RETRY
+                # spawns it again.
                 self._auto_spawned.discard(spawn_key)
                 raise
 
     async def _auto_spawn_with_recovery(self, unresolved: UnresolvedLocationAction) -> None:
-        """Pause-on-recoverable-overflow wrapper around _auto_spawn_for_action.
+        """Pause wrapper around _auto_spawn_for_action, for a full slot or a spawn that failed.
 
-        RETRY re-attempts the spawn, which succeeds if capacity freed in the
-        interim (``slot.close()`` forcing a fresh receiver). ABORT_THREAD ends
-        the contributor at ABORTED rather than FAILED.
+        RETRY re-attempts the spawn: it succeeds if capacity freed in the interim
+        (``slot.close()`` forcing a fresh receiver) or the cause of a failed spawn
+        was fixed. ABORT_THREAD ends the thread at ABORTED.
 
         The action-level verbs never arrive: the spawn callback fires before
         action resolution, so there is no current action to recover, and
-        ``HONOURED_DECISIONS`` refuses them on the call. This site used to
-        refuse them itself by re-pausing, which was the right answer written in
-        the wrong place -- the operator learned their verb did not apply only
-        after the thread had un-paused and paused again.
+        ``HONOURED_DECISIONS`` refuses them on the call, so the operator learns
+        at once that the verb does not apply.
         """
         while True:
             try:
                 await self._auto_spawn_for_action(unresolved)
                 return
-            except RecoverableCapacityExceededError as error:
+            except (_ThreadStopSignal, _ThreadAbortedSignal, OperationDecisionSignal):
+                raise
+            except CapacityExceededError as error:
                 decision = await self._pause_for_error(
-                    error, f"capacity exceeded: {error}",
+                    error, str(error),
                     PauseSite.SPAWN_CAPACITY,
                 )
                 if decision == RecoveryDecision.RETRY:
@@ -1172,6 +1299,15 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
                     continue
                 self._check_abort_thread(decision, error)
                 raise error
+            except Exception as error:
+                self._record_auto_spawn_failure(unresolved, error)
+                failed = AutoSpawnFailedError(f"{type(error).__name__}: {error}")
+                decision = await self._pause_for_error(failed, str(failed), PauseSite.SPAWN_CAPACITY)
+                if decision == RecoveryDecision.RETRY:
+                    self._fire(ThreadEvent.RECOVERY_RETRY)
+                    continue
+                self._check_abort_thread(decision, failed)
+                raise failed from error
 
     def _sim_pacer(self) -> SimPacer | None:
         """The run's pacer for a simulated thread; None for LIVE, which hardware paces."""
@@ -1210,24 +1346,71 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         # (engine-bounded) from an ad-hoc one (gateway fail-fast timer).
         if self._context is not None:
             current_execution_id.set(self._context.execution_id)
+        current_thread.set(RunningThread(id=self._thread.id, name=self._thread.name))
         current_sim_pacer.set(self._sim_pacer())
 
         try:
             await self._start_body()
         except Exception as exc:
+            if self._a_crash_pauses(exc):
+                try:
+                    await self._pause_until_the_operator_ends_it(exc)
+                except asyncio.CancelledError:
+                    self._fire_thread_stopped_on_cancel()
+                    raise
+                return
             # The original crash is the payload the fatal path records; the
             # guarded terminal fire must never replace it.
             self._fire_thread_failed(exc)
             raise
 
+    def _a_crash_pauses(self, error: Exception) -> bool:
+        """An error the thread's own handling did not catch pauses, unless the author chose ABORT or the thread is
+        being stopped or aborted."""
+        if self.status.is_terminal():
+            return False
+        return not (
+            self._failed_under_abort_policy
+            or isinstance(error, (_ThreadStopSignal, _ThreadAbortedSignal))
+        )
+
+    async def _pause_until_the_operator_ends_it(self, error: Exception) -> None:
+        self._record_where_the_crash_left_the_labware(error)
+        await self._pause_for_error(
+            error,
+            f"the thread stopped on an error its own handling did not catch ({type(error).__name__}: {error}); "
+            "the failed step is unknown, so the only choice is ABORT_THREAD. Check the labware and take over by hand.",
+            PauseSite.UNHANDLED_ERROR,
+        )
+        self._release_all_held_reservations()
+        self._publish_owner_slot_outcome_on_exit(RecoveryDecision.ABORT_THREAD)
+        self._fire(ThreadEvent.ABORT_THREAD)
+
+    def _record_where_the_crash_left_the_labware(self, error: Exception) -> None:
+        """A THREAD_DIED incident naming the labware and its position, which clearing the deck by hand needs.
+        A recording failure must not become a second crash."""
+        if self._thread_incident_declarer is None or self._context is None:
+            return
+        location = self.current_location
+        try:
+            self._thread_incident_declarer.declare_thread_death(
+                self._context.execution_id,
+                self._thread.id,
+                ThreadDiedContext(
+                    thread_name=self._thread.name,
+                    labware_name=self._thread.labware.name,
+                    labware_id=self._thread.labware.id,
+                    last_position_id=location.position_id if location is not None else None,
+                    error_type=type(error).__name__,
+                    error_message=str(error),
+                ),
+            )
+        except Exception:
+            orca_logger.exception("Thread %s - recording the crash failed", self._thread.name)
+
     def _fire_thread_failed(self, cause: Exception) -> None:
         """Land an unhandled crash in terminal FAILED; no-op if already terminal."""
-        if self.status in (
-            LabwareThreadStatus.COMPLETED,
-            LabwareThreadStatus.ABORTED,
-            LabwareThreadStatus.STOPPED,
-            LabwareThreadStatus.FAILED,
-        ):
+        if self.status.is_terminal():
             return
         # The FAILED event must name its cause; an error-pause that already
         # recorded one keeps the original.
@@ -1242,21 +1425,20 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
             )
 
     def _fire_thread_stopped_on_cancel(self) -> None:
-        """Land a hard-cancelled thread in terminal STOPPED; no-op if already terminal.
+        """Land a hard-cancelled thread in terminal STOPPED, or ABORTED when its owner's
+        abort reached it first; no-op if already terminal.
 
         ``abort_execution`` cancels the task, and ``CancelledError`` is a
         BaseException no handler in ``start`` catches, so without this the
         thread keeps its pre-abort status and the aborted execution goes on
         reporting it as active.
         """
-        if self.status in (
-            LabwareThreadStatus.COMPLETED,
-            LabwareThreadStatus.ABORTED,
-            LabwareThreadStatus.STOPPED,
-            LabwareThreadStatus.FAILED,
-        ):
+        if self.status.is_terminal():
             return
         try:
+            if self._released_by_the_owners_abort():
+                self._fire(ThreadEvent.ABORT_THREAD)
+                return
             if self.status != LabwareThreadStatus.STOPPING:
                 self._fire(ThreadEvent.STOP_REQUESTED)
             self._handle_thread_stop()
@@ -1281,11 +1463,32 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
                 raise
 
         if uninitialized:
-            await self.initialize_labware()
+            try:
+                await self.initialize_labware()
+            except asyncio.CancelledError:
+                # An abort can land while the thread waits for its start location.
+                self._fire_thread_stopped_on_cancel()
+                raise
+            except _ThreadStopSignal:
+                # Getting labware already on the deck to the start is a move, and a stop can land in it.
+                self._release_all_held_reservations()
+                self._handle_thread_stop()
+                self._tell_the_waiting_method_its_labware_is_gone()
+                return
+            except _ThreadAbortedSignal:
+                self._release_all_held_reservations()
+                # Aborted at the start dispense: the plate never arrived, so its registry entry goes too.
+                if self._labware_registry is not None:
+                    self._labware_registry.unregister(self._thread.labware.id)
+                self._fire(ThreadEvent.ABORT_THREAD)
+                self._tell_the_waiting_method_its_labware_is_gone()
+                return
 
         if self._stop_event.is_set():
             self._handle_thread_stop()
+            self._tell_the_waiting_method_its_labware_is_gone()
             return
+        self._reached_start = True
 
         # Yield thread: create MergeLane now that EventChannelRegistry is available
         assert self._event_channel_registry is not None, (
@@ -1300,8 +1503,7 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
             try:
                 await self._run_method_loop()
             except _ThreadAbortedSignal:
-                # Bug TTT: operator-initiated ABORT_THREAD recovery.
-                # Transition to the terminal ABORTED state so anyone awaiting
+                # Operator-initiated ABORT_THREAD recovery. Transition to the terminal ABORTED state so anyone awaiting
                 # ``self.completed`` unblocks and the workflow loop sees a
                 # cleanly-terminal thread, rather than treating the exit as
                 # an unhandled exception that would mark the execution
@@ -1312,14 +1514,23 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
                     self._thread.name,
                 )
                 self._fire(ThreadEvent.ABORT_THREAD)
+                self._tell_the_waiting_method_its_labware_is_gone()
             except _ThreadStopSignal:
-                # Co-labware race woke on stop_event. Skip end-location move and land
-                # at STOPPED; contributors follow stop_event directly, so no publish.
-                orca_logger.info(
-                    "Thread %s - cooperative stop honored mid-action",
-                    self._thread.name,
-                )
-                self._handle_thread_stop()
+                if self._released_by_the_owners_abort():
+                    orca_logger.info(
+                        "Thread %s - the owner aborted the shared action before the stop arrived",
+                        self._thread.name,
+                    )
+                    self._fire(ThreadEvent.ABORT_THREAD)
+                else:
+                    # Skip the end-location move and land at STOPPED; contributors
+                    # follow stop_event directly, so no publish.
+                    orca_logger.info(
+                        "Thread %s - cooperative stop honored mid-action",
+                        self._thread.name,
+                    )
+                    self._handle_thread_stop()
+                    self._tell_the_waiting_method_its_labware_is_gone()
             except asyncio.CancelledError:
                 # Hard abort cancels this task; stamp terminal before unwinding.
                 self._fire_thread_stopped_on_cancel()
@@ -1328,6 +1539,7 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
                 # Owner failed post-binding (move/deadlock/wait-step) without engaging the
                 # group pause; release parked contributors so they abort, not strand.
                 self._publish_owner_slot_outcome_on_exit(RecoveryDecision.ABORT_THREAD)
+                self._tell_the_waiting_method_its_labware_is_gone()
                 raise
         finally:
             for method in self._completed_methods:
@@ -1340,6 +1552,11 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
             self._declare_unresolved_anchor_inserts(method_lane_dropped, "method")
             self._release_all_held_reservations()
 
+    def _tell_the_waiting_method_its_labware_is_gone(self) -> None:
+        """This thread was spawned to bring labware to another thread's action and ended before it arrived."""
+        if self._bound_to_bring_labware_to is not None:
+            self._bound_to_bring_labware_to.note_labware_lost(self._thread.labware.name)
+
     def _declare_unresolved_anchor_inserts(
         self, dropped: list[DroppedAnchorInsert], target_type: str
     ) -> None:
@@ -1347,7 +1564,7 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
 
         The drop is expected, whether the anchor never ran or the insert
         never got its turn; this only makes it loud. No-op without a declarer
-        (threads minted before SystemRuntime binds itself).
+        (threads minted before SystemRuntime binds its declarer).
 
         Best-effort: this runs in the thread's terminal ``finally``, so a
         declarer failure must never interrupt reservation release or mask
@@ -1401,19 +1618,16 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
                 self._assigned_method = await self._method_lane.next()
             except StopAsyncIteration:
                 break
+            except (_ThreadStopSignal, _ThreadAbortedSignal):
+                raise
             except Exception as error:
-                # Generator-level errors (yield thread exceptions, branch no-match)
-                # route through error recovery so operator can intervene under
-                # PAUSE policy. Under ABORT, surface the error directly so
-                # operator-less runs (sim/CI) fail loudly instead of parking.
-                # ``OverrideWithPauseError`` subclasses override that: external
-                # coordination signals always route to PAUSE so the operator
-                # decides recovery, never the workflow author's ABORT
-                # declaration. See ``error_policy_overrides`` for the taxonomy.
+                # A thread-body error pauses under PAUSE policy and surfaces under ABORT,
+                # unless it pauses under any policy (see ``error_policy_overrides``).
                 if (
                     self._effective_failure_policy() == FailurePolicy.ABORT
-                    and not self._should_force_pause(error)
+                    and not self._pauses_under_any_policy(error)
                 ):
+                    self._failed_under_abort_policy = True
                     raise error
                 decision = await self._pause_for_error(
                     error, f"thread step failed: {type(error).__name__}: {error}",
@@ -1423,6 +1637,8 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
                     continue
                 self._check_abort_thread(decision, error)
                 raise error
+
+            await self._name_my_partners_or_pause()
 
             # WaitStep: adapter yields a sentinel with wait_event_name set.
             # Handle the event wait in the thread loop so skip and retry work.
@@ -1438,42 +1654,15 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
                 assert self._event_channel_registry is not None
                 wait_event_name = self._assigned_method.wait_event_name
                 assert wait_event_name is not None
-                channel = self._event_channel_registry.get_or_create(wait_event_name)
-                seen = 0
-                while True:
-                    try:
-                        await channel.wait(seen_counter=seen, timeout=self._assigned_method.wait_timeout)
-                        break
-                    except asyncio.TimeoutError as err:
-                        # ``asyncio.TimeoutError`` is the only exception type
-                        # this site catches today, and it cannot inherit
-                        # ``OverrideWithPauseError`` (it's a stdlib class), so
-                        # the override check is unreachable today. The check
-                        # is kept for symmetry with the other three policy-
-                        # ABORT branches: if a future event-channel surface
-                        # raises an override-aware exception through this
-                        # path, the override is honored automatically.
-                        if (
-                            self._effective_failure_policy() == FailurePolicy.ABORT
-                            and not self._should_force_pause(err)
-                        ):
-                            raise
-                        decision = await self._pause_for_error(
-                            err,
-                            f"thread step failed: wait event "
-                            f"{wait_event_name!r} timed out after "
-                            f"{self._assigned_method.wait_timeout}s",
-                            PauseSite.WAIT_EVENT_TIMEOUT,
-                        )
-                        if decision == RecoveryDecision.RETRY:
-                            continue
-                        self._check_abort_thread(decision, err)
-                        raise
+                await self.wait_for_event(
+                    self._event_channel_registry.get_or_create(wait_event_name),
+                    self._assigned_method.wait_timeout,
+                )
                 self._assigned_method = None
                 continue
 
             self._assigned_method.set_current_thread(
-                self._thread.id, self._thread.name, self._thread.submission_id,
+                self._thread.id, self._thread.name, self._thread.submission_id, self._thread.group_id,
             )
             if self._event_channel_registry is not None:
                 self._assigned_method.set_event_channel_registry(self._event_channel_registry)
@@ -1554,7 +1743,7 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
                 # own re-entrant request that would succeed.
                 try:
                     if self._assigned_method.shared_coord.is_contributor(self._thread.id):
-                        self._assigned_action = await self._assigned_method.wait_for_current_action()
+                        self._assigned_action = await self._wait_for_the_owner_to_bind()
                     else:
                         self._assigned_action = await self._assigned_method.resolve_current_action(
                             self._thread.id,
@@ -1572,13 +1761,13 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
                     await self._vacate_for_acquisition_yield()
                     continue
                 except UnresolvableDeadlockError as error:
-                    # S3 Round 1.5: typed catch for unresolvable-deadlock
+                    # Typed catch for unresolvable-deadlock
                     # declarations. Record the typed
                     # IncidentCategory.UNRESOLVABLE_DEADLOCK incident +
                     # fan out pause_all_threads(execution_id) BEFORE
                     # entering the per-thread pause path so the deadlock
                     # surfaces on every operator surface (orca incidents
-                    # list / GET /api/incidents / incidents_list MCP) and
+                    # list / GET /api/incidents) and
                     # the rest of the execution halts cleanly.
                     self._record_unresolvable_deadlock(error)
                     decision = await self._pause_for_error(
@@ -1593,8 +1782,10 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
                     # the rendezvous (owner + contributor) rather than zombie-park PAUSED.
                     self._publish_owner_slot_outcome_on_exit(RecoveryDecision.ABORT_THREAD)
                     raise _ThreadAbortedSignal(str(error))
+                except _ThreadStopSignal:
+                    raise
                 except Exception as error:
-                    # Round 5 S1: ``ActionReservationTimeoutError`` flows
+                    # ``ActionReservationTimeoutError`` flows
                     # through the same operator-pause path as any other
                     # action-resolution error -- operator chooses
                     # RETRY / ABORT / etc. The typed exception class only
@@ -1625,6 +1816,11 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
                     {self._assigned_action.action.location}
                 )
 
+                left_out = self._why_a_left_out_plate_blocks_the_action(unresolved)
+                if left_out:
+                    await self._pause_for_labware_that_will_not_come(CoLabwareLostError(left_out))
+                    continue
+
                 # Spawn contributors only after the owner holds the device; a
                 # pre-reservation spawn floods the single-lane bridges (deadlock).
                 await self._auto_spawn_with_recovery(unresolved)
@@ -1634,10 +1830,16 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
                     template.name: f"{self._assigned_action.action.location.position_id}/{site}"
                     for template, site in unresolved.deck_positions.items()
                 })
-                while self.current_location not in target_sites:
-                    await self._resolve_and_execute_move(target_sites)
+                if self._is_a_joiner_the_action_does_not_take(unresolved):
+                    await self._hold_before_the_next_command()
+                    await self._follow_shared_action_outcome()
+                else:
+                    while self.current_location not in target_sites:
+                        await self._hold_before_the_next_command()
+                        await self._resolve_and_execute_move(target_sites)
 
-                await self._handle_thread_at_assigned_action_location()
+                    await self._hold_before_the_next_command()
+                    await self._handle_thread_at_assigned_action_location()
 
                 if self._pause_request_event.is_set():
                     await self._handle_manual_pause()
@@ -1652,6 +1854,11 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
 
         # all methods in the thread are completed, now move to end location
         await self._handle_thread_completion()
+
+    async def _hold_before_the_next_command(self) -> None:
+        """Honour a pending pause before the next move leg or action starts; a stop there ends the thread."""
+        if self._pause_request_event.is_set():
+            await self.hold_for_pause()
 
     async def _resolve_and_execute_move(self, target_sites: list[Location]) -> None:
         assert self.assigned_action is not None, "Assigned action should not be None when moving to assigned location"
@@ -1710,7 +1917,6 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         declared: str | None,
     ) -> NoReturn:
         assert self._assigned_action is not None
-        from orca.runtime.runtime_interface import TransitLabwareMissingDeckSiteError
         raise TransitLabwareMissingDeckSiteError(
             self._thread.name, mutex.position_id,
             template.name if template is not None else "<no-template>",
@@ -1742,6 +1948,9 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         try:
             while True:
                 self._labware_moved_event.clear()
+                if self._labware_discharged:
+                    await self._pause_before_replanning(LabwareDischargedError(self._thread.labware.name))
+                    continue
                 self._planned_from = self.current_location
                 previous_location = self._location_history.get_previous_location()
                 try:
@@ -1761,16 +1970,26 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
                         # moot however the labware moved, and nothing is held.
                         self._fire(ThreadEvent.PARK_ABANDONED)
                         raise
+                    if self._pause_request_event.is_set() and not self._plan_is_stale():
+                        await self.hold_for_pause()
+                        self._fire(event)
+                        continue
                 except Exception as error:
-                    if not replanned:
+                    if not replanned and not isinstance(error, (NoRouteError, RouteGraphMissingTeachpointError)):
                         raise
-                    # Someone named a position no route reaches; letting this
-                    # escape would kill the thread instead of asking again.
-                    await self._pause_for_unroutable_replan(error)
+                    # No route reaches where it is or where it must go. Letting
+                    # this escape would kill the thread instead of asking.
+                    await self._pause_before_replanning(error)
                     continue
                 else:
                     if await self._execute_move_action():
                         return
+                    if self._pause_request_event.is_set() and not self._plan_is_stale():
+                        # Give back what the plan held, pause, then plan again from the same place.
+                        self._discard_stale_move()
+                        await self.hold_for_pause()
+                        self._fire(event)
+                        continue
                 self._discard_stale_move()
                 self._fire(ThreadEvent.MOVE_REPLAN_REQUESTED)
                 replanned = True
@@ -1793,16 +2012,14 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         finally:
             self._planned_from = None
 
-    async def _pause_for_unroutable_replan(self, error: Exception) -> None:
-        """Park at the move site after a re-plan that found no route.
+    async def _pause_before_replanning(self, error: Exception) -> None:
+        """Park at the move site when no move can be planned: no route, or the labware was discharged.
 
-        The operator has just said where the labware is; if nothing can reach
-        it from there, the answer is another correction, so the thread waits
-        for one instead of dying. RETRY plans again from whatever they say
-        next. There is no move bound to declare finished, so CONTINUE is
-        refused by the same check that refuses it at any other bare pause.
+        RETRY plans again from wherever the operator now says the labware is. A
+        discharged labware cannot come back, so only ABORT_THREAD ends that pause.
+        There is no move bound to declare finished, so CONTINUE is refused.
         """
-        message = f"move re-plan failed with {type(error).__name__}: {error}"
+        message = f"no move could be planned, {type(error).__name__}: {error}"
         decision = await self._pause_for_error(
             error, message, PauseSite.MOVE_RESOLUTION,
         )
@@ -1816,11 +2033,16 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         self, abandon_when: Callable[[], bool] | None,
     ) -> Callable[[], bool]:
         """Withdraw the pending reservation request on the caller's own
-        condition, or once the plan being requested no longer starts where the
-        labware is."""
-        if abandon_when is None:
-            return self._plan_is_stale
-        return lambda: self._plan_is_stale() or abandon_when()
+        condition, when the thread is stopped, once the plan being requested no
+        longer starts where the labware is, or when the run asks the thread to pause."""
+        def withdraw() -> bool:
+            return (
+                self._stop_event.is_set()
+                or self._plan_is_stale()
+                or self._pause_request_event.is_set()
+                or (abandon_when is not None and abandon_when())
+            )
+        return withdraw
 
     def _plan_is_stale(self) -> bool:
         """True when the ledger puts the labware somewhere this plan does not
@@ -1833,6 +2055,8 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         an edit means re-confirming a position the labware already had is not
         a move, and a signal that arrives late is still answered correctly.
         """
+        if self._labware_discharged:
+            return True
         planned_from = self._planned_from
         if planned_from is None:
             return False
@@ -1873,10 +2097,43 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         """
         self._labware_moved_event.set()
 
+    def notify_labware_discharged(self) -> None:
+        """An operator forced this thread's labware off the record. It pauses at its next step."""
+        self._labware_discharged = True
+        self._labware_moved_event.set()
 
     @property
     def co_labware_timeout(self) -> float | None:
         return self._coordination_config.co_labware_timeout
+
+    def _event_wait_timeout(self, step_timeout: float | None) -> float | None:
+        return step_timeout if step_timeout is not None else self._coordination_config.event_timeout
+
+    async def wait_for_event(self, channel: EventChannel, step_timeout: float | None) -> str | None:
+        timeout = self._event_wait_timeout(step_timeout)
+        while True:
+            try:
+                _, value, _ = await channel.wait(seen_counter=0, timeout=timeout)
+                return value
+            except TimeoutError as err:
+                # A stdlib TimeoutError never pauses under ABORT; the check
+                # matches the other policy-ABORT branches.
+                if (
+                    self._effective_failure_policy() == FailurePolicy.ABORT
+                    and not self._pauses_under_any_policy(err)
+                ):
+                    self._failed_under_abort_policy = True
+                    raise
+                decision = await self._pause_for_error(
+                    err,
+                    f"thread step failed: wait event {channel.name!r} timed out after {timeout}s",
+                    PauseSite.WAIT_EVENT_TIMEOUT,
+                )
+                if decision == RecoveryDecision.RETRY:
+                    self._fire(ThreadEvent.RECOVERY_RETRY)
+                    continue
+                self._check_abort_thread(decision, err)
+                raise
 
     def _shared_action_group(self) -> SharedActionCoordination | None:
         """The action-scoped participant group iff this thread's current action is
@@ -1900,19 +2157,23 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         assert self._assigned_method is not None
         group = self._assigned_method.current_action_coord
         assert group is not None, "action group must be minted before a contributor waits"
+        if self._stop_event.is_set():
+            self._assigned_action = None
+            raise _ThreadStopSignal()
         self._fire(ThreadEvent.CO_LABWARE_AWAITED)
         self._fire(ThreadEvent.ACTION_RESOLVED)
         paused_here = False
         self._following_peer_action = True
         try:
             while not group.outcome.done():
-                waiters = [asyncio.ensure_future(self._stop_event.wait())]
+                waiters = [
+                    asyncio.ensure_future(self._stop_event.wait()),
+                    asyncio.ensure_future(_settled(group.outcome)),
+                ]
                 if not paused_here:
                     waiters.append(asyncio.ensure_future(group.action_paused.wait()))
                 try:
-                    await asyncio.wait(
-                        {group.outcome, *waiters}, return_when=asyncio.FIRST_COMPLETED,
-                    )
+                    await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
                 finally:
                     await drain_cancelled_waiters(*waiters)
                 if group.outcome.done() or self._stop_event.is_set():
@@ -1928,26 +2189,20 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
                     # against where the OWNER stopped. Same reasoning as
                     # `paused_device_command`.
                     self._pause_site = (
-                        PauseSite.DEVICE_OP if group.op_paused_command is not None
-                        else PauseSite.ACTION_BODY
+                        group.step_paused_site or PauseSite.ACTION_BODY
                     )
                     self._fire(ThreadEvent.ERROR_PAUSE)
                     paused_here = True
         except asyncio.CancelledError:
             # An ABORT-policy owner publishes ABORT_THREAD then re-raises, cancelling
             # this task before it reads the outcome; honor it (ABORTED) not frozen.
-            if (
-                group.outcome.done()
-                and group.outcome.result().decision == RecoveryDecision.ABORT_THREAD
-            ):
+            if self._released_by_the_owners_abort():
                 self._assigned_action = None
                 raise _ThreadAbortedSignal("shared rendezvous aborted by the owner")
             raise
         finally:
             self._following_peer_action = False
         self._assigned_action = None
-        # Own cooperative stop wins over a group outcome a co-torn-down owner
-        # published: a stopped contributor lands STOPPED, never spins on it.
         if self._stop_event.is_set() or not group.outcome.done():
             raise _ThreadStopSignal()
         if paused_here:
@@ -1959,6 +2214,21 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
             self._pause_site = None
         self._react_to_shared_outcome(outcome)
 
+    def _owners_abort_published(self) -> bool:
+        method = self._assigned_method
+        if method is None or not method.shared_coord.is_contributor(self._thread.id):
+            return False
+        group = method.current_action_coord
+        return (
+            group is not None
+            and group.outcome.done()
+            and group.outcome.result().decision == RecoveryDecision.ABORT_THREAD
+        )
+
+    def _released_by_the_owners_abort(self) -> bool:
+        """The owner's abort reached this contributor before any stop did."""
+        return self._owners_abort_published() and not self._stopped_before_the_owners_abort
+
     def _react_to_shared_outcome(self, outcome: ActionResolution) -> None:
         """React to the group's published outcome. ABORT_THREAD tears this contributor
         down; every other outcome returns so the method loop advances to the next action
@@ -1969,7 +2239,7 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
     def _publish_owner_slot_outcome_on_exit(self, decision: RecoveryDecision) -> None:
         """Publish a terminal action outcome so contributors fan out when the OWNER
         leaves the rendezvous outside the normal funnels (handle_recovery / completion):
-        a resolution error, a co-labware timeout, or a cooperative stop. Idempotent;
+        a resolution error, an abort at a co-labware timeout, or a cooperative stop. Idempotent;
         skipped for contributors (they follow, never drive) and when no group is minted."""
         method = self._assigned_method
         if method is None:
@@ -1986,6 +2256,29 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
             method.shared_coord.exit_signal.set()
             method.shared_coord.completed.set()
 
+    def _why_a_left_out_plate_blocks_the_action(self, unresolved: UnresolvedLocationAction) -> str:
+        """Why the action can never start, when it needs the plate of an optional thread the group left out."""
+        assert self._assigned_action is not None and self._assigned_method is not None
+        if self._assigned_method.shared_coord.is_contributor(self._thread.id):
+            return ""
+        missing = {template.name for template in self._inputs_with_no_thread(unresolved)}
+        command = self._assigned_action.action.command
+        return " ".join(
+            f"Thread {self._thread.name}: action '{command}' needs plate '{labware}', and its group left out "
+            f"the optional thread '{thread}' that brings it, so it will never come. Submit again with "
+            f"'{thread}' named in the group, or declare it with wf.thread so it is spawned when an action "
+            f"needs it. ABORT_ACTION skips the action, ABORT_THREAD ends this plate."
+            for labware, thread in self._thread.left_out.items() if labware in missing
+        )
+
+    async def _pause_for_labware_that_will_not_come(self, error: CoLabwareLostError) -> None:
+        assert self._assigned_method is not None
+        decision = await self._pause_for_error(error, str(error), PauseSite.CO_LABWARE_LOST)
+        self._fire(_recovery_event_for(decision))
+        await self._assigned_method.handle_recovery(decision)
+        self._assigned_action = None
+        self._check_abort_thread(decision, error)
+
     async def _handle_thread_at_assigned_action_location(self) -> None:
         assert self._assigned_action is not None
         assert self._assigned_method is not None
@@ -2001,14 +2294,36 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
 
         while True:
             self._assigned_action.action.refresh_labware_presence()
+            self._assigned_method.shared_coord.signal_lost_among(set(self._assigned_action.action.missing_input_report()))
             self._fire(ThreadEvent.CO_LABWARE_AWAITED)
-            outcome = await CoLabwareCoordinator.wait(
-                stop_event=self._stop_event,
-                exit_event=self._assigned_method.exit_signal,
-                pause_event=self._pause_request_event,
-                co_labware_event=self._assigned_action.action.all_labware_is_present,
-                timeout=self.co_labware_timeout,
+            action = self._assigned_action.action
+            self._move_handler.note_co_labware_wait(
+                self._thread.id, lambda: {labware.id for labware in action.peek_missing_input_labware()},
             )
+            try:
+                outcome = await CoLabwareCoordinator.wait(
+                    stop_event=self._stop_event,
+                    exit_event=self._assigned_method.exit_signal,
+                    pause_event=self._pause_request_event,
+                    co_labware_event=action.all_labware_is_present,
+                    labware_lost_event=self._assigned_method.shared_coord.labware_lost,
+                    timeout=self.co_labware_timeout,
+                )
+            finally:
+                self._move_handler.end_co_labware_wait(self._thread.id)
+
+            if outcome is CoLabwareWaitOutcome.CO_LABWARE_LOST:
+                missing = set(self._assigned_action.action.missing_input_report())
+                lost = self._assigned_method.shared_coord.take_lost_labware(missing)
+                if not lost:
+                    continue
+                await self._pause_for_labware_that_will_not_come(CoLabwareLostError(
+                    f"Thread {self._thread.name}: {', '.join(lost)} ended before reaching "
+                    f"{self._assigned_action.action.location.name} for action "
+                    f"'{self._assigned_action.action.command}'. ABORT_ACTION skips the action, "
+                    f"ABORT_THREAD ends this plate."
+                ))
+                return
 
             if outcome is CoLabwareWaitOutcome.STOP_REQUESTED:
                 # Stop is per-thread; only the reservation owner releases.
@@ -2042,17 +2357,22 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
                 return
 
             if outcome is CoLabwareWaitOutcome.TIMEOUT:
-                # Publish ABORT_THREAD so an arrived contributor aborts cleanly rather
-                # than zombie-parking; the owner itself FAILs via the TimeoutError below.
-                self._publish_owner_slot_outcome_on_exit(RecoveryDecision.ABORT_THREAD)
                 missing_names = ", ".join(
                     self._assigned_action.action.missing_input_report()
                 ) or "unknown"
-                raise TimeoutError(
+                timed_out = TimeoutError(
                     f"Thread {self._thread.name} timed out ({self.co_labware_timeout}s) waiting "
                     f"for co-labware at {self._assigned_action.action.location.name}. "
                     f"Missing: {missing_names}"
                 )
+                self._record_co_labware_timeout()
+                decision = await self._pause_for_error(timed_out, str(timed_out), PauseSite.CO_LABWARE_WAIT)
+                if decision == RecoveryDecision.RETRY:
+                    self._fire(ThreadEvent.RECOVERY_RETRY)
+                    continue
+                # An arrived contributor aborts cleanly rather than zombie-parking.
+                self._publish_owner_slot_outcome_on_exit(RecoveryDecision.ABORT_THREAD)
+                raise _ThreadAbortedSignal(str(timed_out))
 
             break
 
@@ -2078,7 +2398,12 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         # This thread drives the body, so it is the one whose pause a safe
         # point inside the body has to honor.
         self._assigned_action.set_pause_checkpoint(self)
+        method = self._assigned_method
+        if method is not None:
+            self._assigned_action.require_partner_barcodes(lambda: method.partner_barcodes)
         try:
+            if self._labware_discharged:
+                raise LabwareDischargedError(self._thread.labware.name)
             await self._assigned_action.execute()
         except Exception as error:
             await self._handle_action_error(error)
@@ -2096,6 +2421,7 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
             thread_id=self._thread.id,
             thread_name=self._thread.name,
             template_name=self._thread.template_name,
+            group_id=self._thread.group_id,
         )
         await CoLabwareCoordinator.emit_tip_events(
             self._assigned_action, tip_context, self._event_bus,
@@ -2114,7 +2440,7 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
 
         Invoked from the typed ``except UnresolvableDeadlockError:`` arm
         in the action-resolution loop. When a declarer is wired in
-        (production ``SystemRuntime``), this records an incident under
+        (the runtime's ``IncidentDeclarer`` in production), this records an incident under
         ``IncidentCategory.UNRESOLVABLE_DEADLOCK`` with the rich
         diagnostic context AND fans out
         ``pause_all_threads(execution_id)`` so the rest of the
@@ -2143,13 +2469,13 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
             )
 
     async def _recover_device_op(
-        self, error: Exception, command: str,
+        self, error: Exception, command: str, site: PauseSite,
     ) -> RecoveryDecision:
         """Operation-level recovery seam, consulted by the device dispatcher when a
         device call in this thread's action body fails. Records the failure, pauses
-        the thread for an operator decision, and returns it: RETRY_OP makes the
+        the thread for an operator decision, and returns it: RETRY makes the
         dispatcher re-invoke just the failed call (the body stays suspended at its
-        await); an action-level decision (RETRY / ABORT_*) is applied by
+        await); an action-level decision (CONTINUE / ABORT_*) is applied by
         ``_handle_action_error`` via the ``OperationDecisionSignal`` the dispatcher
         then raises.
 
@@ -2160,40 +2486,39 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         assert self._assigned_method is not None
         if (
             self._assigned_method.current_failure_policy == FailurePolicy.ABORT
-            and not self._should_force_pause(error)
+            and not self._pauses_under_any_policy(error)
         ):
             # ABORT policy has no operator loop; propagate for whole-action abort.
+            # The body may still catch it, so the thread is marked only when it leaves the action.
             raise error
         self._record_action_failure(error, command)
-        op_context = ThreadExecutionContext(
-            execution_id=self._context.execution_id,
-            workflow_name=self._context.workflow_name,
-            thread_id=self._thread.id,
-            thread_name=self._thread.name,
-            template_name=self._thread.template_name,
-            last_error=str(error),
-        )
-        # One-shot operator signal (action stays suspended, does not ERROR).
-        # emit_event not set_status: set_status' (command,"FAILED") dedup drops repeats.
-        self._status_manager.emit_event(f"DEVICE_OP.{command}.FAILED", op_context)
-        message = f"device op '{command}' failed with {type(error).__name__}: {error}"
-        self._op_pause_command = command
+        # The failure itself is the command's COMMAND.<device>.FAILED; the thread's pause says where it stopped.
+        is_device_op = site in (PauseSite.DEVICE_OP, PauseSite.COMMAND_SAVE)
+        if site is PauseSite.COMMAND_SAVE:
+            message = (
+                f"device op '{command}' ran, and saving it failed with {type(error).__name__}: "
+                f"{str(error).rstrip('.')}. RETRY saves it again and sends nothing to the device."
+            )
+        elif is_device_op:
+            message = f"device op '{command}' failed with {type(error).__name__}: {error}"
+        else:
+            message = f"'{command}' ran out of time; RETRY waits again"
+        if is_device_op:
+            self._op_pause_command = command
         group = self._shared_action_group()
         if group is not None:
             group.mark_paused()
-            group.mark_op_paused(command)
+            group.mark_step_paused(site, command if is_device_op else None)
         try:
-            decision = await self._pause_for_error(
-                error, message, PauseSite.DEVICE_OP,
-            )
+            decision = await self._pause_for_error(error, message, site)
         finally:
             self._op_pause_command = None
             if group is not None:
-                group.clear_op_paused()
-        if decision == RecoveryDecision.RETRY_OP:
-            # Un-pause for op-level retry; action-level decisions (RETRY/ABORT_*)
-            # un-pause in _handle_action_error after the body unwinds.
-            self._fire(ThreadEvent.RECOVERY_RETRY)
+                group.clear_step_paused()
+        if decision == RecoveryDecision.RETRY:
+            # Back into the action body to repeat the step; action-level decisions
+            # (CONTINUE/ABORT_*) un-pause in _handle_action_error after the body unwinds.
+            self._fire(ThreadEvent.ACTION_BODY_RESUMED)
         return decision
 
     def _record_move_failure(self, error: Exception) -> None:
@@ -2268,7 +2593,7 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         Invoked from the PAUSE branch of ``_handle_action_error`` just
         before the thread parks in ``_pause_for_error``. Mirrors
         ``_record_unresolvable_deadlock``: when a declarer is wired in
-        (production ``SystemRuntime``) it adds a queryable
+        (the runtime's ``IncidentDeclarer`` in production) it adds a queryable
         ``IncidentCategory.ACTION_FAILED`` record so the failure surfaces
         on every operator surface. When the declarer is ``None`` (test
         fixtures that build threads directly) it is a silent skip -- the
@@ -2302,7 +2627,38 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
                 "falling through to per-thread pause"
             )
 
-    def _record_action_continued(self, error: BaseException) -> None:
+    def _record_auto_spawn_failure(self, unresolved: UnresolvedLocationAction, error: Exception) -> None:
+        """Record an AUTO_SPAWN_FAILED incident; same silent-skip-and-never-propagate contract as the others."""
+        if self._thread_incident_declarer is None:
+            return
+        requested = ", ".join(template.name for template in self._inputs_with_no_thread(unresolved))
+        context = AutoSpawnFailedDetail(
+            requested_labware_name=requested or "unknown", requesting_thread_id=self._thread.id,
+        )
+        try:
+            self._thread_incident_declarer.declare_auto_spawn_failure(
+                self._context.execution_id, context, f"{type(error).__name__}: {error}",
+            )
+        except Exception:
+            orca_logger.exception("declare_auto_spawn_failure failed; the thread still pauses")
+
+    def _record_co_labware_timeout(self) -> None:
+        """Record a CO_LABWARE_TIMEOUT incident; same silent-skip-and-never-propagate contract as the others."""
+        if self._thread_incident_declarer is None or self._assigned_action is None:
+            return
+        context = CoLabwareTimeoutDetail(
+            missing_labware_names=tuple(self._assigned_action.action.missing_input_report()),
+            waited_seconds=self.co_labware_timeout or 0.0,
+            position_id=self._assigned_action.action.location.name,
+        )
+        try:
+            self._thread_incident_declarer.declare_co_labware_timeout(
+                self._context.execution_id, self._thread.id, context,
+            )
+        except Exception:
+            orca_logger.exception("declare_co_labware_timeout failed; the thread still pauses")
+
+    def _record_action_continued(self, error: BaseException, unsaved: UnsavedResult | None = None) -> None:
         """Record an ACTION_CONTINUED incident when the operator carries on.
 
         The ACTION_FAILED incident stays as it is: continuing past a failure is
@@ -2321,6 +2677,9 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
             method_name=self._assigned_method.name,
             error_type=type(error).__name__,
             error_message=str(error),
+            unsaved_command=None if unsaved is None else unsaved.command,
+            unsaved_request=None if unsaved is None else unsaved.request,
+            unsaved_result=None if unsaved is None else unsaved.result,
         )
         try:
             self._thread_incident_declarer.declare_action_continued(
@@ -2352,20 +2711,24 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         published status event is ``THREAD.<id>.PAUSED`` either way --
         the cause is local to the state machine, not on the wire.
         ``_last_error`` is cleared on every decision the thread survives
-        (``RETRY``, ``RETRY_OP``, ``CONTINUE``, ``ABORT_ACTION``,
+        (``RETRY``, ``RETRY_ACTION``, ``CONTINUE``, ``ABORT_ACTION``,
         ``ABORT_METHOD``) because the thread keeps running and a later clean
         completion must not leak the recovered error onto its snapshot. Only
         ``ABORT_THREAD`` (terminal) preserves it, so ``thread.last_error`` keeps
         attributing the abort to its cause after the thread lands ``ABORTED``.
         """
-        # The longest wait in the system: it ends when a person decides. The
-        # two body-level sites resume into the device they are holding.
-        if site not in (PauseSite.ACTION_BODY, PauseSite.DEVICE_OP):
+        # The longest wait in the system: it ends when a person decides. The sites inside an
+        # action keep its device, because RETRY resumes there.
+        if site not in (
+            PauseSite.ACTION_BODY, PauseSite.DEVICE_OP, PauseSite.COMMAND_SAVE, PauseSite.ACTION_WAIT,
+            PauseSite.CO_LABWARE_WAIT, PauseSite.CO_LABWARE_LOST,
+        ):
             self._holdover.release_current()
         self._last_error = error
         self._pause_message = message
         self._pause_site = site
         self._resume_event.clear()
+        self._decided_by_group = self._group_deciding(site)
         self._fire(event)
         orca_logger.error("Thread %s paused: %s", self.name, message)
         # A paused thread is exactly when a person reaches into the deck, so
@@ -2385,7 +2748,7 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
                 },
             )
 
-        decision = await self._await_recovery_decision(site)
+        decision = await self._await_recovery_decision()
         orca_logger.info("Thread %s resuming with decision: %s", self.name, decision.name)
 
         self._recovery_decision = None
@@ -2395,28 +2758,53 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
             self._pause_site = None
         return decision
 
-    async def _await_recovery_decision(self, site: PauseSite) -> RecoveryDecision:
+    def _group_deciding(self, site: PauseSite | None) -> SharedActionCoordination | None:
+        """The paused action group that decides this pause, or None when the thread decides alone."""
+        group = self._shared_action_group()
+        if group is not None and group.action_paused.is_set() and site in (
+            PauseSite.ACTION_BODY, PauseSite.DEVICE_OP, PauseSite.COMMAND_SAVE, PauseSite.ACTION_WAIT,
+        ):
+            return group
+        return None
+
+    async def _await_recovery_decision(self) -> RecoveryDecision:
         """Wait for the recovery decision, from the right channel.
 
         A shared action that paused as a group takes ONE decision, fed by any
-        participant, and the group's pause is always at the action body or the
-        device call inside it -- those are the only two sites that mark it.
+        participant, and the group's pause is always at the action body or one
+        step inside it (a device call, its save, or a wait): only those sites mark it.
 
-        ``site`` is what keeps a thread paused somewhere else off that channel.
+        The group is fixed when the pause begins (`_group_deciding`), from the
+        pause's site, and a contributor leaving the group afterwards does not
+        move it. The site keeps a thread paused somewhere else off that channel.
         A contributor whose own move failed while the owner's action was also
         paused would otherwise consume the owner's decision: it would take an
         ABORT_METHOD its own site does not honour, fail itself on it, and leave
         the owner waiting on a decision that had already been eaten.
+
+        A stop ends the wait as ABORT_THREAD, as a stop on an error-paused thread
+        does: one requested while the action was still running reaches the pause too.
         """
-        group = self._shared_action_group()
-        if (
-            group is not None and group.action_paused.is_set()
-            and site in (PauseSite.ACTION_BODY, PauseSite.DEVICE_OP)
-        ):
+        aborts_on_stop = asyncio.create_task(self._abort_on_stop())
+        try:
+            decision = await self._recovery_decision_from_its_channel()
+        finally:
+            aborts_on_stop.cancel()
+        # An operator's decision that beat the watcher must not outlive the stop.
+        return RecoveryDecision.ABORT_THREAD if self._stop_event.is_set() else decision
+
+    async def _abort_on_stop(self) -> None:
+        await self._stop_event.wait()
+        self._deliver_decision(RecoveryDecision.ABORT_THREAD)
+
+    async def _recovery_decision_from_its_channel(self) -> RecoveryDecision:
+        group = self._decided_by_group
+        if group is not None:
             await group.decision_ready.wait()
+            self._decided_by_group = None
             decision = group.decision
             assert decision is not None
-            # Consume: clear paused + decision so a RETRY/RETRY_OP re-drive is not seen as
+            # Consume: clear paused + decision so a RETRY/RETRY_ACTION re-drive is not seen as
             # still-paused (a second recovery would be lost) and awaits a fresh decision.
             group.reset_decision()
             group.action_paused.clear()
@@ -2440,10 +2828,9 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         transitions the thread to ``LabwareThreadStatus.ABORTED`` and
         returns -- so the workflow sees a terminal-but-non-failure
         thread instead of the hang-then-FAILED outcome that re-raising
-        the original error would produce. Bug TTT regression covers
-        the action-error path; this helper extends the same fix to
-        action-resolution, move-failure, wait-step timeout,
-        branch-step timeout, and auto-spawn capacity-exceeded paths.
+        the original error would produce. Used by the action-resolution,
+        move-failure, wait-step timeout, branch-step timeout, and auto-spawn
+        capacity-exceeded paths.
         """
         if decision == RecoveryDecision.ABORT_THREAD:
             raise _ThreadAbortedSignal(str(error))
@@ -2451,10 +2838,10 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
     async def hold_if_pause_requested(self, message: str | None = None) -> bool:
         """Hold a running action body where the operator already asked it to stop.
 
-        A manual step, or a simulated step's wait, is the safest point the
-        thread ever occupies: nothing is in motion. Returning from a confirm
-        straight into the rest of the body would run it after the operator
-        asked the execution to stop. True when the body carries on here.
+        Between two instrument commands, or at a manual step, nothing is in
+        motion. Carrying on from there into the rest of the body would run it
+        after the operator asked the execution to stop. True when the body
+        carries on here.
         """
         if not self._pause_request_event.is_set():
             return True
@@ -2479,8 +2866,8 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         """Pause at a safe point and wait for resume, or for a stop.
 
         Used by boundary checkpoints (between methods, between actions), the
-        AWAITING_CO_THREADS wait loop, and a confirmed manual step inside an
-        action body. ``resume_event`` says where the thread goes next: the
+        AWAITING_CO_THREADS wait loop, and the holds inside an action body.
+        ``resume_event`` says where the thread goes next: the
         boundary default re-resolves the action location, while a held action
         body returns to EXECUTING_ACTION because it never left its device.
         Racing the stop event keeps a stop from having to wait out a resume
@@ -2537,55 +2924,55 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
             return FailurePolicy.PAUSE
 
     @staticmethod
-    def _should_force_pause(error: BaseException) -> bool:
-        """True when the error is an external coordination signal that
-        must override a declared ``FailurePolicy.ABORT`` and route to PAUSE.
+    def _pauses_under_any_policy(error: BaseException) -> bool:
+        """Whether the error pauses the thread even under ``FailurePolicy.ABORT``.
 
-        See ``orca.workflow_models.error_policy_overrides`` for the marker
-        base. The check is centralized here so every policy-ABORT branch
-        site (action body, move action, generator consumption, wait-step
-        timeout) applies the override identically.
+        Every policy-ABORT branch (action body, device call, move, thread step,
+        wait-step timeout) asks here. See ``error_policy_overrides``.
         """
+        return isinstance(error, PausesUnderAnyPolicyError)
+
+    @staticmethod
+    def _should_force_pause(error: BaseException) -> bool:
+        """True when the error is an external coordination signal: nothing failed, so no failure is recorded."""
         return isinstance(error, OverrideWithPauseError)
 
     async def _handle_action_error(self, error: Exception) -> None:
         """Handle an action failure based on the current method's failure policy.
 
         ABORT policy: delegates reservation release to the method and re-raises,
-        unless the error is an ``OverrideWithPauseError`` subclass. External
-        coordination signals (gateway control, maintenance windows, operator
-        HALT) route through PAUSE regardless of the declared policy: the
-        method itself did not fail, so the workflow author's ABORT intent
-        does not apply. See ``error_policy_overrides`` for the full
-        taxonomy.
+        unless the error is a ``PausesUnderAnyPolicyError``: a device that went
+        offline, or an external coordination signal (gateway control, a
+        maintenance window, operator HALT). Those pause whatever the method
+        declared. See ``error_policy_overrides``.
 
         PAUSE policy: pauses the thread, waits for an operator decision, then
         delegates the full recovery lifecycle to ExecutingMethod.handle_recovery().
 
-        RETRY behavior: ``ExecutingMethod.handle_recovery(RETRY)`` re-runs
-        the action body from the top. The thread's reservation is held
+        RETRY_ACTION behavior: ``ExecutingMethod.handle_recovery(RETRY_ACTION)``
+        re-runs the action body from the top. The thread's reservation is held
         across the PAUSE-RETRY cycle; the operator decides via SKIP or
         ABORT_THREAD if the reservation should be released instead. For
         ``OverrideWithPauseError`` against a still-held flag (gateway
-        still controlling the device, etc.), RETRY raises the same signal
+        still controlling the device, etc.), RETRY_ACTION raises the same signal
         and re-pauses -- operator-paced loop, no auto-backoff.
 
-        Bug TTT: ABORT_THREAD is operator-initiated; ``_check_abort_thread``
+        ABORT_THREAD is operator-initiated; ``_check_abort_thread``
         raises the ``_ThreadAbortedSignal`` sentinel that ``start`` catches
         and translates to ``LabwareThreadStatus.ABORTED``. Re-raising the
-        original action error (the pre-fix path) landed the execution at
-        FAILED and left the thread frozen in the transient
-        ``RESOLVING_ACTION_LOCATION`` state set just below.
+        original action error would land the execution at FAILED and leave
+        the thread frozen in the transient ``RESOLVING_ACTION_LOCATION`` state
+        set just below.
         """
         assert self._assigned_method is not None
         assert self._assigned_action is not None
 
         if isinstance(error, OperationDecisionSignal):
             # The op-recovery seam already paused + recorded this; apply the
-            # action-level decision without re-pausing (RETRY_OP never reaches here).
+            # action-level decision without re-pausing (RETRY never reaches here).
             self._fire(_recovery_event_for(error.decision))
             if error.decision == RecoveryDecision.CONTINUE:
-                self._record_action_continued(error.original_error)
+                self._record_action_continued(error.original_error, error.unsaved)
             await self._assigned_method.handle_recovery(error.decision)
             self._assigned_action = None
             self._check_abort_thread(error.decision, error.original_error)
@@ -2593,7 +2980,8 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
 
         policy = self._assigned_method.current_failure_policy
 
-        if policy == FailurePolicy.ABORT and not self._should_force_pause(error):
+        if policy == FailurePolicy.ABORT and not self._pauses_under_any_policy(error):
+            self._failed_under_abort_policy = True
             await self._assigned_method.handle_recovery(RecoveryDecision.ABORT_THREAD)
             self._assigned_action = None
             raise error
@@ -2637,6 +3025,11 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         # route to all of them, the first grant wins (a hotel's shelves).
         end_locations = self._thread.end_locations
         while self.current_location not in end_locations:
+            if self._pause_request_event.is_set():
+                await self._handle_manual_pause()
+                if self._stop_event.is_set():
+                    self._handle_thread_stop()
+                    return
             await self._fire_and_execute_move_to(
                 ThreadEvent.MOVE_TO_END_REQUESTED,
                 end_locations,
@@ -2657,7 +3050,7 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         #     is what the next receiver would adopt.
         #   - `end_manual_remove` (bare-string default or explicit
         #     MANUAL_REMOVE) -> ManualRemoveSpawn.dispose: sim modes call
-        #     `dispose_labware` exactly as the legacy branch did; LIVE
+        #     `dispose_labware`; LIVE
         #     polls `end_location.labware` waiting for
         #     `labware_discharge` to clear the slot. The thread parks at
         #     `AWAITING_MANUAL_REMOVE` for the duration of the wait so
@@ -2685,16 +3078,9 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
             return
 
         if end_spawn is not None:
-            # The dispose released the labware from the world; retire its
-            # position so a reboot does not resurrect it at the end slot.
-            self._labware_location_service.retire(self._thread.labware)
-            if self._labware_placer is not None:
-                # The dispose clears the site but says nothing to the driver.
-                # A deck site left holding it materialized collides with
-                # whatever the next receiver projects onto the same slot.
-                await self._labware_placer.project_devices(
-                    self._thread.labware, self.current_location,
-                )
+            # The labware leaves the lab: its slot, its position and the device's deck let it go, and the system
+            # stops listing it. In LIVE the operator's discharge already did the last part.
+            await self._require_pipeline().placer.left(self._thread.labware, self.current_location)
 
         # Update registry state and route any undelivered items to a fresh receiver
         if self._labware_registry is not None:
@@ -2727,14 +3113,15 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
                                         workflow_name=self._context.workflow_name,
                                         thread_id=self._thread.id,
                                         thread_name=self._thread.name,
-                                        template_name=self._thread.template_name)
+                                        template_name=self._thread.template_name,
+                                        group_id=self._thread.group_id)
 
         while True:
             if self._plan_is_stale():
                 return False
             executable_move_action = self._move_action.executable(
                 self._status_manager, context,
-                self._labware_location_service, self._require_placer(),
+                self._labware_location_service, self._require_pipeline(),
                 self._move_handler,
                 pause_checkpoint=self,
             )
@@ -2744,10 +3131,11 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
             except Exception as error:
                 if (
                     self._effective_failure_policy() == FailurePolicy.ABORT
-                    and not self._should_force_pause(error)
+                    and not self._pauses_under_any_policy(error)
                 ):
                     self._move_action.reservation.release_reservation()
                     self._move_action = None
+                    self._failed_under_abort_policy = True
                     raise error
                 message = f"move failed with {type(error).__name__}: {error}"
                 # No incident when a coordination signal (gateway control, HALT)
@@ -2776,29 +3164,37 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
 
     async def _await_move_target(self) -> bool:
         """Wait for the move's target to clear. False once the plan no longer
-        starts where the labware is.
+        starts where the labware is, or the thread was stopped or asked to pause.
 
         The wait races a wake-up, because the labware landing on this very
         target is one of the things an operator can do: waiting for a position
-        to be vacated by the plate that belongs on it never ends.
+        to be vacated by the plate that belongs on it never ends. A wake that
+        leaves the plan good keeps waiting.
         """
         assert self._move_action is not None
-        self._labware_moved_event.clear()
-        if self._plan_is_stale():
-            return False
-        waiters = [
-            asyncio.ensure_future(self._move_action.target.wait_until_available()),
-            asyncio.ensure_future(self._labware_moved_event.wait()),
-        ]
-        try:
-            await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
-        finally:
-            await drain_cancelled_waiters(*waiters)
-        return not self._plan_is_stale()
+        while True:
+            self._labware_moved_event.clear()
+            if self._plan_is_stale():
+                return False
+            target_cleared = asyncio.ensure_future(self._move_action.target.wait_until_available())
+            waiters = [
+                target_cleared,
+                asyncio.ensure_future(self._labware_moved_event.wait()),
+                asyncio.ensure_future(self._stop_event.wait()),
+                asyncio.ensure_future(self._pause_request_event.wait()),
+            ]
+            try:
+                await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                await drain_cancelled_waiters(*waiters)
+            if self._stop_event.is_set() or self._pause_request_event.is_set() or self._plan_is_stale():
+                return False
+            if target_cleared.done() and not target_cleared.cancelled():
+                return True
 
     async def _handle_deadlock(self) -> bool:
-        """Reroute a deadlocked move to a parking spot. False when the plan
-        went stale while waiting for one, which can otherwise be hours."""
+        """Reroute a deadlocked move to a parking spot. False when the thread is stopped, the
+        plan went stale or a pause arrived while waiting for one, which can otherwise be hours."""
         assert self._move_action is not None
         orca_logger.info(f"Thread {self._thread.name} - Deadlock detected")
         old_target = self._move_action.target
@@ -2806,7 +3202,7 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         try:
             self._move_action = await self._move_handler.handle_deadlock(
                 self._thread.id, self._move_action, previous_location,
-                abandon_when=self._plan_is_stale,
+                abandon_when=self._withdraw_move_when(None),
             )
         except MoveAbandonedError:
             return False
@@ -2837,6 +3233,10 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         return self._thread.submission_id
 
     @property
+    def group_id(self) -> str | None:
+        return self._thread.group_id
+
+    @property
     def execution_context(self) -> WorkflowExecutionContext:
         return self._context
 
@@ -2862,6 +3262,7 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         if self._thread.labware_template is None:
             return
         method.assign_thread(self._thread.labware_template, self._thread)
+        self._bound_to_bring_labware_to = method
 
     def my_slot(self) -> IMySlotView | None:
         if self._labware_registry is None:
@@ -2899,9 +3300,9 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
     async def _vacate_for_acquisition_yield(self) -> None:
         """Yield for a deadlock-flagged action acquisition (rule-7 amendment):
         park this thread's plate to a resolution pad so the drain it defers can
-        complete, then re-resolve. Residents cannot move and threads already at
-        a pad have nothing to vacate; both back off briefly instead -- R1's
-        starvation ratchet rotates the flag to the thread whose park helps.
+        complete, then re-resolve. A resident cannot move, a thread at a pad has
+        nothing to vacate, and a plate may have no pad it can reach. Each says so
+        and backs off, so the detector picks another thread or none.
         """
         template = self._thread.thread_template
         system_map = self._move_handler.system_map
@@ -2910,11 +3311,13 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
             template.start_reuse_existing or template.immovable
         )
         if immobile or system_map.is_deadlock_resolution_location(current.position_id):
+            self._move_handler.note_cannot_yield(self._thread.id)
             await asyncio.sleep(0.5)
             return
         paths = system_map.get_shortest_paths_to_deadlock_resolution(current.position_id)
         pad_ids = {path[-1] for path in paths if len(path) > 1}
         if not pad_ids:
+            self._move_handler.note_cannot_yield(self._thread.id)
             await asyncio.sleep(0.5)
             return
         pads = [self._move_handler.get_location(pid) for pid in pad_ids]
@@ -2938,6 +3341,23 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         targets = [target] if isinstance(target, Location) else list(target)
         await self._fire_and_execute_move_to(
             event, targets, abandon_when=abandon_when,
+        )
+
+    async def _hand_the_slot_on(self) -> None:
+        """Give a full or used-up receiver's slot to the next receiver, if the slot hands off when full.
+
+        This receiver goes on with its later steps; whatever overflowed past it is routed now.
+        """
+        self._stopped_taking_contributions = False
+        if self._labware_registry is None:
+            return
+        slot = self._labware_registry.get_slot(self._my_slot_key())
+        if slot is None or slot.active_thread is not self or not slot.hands_off_when_full():
+            return
+        self._ended_spent = slot.receiver_spent
+        self._handed_the_slot_on = True
+        await slot.drain_for_handoff(
+            self._auto_spawn_callback, self._thread.run_mode, completing_thread=self._thread,
         )
 
     async def _yield_adapter(
@@ -2966,17 +3386,21 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
             slot = self._labware_registry.get_slot(self._my_slot_key())
             if slot is None:
                 return True
+            # After a hand-off the slot's queue holds the next receiver's work, not this one's.
+            if self._handed_the_slot_on:
+                return False
             if not slot.queue.empty():
                 return True
             if slot.is_closed:
                 return False
             # Depletion-stop: this receiver's labware is used up, so waiting for
             # work it cannot serve strands whatever overflowed past it.
-            if slot.receiver_spent:
-                return False
             # Capacity-stop: a full receiver finalizes now instead of looping for
             # a contribution the policy will overflow into a fresh receiver.
-            return slot.has_room()
+            if slot.receiver_spent or not slot.has_room():
+                self._stopped_taking_contributions = True
+                return False
+            return True
 
         user_ctx = ThreadContext(
             registry, self._variable_store, self._context.execution_id,
@@ -2991,6 +3415,8 @@ class ExecutingLabwareThread(ILabwareThread, IThreadContext):
         async for item in yield_func(user_ctx):
             if self._stop_event.is_set():
                 break
+            if self._stopped_taking_contributions:
+                await self._hand_the_slot_on()
             templates = item if isinstance(item, list) else [item]
             for template in templates:
                 if self._stop_event.is_set():
@@ -3063,18 +3489,16 @@ class ExecutingThreadFactory:
     # Class-level default so test code that bypasses __init__ via __new__()
     # observes None rather than AttributeError.
     _residency_check: ResidencyCheck | None = None
+    _status_recorder: IThreadStatusRecorder | None = None
 
     def __init__(self,
                  event_bus: IEventBus,
                  move_handler: MoveHandler,
                  status_manager: StatusManager,
-                 reservation_coordinator: IThreadReservationCoordinator,
                  actions_resolver: DynamicResourceActionResolver,
                  executing_method_registry: ExecutingMethodRegistry,
-                 system_map: SystemMap,
                  labware_location_service: ILabwareLocationService,
                  coordination_config: CoordinationConfig | None = None,
-                 method_factory: MethodFactory | None = None,
                  method_registry: IMethodRegistry | None = None,
                  variable_store: IVariableResolver | None = None,
                  register_method_template: Callable[[str, MethodTemplate], None] | None = None,
@@ -3084,42 +3508,40 @@ class ExecutingThreadFactory:
         self._actions_resolver = actions_resolver
         self._move_handler = move_handler
         self._status_manager = status_manager
-        self._reservation_coordinator = reservation_coordinator
-        self._system_map = system_map
         self._executing_method_registry = executing_method_registry
         self._labware_location_service = labware_location_service
         self._coordination_config = coordination_config
-        self._method_factory = method_factory
         self._method_registry = method_registry
         self._variable_store = variable_store
         self._register_method_template = register_method_template
         self._residency_check = residency_check
-        # S3 Round 1.5: late-bound. The factory is constructed during
+        # Late-bound. The factory is constructed during
         # SystemBuild (SdkToSystemBuilder), BEFORE SystemRuntime exists.
-        # SystemRuntime.__init__ calls set_thread_incident_declarer(self) so every
+        # SystemRuntime.__init__ calls set_thread_incident_declarer so every
         # thread minted after construction (i.e., during execution) gets
         # the back-ref. Threads minted before set_thread_incident_declarer fires
         # would get None -- there are none in practice (threads spawn only
         # during execution), but the optional-None type makes test fixtures
         # that bypass SystemRuntime trivial.
         self._thread_incident_declarer: IThreadIncidentDeclarer | None = None
-        self._labware_placer: LabwarePlacer | None = None
+        self._status_recorder: IThreadStatusRecorder | None = None
+        self._command_pipeline: SystemCommandPipeline | None = None
 
-    def set_labware_placer(self, placer: LabwarePlacer) -> None:
-        """Set the placement chokepoint back-reference (late-bound by System).
-
-        Every thread minted after this returns projects its spawn-placed labware
-        onto the LH deck (no-op off a liquid handler) through it."""
-        self._labware_placer = placer
+    def set_command_pipeline(self, pipeline: SystemCommandPipeline) -> None:
+        """Set the system's command pipeline (late-bound by System); every thread minted after this moves and places through it."""
+        self._command_pipeline = pipeline
 
     def set_thread_incident_declarer(self, declarer: IThreadIncidentDeclarer) -> None:
         """Set the post-construction back-reference for thread-incident recording.
 
-        Called by SystemRuntime.__init__ once it has constructed itself
-        and can serve as the IThreadIncidentDeclarer implementation. Every
+        Called by SystemRuntime.__init__ once it has built its
+        IncidentDeclarer. Every
         thread created after this returns will receive the back-ref.
         """
         self._thread_incident_declarer = declarer
+
+    def set_thread_status_recorder(self, recorder: IThreadStatusRecorder) -> None:
+        self._status_recorder = recorder
 
     def create_instance(self,
                         instance: LabwareThreadInstance,
@@ -3144,8 +3566,9 @@ class ExecutingThreadFactory:
             executing_method_registry=self._executing_method_registry,
             variable_store=self._variable_store,
             register_method_template=self._register_method_template,
-            labware_placer=self._labware_placer,
+            command_pipeline=self._command_pipeline,
             residency_check=self._residency_check,
+            status_recorder=self._status_recorder,
         )
 
 
@@ -3165,7 +3588,11 @@ class IExecutingThreadRegistry(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def set_labware_placer(self, placer: LabwarePlacer) -> None:
+    def set_thread_status_recorder(self, recorder: IThreadStatusRecorder) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def set_command_pipeline(self, pipeline: SystemCommandPipeline) -> None:
         """Forward the placement chokepoint back-reference to the factory."""
         raise NotImplementedError
 
@@ -3191,10 +3618,13 @@ class ExecutingThreadRegistry(IExecutingThreadRegistry):
         """
         self._factory.set_thread_incident_declarer(declarer)
 
-    def set_labware_placer(self, placer: LabwarePlacer) -> None:
+    def set_thread_status_recorder(self, recorder: IThreadStatusRecorder) -> None:
+        self._factory.set_thread_status_recorder(recorder)
+
+    def set_command_pipeline(self, pipeline: SystemCommandPipeline) -> None:
         """Forward the placement chokepoint down to the factory (late-bound by
         System after construction, like the incident declarer)."""
-        self._factory.set_labware_placer(placer)
+        self._factory.set_command_pipeline(pipeline)
 
     def create_executing_thread(self, thread_id: str, context: WorkflowExecutionContext) -> ExecutingLabwareThread:
         """Wrap the instance registered under ``thread_id``, reusing a live wrapper.

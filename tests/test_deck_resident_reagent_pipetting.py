@@ -8,6 +8,8 @@ with the PLR driver (only transit labware is, via move_plate on arrival), so
 `aspirate(reagent.well(...))` raised `Resource '<reagent>' not found`.
 """
 
+from orca.sdk.build import build_system_over
+from orca.events.event_bus import EventBus
 import pytest
 from pydantic import JsonValue
 
@@ -15,17 +17,12 @@ import orca.orca as orca
 from orca.spawn import DISPENSE, LEAVE_IN_PLACE, REUSE_EXISTING
 from cheshire_drivers import DeckLayoutConfig, DeckResourceConfig, Teachpoint
 from cheshire_drivers import RecordingLiquidHandlerDriver
-from cheshire_drivers.plr import ChatterboxLiquidHandlerDriver
 from cheshire_drivers.liquid_handler_models import GetDeckStateRequest
 from orca.devices.device_interfaces import ILiquidHandler
 from orca.devices.devices import LiquidHandler, Storage
 from orca.resource_models.plate_pad import PlatePad
 from orca.resource_models.transporter import Transporter
-from orca.runtime.device_factory_protocol import DriverPairElement
-from orca.runtime.device_factory_context import use_device_factory
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.store_factory import InMemoryRuntimeStoreFactory
-from orca.runtime.system_runtime import SystemRuntime
+from orca.modes.run_modes import WorkflowRunMode
 from orca.sdk.build import Topology
 from orca.sdk.labware import PlateTemplate, TipRackTemplate
 from orca.state.records import LabwareInitialState
@@ -33,6 +30,14 @@ from orca.workflow_models.action_context import ActionContext
 from orca.workflow_models.method_context import MethodContext
 from orca.workflow_models.thread_context import ThreadContext
 from tests.test_helpers import run_to_quiescence, named_for_template
+from tests.setup_package import package_stores, write_deck_layouts, write_teachpoints
+from tests.setup_package import with_teachpoints, with_deck_layouts
+from tests.memory_activity import memory_ops_store, memory_runtime
+from tests.memory_activity import memory_unsaved_positions
+from tests.real_device_path import the_real_device_path
+from tests.recording_handler import RecordingHandler
+from orca.resource_models.labware_service_interface import ILabwareService
+from tests.memory_activity import memory_labware_service
 
 
 DECK_CONFIG = DeckLayoutConfig(
@@ -49,44 +54,31 @@ ARM_DECK_ENTRY = "lh/carrier-7-2"
 
 
 async def _build(recorder: RecordingLiquidHandlerDriver, joins: int):
-    stores = InMemoryRuntimeStoreFactory()
+    stores = package_stores()
 
     sample_plate = PlateTemplate(
         "sample_plate", labware_type="Cor_Falcon_96_wellplate_340ul_Fb_Black")
     reservoir = PlateTemplate(
         "reservoir", labware_type="AGenBio_1_troughplate_190000uL_Fl")
 
-    class _LhDeckFactory:
-        def __init__(self, lh: RecordingLiquidHandlerDriver) -> None:
-            self._lh = lh
-            from orca.runtime.device_factory import SimDeviceFactory
-            self._fallback = SimDeviceFactory()
+    the_real_device_path().simulate_with("lh", recorder)
+    lh = with_deck_layouts(LiquidHandler(
+        "lh",
+        deck_layout="default",
+    ), write_deck_layouts(stores, "lh", {"default": DECK_CONFIG}))
+    stacker = Storage("stacker")
+    waste = Storage("waste")
+    pad = PlatePad("pad")
 
-        def build_drivers(self, device_type: str, name: str, *, deck_modeling: bool = False):
-            if device_type == "liquid_handler":
-                return self._lh, self._lh
-            return self._fallback.build_drivers(device_type, name, deck_modeling=deck_modeling)
-
-    with use_device_factory(_LhDeckFactory(recorder)):
-        lh = LiquidHandler(
-            "lh",
-            deck_layout_store=stores.deck_layouts("lh", seed={"default": DECK_CONFIG}),
-            deck_layout="default",
-        )
-        stacker = Storage("stacker")
-        waste = Storage("waste")
-        pad = PlatePad("pad")
-
-        from cheshire_drivers import CartesianCoordinates as C
-        arm = Transporter(
-            "arm",
-            teachpoint_store=stores.teachpoints("arm", seed=[
-                Teachpoint("stacker", C(0, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("pad", C(200, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint(ARM_DECK_ENTRY, C(400, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("waste", C(600, 200, 300, 0, 90, 180), orientation="right"),
-            ]),
-        )
+    from cheshire_drivers import CartesianCoordinates as C
+    arm = with_teachpoints(Transporter(
+        "arm",
+    ), write_teachpoints(stores, "arm", [
+            Teachpoint("stacker", C(0, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("pad", C(200, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint(ARM_DECK_ENTRY, C(400, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("waste", C(600, 200, 300, 0, 90, 180), orientation="right"),
+        ]))
 
     @orca.action(
         device=lh,
@@ -124,7 +116,7 @@ async def _build(recorder: RecordingLiquidHandlerDriver, joins: int):
         transporters=[arm],
     )
     build = await orca.build_system(
-        name="Resident Reagent", workflow=workflow, topology=topology, stores=stores)
+        name="Resident Reagent", workflow=workflow, topology=topology, stores=stores, event_bus=EventBus(), ops_history_store=memory_ops_store())
     return build, lh
 
 
@@ -133,11 +125,11 @@ async def _build(recorder: RecordingLiquidHandlerDriver, joins: int):
 async def test_resident_reagent_is_seeded_into_the_plr_deck() -> None:
     """After a resident reagent binds to its deck site, the driver deck knows
     about it (so liquid ops can address it). RED today: it is never seeded."""
-    recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    recorder = RecordingHandler()
     build, lh = await _build(recorder, joins=1)
-    runtime = SystemRuntime(build.system, event_bus=build.event_bus)
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
     await runtime.start()
-    record = await runtime.submit_workflow("resident_reagent_wf", mode=WorkflowRunMode.PURE_SIM)
+    record = await runtime.submit_workflow("resident_reagent_wf", mode=WorkflowRunMode.CHECK_RUN)
     await run_to_quiescence(runtime, record.id)
 
     deck = await lh.driver.get_deck_state(GetDeckStateRequest())
@@ -152,11 +144,11 @@ async def test_resident_reagent_is_seeded_into_the_plr_deck() -> None:
 async def test_resident_reagent_is_reused_not_respawned() -> None:
     """Two methods both consume the resident reagent; it must bind ONCE (same
     instance), not spawn a fresh reagent per join."""
-    recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    recorder = RecordingHandler()
     build, _ = await _build(recorder, joins=2)
-    runtime = SystemRuntime(build.system, event_bus=build.event_bus)
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
     await runtime.start()
-    record = await runtime.submit_workflow("resident_reagent_wf", mode=WorkflowRunMode.PURE_SIM)
+    record = await runtime.submit_workflow("resident_reagent_wf", mode=WorkflowRunMode.CHECK_RUN)
     await run_to_quiescence(runtime, record.id)
 
     reservoir_threads = [
@@ -183,11 +175,12 @@ async def build_pipetting_bench(
     *,
     transfer: bool = False,
     reservoir_volume: float | None = None,
+    labware_service: ILabwareService | None = None,
 ):
     """``reservoir_volume`` declares what the reservoir starts with, which is
     what gives it a contents baseline: without one it reads UNKNOWN forever and
     a test asserting anything else about its provenance asserts nothing."""
-    stores = InMemoryRuntimeStoreFactory()
+    stores = package_stores()
 
     sample_plate = PlateTemplate(
         "sample_plate", labware_type="Cor_Falcon_96_wellplate_340ul_Fb_Black")
@@ -203,37 +196,24 @@ async def build_pipetting_bench(
     tips = TipRackTemplate(
         "tips", labware_type="hamilton_96_tiprack_10uL_filter", with_tips=True)
 
-    class _LhDeckFactory:
-        def __init__(self, lh: RecordingLiquidHandlerDriver) -> None:
-            self._lh = lh
-            from orca.runtime.device_factory import SimDeviceFactory
-            self._fallback = SimDeviceFactory()
+    the_real_device_path().simulate_with("lh", recorder)
+    lh = with_deck_layouts(LiquidHandler(
+        "lh",
+        deck_layout="default",
+    ), write_deck_layouts(stores, "lh", {"default": DECK_CONFIG_PIPETTE}))
+    stacker = Storage("stacker")
+    waste = Storage("waste")
+    pad = PlatePad("pad")
 
-        def build_drivers(self, device_type: str, name: str, *, deck_modeling: bool = False):
-            if device_type == "liquid_handler":
-                return self._lh, self._lh
-            return self._fallback.build_drivers(device_type, name, deck_modeling=deck_modeling)
-
-    with use_device_factory(_LhDeckFactory(recorder)):
-        lh = LiquidHandler(
-            "lh",
-            deck_layout_store=stores.deck_layouts("lh", seed={"default": DECK_CONFIG_PIPETTE}),
-            deck_layout="default",
-        )
-        stacker = Storage("stacker")
-        waste = Storage("waste")
-        pad = PlatePad("pad")
-
-        from cheshire_drivers import CartesianCoordinates as C
-        arm = Transporter(
-            "arm",
-            teachpoint_store=stores.teachpoints("arm", seed=[
-                Teachpoint("stacker", C(0, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("pad", C(200, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint(ARM_DECK_ENTRY, C(400, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("waste", C(600, 200, 300, 0, 90, 180), orientation="right"),
-            ]),
-        )
+    from cheshire_drivers import CartesianCoordinates as C
+    arm = with_teachpoints(Transporter(
+        "arm",
+    ), write_teachpoints(stores, "arm", [
+            Teachpoint("stacker", C(0, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("pad", C(200, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint(ARM_DECK_ENTRY, C(400, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("waste", C(600, 200, 300, 0, 90, 180), orientation="right"),
+        ]))
 
     action_inputs = [sample_plate, reservoir, tips] + (
         [dest_reservoir] if transfer else [])
@@ -301,8 +281,9 @@ async def build_pipetting_bench(
         locations={"stacker": stacker, "pad": pad, "lh": lh, "waste": waste},
         transporters=[arm],
     )
-    build = await orca.build_system(
-        name="Resident Pipetting", workflow=workflow, topology=topology, stores=stores)
+    build = await build_system_over(
+        name="Resident Pipetting", workflow=workflow, topology=topology, stores=stores, event_bus=EventBus(), ops_history_store=memory_ops_store(),
+        labware_service=labware_service or memory_labware_service(), unsaved_positions=memory_unsaved_positions())
     return build, lh
 
 
@@ -313,11 +294,11 @@ async def test_pipette_from_resident_reagent_completes() -> None:
     resident rack. Before the seeding fix this raised Resource-not-found and the
     thread errored; now the driver deck holds both, so the workflow completes and
     the aspirate reaches the driver."""
-    recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    recorder = RecordingHandler()
     build, _ = await build_pipetting_bench(recorder)
-    runtime = SystemRuntime(build.system, event_bus=build.event_bus)
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
     await runtime.start()
-    record = await runtime.submit_workflow("pipetting_wf", mode=WorkflowRunMode.PURE_SIM)
+    record = await runtime.submit_workflow("pipetting_wf", mode=WorkflowRunMode.CHECK_RUN)
     statuses = await run_to_quiescence(runtime, record.id)
 
     assert statuses, "no threads were created"
@@ -350,11 +331,11 @@ async def test_pipette_round_trip_issues_correct_commands() -> None:
     via IWell is not possible here -- the driver mutates its own PLR well, a
     different object than ctx.plate() exposes (see docs/plr-two-entrances.md) --
     so the driver command is the reachable proof the pipetting was issued."""
-    recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    recorder = RecordingHandler()
     build, _ = await build_pipetting_bench(recorder)
-    runtime = SystemRuntime(build.system, event_bus=build.event_bus)
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
     await runtime.start()
-    record = await runtime.submit_workflow("pipetting_wf", mode=WorkflowRunMode.PURE_SIM)
+    record = await runtime.submit_workflow("pipetting_wf", mode=WorkflowRunMode.CHECK_RUN)
     statuses = await run_to_quiescence(runtime, record.id)
     assert all(s == "COMPLETED" for s in statuses.values()), statuses
 
@@ -373,11 +354,11 @@ async def test_pipette_transfers_between_resident_reagents() -> None:
     reservoir's well A1 and dispense into a SECOND resident reservoir's well A1.
     Proves the transfer is addressed to two distinct on-deck residents (both
     seeded into the driver deck), not a round-trip into one well."""
-    recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    recorder = RecordingHandler()
     build, _ = await build_pipetting_bench(recorder, transfer=True)
-    runtime = SystemRuntime(build.system, event_bus=build.event_bus)
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
     await runtime.start()
-    record = await runtime.submit_workflow("pipetting_wf", mode=WorkflowRunMode.PURE_SIM)
+    record = await runtime.submit_workflow("pipetting_wf", mode=WorkflowRunMode.CHECK_RUN)
     statuses = await run_to_quiescence(runtime, record.id)
     assert all(s == "COMPLETED" for s in statuses.values()), statuses
 
@@ -396,22 +377,22 @@ async def test_resident_reagent_volume_carries_into_the_next_run() -> None:
     run 1's draw, not a full one. This is why a deck resident must not be minted
     fresh per run -- a new id each run would report a half-used trough as full,
     and a half-used tip rack as untouched."""
-    recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    recorder = RecordingHandler()
     build, _ = await build_pipetting_bench(recorder, transfer=True)
-    runtime = SystemRuntime(build.system, event_bus=build.event_bus)
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
     await runtime.start()
 
     def _reservoir_id() -> str:
         return next(
             lw.id for lw in build.system.labwares if lw.template_name == "reservoir")
 
-    first = await runtime.submit_workflow("pipetting_wf", mode=WorkflowRunMode.PURE_SIM)
+    first = await runtime.submit_workflow("pipetting_wf", mode=WorkflowRunMode.CHECK_RUN)
     statuses = await run_to_quiescence(runtime, first.id)
     assert all(s == "COMPLETED" for s in statuses.values()), statuses
     reservoir_id = _reservoir_id()
     after_first = (await runtime.labware.get_well_volumes(reservoir_id)).volumes
 
-    second = await runtime.submit_workflow("pipetting_wf", mode=WorkflowRunMode.PURE_SIM)
+    second = await runtime.submit_workflow("pipetting_wf", mode=WorkflowRunMode.CHECK_RUN)
     statuses = await run_to_quiescence(runtime, second.id)
     assert all(s == "COMPLETED" for s in statuses.values()), statuses
     assert _reservoir_id() == reservoir_id, (

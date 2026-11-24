@@ -17,8 +17,8 @@ from collections.abc import Iterator
 
 import pytest
 
-from orca.runtime import sim_diagnostics
-from orca.runtime.sim_diagnostics import (
+from orca.modes import sim_diagnostics
+from orca.modes.sim_diagnostics import (
     enable_sim_coroutine_diagnostics,
     maybe_enable_sim_coroutine_diagnostics_from_env,
     sim_coroutine_diagnostics_enabled,

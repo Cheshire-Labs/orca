@@ -8,7 +8,7 @@ opens its WebSocket and advertises its devices. It carries `last_seen`,
 `status`, the observed kind label, and the interface advertisement. This is
 the source of truth for "is the device reachable right now."
 
-`DeviceConnectionSource` implements both contracts the unified DeviceRegistry
+`DeviceConnectionSource` implements both contracts Orca's `IDeviceRegistry`
 needs:
 
 - `IDeviceConnectionSource`: the connection-card source feeding
@@ -19,15 +19,14 @@ needs:
 
 Both surfaces share the underlying `DeviceConnectionTracker` so a single
 adapter satisfies both. The hosting layer constructs one instance of this
-class and passes it twice to `RuntimeLifecycle` / `SystemRuntime` (once as
-`gateway_registry`, once as `connection_source`). The orca-core collision
-validator and the DeviceFacade union view consume `IGatewayRegistry`; the
-unified registry consumes `IDeviceConnectionSource`.
+class and passes it twice to `SystemRuntime` (once as
+`gateway_registry`, once as `connection_source`). The DeviceFacade union view
+consumes `IGatewayRegistry`; the unified registry consumes `IDeviceConnectionSource`.
 """
 
 from datetime import datetime, timezone
 
-from orca.runtime.runtime_interface import IDeviceConnectionSource, IGatewayRegistry
+from orca.runtime.registry_protocols import IDeviceConnectionSource, IGatewayRegistry
 from orca.runtime.status_models import (
     ConnectionCard,
     GatewayDeviceEntry,
@@ -36,16 +35,9 @@ from orca.runtime.status_models import (
 
 from orca.gateway.registry.connection_tracker import (
     HEARTBEAT_TOLERANCE_SECONDS as _HEARTBEAT_TOLERANCE_SECONDS,
-    DeviceConnectionTracker,
+    IDeviceConnectionTracker,
 )
 from orca.gateway.registry.snapshot import DeviceSnapshot
-
-# Connections older than this count as disconnected. Chosen to accommodate
-# the typical device-bridge heartbeat cadence (10s nominal) plus burst-loss
-# tolerance; a longer pause is the disconnect-policy's job, not the
-# registry's. The unified registry queries this source on every dispatch,
-# so the threshold also bounds the worst-case "stale view" window.
-
 
 
 def _entry_from_snapshot(snapshot: DeviceSnapshot) -> GatewayDeviceEntry:
@@ -78,6 +70,7 @@ def _connection_card_from_snapshot(
         device_is_connected=snapshot.is_connected,
         device_is_initialized=snapshot.is_initialized,
         device_link_mode=snapshot.link_mode,
+        device_is_busy=snapshot.status == "busy",
     )
 
 
@@ -90,7 +83,7 @@ class DeviceConnectionSource(IDeviceConnectionSource, IGatewayRegistry):
     object as both `gateway_registry` and `connection_source` on the runtime.
     """
 
-    def __init__(self, registry: DeviceConnectionTracker) -> None:
+    def __init__(self, registry: IDeviceConnectionTracker) -> None:
         self._registry = registry
 
     # -- IGatewayRegistry surface -------------------------------------------

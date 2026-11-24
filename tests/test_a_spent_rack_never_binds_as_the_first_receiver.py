@@ -21,7 +21,10 @@ positively reports as short is refused. That carve-out is pinned by
 `tests/unit/test_labware_can_continue.py::test_rack_with_no_seed_in_reach_reports_true`.
 """
 
+from orca.events.event_bus import EventBus
 import pytest
+
+from tests.recording_handler import RecordingHandler
 
 import orca.orca as orca
 from cheshire_drivers import (
@@ -31,16 +34,13 @@ from cheshire_drivers import (
     RecordingLiquidHandlerDriver,
     Teachpoint,
 )
-from cheshire_drivers.plr import ChatterboxLiquidHandlerDriver
 from orca.devices.device_interfaces import ILiquidHandler
 from orca.devices.devices import LiquidHandler, Storage
 from orca.resource_models.capacity import CapacityPolicy, OverflowAction
 from orca.resource_models.labware import LabwareInitialState
 from orca.resource_models.plate_pad import PlatePad
 from orca.resource_models.transporter import Transporter
-from orca.runtime.device_factory_context import use_device_factory
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.store_factory import InMemoryRuntimeStoreFactory
+from orca.modes.run_modes import WorkflowRunMode
 from orca.runtime.system_runtime import SystemRuntime
 from orca.sdk.build import Topology
 from orca.sdk.labware import PlateTemplate, TipRackTemplate
@@ -49,10 +49,13 @@ from orca.workflow_models.action_context import ActionContext
 from orca.workflow_models.method_context import MethodContext
 from orca.workflow_models.thread_context import ThreadContext
 from tests.test_helpers import (
-    RecordingLhDeckFactory,
     run_to_quiescence,
     wait_for_paused_thread,
 )
+from tests.setup_package import package_stores, write_deck_layouts, write_teachpoints
+from tests.setup_package import with_teachpoints, with_deck_layouts
+from tests.memory_activity import memory_ops_store, memory_runtime
+from tests.real_device_path import the_real_device_path
 
 DECK_CONFIG = DeckLayoutConfig(
     deck_type="STARlet",
@@ -82,7 +85,7 @@ async def _build(
     ``tip_positions=None`` with ``with_tips=False`` is the rack the ledger
     positively calls empty. ``with_tips=True`` and no positions is a full rack.
     """
-    stores = InMemoryRuntimeStoreFactory()
+    stores = package_stores()
 
     working_plate = PlateTemplate(
         "working_plate", labware_type="Cor_Falcon_96_wellplate_340ul_Fb_Black")
@@ -96,24 +99,22 @@ async def _build(
         ),
     )
 
-    with use_device_factory(RecordingLhDeckFactory(recorder)):
-        lh = LiquidHandler(
-            "lh",
-            deck_layout_store=stores.deck_layouts("lh", seed={"default": DECK_CONFIG}),
-            deck_layout="default",
-        )
-        stacker = Storage("stacker")
-        waste = Storage("waste")
-        pad = PlatePad("pad")
-        arm = Transporter(
-            "arm",
-            teachpoint_store=stores.teachpoints("arm", seed=[
-                Teachpoint("stacker", C(0, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("pad", C(200, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint(ARM_DECK_ENTRY, C(400, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("waste", C(600, 200, 300, 0, 90, 180), orientation="right"),
-            ]),
-        )
+    the_real_device_path().simulate_with("lh", recorder)
+    lh = with_deck_layouts(LiquidHandler(
+        "lh",
+        deck_layout="default",
+    ), write_deck_layouts(stores, "lh", {"default": DECK_CONFIG}))
+    stacker = Storage("stacker")
+    waste = Storage("waste")
+    pad = PlatePad("pad")
+    arm = with_teachpoints(Transporter(
+        "arm",
+    ), write_teachpoints(stores, "arm", [
+            Teachpoint("stacker", C(0, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("pad", C(200, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint(ARM_DECK_ENTRY, C(400, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("waste", C(600, 200, 300, 0, 90, 180), orientation="right"),
+        ]))
 
     deck_positions: dict[object, str] = {working_plate: "carrier-7-0"}
     if tips_from_stacker:
@@ -170,7 +171,7 @@ async def _build(
         transporters=[arm],
     )
     return await orca.build_system(
-        name="Rack supply", workflow=workflow, topology=topology, stores=stores)
+        name="Rack supply", workflow=workflow, topology=topology, stores=stores, event_bus=EventBus(), ops_history_store=memory_ops_store())
 
 
 def _pause_messages(runtime: SystemRuntime, execution_id: str) -> str:
@@ -194,14 +195,13 @@ def _picked_positions(recorder: RecordingLiquidHandlerDriver) -> list[list[str]]
 
 async def _run(**kwargs) -> tuple[dict[str, str], RecordingLiquidHandlerDriver]:
     """Run to completion and return the final thread statuses."""
-    recorder = RecordingLiquidHandlerDriver(
-        ChatterboxLiquidHandlerDriver(num_channels=8))
+    recorder = RecordingHandler()
     build = await _build(recorder, **kwargs)
-    runtime = SystemRuntime(build.system, event_bus=build.event_bus)
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
     await runtime.start()
     try:
         record = await runtime.submit_workflow(
-            "rack_supply", mode=WorkflowRunMode.PURE_SIM)
+            "rack_supply", mode=WorkflowRunMode.CHECK_RUN)
         statuses = await run_to_quiescence(runtime, record.id, timeout=90.0)
         return statuses, recorder
     finally:
@@ -216,17 +216,16 @@ async def _run_twice(
     The bench shape: the rack on the site is real and its ledger says zero.
     Returns the second run's pause message.
     """
-    recorder = RecordingLiquidHandlerDriver(
-        ChatterboxLiquidHandlerDriver(num_channels=8))
+    recorder = RecordingHandler()
     build = await _build(recorder, **kwargs)
-    runtime = SystemRuntime(build.system, event_bus=build.event_bus)
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
     await runtime.start()
     try:
         first = await runtime.submit_workflow(
-            "rack_supply", mode=WorkflowRunMode.PURE_SIM)
+            "rack_supply", mode=WorkflowRunMode.CHECK_RUN)
         await run_to_quiescence(runtime, first.id, timeout=90.0)
         second = await runtime.submit_workflow(
-            "rack_supply", mode=WorkflowRunMode.PURE_SIM)
+            "rack_supply", mode=WorkflowRunMode.CHECK_RUN)
         await wait_for_paused_thread(runtime, second.id, timeout=60.0)
         threads = [t.name for t in runtime.list_threads(second.id)]
         return _pause_messages(runtime, second.id), threads, recorder
@@ -236,14 +235,13 @@ async def _run_twice(
 
 async def _run_until_refused(**kwargs) -> tuple[str, RecordingLiquidHandlerDriver]:
     """Run until a contributor pauses; return its pause message."""
-    recorder = RecordingLiquidHandlerDriver(
-        ChatterboxLiquidHandlerDriver(num_channels=8))
+    recorder = RecordingHandler()
     build = await _build(recorder, **kwargs)
-    runtime = SystemRuntime(build.system, event_bus=build.event_bus)
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
     await runtime.start()
     try:
         record = await runtime.submit_workflow(
-            "rack_supply", mode=WorkflowRunMode.PURE_SIM)
+            "rack_supply", mode=WorkflowRunMode.CHECK_RUN)
         await wait_for_paused_thread(runtime, record.id, timeout=60.0)
         return _pause_messages(runtime, record.id), recorder
     finally:

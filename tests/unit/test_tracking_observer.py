@@ -45,7 +45,7 @@ class TestDeclaredTrackingObserver:
         """Closes the observed-records data-loss gap.
 
         When an @orca.action calls aspirate/dispense, LiquidHandlerInterpreter
-        populates _operation_log with AspirateDetails / DispenseDetails ops.
+        produces AspirateDetails / DispenseDetails ops.
         Without DeclaredTracking on the action, those observed records
         previously fell off the cliff because the observer returned None.
         Now they pass through into a TrackingRecord(source=OBSERVED).
@@ -125,10 +125,10 @@ class TestDeclaredTrackingObserver:
         assert disp.details.volumes == [50.0]
         assert disp.affected_labware == ["plate_b"]
 
-        # Pair linkage: both sides carry the same non-None group_id so downstream
+        # Pair linkage: both sides carry the same transfer_id so downstream
         # consumers can reconstruct the transfer as a unit.
-        assert asp.group_id is not None
-        assert asp.group_id == disp.group_id
+        assert asp.transfer_id is not None
+        assert asp.transfer_id == disp.transfer_id
 
         pickups = [op for op in result.operations if op.operation == DeviceOperation.PICK_UP_TIPS]
         assert len(pickups) == 1

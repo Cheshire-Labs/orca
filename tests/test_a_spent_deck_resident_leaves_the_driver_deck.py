@@ -17,6 +17,7 @@ tests/test_a_depleted_receiver_hands_off.py; this file is the deck-site one
 because only a real deck has a driver world to disagree with.
 """
 
+from orca.events.event_bus import EventBus
 import orca.orca as orca
 from cheshire_drivers import CartesianCoordinates as C
 from cheshire_drivers import DeckLayoutConfig, DeckResourceConfig, Teachpoint
@@ -25,10 +26,8 @@ from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.plate_pad import PlatePad
 from orca.resource_models.sharing import GroupSharing, SubmissionBatching
 from orca.resource_models.transporter import Transporter
-from orca.runtime.labware_group import LabwareGroup, LabwareGroupMember
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.store_factory import InMemoryRuntimeStoreFactory
-from orca.runtime.system_runtime import SystemRuntime
+from orca.workflow_models.labware_group import LabwareGroup, LabwareGroupMember
+from orca.modes.run_modes import WorkflowRunMode
 from orca.sdk.build import SystemBuild, Topology
 from orca.sdk.labware import PlateTemplate
 from orca.spawn import DISPENSE, LEAVE_IN_PLACE, REUSE_EXISTING
@@ -38,6 +37,9 @@ from orca.workflow_models.method_context import MethodContext
 from orca.workflow_models.thread_context import ThreadContext
 
 from tests.test_helpers import run_to_quiescence
+from tests.setup_package import package_stores, write_deck_layouts, write_teachpoints
+from tests.setup_package import with_teachpoints, with_deck_layouts
+from tests.memory_activity import memory_ops_store, memory_runtime
 
 _DECK_CONFIG = DeckLayoutConfig(
     deck_type="STARlet",
@@ -69,7 +71,7 @@ class _OneDrawEach:
 
 
 async def _build_system(depletion: _OneDrawEach) -> SystemBuild:
-    stores = InMemoryRuntimeStoreFactory()
+    stores = package_stores()
     sample = PlateTemplate(
         "sample", labware_type="Cor_Falcon_96_wellplate_340ul_Fb_Black",
     )
@@ -81,23 +83,21 @@ async def _build_system(depletion: _OneDrawEach) -> SystemBuild:
         submission_batching=SubmissionBatching.BATCHABLE,
     )
 
-    lh = LiquidHandler(
+    lh = with_deck_layouts(LiquidHandler(
         "lh",
-        deck_layout_store=stores.deck_layouts("lh", seed={"default": _DECK_CONFIG}),
         deck_layout="default",
-    )
+    ), write_deck_layouts(stores, "lh", {"default": _DECK_CONFIG}))
     stacker = Storage("stacker")
     waste = Storage("waste")
     pad = PlatePad("pad")
-    arm = Transporter(
+    arm = with_teachpoints(Transporter(
         "arm",
-        teachpoint_store=stores.teachpoints("arm", seed=[
+    ), write_teachpoints(stores, "arm", [
             Teachpoint("stacker", C(0, 200, 300, 0, 90, 180), orientation="right"),
             Teachpoint("pad", C(200, 200, 300, 0, 90, 180), orientation="right"),
             Teachpoint(_ARM_DECK_ENTRY, C(400, 200, 300, 0, 90, 180), orientation="right"),
             Teachpoint("waste", C(600, 200, 300, 0, 90, 180), orientation="right"),
-        ]),
-    )
+        ]))
 
     @orca.action(
         device=lh, inputs=[sample, reservoir], deck_positions={sample: "carrier-7-0"},
@@ -132,7 +132,7 @@ async def _build_system(depletion: _OneDrawEach) -> SystemBuild:
         transporters=[arm],
     )
     return await orca.build_system(
-        name="Spent Deck Resident", workflow=workflow, topology=topology, stores=stores,
+        name="Spent Deck Resident", workflow=workflow, topology=topology, stores=stores, event_bus=EventBus(), ops_history_store=memory_ops_store(),
     )
 
 
@@ -145,14 +145,14 @@ def _plate_group(gid: str) -> LabwareGroup:
 async def test_a_spent_deck_resident_is_replaced_without_colliding_on_its_slot() -> None:
     depletion = _OneDrawEach()
     build = await _build_system(depletion)
-    runtime = SystemRuntime(build.system, event_bus=build.event_bus)
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
     template = build.system.get_workflow_template("spent_resident_wf")
     await runtime.start()
     try:
         submission = await runtime.submit(
             template,
             groups=[_plate_group("grp-1"), _plate_group("grp-2")],
-            mode=WorkflowRunMode.PURE_SIM,
+            mode=WorkflowRunMode.CHECK_RUN,
         )
         statuses = await run_to_quiescence(
             runtime, submission.execution_id, timeout=90.0,

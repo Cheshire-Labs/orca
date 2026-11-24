@@ -13,7 +13,7 @@ import pytest
 from orca.resource_models.deck_site_location import DeckSiteLocation
 from orca.system.reservation_manager.location_reservation import LocationReservation
 from orca.system.reservation_manager.reservation_manager import LocationReservationManager
-from orca.system.resource_registry import ResourceRegistry
+from orca.resource_models.resource_registry import ResourceRegistry
 from orca.resource_models.location import Location
 from orca.system.system_map import SystemMap
 from orca.workflow_models.actions.location_action import ActionBodyLocationAction
@@ -37,8 +37,8 @@ async def _device_held_by_an_action_with_no_inputs() -> tuple[
     mutex = Location("flex")
     system_map.register_mutex_location(mutex)
 
-    deck_slot = DeckSiteLocation("flex/C2-slot", device, mutex_position_id="flex")
-    crossing = DeckSiteLocation("flex/handoff", device, mutex_position_id="flex")
+    deck_slot = DeckSiteLocation("flex/C2-slot", device, mutex_position_id="flex", site_name="C2-slot")
+    crossing = DeckSiteLocation("flex/handoff", device, mutex_position_id="flex", site_name="handoff")
     for site in (deck_slot, crossing):
         await system_map.add_site_location(site)
         device.add_site(site)

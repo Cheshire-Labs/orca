@@ -23,6 +23,7 @@ from orca.state.records import (
     TrackingRecord,
     TrackingSource,
 )
+from tests.memory_activity import memory_ops_store
 
 
 def _make_fake_rack(name: str = "tips_384") -> MagicMock:
@@ -65,7 +66,7 @@ async def _append_pickup(history: OpsHistory, rack_name: str, positions: list[st
 class TestTipRackHasCapacity:
     @pytest.mark.asyncio
     async def test_fresh_rack_reports_true(self) -> None:
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         inst = TipRackInstance(_make_fake_rack(), template_name="tips_384", labware_type="tips_384")
         bind_ledger(inst, history)
         await _seed_rack(history, inst.name, ["A1", "A2"])
@@ -74,7 +75,7 @@ class TestTipRackHasCapacity:
 
     @pytest.mark.asyncio
     async def test_depleted_rack_reports_false(self) -> None:
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         inst = TipRackInstance(_make_fake_rack(), template_name="tips_384", labware_type="tips_384")
         bind_ledger(inst, history)
         await _seed_rack(history, inst.name, ["A1", "A2"])
@@ -84,7 +85,7 @@ class TestTipRackHasCapacity:
 
     @pytest.mark.asyncio
     async def test_partially_used_rack_reports_true(self) -> None:
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         inst = TipRackInstance(_make_fake_rack(), template_name="tips_384", labware_type="tips_384")
         bind_ledger(inst, history)
         await _seed_rack(history, inst.name, ["A1", "A2", "B1", "B2"])
@@ -96,7 +97,7 @@ class TestTipRackHasCapacity:
     async def test_rack_declared_empty_reports_false(self) -> None:
         """An INITIAL_STATE naming no positions is a real answer: with_tips=False
         means the rack starts empty and the gate must say so."""
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         inst = TipRackInstance(_make_fake_rack(), template_name="tips_384", labware_type="tips_384")
         bind_ledger(inst, history)
         await _seed_rack(history, inst.name, [])
@@ -110,7 +111,7 @@ class TestTipRackHasCapacity:
         then means "never seen", not "ran out", and the gate must not strand
         a deck resident that is very likely still stocked.
         """
-        history = OpsHistory()
+        history = OpsHistory(store=memory_ops_store())
         inst = TipRackInstance(_make_fake_rack(), template_name="tips_384", labware_type="tips_384")
         bind_ledger(inst, history)
 

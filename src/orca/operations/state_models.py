@@ -1,3 +1,5 @@
+from orca.operations.binding import RestBinding, Route
+from orca.operations.route_tags import RouteTag
 """Wire models for the state operations.
 
 Apart from `state.py` because the Operation classes there take
@@ -22,9 +24,8 @@ class UnsettledSubjectDTO(BaseModel):
     """Why it is unsettled. `unknown` is nobody ever said; `stale` is it was
     known, then a stretch passed with nobody watching."""
     detail: str
-    settle_with: str | None
-    """The verb that settles it. Null when no verb does: an unfinished action
-    is holding operations, and only ending that action helps."""
+    settle_with: str
+    """The verb that settles it."""
 
     @classmethod
     def from_subject(cls, subject: UnsettledSubject) -> Self:
@@ -45,3 +46,12 @@ class UnsettledStateRequest(BaseModel):
 class UnsettledStateResponse(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     unsettled: list[UnsettledSubjectDTO]
+
+
+UNSETTLED_STATE_ROUTE = Route(
+    UnsettledStateRequest,
+    UnsettledStateResponse,
+    RestBinding(
+        method="GET", path="/unsettled", tag=RouteTag.LABWARE,
+    ),
+)

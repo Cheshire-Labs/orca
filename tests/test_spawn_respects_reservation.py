@@ -14,6 +14,7 @@ as ``MoveHandler.acquire_placement_reservation`` promises. A free location still
 places immediately (no spurious wait).
 """
 
+from tests.test_helpers import make_labware_placer
 from unittest.mock import Mock
 
 import asyncio
@@ -25,15 +26,16 @@ from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.labware_staging_bridge import LabwareStagingBridge
 from orca.resource_models.location import Location
 from orca.resource_models.plate_pad import PlatePad
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from orca.system.reservation_manager.location_reservation import LocationReservation
-from orca.system.reservation_manager.move_handler import MoveHandler
+from orca.workflow_models.actions.move_handler import MoveHandler
 from orca.system.reservation_manager.reservation_manager import (
     ThreadReservationCoordinator,
 )
 from orca.workflow_models.labware_threads.labware_thread import (
     LabwareThreadInstance,
 )
+from tests.placements_for_tests import this_tests_placements
 from orca.resource_models.labware_location_service import (
     InMemoryLabwareLocationService,
 )
@@ -66,7 +68,7 @@ def _spawning_thread(location: Location) -> tuple[LabwareThreadInstance, Labware
         labware=plate,
         start_location=location,
         end_locations=[location],
-        run_mode=WorkflowRunMode.PURE_SIM,
+        run_mode=WorkflowRunMode.CHECK_RUN,
     )
     return thread, plate
 
@@ -103,7 +105,8 @@ async def test_spawn_reserves_before_placing() -> None:
     location = _location()
     acquirer = _GatedAcquirer(LocationReservation(location))
     thread, plate = _spawning_thread(location)
-    spawn = ManualPlaceSpawn(location, InMemoryLabwareLocationService(), acquirer)
+    service = _service()
+    spawn = ManualPlaceSpawn(location, service, make_labware_placer(service), acquirer)
 
     task = asyncio.create_task(spawn.acquire(thread))
     await asyncio.wait_for(acquirer.acquiring.wait(), timeout=2.0)
@@ -128,7 +131,8 @@ async def test_spawn_places_immediately_on_free_location() -> None:
     move_handler = _move_handler(location)
 
     thread, plate = _spawning_thread(location)
-    spawn = ManualPlaceSpawn(location, InMemoryLabwareLocationService(), move_handler)
+    service = _service()
+    spawn = ManualPlaceSpawn(location, service, make_labware_placer(service), move_handler)
 
     await asyncio.wait_for(spawn.acquire(thread), timeout=2.0)
     assert location.labware is plate
@@ -161,7 +165,7 @@ async def test_dispense_spawn_reserves_before_dispensing() -> None:
 
     acquirer = _GatedAcquirer(LocationReservation(location))
     thread, plate = _spawning_thread(location)
-    spawn = DispenseSpawn(location, InMemoryLabwareLocationService(), acquirer)
+    spawn = DispenseSpawn(location, make_labware_placer(_service()), acquirer)
 
     task = asyncio.create_task(spawn.acquire(thread))
     await asyncio.wait_for(acquirer.acquiring.wait(), timeout=2.0)
@@ -175,3 +179,8 @@ async def test_dispense_spawn_reserves_before_dispensing() -> None:
     await asyncio.wait_for(task, timeout=2.0)
     assert storage.dispensed == ["dispense"]
     assert location.labware is plate
+
+
+def _service() -> InMemoryLabwareLocationService:
+    return InMemoryLabwareLocationService(this_tests_placements())
+

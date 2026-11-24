@@ -1,12 +1,12 @@
 """The orca daemon serves the device-bridge gateway websocket route."""
 
-from unittest.mock import MagicMock
+import time
 
-import pytest
+from fastapi.testclient import TestClient
 
+from cheshire_drivers.gateway_protocol import ClientHello, DeviceConnectInfo, MessageEnvelope
 from orca.daemon.app import create_app
-from orca.gateway.auth import NullConnectionAuthenticator
-from orca.gateway.websocket.router import _authenticator_from_websocket
+from tests.gateway_parts import answer_assignment
 
 
 def test_daemon_mounts_ws_devices_route() -> None:
@@ -19,18 +19,21 @@ def test_daemon_mounts_ws_devices_route() -> None:
     assert "/ws/devices" in ws_paths
 
 
-@pytest.mark.asyncio
-async def test_ws_devices_default_authenticator_allows_keyless_connect() -> None:
-    """A fresh daemon leaves connection_authenticator unset; the router must
-    resolve that to the allow-all NullConnectionAuthenticator, so a keyless
-    device bridge connects. Asserting the resolved authenticator (not the raw
-    unset attribute) is what proves the default-allow behavior actually
-    holds."""
+def test_ws_devices_allows_a_keyless_device_bridge() -> None:
+    """A daemon trusts its LAN: a device bridge that sends no key is accepted
+    and its devices reach the daemon's own roster."""
     app = create_app()
-    assert getattr(app.state, "connection_authenticator", None) is None
-
-    websocket = MagicMock()
-    websocket.app = app
-    authenticator = _authenticator_from_websocket(websocket)
-    assert isinstance(authenticator, NullConnectionAuthenticator)
-    assert await authenticator.authenticate(None) is True
+    hello = ClientHello(client_id="lab_pc", site="boston", lab="molbio")
+    built = DeviceConnectInfo(name="shaker_1", type="shaker", interfaces=frozenset({"IShaker"}))
+    gateway = app.state.daemon.connections.gateway
+    tracker = gateway.tracker
+    with TestClient(app) as client, client.websocket_connect("/ws/devices") as ws:
+        assert client.portal is not None
+        client.portal.call(gateway.assignments.publish, [])
+        ws.send_text(MessageEnvelope.wrap_hello(hello).model_dump_json())
+        answer_assignment(ws, built)
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline and tracker.peek_snapshot("shaker_1") is None:
+            time.sleep(0.01)
+        assert tracker.peek_snapshot("shaker_1") is not None
+        ws.close()

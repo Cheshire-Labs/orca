@@ -1,0 +1,22 @@
+{
+  "default": {
+    "deck_type": "STARlet",
+    "resources": [
+      {
+        "catalog_ref": "PLT_CAR_L5AC_A00",
+        "name": "carrier-7",
+        "rail": 7
+      },
+      {
+        "catalog_ref": "TIP_CAR_480_A00",
+        "name": "carrier-15",
+        "rail": 15
+      },
+      {
+        "catalog_ref": "Trough_CAR_4R200_A00",
+        "name": "carrier-25",
+        "rail": 25
+      }
+    ]
+  }
+}

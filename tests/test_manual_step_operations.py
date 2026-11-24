@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from orca.operations._protocol import OperationError, OperationErrorCode
+from orca.operations.protocol import OperationError
 from orca.operations.manual_step import (
     ConfirmManualStepOperation,
     ListPendingManualStepsOperation,
@@ -102,7 +102,7 @@ class TestConfirmManualStepOperation:
                 ),
             )
         err = excinfo.value
-        assert err.code == OperationErrorCode.NOT_FOUND
+        assert err.http_status == 404
         assert err.extras is not None
         assert err.extras["step_id"] == "manual_step-zzzz"
         assert err.extras["execution_id"] == "exec-a"
@@ -128,4 +128,4 @@ class TestListPendingManualStepsOperation:
         op = ListPendingManualStepsOperation(runtime=runtime.to_mock())
         with pytest.raises(OperationError) as excinfo:
             await op.run(ListPendingManualStepsRequest(execution_id="nope"))
-        assert excinfo.value.code == OperationErrorCode.NOT_FOUND
+        assert excinfo.value.http_status == 404

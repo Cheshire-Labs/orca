@@ -1,49 +1,86 @@
 import logging
-from collections.abc import Generator
+import os
+from collections.abc import AsyncGenerator, Generator
 from datetime import datetime
 from pathlib import Path
 
 import pytest
 import pytest_asyncio
 
+from orca.gateway.controller.command_pipeline import DeviceCommandPipeline
 from orca.daemon.lifecycle import DaemonInfo
+from orca.resource_models.position_occupancy import PositionOccupancy
 from orca.resource_models.transporter import Transporter
-from orca.runtime.run_modes import WorkflowRunMode, current_run_mode
+from orca.modes.run_modes import WorkflowRunMode, current_run_mode
+from orca.runtime.store_factory import default_package_root
 from orca.system.registries import LabwareRegistry
-from orca.system.resource_registry import ResourceRegistry
-from orca.resource_models.labware_directory import reset_labware_directory
-from orca.state.current import reset_placement_ledger
+from orca.resource_models.resource_registry import ResourceRegistry
 from orca.system.system_map import SystemMap
 from orca.workflow_models.method_template import drain_pending_method_templates
 from orca.workflow_models.thread_template import drain_pending_thread_templates
 from tests.test_helpers import create_test_transporter, create_test_device, wire_system_map
+from tests.memory_activity import close_memory_activity
+from tests.placements_for_tests import fresh_test_placements
+from tests.audit_capture import AuditCapture, capture_audit
+from tests.isolated_daemon import START_LIMIT_S, start_isolated_daemon, stop_isolated_daemon
+from tests.real_device_path import RealDevicePath, real_device_path
+
+os.environ.setdefault("ORCA_SIM_SPEEDUP", "off")
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _close_memory_activity() -> AsyncGenerator[None, None]:
+    yield
+    await close_memory_activity()
+
+
+@pytest.fixture
+def audit() -> Generator[AuditCapture, None, None]:
+    """The audit rows written during the test, read back through IAuditStore."""
+    with capture_audit() as capture:
+        yield capture
+
 
 @pytest.fixture(autouse=True)
-def _empty_world() -> Generator[None, None, None]:
-    """One placement ledger per process means one world; each test starts in an
-    empty one."""
-    reset_placement_ledger()
-    reset_labware_directory()
-    yield
-    reset_placement_ledger()
-    reset_labware_directory()
+def _an_empty_world_for_positions_no_build_binds(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A unit test that builds no system still needs a placement ledger, so each test gets an empty one.
+
+    A system build binds its own ledger over this one. Mark a test
+    `positions_bound_by_the_build` to prove the build reached every position.
+    """
+    if request.node.get_closest_marker("positions_bound_by_the_build") is not None:
+        return
+    placements = fresh_test_placements()
+    unbound_init = PositionOccupancy.__init__
+
+    def _bound_init(self: PositionOccupancy, position_id: str, *, single_occupant: bool = True) -> None:
+        unbound_init(self, position_id, single_occupant=single_occupant)
+        self.bind_placements(placements)
+
+    monkeypatch.setattr(PositionOccupancy, "__init__", _bound_init)
 
 
 LOG_DIR = Path(__file__).parent / "logs"
 
 
 @pytest.fixture(autouse=True)
-def _seed_run_mode_for_tests() -> Generator[None, None, None]:
+def _seed_run_mode_for_tests(request: pytest.FixtureRequest) -> Generator[None, None, None]:
     """Seed `current_run_mode` for every test (sim-hierarchy v3.4).
 
-    Production seeds via SystemRuntime.start() / WorkflowExecutor.start() /
+    Production seeds via SystemRuntime._run_workflow() /
     ExecutingLabwareThread.start(). Unit tests that construct Devices or
     Transporters directly and call them without going through those seam
     points still need a seeded ContextVar so `device.driver` dispatches.
-    PURE_SIM is the right default for tests: every device wrapper returns
+    CHECK_RUN is the right default for tests: every device wrapper returns
     its sim driver.
     """
-    token = current_run_mode.set(WorkflowRunMode.PURE_SIM)
+    if request.node.get_closest_marker("out_of_run") is not None:
+        # An operator's command outside any run: nothing seeded, as a server request sees it.
+        yield
+        return
+    token = current_run_mode.set(WorkflowRunMode.CHECK_RUN)
     try:
         yield
     finally:
@@ -88,71 +125,14 @@ def _configure_orca_logging() -> Generator[None, None, None]:
 
 # -- Daemon-backed fixtures (for CLI tests that need a real running daemon) --
 
-
-def _pick_free_port_for_daemon() -> int:
-    import socket
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+_TEST_BODY_LIMIT_S = 120.0
 
 
-def _spawn_isolated_daemon(port: int, pid_dir: Path) -> object:
-    """Spawn `python -m orca.daemon` with ORCA_DAEMON_HOME pointed at pid_dir.
-
-    Must also inject PYTHONPATH so the subprocess can import
-    `tests.daemon.daemon_test_fixture_topology` for mount/load specs.
-    """
-    import os
-    import subprocess
-    import sys
-
-    project_root = str(Path(__file__).resolve().parent.parent)
-    env = {
-        **os.environ,
-        "ORCA_DAEMON_HOME": str(pid_dir),
-        "PYTHONPATH": project_root + os.pathsep + os.environ.get("PYTHONPATH", ""),
-    }
-    cmd = [sys.executable, "-m", "orca.daemon", "--port", str(port)]
-    if sys.platform == "win32":
-        creationflags = (
-            subprocess.CREATE_NO_WINDOW
-            | subprocess.CREATE_NEW_PROCESS_GROUP
-        )
-        return subprocess.Popen(
-            cmd,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=creationflags,
-            close_fds=True,
-            env=env,
-        )
-    return subprocess.Popen(
-        cmd,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-        close_fds=True,
-        env=env,
-    )
-
-
-def _wait_for_daemon_health(port: int, timeout_s: float = 45.0) -> bool:
-    import time
-    import httpx
-
-    deadline = time.time() + timeout_s
-    url = f"http://127.0.0.1:{port}/health"
-    with httpx.Client(timeout=1.0) as client:
-        while time.time() < deadline:
-            try:
-                if client.get(url).status_code == 200:
-                    return True
-            except httpx.HTTPError:
-                pass
-            time.sleep(0.1)
-    return False
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """The per-test time limit covers fixture setup, so a test that starts a daemon gets the start limit on top."""
+    for item in items:
+        if "running_daemon" in getattr(item, "fixturenames", ()) and item.get_closest_marker("timeout") is None:
+            item.add_marker(pytest.mark.timeout(START_LIMIT_S + _TEST_BODY_LIMIT_S))
 
 
 @pytest.fixture
@@ -161,86 +141,40 @@ def running_daemon(
 ) -> Generator[DaemonInfo, None, None]:
     """Live daemon in an isolated ORCA_DAEMON_HOME. No system loaded yet.
 
-    Yields the DaemonInfo read from the subprocess-written PID file. The
-    in-process test can then call CLI commands (CliRunner) or HTTP calls --
-    ORCA_DAEMON_HOME is monkeypatched so LocalDaemonClient's `pid_file_path()`
-    returns the same tmp path.
+    ORCA_DAEMON_HOME is monkeypatched so OrcaClient's `pid_file_path()` finds this daemon.
     """
-    import time
-    import httpx
-    import psutil
-
-    from orca.daemon.lifecycle import read_pid_file
-
     monkeypatch.setenv("ORCA_DAEMON_HOME", str(tmp_path))
-
-    port = _pick_free_port_for_daemon()
-    proc = _spawn_isolated_daemon(port, tmp_path)
-    daemon_pid: int | None = None
+    daemon = start_isolated_daemon(tmp_path, default_package_root())
     try:
-        if not _wait_for_daemon_health(port):
-            raise RuntimeError(
-                f"daemon did not start within the health-wait budget "
-                f"(port={port}, see {tmp_path}/daemon.log)",
-            )
-        info = read_pid_file(tmp_path / "daemon.json")
-        assert info is not None, "daemon did not write a PID file"
-        daemon_pid = info.pid
-        yield info
+        yield daemon.info
     finally:
-        # Shutdown.
-        try:
-            with httpx.Client(timeout=5.0) as c:
-                c.post(f"http://127.0.0.1:{port}/shutdown")
-        except httpx.HTTPError:
-            pass
-        if daemon_pid is not None:
-            deadline = time.time() + 10.0
-            while time.time() < deadline:
-                if not psutil.pid_exists(daemon_pid):
-                    break
-                time.sleep(0.1)
-            if psutil.pid_exists(daemon_pid):
-                try:
-                    psutil.Process(daemon_pid).terminate()
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    pass
+        stop_isolated_daemon(daemon)
 
 
 @pytest.fixture
 def loaded_daemon(running_daemon: DaemonInfo) -> DaemonInfo:
-    """A running daemon with the topology mounted + `simple_workflow` loaded
-    in sim mode. Tests can exercise the whole CLI -> daemon -> runtime path.
+    """A running daemon with its package folder mounted in sim mode.
 
-    Mirrors the split ingress: mount the topology, then register
-    the workflow separately.
+    The folder holds the fixture topology plus `simple_workflow` and
+    `slow_window_workflow`. Tests can exercise the whole CLI -> daemon -> runtime path.
     """
     import httpx
+    from tests.daemon.fixture_package import SIMPLE_WORKFLOW, SLOW_WORKFLOW, write_package
+
+    write_package(workflows={**SIMPLE_WORKFLOW, **SLOW_WORKFLOW})
     info = running_daemon
-    port = info.port
-    base = f"http://127.0.0.1:{port}"
     with httpx.Client(timeout=30.0) as c:
-        mount = c.post(
-            f"{base}/mount-topology",
-            json={
-                "spec": "tests.daemon.daemon_test_fixture_topology:build_topology",
-                "sim": True,
-            },
-        )
+        mount = c.post(f"http://127.0.0.1:{info.port}/api/runtime/mount-package", json={})
         assert mount.status_code == 200, (
-            f"POST /mount-topology failed: {mount.status_code} {mount.text}"
-        )
-        load = c.post(
-            f"{base}/workflows",
-            json={
-                "spec": "tests.daemon.daemon_test_fixture_topology:build_workflow",
-            },
-        )
-        assert load.status_code == 200, (
-            f"POST /workflows failed: {load.status_code} {load.text}"
+            f"POST /api/runtime/mount-package failed: {mount.status_code} {mount.text}"
         )
     return info
 
+
+
+
+async def _save_nowhere(command: str) -> None:
+    return None
 
 @pytest_asyncio.fixture
 async def system_map() -> SystemMap:
@@ -258,6 +192,10 @@ async def system_map() -> SystemMap:
     ham1 = create_test_device("ham1")
 
     # Create registry and add resources
+    # This map is in no system, so a world command a mover runs has no history to be saved in.
+    for robot in (robot1, robot2):
+        robot.engine_commands.save_with(_save_nowhere, DeviceCommandPipeline(()))
+
     registry = ResourceRegistry()
     registry.add_resource(robot1)
     registry.add_resource(robot2)
@@ -273,3 +211,27 @@ async def system_map() -> SystemMap:
         pads=["loc1", "loc2", "loc3", "loc4", "loc5"],
     )
     return system_map
+
+@pytest.fixture(autouse=True)
+def _setup_files_in_a_temp_package(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A daemon keeps setup files in its package folder; never let a test's be the repo."""
+    monkeypatch.setenv("ORCA_PACKAGE_DIR", str(tmp_path_factory.mktemp("package")))
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _devices_on_the_real_device_path(
+    request: pytest.FixtureRequest, _setup_files_in_a_temp_package: None,
+) -> AsyncGenerator[RealDevicePath, None]:
+    """Every device a test builds goes through the check run's controller and in-process orca-client."""
+    async with real_device_path(run_mode=_parametrized_run_mode(request)) as path:
+        yield path
+
+
+def _parametrized_run_mode(request: pytest.FixtureRequest) -> WorkflowRunMode | None:
+    """The run mode a test case is parametrized with, if any."""
+    node = request.node
+    if not isinstance(node, pytest.Function) or not hasattr(node, "callspec"):
+        return None
+    return next((value for value in node.callspec.params.values() if isinstance(value, WorkflowRunMode)), None)

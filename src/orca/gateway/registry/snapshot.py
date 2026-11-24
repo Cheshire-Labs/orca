@@ -3,9 +3,8 @@
 The snapshot is the public read shape returned by
 :meth:`DeviceConnectionTracker.get_device` and
 :meth:`DeviceConnectionTracker.list_devices`.
-It replaces the loose ``dict[str, Any]`` that those methods previously
-returned, so REST handlers, MCP tool bodies, the controller, and the
-gateway service can all use attribute access (``device.type``)
+REST handlers, the controller, and the
+gateway service all use attribute access (``device.type``)
 instead of the typo-prone ``device["type"]`` / ``device.get(...)``
 shape.
 
@@ -37,8 +36,7 @@ class DeviceSnapshot(BaseModel):
     at handshake plus live ``status`` / ``last_seen`` updates from
     StatusMessage and heartbeat traffic. The ``methods`` map preserves
     the typed :class:`MethodInfo` shape rather than its serialized dict
-    form so callers can attribute-access ``methods["aspirate"].kind``
-    instead of indexing into a nested ``dict[str, Any]``.
+    form so callers can attribute-access ``methods["aspirate"].kind``.
     """
 
     # `validate_assignment` because the registry mutates fields in place as
@@ -94,7 +92,6 @@ class _RegisteredDeviceState:
 class _ClientState:
     """Mutable internal cell for a connected client's session metadata.
 
-    Replaces the loose ``dict[str, Any]`` the tracker kept per client.
     Internal-only: never serialized to the wire.
     """
 

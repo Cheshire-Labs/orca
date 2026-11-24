@@ -8,10 +8,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from orca.operations._protocol import OperationError, OperationErrorCode
+from orca.operations.protocol import OperationError
 from orca.operations.labware import EditLabwareBarcodeOperation, RegisterLabwareOperation
 from orca.operations.labware_models import EditLabwareBarcodeRequest, RegisterLabwareRequest
-from orca.runtime.runtime_interface import BarcodeInUseError
+from orca.runtime.errors import BarcodeInUseError
 
 
 def _runtime_refusing(method_name: str) -> MagicMock:
@@ -23,9 +23,9 @@ def _runtime_refusing(method_name: str) -> MagicMock:
 
 
 def _assert_typed_409(raised: OperationError) -> None:
-    assert raised.code is OperationErrorCode.CONFLICT
-    assert raised.wire_code == "barcode_in_use"
-    assert raised.status_code == 409
+    assert raised.http_status == 409
+    assert raised.surface_code() == "barcode_in_use"
+    assert raised.http_status == 409
     assert raised.extras == {"barcode": "BC-1", "existing_labware_id": "lw-old"}
 
 

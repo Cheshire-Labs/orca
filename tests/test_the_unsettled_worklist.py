@@ -5,12 +5,11 @@ destination plate whose template declares no starting volumes is not unsettled:
 nobody described it because there was nothing to describe.
 """
 
-from types import SimpleNamespace
 
 import pytest
 
-from orca.state.confirm_refusals import HeldByUnfinishedActionError, NothingToConfirmError, WorkLostError
-from orca.runtime.sim_labware import SimPlateTemplate
+from orca.state.confirm_refusals import NothingToConfirmError, WorkLostError
+from orca.resource_models.sim_labware import SimPlateTemplate
 from orca.state.provenance import Provenance
 from orca.state.records import (
     DeviceOperation,
@@ -21,32 +20,6 @@ from orca.state.records import (
 )
 
 from tests.test_labware_contents_are_ledger_owned import _started
-
-
-class _ActionHoldingOperations:
-    """An action that has done things and has not been folded yet."""
-
-    def __init__(self, operations: list[OperationRecord]) -> None:
-        self._operations = operations
-
-    @property
-    def pending_operations(self) -> list[OperationRecord]:
-        return self._operations
-
-
-def _a_pick_nobody_recorded(labware_name: str, device_name: str) -> OperationRecord:
-    return OperationRecord(
-        operation=DeviceOperation.PICK_UP_TIPS,
-        device_name=device_name,
-        affected_labware=[labware_name],
-        affected_labware_ids=[],
-        action_id="act-held",
-        thread_id="t1",
-        details=TipPickUpDetails(
-            tip_rack=labware_name, positions=["A1"], use_channels=None,
-        ),
-        timestamp=1.0,
-    )
 
 
 class TestWhatDoesNotBelongOnIt:
@@ -104,7 +77,7 @@ class TestTheHalfThatMatters:
             plate = await SimPlateTemplate("plate_bare").create_instance()
             await plate.enter_record(system.labware_contents)
             system.add_labware(plate)
-            await system.labware_contents.assert_volumes(plate, {"A1": 100.0})
+            await system.labware_contents.assert_volumes(plate.ref, {"A1": 100.0})
             await plate.note_observation_gap(ObservationGapCause.RUNTIME_RESTART)
 
             listed = {item.subject: item for item in await runtime.unsettled_state()}
@@ -118,13 +91,13 @@ class TestTheHalfThatMatters:
         driven directly. Without this nothing covers a head reaching the list
         at all."""
         system, runtime = await _started()
-        real = runtime._liquid_handlers
+        real = system.handlers_with_a_head
         try:
-            runtime._liquid_handlers = lambda: [SimpleNamespace(name="mlstar_1")]
+            system.handlers_with_a_head = lambda: ["mlstar_1"]
             heads = [item for item in await runtime.unsettled_state()
                      if item.subject_kind == "device_head"]
         finally:
-            runtime._liquid_handlers = real
+            system.handlers_with_a_head = real
             await runtime.shutdown()
 
         assert [item.subject for item in heads] == ["mlstar_1"]
@@ -143,7 +116,7 @@ class TestWhatEachRowTellsAPersonToDo:
             plate = await SimPlateTemplate("plate_bare").create_instance()
             await plate.enter_record(system.labware_contents)
             system.add_labware(plate)
-            await system.labware_contents.assert_volumes(plate, {"A1": 100.0})
+            await system.labware_contents.assert_volumes(plate.ref, {"A1": 100.0})
             await plate.note_observation_gap(
                 ObservationGapCause.OPERATIONS_DROPPED,
             )
@@ -151,7 +124,7 @@ class TestWhatEachRowTellsAPersonToDo:
             listed = {item.subject: item for item in await runtime.unsettled_state()}
 
             detail = listed[plate.name].detail
-            assert "aborted" in detail
+            assert "cut a command off" in detail
             assert "set-well-volumes" in detail
             assert "stretch passed with nobody watching" not in detail
         finally:
@@ -159,7 +132,7 @@ class TestWhatEachRowTellsAPersonToDo:
 
     async def test_a_head_an_abort_touched_is_named_its_own_verb(self) -> None:
         system, runtime = await _started()
-        real = runtime._liquid_handlers
+        real = system.handlers_with_a_head
         try:
             await system.mounted_tips.assert_mounted(
                 "mlstar_1", {0: ("tips_96", "A1")},
@@ -167,14 +140,14 @@ class TestWhatEachRowTellsAPersonToDo:
             await system.mounted_tips.note_observation_gap(
                 "mlstar_1", ObservationGapCause.OPERATIONS_DROPPED,
             )
-            runtime._liquid_handlers = lambda: [SimpleNamespace(name="mlstar_1")]
+            system.handlers_with_a_head = lambda: ["mlstar_1"]
             heads = [item for item in await runtime.unsettled_state()
                      if item.subject_kind == "device_head"]
         finally:
-            runtime._liquid_handlers = real
+            system.handlers_with_a_head = real
             await runtime.shutdown()
 
-        assert "aborted" in heads[0].detail
+        assert "cut a command off" in heads[0].detail
         assert "set-mounted-tips" in heads[0].detail
         assert "count it" not in heads[0].detail, (
             "a head has no count; it carries a tip per channel"
@@ -202,13 +175,13 @@ class TestARowCanBeActedOnAsItStands:
         self,
     ) -> None:
         system, runtime = await _started()
-        real = runtime._liquid_handlers
+        real = system.handlers_with_a_head
         try:
-            runtime._liquid_handlers = lambda: [SimpleNamespace(name="mlstar_1")]
+            system.handlers_with_a_head = lambda: ["mlstar_1"]
             heads = [item for item in await runtime.unsettled_state()
                      if item.subject_kind == "device_head"]
         finally:
-            runtime._liquid_handlers = real
+            system.handlers_with_a_head = real
             await runtime.shutdown()
 
         assert heads[0].subject_id is None
@@ -290,37 +263,8 @@ class TestTheVerbTheRowNamesIsOneThatWorks:
             listed = {item.subject: item for item in await runtime.unsettled_state()}
 
             assert listed[instance.name].settle_with == "set-tip-state"
-            with pytest.raises(WorkLostError, match="aborted action lost work") as refusal:
+            with pytest.raises(WorkLostError, match="cut off a command") as refusal:
                 await runtime.labware.confirm_tip_state(instance.id, confirm=True)
             assert refusal.value.settle_with == listed[instance.name].settle_with
-        finally:
-            await runtime.shutdown()
-
-
-class TestTheCaseNoVerbAnswers:
-    """An unfinished action is holding operations the record has not heard
-    about. Confirming freezes a number that is behind; stating one gets the
-    action's own operations folded on top of it. Only ending the action helps.
-    """
-
-    async def test_a_labware_an_unfinished_action_holds_names_no_verb(self) -> None:
-        system, runtime = await _started()
-        try:
-            snap = await runtime.labware.register("tips_96", confirm=True)
-            instance = next(l for l in system.labwares if l.id == snap.id)
-            # Strong reference: the registry holds actions weakly.
-            action = _ActionHoldingOperations(
-                [_a_pick_nobody_recorded(instance.name, "lh_1")],
-            )
-            system.ops_history.unrecorded.watch("act-held", action)
-
-            listed = {item.subject: item for item in await runtime.unsettled_state()}
-            row = listed[instance.name]
-
-            assert row.settle_with is None
-            assert "settle the action" in row.detail
-            with pytest.raises(HeldByUnfinishedActionError) as refusal:
-                await runtime.labware.confirm_tip_state(instance.id, confirm=True)
-            assert refusal.value.settle_with is None
         finally:
             await runtime.shutdown()

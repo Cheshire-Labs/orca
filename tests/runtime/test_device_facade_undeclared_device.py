@@ -5,14 +5,14 @@ still reachable.
 device. Every write verb then resolved it through the topology registry first,
 which raises `KeyError`, and the daemon turned that into a 404: the device is
 listed and then reported not to exist. A hosted deployment's MCP and REST never had this
-problem, because they dispatch through `orca.gateway.adhoc`, which resolves the
+problem, because they dispatch through `orca.gateway.operator_commands`, which resolves the
 name against the connection tracker.
 
 The earlier facade tests could not see any of this: each one set
 `system.get_device.return_value`, so the registry always succeeded.
 
 The other half is what an operator is told when a command fails past the gate.
-`adhoc` raises `DeviceError` subclasses, and the daemon caught only `KeyError`,
+The operator path raises `DeviceError` subclasses, and the daemon caught only `KeyError`,
 `TypeError` and `ValueError`, so an offline device, a locked one, or a timeout
 reached the operator as a bare 500.
 """
@@ -24,10 +24,13 @@ import pytest
 
 from cheshire_drivers.driver_introspection import MethodInfo
 
-from orca.gateway.adhoc import AdhocResult
-from orca.gateway.controller.exceptions import DeviceOfflineError
+from tests.gateway_parts import gateway_with
+from orca.operations.operator_device_models import BatchFailureExtras
+from orca.gateway.controller.exceptions import DeviceError, DeviceOfflineError, DeviceUnknownError
 from orca.gateway.registry.snapshot import DeviceSnapshot
+from orca.operations.protocol import OperationError
 from orca.runtime.facades.devices import DeviceFacade
+from tests.runtime.operator_calls import recording_runner, send
 
 
 DEVICE = "flex_undeclared"
@@ -69,41 +72,28 @@ def facade() -> DeviceFacade:
     # Explicit: a MagicMock returns a truthy Mock for fault(), which would read
     # every device as faulted.
     faults.fault = MagicMock(return_value=None)
-    return DeviceFacade(
-        system, MagicMock(), MagicMock(), MagicMock(), MagicMock(), faults,
-    )
+    return DeviceFacade(system, MagicMock(), MagicMock(), gateway_with(controller=faults))
 
 
 @pytest.fixture(autouse=True)
 def connected():
     with patch(
-        "orca.runtime.facades.devices.device_connection_tracker.peek_snapshot",
+        "orca.gateway.registry.connection_tracker.DeviceConnectionTracker.peek_snapshot",
         return_value=_card(),
     ):
         yield
 
 
 @pytest.fixture
-def dispatch():
-    with patch(
-        "orca.runtime.facades.devices.adhoc.execute_adhoc_command",
-        new=AsyncMock(return_value=AdhocResult(raw=None, interfaces=frozenset())),
-    ) as sent:
-        yield sent
+def dispatch() -> MagicMock:
+    return recording_runner()
 
 
 @pytest.mark.asyncio
 async def test_send_reaches_a_device_only_the_agent_knows(facade, dispatch) -> None:
-    await facade.execute(DEVICE, "gripper.ungrip", {}, confirm=True)
+    await send(facade, dispatch, DEVICE, "gripper.ungrip", {})
 
-    assert dispatch.await_args.kwargs["command"] == "gripper.ungrip"
-
-
-@pytest.mark.asyncio
-async def test_invoke_reaches_a_device_only_the_agent_knows(facade, dispatch) -> None:
-    await facade.invoke(DEVICE, "gripper.ungrip", {}, confirm=True)
-
-    assert dispatch.await_args.kwargs["command"] == "gripper.ungrip"
+    assert dispatch.run_named.await_args_list[-1].args[1] == "gripper.ungrip"
 
 
 def test_capabilities_list_a_device_only_the_agent_knows(facade) -> None:
@@ -124,27 +114,30 @@ def test_introspection_answers_for_a_device_only_the_agent_knows(facade) -> None
 async def test_a_name_neither_side_knows_is_a_missing_device(facade, dispatch) -> None:
     """Not "this device has no such command": the device is the thing that is
     missing, and the daemon turns this into the 404 an operator expects."""
+    dispatch.device = AsyncMock(side_effect=DeviceUnknownError("no_such_device"))
     with patch(
-        "orca.runtime.facades.devices.device_connection_tracker.peek_snapshot",
+        "orca.gateway.registry.connection_tracker.DeviceConnectionTracker.peek_snapshot",
         return_value=None,
     ):
-        with pytest.raises(KeyError):
-            await facade.execute("no_such_device", "gripper.ungrip", {}, confirm=True)
-        with pytest.raises(KeyError):
-            await facade.invoke("no_such_device", "gripper.ungrip", {}, confirm=True)
-    assert dispatch.await_count == 0
+        with pytest.raises(OperationError) as sent:
+            await send(facade, dispatch, "no_such_device", "gripper.ungrip", {})
+    assert sent.value.http_status == 404
+    assert dispatch.run_named.await_count == 0
 
 
 @pytest.mark.asyncio
 async def test_a_gateway_failure_keeps_its_own_error(facade) -> None:
     """`DeviceOfflineError` and its siblings carry what went wrong. Flattening
     them into a generic failure loses the one thing the operator needed."""
-    with patch(
-        "orca.runtime.facades.devices.adhoc.execute_adhoc_command",
-        new=AsyncMock(side_effect=DeviceOfflineError("device bridge went away")),
-    ):
-        with pytest.raises(DeviceOfflineError):
-            await facade.execute(DEVICE, "gripper.ungrip", {}, confirm=True)
+    runner = recording_runner(fails_with=DeviceOfflineError("device bridge went away"))
+    with pytest.raises(OperationError) as refused:
+        await send(facade, runner, DEVICE, "gripper.ungrip", {})
+    assert refused.value.surface_code() == "batch_error"
+    assert refused.value.extras is not None
+    failed = BatchFailureExtras.model_validate(refused.value.extras)
+    [ran] = failed.results
+    assert ran.error_type == "DeviceOfflineError"
+    assert ran.error is not None and "device bridge went away" in ran.error
 
 
 def test_an_explicit_default_of_none_is_not_no_default(facade) -> None:
@@ -157,86 +150,87 @@ def test_an_explicit_default_of_none_is_not_no_default(facade) -> None:
     assert force.default == "None"
 
 
-class TestTheCatalogAndTheGateAgree:
-    """`device capabilities` must not list a command `invoke` refuses.
-
-    `derive_capabilities` subtracts every interface member, so an @external
+class TestAnInterfaceMethodTheCatalogListsIsSendable:
+    """`derive_capabilities` subtracts every interface member, so an @external
     interface method rides the card's `methods` and not its `capabilities`.
-    With no orca-side resource to read interface methods off, the card's
-    catalog is the only thing that can be the allow-list.
+    It is still a command the device can be sent by name.
     """
 
-    async def _card_with_an_interface_method(self) -> DeviceSnapshot:
-        card = _card()
-        return DeviceSnapshot(
-            **{
-                **card.model_dump(),
-                "methods": {**card.methods, "retract_axis": MethodInfo(
-                    kind="method",
-                    params={"axis": {"type": "str", "required": True}},
-                    docstring="Retract one axis.",
-                )},
-            }
-        )
-
-    async def test_an_interface_method_the_catalog_lists_is_invokable(
+    async def test_an_interface_method_the_catalog_lists_is_sent(
         self, facade: DeviceFacade,
     ) -> None:
-        card = await self._card_with_an_interface_method()
+        card = _card()
+        card = DeviceSnapshot(**{
+            **card.model_dump(),
+            "methods": {**card.methods, "retract_axis": MethodInfo(
+                kind="method",
+                params={"axis": {"type": "str", "required": True}},
+                docstring="Retract one axis.",
+            )},
+        })
         with patch(
-            "orca.runtime.facades.devices.device_connection_tracker.peek_snapshot",
+            "orca.gateway.registry.connection_tracker.DeviceConnectionTracker.peek_snapshot",
             return_value=card,
         ):
-            listed = set(facade.get_device_introspection(DEVICE).methods)
-            assert "retract_axis" in listed
+            assert "retract_axis" in set(facade.get_device_introspection(DEVICE).methods)
             assert "retract_axis" not in card.capabilities
 
-            with patch(
-                "orca.runtime.facades.devices.adhoc.execute_adhoc_command",
-                new=AsyncMock(
-                    return_value=AdhocResult(raw=None, interfaces=frozenset()),
-                ),
-            ) as sent:
-                await facade.invoke(
-                    DEVICE, "retract_axis", {"axis": "y"}, confirm=True,
-                )
+            sent = recording_runner()
+            await send(facade, sent, DEVICE, "retract_axis", {"axis": "y"})
 
-        assert sent.await_args.kwargs["command"] == "retract_axis"
-
-    async def test_a_command_the_catalog_never_listed_is_still_refused(
-        self, facade: DeviceFacade,
-    ) -> None:
-        with pytest.raises(ValueError, match="no invokable capability"):
-            await facade.invoke(DEVICE, "self_destruct", {}, confirm=True)
+        assert sent.run_named.await_args_list[-1].args[1] == "retract_axis"
 
 
 class TestAGatewayErrorKeepsItsStatus:
     """A `DeviceError` subclass means what its parent means to an operator.
 
-    The route walks the exception's parents rather than looking up its exact
-    type, so a subclass added later does not silently become a 502, and the
-    two that already exist answer 409 rather than falling through.
+    The mapping walks the exception's parents rather than looking up its exact
+    type, so a subclass added later does not silently become a 502.
     """
 
     def test_each_mapped_error_carries_its_own_status(self) -> None:
-        from orca.daemon.routes import _gateway_http_error
         from orca.gateway.controller.exceptions import (
             CommandTimeoutError,
             ConfirmationRequiredError,
             DeviceLockedError,
             DeviceUnknownError,
         )
+        from orca.operations.device_commands import device_error_code
 
-        assert _gateway_http_error(DeviceUnknownError("x")).status_code == 404
-        assert _gateway_http_error(DeviceOfflineError("x")).status_code == 503
-        assert _gateway_http_error(DeviceLockedError("x")).status_code == 409
-        assert _gateway_http_error(CommandTimeoutError("x")).status_code == 504
-        assert _gateway_http_error(ConfirmationRequiredError("x")).status_code == 409
+        def status(exc: DeviceError) -> int:
+            return device_error_code(exc).http_status
+
+        assert status(DeviceUnknownError("x")) == 404
+        assert status(DeviceOfflineError("x")) == 503
+        assert status(DeviceLockedError("x")) == 409
+        assert status(CommandTimeoutError("x")) == 504
+        assert status(ConfirmationRequiredError("x")) == 400
+
+    def test_a_faulted_device_answers_device_faulted(self) -> None:
+        from orca.gateway.controller.exceptions import DeviceFaultedError
+        from orca.gateway.device_fault import DeviceFault, DeviceFaultOutcome
+        from orca.operations.device_commands import device_error_code
+
+        fault = DeviceFault(
+            device_id="shaker1", command="shake", command_id="c1",
+            outcome=next(iter(DeviceFaultOutcome)), error="x", error_type="X", at=0.0,
+        )
+
+        code = device_error_code(DeviceFaultedError("x", fault))
+        assert (code, code.http_status) == ("device_faulted", 409)
+
+    def test_an_unreadable_world_answers_runtime_not_ready(self) -> None:
+        from orca.gateway.controller.exceptions import ModeUnresolvableError
+        from orca.operations.device_commands import device_error_code
+
+        code = device_error_code(ModeUnresolvableError("x"))
+        assert (code, code.http_status) == ("runtime_not_ready", 503)
 
     def test_an_unmapped_subclass_answers_like_its_parent(self) -> None:
-        from orca.daemon.routes import _gateway_http_error
+        from orca.operations.device_commands import device_error_code
 
         class StillWarmingUp(DeviceOfflineError):
             pass
 
-        assert _gateway_http_error(StillWarmingUp("x")).status_code == 503
+        code = device_error_code(StillWarmingUp("x"))
+        assert (code, code.http_status) == ("device_offline", 503)

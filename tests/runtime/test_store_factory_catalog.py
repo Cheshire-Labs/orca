@@ -1,17 +1,10 @@
-"""InMemoryRuntimeStoreFactory catalog single-source.
-
-The factory holds ONE catalog Service (injectable so the daemon shares it across
-mount/unload + the runtime + the deployment layer). The read-only
-``labware_catalog()`` view reads THROUGH that Service per query, with no
-snapshot, so operator-added custom rows resolve in workflows on the next read.
+"""PackageSetupStoreFactory holds one catalog Service. The read-only
+``labware_catalog()`` view reads through it per query, so added labware resolves
+in workflows on the next read.
 """
 
-from orca.runtime.labware_catalog_service import (
-    LabwareCatalogService,
-    seeded_labware_catalog_service,
-)
 from orca.runtime.labware_catalog_store import LabwareCatalogEntry
-from orca.runtime.store_factory import InMemoryRuntimeStoreFactory
+from tests.setup_package import package_stores
 
 
 def _custom_plate(labware_type: str) -> LabwareCatalogEntry:
@@ -39,24 +32,16 @@ def _custom_plate(labware_type: str) -> LabwareCatalogEntry:
     )
 
 
-def test_factory_returns_the_injected_catalog_service() -> None:
-    service = seeded_labware_catalog_service()
-    factory = InMemoryRuntimeStoreFactory(catalog_service=service)
-    assert factory.labware_catalog_store() is service
-
-
-async def test_default_factory_seeds_its_own_catalog_service() -> None:
-    factory = InMemoryRuntimeStoreFactory()
-    catalog = factory.labware_catalog()
-    assert len(await catalog.list()) > 0  # PLR seed loaded
+async def test_the_factory_catalog_holds_the_built_ins() -> None:
+    catalog = package_stores().labware_catalog()
+    assert len(await catalog.list()) > 0
 
 
 async def test_build_catalog_includes_operator_custom_rows() -> None:
     # Single-source: a custom row added through the shared Service must resolve
     # in the build-time catalog, not just on the operator surface.
-    service: LabwareCatalogService = seeded_labware_catalog_service()
-    await service.add(_custom_plate("my_custom_plate"))
-    factory = InMemoryRuntimeStoreFactory(catalog_service=service)
+    factory = package_stores()
+    await factory.labware_catalog_store().add(_custom_plate("my_custom_plate"))
 
     catalog = factory.labware_catalog()
     assert await catalog.contains("my_custom_plate")

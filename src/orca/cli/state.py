@@ -7,6 +7,13 @@ from orca.cli.backend import get_client
 
 app = typer.Typer(help="State an operator has to settle.")
 
+# The server names the operation; the worklist names the verb to type.
+_CLI_VERB = {
+    "set-well-volumes": "orca labware set-volume",
+    "set-tip-state": "orca labware set-tips",
+    "set-mounted-tips": "orca device set-mounted-tips",
+}
+
 
 @app.command("unsettled")
 def unsettled_state() -> None:
@@ -17,10 +24,10 @@ def unsettled_state() -> None:
     """
     client = get_client()
     result = client.state_unsettled()
+    output.emit_json(result.model_dump(mode="json"))
     if not result.unsettled:
         output.info("nothing is unsettled; the record can answer for everything it tracks")
         return
     for subject in result.unsettled:
         output.info(f"{subject.subject}: {subject.detail}")
-        if subject.settle_with is not None:
-            output.info(f"  settle with: {subject.settle_with}")
+        output.info(f"  settle with: {_CLI_VERB.get(subject.settle_with, subject.settle_with)}")

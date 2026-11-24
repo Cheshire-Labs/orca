@@ -4,6 +4,7 @@ Verifies that parameters flow from the action through the DeviceHandle
 to the device and driver with the correct semantic meaning.
 """
 
+from tests.mock import outside_any_system
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
@@ -15,9 +16,10 @@ from cheshire_drivers import (
 from orca.devices.shaker import Shaker
 from orca.resource_models.devices import Device
 from orca.resource_models.location import Location
-from orca.runtime.device_factory_protocol import DriverPairElement
-from orca.runtime.device_factory_context import use_device_factory
+from orca.driver_management.device_factory_protocol import DeviceDriver
+from orca.driver_management.device_factory_context import use_device_factory
 from orca.system.reservation_manager.location_reservation import LocationReservation
+from tests.test_helpers import command_recorder
 
 
 # ---------------------------------------------------------------------------
@@ -47,10 +49,10 @@ class _RecordingShakerFactory:
     def __init__(self, driver: _RecordingShaker) -> None:
         self._d = driver
 
-    def build_drivers(
+    def build_driver(
         self, device_type: str, name: str,
-    ) -> tuple[DriverPairElement, DriverPairElement]:
-        return self._d, self._d
+    ) -> DeviceDriver:
+        return self._d
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +80,7 @@ class TestCodeFirstActionContract:
         """ctx.device().shake(duration=30, speed=500) reaches the driver correctly."""
         driver = _RecordingShaker()
         with use_device_factory(_RecordingShakerFactory(driver)):
-            shaker = Shaker("test_shaker")
+            shaker = outside_any_system(Shaker("test_shaker"))
 
         async def user_func(ctx: "ActionContext") -> None:
             await ctx.device().shake(duration=30, speed=500)
@@ -88,6 +90,7 @@ class TestCodeFirstActionContract:
 
         action = ActionBodyLocationAction(func=user_func, command="shake")
         action.set_execution_context(variable_store=None, execution_id="test", thread_id="test-thread")
+        action.set_recorder(command_recorder())
         _wire_action_to_device(action, shaker)
         await action.execute()
 

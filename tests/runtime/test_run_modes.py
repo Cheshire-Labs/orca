@@ -2,33 +2,32 @@
 
 Covers:
 
-- `resolve_effective_mode_for_device`: the 12-row v3.4 lookup combining
-  a submission's run_mode with a per-device topology sim_override.
-- `runtime.submit_workflow(mode=...)`: dispatches `assert_runnable` via
-  the unified DeviceRegistry, raising the right error class for each gap.
+- `device_run_mode`: what one device runs as under each run mode and setting.
+- `runtime.submit_workflow(mode=...)`: refuses a sim or live run whose devices are not ready.
 """
 
+from orca.config import OrcaConfig
 from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 
 import pytest
+from tests.no_devices import NullDeviceConnectionSource
+from orca.runtime.server_events import ServerEvents
+from orca.runtime.startup import build_device_gateway
+
+from tests.device_modes import run_by_an_orca_client
+
+from orca.system.errors import DevicesNotReadyError
 
 import orca.orca as orca
 from orca.resource_models.resource_pool import ResourcePool
-from orca.runtime.registries import NullGatewayRegistry
-from orca.runtime.run_modes import (
-    ResolvedDeviceMode,
-    WorkflowRunMode,
-    resolve_effective_mode_for_device,
-)
-from orca.runtime.runtime_interface import (
-    WorkflowDeviceNotConnectedError,
-)
+from tests.no_devices import NullGatewayRegistry
+from orca.modes.device_modes import DeviceMode
+from orca.modes.run_modes import WorkflowRunMode, device_run_mode
 from orca.runtime.status_models import (
     ConnectionCard,
     GatewayDeviceEntry,
 )
-from orca.runtime.system_runtime import SystemRuntime
 from orca.sdk.events import EventBus
 from orca.sdk.system import ResourceRegistry, SystemMap
 from orca.sdk.workflow import (
@@ -52,107 +51,34 @@ from tests.test_helpers import (
     create_test_transporter,
     wire_system_map,
 )
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 
 # --- Resolver matrix --------------------------------------------------------
 
 
-class TestResolveEffectiveModeForDevice:
-    """v3.4 12-row table: submission_mode x device_sim_override.
-
-    Per-device overrides only ratchet TOWARD sim relative to submission
-    mode. Toward-live overrides are silently inert. Warning fires only
-    when going LIVE with a sim-direction override present.
-    """
-
-    # PURE_SIM submission row: always resolves to PURE_SIM, no warnings.
-    @pytest.mark.parametrize("override", [
-        None,
-        WorkflowRunMode.PURE_SIM,
-        WorkflowRunMode.DEVICE_SIM,
-        WorkflowRunMode.LIVE,
-    ])
-    def test_pure_sim_submission_always_pure_sim_no_warning(
-        self, override: WorkflowRunMode | None,
-    ) -> None:
-        result = resolve_effective_mode_for_device(
-            WorkflowRunMode.PURE_SIM, override,
-        )
-        assert result == ResolvedDeviceMode(WorkflowRunMode.PURE_SIM, None)
-
-    def test_device_sim_submission_no_override(self) -> None:
-        result = resolve_effective_mode_for_device(
-            WorkflowRunMode.DEVICE_SIM, None,
-        )
-        assert result == ResolvedDeviceMode(WorkflowRunMode.DEVICE_SIM, None)
-
-    def test_device_sim_submission_pure_sim_override_ratchets_down(self) -> None:
-        result = resolve_effective_mode_for_device(
-            WorkflowRunMode.DEVICE_SIM, WorkflowRunMode.PURE_SIM,
-        )
-        assert result == ResolvedDeviceMode(WorkflowRunMode.PURE_SIM, None)
-
-    def test_device_sim_submission_device_sim_override_redundant(self) -> None:
-        result = resolve_effective_mode_for_device(
-            WorkflowRunMode.DEVICE_SIM, WorkflowRunMode.DEVICE_SIM,
-        )
-        assert result == ResolvedDeviceMode(WorkflowRunMode.DEVICE_SIM, None)
-
-    def test_device_sim_submission_live_override_silently_inert(self) -> None:
-        # Toward-live override has no effect under a sim submission.
-        result = resolve_effective_mode_for_device(
-            WorkflowRunMode.DEVICE_SIM, WorkflowRunMode.LIVE,
-        )
-        assert result == ResolvedDeviceMode(WorkflowRunMode.DEVICE_SIM, None)
-
-    def test_live_submission_no_override(self) -> None:
-        result = resolve_effective_mode_for_device(
-            WorkflowRunMode.LIVE, None,
-        )
-        assert result == ResolvedDeviceMode(WorkflowRunMode.LIVE, None)
-
-    def test_live_submission_live_override_redundant(self) -> None:
-        result = resolve_effective_mode_for_device(
-            WorkflowRunMode.LIVE, WorkflowRunMode.LIVE,
-        )
-        assert result == ResolvedDeviceMode(WorkflowRunMode.LIVE, None)
-
-    def test_live_submission_pure_sim_override_warns(self) -> None:
-        result = resolve_effective_mode_for_device(
-            WorkflowRunMode.LIVE,
-            WorkflowRunMode.PURE_SIM,
-            device_name="shaker_1",
-        )
-        assert result.resolved is WorkflowRunMode.PURE_SIM
-        assert result.warning is not None
-        assert "shaker_1" in result.warning
-        assert "PURE_SIM" in result.warning
-
-    def test_live_submission_device_sim_override_warns(self) -> None:
-        result = resolve_effective_mode_for_device(
-            WorkflowRunMode.LIVE,
-            WorkflowRunMode.DEVICE_SIM,
-            device_name="centrifuge_1",
-        )
-        assert result.resolved is WorkflowRunMode.DEVICE_SIM
-        assert result.warning is not None
-        assert "centrifuge_1" in result.warning
-        assert "DEVICE_SIM" in result.warning
+@pytest.mark.parametrize(("run_mode", "setting", "runs_as"), [
+    (WorkflowRunMode.CHECK_RUN, DeviceMode.SIM, WorkflowRunMode.CHECK_RUN),
+    (WorkflowRunMode.CHECK_RUN, DeviceMode.LIVE, WorkflowRunMode.CHECK_RUN),
+    (WorkflowRunMode.SIM, DeviceMode.SIM, WorkflowRunMode.SIM),
+    (WorkflowRunMode.SIM, DeviceMode.LIVE, WorkflowRunMode.SIM),
+    (WorkflowRunMode.LIVE, DeviceMode.SIM, WorkflowRunMode.SIM),
+    (WorkflowRunMode.LIVE, DeviceMode.LIVE, WorkflowRunMode.LIVE),
+])
+def test_a_live_run_uses_each_devices_setting_and_the_other_modes_decide_for_every_device(
+    run_mode: WorkflowRunMode, setting: DeviceMode, runs_as: WorkflowRunMode,
+) -> None:
+    assert device_run_mode(run_mode, setting) is runs_as
 
 
 # --- Real-system fixtures ---------------------------------------------------
 
 
-async def _build_system(
-    *,
-    extra_devices: dict[str, WorkflowRunMode | None] | None = None,
-) -> ISystem:
-    """Construct a minimal System with a shaker + transporter for run-mode tests.
-
-    `extra_devices` lets a test add additional Devices to the topology by
-    name, optionally forcing a per-device topology sim_override on each.
-    The dict value is the override mode (or None for no override).
-    """
+async def _build_system() -> ISystem:
+    """Construct a minimal System with a shaker + transporter for run-mode tests."""
     plate = create_test_plate_template("plate_96")
 
     registry = ResourceRegistry()
@@ -163,17 +89,6 @@ async def _build_system(
     pool = ResourcePool("shaker1", [shaker])
     registry.add_resource_pool(pool)
 
-    if extra_devices:
-        for dev_name, override in extra_devices.items():
-            dev = create_test_device(dev_name, sim_override=override)
-            registry.add_resource(dev)
-            registry.add_resource_pool(ResourcePool(dev_name, [dev]))
-
-    # Extra devices live in the registry but are NOT mounted on the SystemMap;
-    # the topology-card build path reads `system.devices` directly, so the
-    # registry membership alone is sufficient for run-mode tests. Skipping
-    # mounting avoids needing additional Locations on the map for every
-    # ad-hoc device a test wants to inject.
     system_map = SystemMap(registry)
     await wire_system_map(system_map, devices={"shaker1": shaker}, pads=["pad1"])
 
@@ -209,7 +124,10 @@ async def _build_system(
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=EventBus(),
+        event_bus=EventBus(), config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     return builder.get_system()
@@ -251,14 +169,14 @@ def _connection_card(
     )
 
 
-async def test_submit_workflow_pure_sim_succeeds_with_topology_only() -> None:
+async def test_submit_workflow_check_run_succeeds_with_topology_only() -> None:
     system = await _build_system()
-    runtime = SystemRuntime(
+    runtime = await memory_runtime(
         system,
         gateway_registry=NullGatewayRegistry(),
     )
     await runtime.start()
-    record = await runtime.submit_workflow("run_mode_test_workflow", mode=WorkflowRunMode.PURE_SIM)
+    record = await runtime.submit_workflow("run_mode_test_workflow", mode=WorkflowRunMode.CHECK_RUN)
     assert record.workflow_name == "run_mode_test_workflow"
     await runtime.shutdown()
 
@@ -269,9 +187,9 @@ async def test_submit_workflow_requires_run_mode() -> None:
     The deployment base mode is no longer a submit-time fallback under
     sim-hierarchy v3.4 -- the operator must declare a mode per submission.
     """
-    from orca.runtime.runtime_interface import RunModeRequiredError
+    from orca.runtime.errors import RunModeRequiredError
     system = await _build_system()
-    runtime = SystemRuntime(
+    runtime = await memory_runtime(
         system,
         gateway_registry=NullGatewayRegistry(),
     )
@@ -281,22 +199,22 @@ async def test_submit_workflow_requires_run_mode() -> None:
     await runtime.shutdown()
 
 
-async def test_submit_workflow_device_sim_raises_for_topology_only() -> None:
-    """DEVICE_SIM requires every topology-declared device to be connected."""
+async def test_submit_workflow_sim_raises_for_topology_only() -> None:
+    """A sim run is refused at its start when a device's orca-client is not connected."""
     system = await _build_system()
-    runtime = SystemRuntime(
+    run_by_an_orca_client(*system.resources)
+    runtime = await memory_runtime(
         system,
         gateway_registry=NullGatewayRegistry(),
+        connection_source=NullDeviceConnectionSource(),
+        gateway=build_device_gateway(ServerEvents(), None),
     )
     await runtime.start()
-    with pytest.raises(WorkflowDeviceNotConnectedError) as exc:
+    with pytest.raises(DevicesNotReadyError) as exc:
         await runtime.submit_workflow(
-            "run_mode_test_workflow", mode=WorkflowRunMode.DEVICE_SIM,
+            "run_mode_test_workflow", mode=WorkflowRunMode.SIM,
         )
-    # Topology has shaker1 + robot1; both should appear since neither has a
-    # gateway connection.
-    assert "shaker1" in exc.value.missing
-    assert "robot1" in exc.value.missing
+    assert "orca-client is not connected" in exc.value.devices["shaker1"]
     await runtime.shutdown()
 
 
@@ -318,7 +236,7 @@ async def test_submit_workflow_live_succeeds_when_every_device_connected() -> No
     # Build matching gateway entries so the topology x gateway collision
     # validator at start-up does not refuse our otherwise-clean topology.
     # Driver_class_observed must equal the topology's driver_class.
-    runtime = SystemRuntime(
+    runtime = await memory_runtime(
         system,
         gateway_registry=NullGatewayRegistry(),
         connection_source=source,
@@ -336,9 +254,9 @@ async def test_submit_workflow_live_succeeds_when_every_device_connected() -> No
 
 
 async def test_start_with_no_overrides_passes_cleanly() -> None:
-    """v3.4: runtime.start() seeds ContextVar and proceeds without C1 checks."""
+    """runtime.start() seeds ContextVar and proceeds."""
     system = await _build_system()
-    runtime = SystemRuntime(
+    runtime = await memory_runtime(
         system,
         gateway_registry=NullGatewayRegistry(),
     )
@@ -346,63 +264,26 @@ async def test_start_with_no_overrides_passes_cleanly() -> None:
     await runtime.shutdown()
 
 
-async def test_start_with_topology_sim_override_proceeds() -> None:
-    """v3.4: topology sim_override no longer hard-errors at start.
-
-    The C1 conformance rule was deleted along with `validate_topology_overrides`.
-    Per-device overrides are evaluated at submit time via the 12-row
-    resolver; start() is purely lifecycle.
-    """
-    system = await _build_system(extra_devices={"sim_only": WorkflowRunMode.PURE_SIM})
-    runtime = SystemRuntime(
-        system,
-        gateway_registry=NullGatewayRegistry(),
-    )
-    await runtime.start()
-    await runtime.shutdown()
+# --- The refusal names every device ------------------------------------------
 
 
-# --- Topology -> TopologyCard sim_override plumbing -------------------------
-
-
-async def test_device_sim_override_surfaces_on_topology_card() -> None:
-    """`Device(sim_override=...)` flows through to `TopologyCard.topology_sim_override`."""
-    system = await _build_system(extra_devices={"forced_sim": WorkflowRunMode.PURE_SIM})
-    runtime = SystemRuntime(
-        system,
-        gateway_registry=NullGatewayRegistry(),
-    )
-    entry = await runtime.device_registry.get("forced_sim")
-    assert entry is not None
-    assert entry.topology_card is not None
-    assert (
-        entry.topology_card.topology_sim_override is WorkflowRunMode.PURE_SIM
-    )
-
-
-# --- DeviceRegistry assert_runnable still aggregates ------------------------
-
-
-async def test_assert_runnable_aggregates_via_runtime() -> None:
-    """End-to-end sanity: submit_workflow surfaces every offending device.
-
-    Builds a system with TWO topology devices, neither connected, then calls
-    `submit_workflow(mode=DEVICE_SIM)`. The error must list both devices.
-    """
+async def test_the_refusal_names_every_device_and_every_mover() -> None:
+    """Nothing is connected. A run brings up every device and every transporter (owner, 2026-11-13), so the arm
+    is named though it is on no route the workflow declares."""
     system = await _build_system()
-    runtime = SystemRuntime(
+    run_by_an_orca_client(*system.resources)
+    runtime = await memory_runtime(
         system,
         gateway_registry=NullGatewayRegistry(),
+        connection_source=NullDeviceConnectionSource(),
+        gateway=build_device_gateway(ServerEvents(), None),
     )
     await runtime.start()
-    with pytest.raises(WorkflowDeviceNotConnectedError) as exc:
+    with pytest.raises(DevicesNotReadyError) as exc:
         await runtime.submit_workflow(
             "run_mode_test_workflow", mode=WorkflowRunMode.LIVE,
         )
-    # shaker1 + robot1 both unconnected.
-    missing = sorted(exc.value.missing)
-    assert "shaker1" in missing
-    assert "robot1" in missing
+    assert set(exc.value.devices) == {"shaker1", "robot1"}
     await runtime.shutdown()
 
 

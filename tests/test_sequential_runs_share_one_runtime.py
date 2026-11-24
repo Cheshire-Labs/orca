@@ -7,12 +7,13 @@ this pins is whether it also leaves the DEVICE reserved. If it does, the next
 run waits on that device forever and the deployment looks hung.
 """
 
+import pytest
+from orca.config import OrcaConfig
 from typing import AsyncGenerator, Tuple
 
 import orca.orca as orca
 from orca.resource_models.resource_pool import ResourcePool
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.system_runtime import SystemRuntime
+from orca.modes.run_modes import WorkflowRunMode
 from orca.sdk.events import EventBus
 from orca.sdk.system import ResourceRegistry, SystemMap
 from orca.sdk.workflow import WorkflowTemplate
@@ -32,7 +33,14 @@ from tests.test_helpers import (
     execution_outcome,
     wire_system_map,
 )
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
+
+# The system build must reach every position these runs touch.
+pytestmark = pytest.mark.positions_bound_by_the_build
 
 async def _system_with_a_resident_and_a_visitor() -> Tuple[
     ISystem, WorkflowTemplate, WorkflowTemplate
@@ -101,7 +109,10 @@ async def _system_with_a_resident_and_a_visitor() -> Tuple[
         resources_registry=registry,
         system_map=system_map,
         workflows=[leave_resident, visit_shaker],
-        event_bus=EventBus(),
+        event_bus=EventBus(), config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     return builder.get_system(), leave_resident, visit_shaker
@@ -117,10 +128,10 @@ async def test_a_finished_run_frees_the_device_its_resident_sits_in() -> None:
     device then waits forever, with nothing logged to say what it is waiting on.
     """
     system, leave_resident, _visit_shaker = await _system_with_a_resident_and_a_visitor()
-    runtime = SystemRuntime(system)
+    runtime = await memory_runtime(system)
     await runtime.start()
     try:
-        first = await runtime.submit(leave_resident, mode=WorkflowRunMode.PURE_SIM)
+        first = await runtime.submit(leave_resident, mode=WorkflowRunMode.CHECK_RUN)
         assert (await execution_outcome(runtime, first, timeout=60.0)).status == "completed"
         held = runtime.list_reservations(first.execution_id)
     finally:

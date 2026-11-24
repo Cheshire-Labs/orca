@@ -1,10 +1,6 @@
 """`orca ops-history ...` CLI: per-execution archive read + cross-execution search.
 
-Works against both backends: the local daemon binds the ops-history
-Operations at ``POST /operations/list-ops-history`` and
-``POST /operations/search-ops-history``; a cloud deployment exposes the same surface
-under ``/api/operations/...`` (and the matching MCP tools
-``ops_history_get`` / ``ops_history_search``).
+Both verbs read ``GET /api/ops-history`` on either server.
 """
 
 import typer
@@ -17,7 +13,7 @@ from orca.state.records import TrackingRecord
 def _affected_ids(record: TrackingRecord) -> str:
     """Distinct canonical labware UUIDs across a record's ops.
 
-    These are the ids ``orca labware journey`` / ``labware history`` accept;
+    These are the ids ``orca labware journey`` accepts;
     the display names alone are not resolvable.
     """
     ids: list[str] = []
@@ -44,7 +40,7 @@ def ops_history_get(
     client = get_client()
     ids = [r.id for r in client.list_executions()]
     resolved = resolve.resolve_execution_id(execution_id, ids)
-    payload = client.ops_history_get(resolved)
+    payload = client.ops_history_search(execution_id=resolved)
     if output.get_mode().value == "json":
         output.emit_json(payload.model_dump(mode="json"))
         return

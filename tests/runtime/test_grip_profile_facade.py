@@ -4,15 +4,14 @@ import pytest
 from cheshire_drivers.move_parameters import MoveParameterPatch
 
 from orca.runtime.danger import ConfirmationRequired
-from orca.runtime.db import create_memory_engine
 from orca.runtime.facades.grip_profiles import GripProfileFacade
 from orca.runtime.grip_profile_service import GripProfileService
-from orca.runtime.sqlite_grip_profile_store import SqliteGripProfileStore
+from tests.setup_package import fresh_grip_profiles
 
 
 def _facade() -> GripProfileFacade:
     return GripProfileFacade(
-        GripProfileService(SqliteGripProfileStore(create_memory_engine()))
+        GripProfileService(fresh_grip_profiles())
     )
 
 

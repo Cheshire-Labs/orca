@@ -3,43 +3,43 @@
 Verifies the two-card composition rules:
 
 - Either card may be present alone; absence of one is a valid state.
-- Topology-only entries support PURE_SIM only (R1).
-- DEVICE_SIM / LIVE require both cards AND a live connection.
+- Topology-only entries support CHECK_RUN only (R1).
+- SIM / LIVE require both cards AND a live connection.
 - Heartbeat staleness flips `is_connected` to False (owned by the source impl;
   asserted via a fake source that exposes the threshold knob).
 - `is_device_connected` / `is_initialized` come from the device bridge when one
   holds the device, and from the in-process LIVE driver when none does.
 - Kind-mismatch (C2 superset rule) raises `TopologyCollisionError`.
-- `assert_runnable` aggregates every offending name, not just the first.
+- `unreachable` names every device a sim or live run cannot reach, not just the first.
 
 Tests use small fake doubles (no PLR / cheshire-drivers / system_runtime
-infrastructure pulled in) so failures localize to the registry itself. The
-resource stub is the exception: it holds a real `SimulationManager`, because
-the run-mode-dependent driver swap is exactly what a plain attribute cannot
-reproduce and exactly what the branch with no device bridge has to avoid
-reading.
+infrastructure pulled in) so failures localize to the registry itself.
 """
 
 from datetime import datetime, timedelta, timezone
 
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 from cheshire_drivers.gateway_protocol import DeviceConnectInfo, DriverMode
 
+from orca.modes.run_modes import OUT_OF_RUN_BASE
 from orca.gateway.connection_source import (
     _HEARTBEAT_TOLERANCE_SECONDS,
     DeviceConnectionSource,
 )
 from orca.gateway.registry.connection_tracker import DeviceConnectionTracker
 from orca.resource_models.resources import IResource
-from orca.resource_models.simulation_manager import SimulationManager
+from orca.resource_models.device_run_mode import DeviceRunMode
 from orca.runtime.registries.device_registry import DeviceRegistryImpl
-from orca.runtime.runtime_interface import (
+from orca.runtime.registry_protocols import (
     IDeviceConnectionSource,
     ITopologyRegistry,
-    TopologyCollisionError,
-    WorkflowDeviceMissingError,
-    WorkflowDeviceNotConnectedError,
 )
+from orca.runtime.errors import (
+    TopologyCollisionError,
+)
+from orca.runtime.system_runtime import declared_device_snapshots
 from orca.runtime.status_models import (
     ConnectionCard,
     ReportedDeviceLink,
@@ -154,16 +154,11 @@ class _StubAgentHeldDriver(_StubDriver):
 
 
 class _StubResource(IResource):
-    """Stub shaped like Device/Transporter, driver swap included.
+    """Stub shaped like Device/Transporter: one driver and a real run mode."""
 
-    It holds a real `SimulationManager`, so `driver` resolves the ambient run
-    mode and falls back to the sim driver when nothing seeded one, exactly as
-    `Device` does. A stub carrying plain attributes cannot reproduce that,
-    which is how a read off the dispatch driver survived its own test.
-    """
-
-    def __init__(self, *, live: _StubDriver, sim: _StubDriver) -> None:
-        self._manager: SimulationManager[_StubDriver] = SimulationManager(live, sim)
+    def __init__(self, driver: _StubDriver) -> None:
+        self._driver = driver
+        self._run_mode = DeviceRunMode("stub")
 
     @property
     def name(self) -> str:
@@ -171,25 +166,14 @@ class _StubResource(IResource):
 
     @property
     def driver(self) -> _StubDriver:
-        return self._manager.driver
+        return self._driver
 
-    @property
-    def live_driver(self) -> _StubDriver:
-        return self._manager.live_driver
-
-    @property
-    def effective_mode(self) -> str:
-        return self._manager.effective_mode.value
-
-    def mode_under(self, base: WorkflowRunMode) -> WorkflowRunMode:
-        return self._manager.mode_under(base)
-
-    def driver_under(self, base: WorkflowRunMode) -> _StubDriver:
-        return self._manager.driver_under(base)
+    async def mode_under(self, base: WorkflowRunMode) -> WorkflowRunMode:
+        return await self._run_mode.mode_under(base)
 
     @property
     def is_initialized(self) -> bool:
-        return self._manager.driver.is_initialized
+        return self._driver.is_initialized
 
 
 # --- Helpers ----------------------------------------------------------------
@@ -201,7 +185,6 @@ def _topology_entry(
     interfaces: tuple[str, ...] = ("IShaker",),
     kind: str = "shaker",
     position_ids: tuple[str, ...] = ("loc_a",),
-    sim_override: WorkflowRunMode | None = None,
     interfaces_are_class_defaults: bool = False,
 ) -> TopologyDeviceEntry:
     return TopologyDeviceEntry(
@@ -209,7 +192,6 @@ def _topology_entry(
         kind=kind,
         interfaces=interfaces,
         position_ids=position_ids,
-        sim_override=sim_override,
         interfaces_are_class_defaults=interfaces_are_class_defaults,
     )
 
@@ -242,7 +224,7 @@ def _connection_card(
 def _brought_up(is_initialized: bool) -> _StubResource:
     """A resource whose in-process drivers both agree, so only the source varies."""
     driver = _StubDriver(is_connected=is_initialized, is_initialized=is_initialized)
-    return _StubResource(live=driver, sim=driver)
+    return _StubResource(driver)
 
 
 def _registry(
@@ -256,6 +238,7 @@ def _registry(
         topology_source=FakeTopologyRegistry(topology or []),
         connection_source=FakeConnectionSource(connections or [], now=now),
         system=FakeSystem(resources),
+        base_mode=lambda: OUT_OF_RUN_BASE,
     )
 
 
@@ -276,27 +259,9 @@ class TestTwoCardMatrix:
         assert entry.topology_card is not None
         assert entry.connection_card is None
         assert await entry.is_client_connected() is False
-        assert await entry.supports_mode(WorkflowRunMode.PURE_SIM) is True
-        assert await entry.supports_mode(WorkflowRunMode.DEVICE_SIM) is False
+        assert await entry.supports_mode(WorkflowRunMode.CHECK_RUN) is True
+        assert await entry.supports_mode(WorkflowRunMode.SIM) is False
         assert await entry.supports_mode(WorkflowRunMode.LIVE) is False
-
-    async def test_sim_pinned_topology_only_supports_live(self) -> None:
-        # A PURE_SIM-pinned device resolves to sim under any submission mode,
-        # so it "supports" DEVICE_SIM and LIVE submissions without a
-        # connection. The daemon mode-support view reads this.
-        registry = _registry(
-            topology=[
-                _topology_entry(
-                    "sim_shaker", sim_override=WorkflowRunMode.PURE_SIM,
-                ),
-            ],
-        )
-        entry = await registry.get("sim_shaker")
-        assert entry is not None
-        assert entry.connection_card is None
-        assert await entry.supports_mode(WorkflowRunMode.PURE_SIM) is True
-        assert await entry.supports_mode(WorkflowRunMode.DEVICE_SIM) is True
-        assert await entry.supports_mode(WorkflowRunMode.LIVE) is True
 
     async def test_connection_only(self) -> None:
         now = datetime.now(timezone.utc)
@@ -309,11 +274,14 @@ class TestTwoCardMatrix:
         assert entry is not None
         assert entry.topology_card is None
         assert entry.connection_card is not None
+        # The device list shows when its client last spoke and what kind it advertised.
+        assert entry.connection_card.last_heartbeat == fresh_hb
+        assert entry.connection_card.advertised_kind == "Shaker"
         assert await entry.is_client_connected() is True
-        # PURE_SIM needs a topology declaration; connection-only fails.
-        assert await entry.supports_mode(WorkflowRunMode.PURE_SIM) is False
-        # DEVICE_SIM/LIVE also fail because BOTH cards are required (R1).
-        assert await entry.supports_mode(WorkflowRunMode.DEVICE_SIM) is False
+        # CHECK_RUN needs a topology declaration; connection-only fails.
+        assert await entry.supports_mode(WorkflowRunMode.CHECK_RUN) is False
+        # SIM/LIVE also fail because BOTH cards are required (R1).
+        assert await entry.supports_mode(WorkflowRunMode.SIM) is False
         assert await entry.supports_mode(WorkflowRunMode.LIVE) is False
 
     async def test_both_cards_present(self) -> None:
@@ -329,8 +297,8 @@ class TestTwoCardMatrix:
         assert entry.topology_card is not None
         assert entry.connection_card is not None
         assert await entry.is_client_connected() is True
-        assert await entry.supports_mode(WorkflowRunMode.PURE_SIM) is True
-        assert await entry.supports_mode(WorkflowRunMode.DEVICE_SIM) is True
+        assert await entry.supports_mode(WorkflowRunMode.CHECK_RUN) is True
+        assert await entry.supports_mode(WorkflowRunMode.SIM) is True
         assert await entry.supports_mode(WorkflowRunMode.LIVE) is True
 
     async def test_neither_card(self) -> None:
@@ -356,173 +324,59 @@ class TestTwoCardMatrix:
         assert names == ["shaker_1", "shaker_2", "rogue"]
 
 
-# --- R1: assert_runnable per-mode rules -------------------------------------
+# --- Which devices a sim or live run cannot reach ---------------------------
 
 
-class TestAssertRunnable:
-    """Per R1: topology-only entries are PURE_SIM only.
+class TestUnreachable:
+    """A sim or live command needs the device declared and its orca-client connected."""
 
-    Per the plan: missing-topology and not-connected are reported separately.
-    """
-
-    async def test_pure_sim_passes_with_topology_only(self) -> None:
+    async def test_a_declared_device_with_no_connection_is_unreachable(self) -> None:
         registry = _registry(topology=[_topology_entry("shaker_1")])
-        await registry.assert_runnable(["shaker_1"], WorkflowRunMode.PURE_SIM)
+        assert list(await registry.unreachable(["shaker_1"])) == ["shaker_1"]
 
-    async def test_pure_sim_raises_when_topology_missing(self) -> None:
-        registry = _registry()
-        with pytest.raises(WorkflowDeviceMissingError) as exc:
-            await registry.assert_runnable(
-                ["shaker_1"], WorkflowRunMode.PURE_SIM,
-            )
-        assert exc.value.missing == ["shaker_1"]
-
-    async def test_device_sim_raises_for_topology_only(self) -> None:
-        registry = _registry(topology=[_topology_entry("shaker_1")])
-        with pytest.raises(WorkflowDeviceNotConnectedError) as exc:
-            await registry.assert_runnable(
-                ["shaker_1"], WorkflowRunMode.DEVICE_SIM,
-            )
-        assert exc.value.missing == ["shaker_1"]
-
-    async def test_live_raises_for_topology_only(self) -> None:
-        registry = _registry(topology=[_topology_entry("shaker_1")])
-        with pytest.raises(WorkflowDeviceNotConnectedError) as exc:
-            await registry.assert_runnable(
-                ["shaker_1"], WorkflowRunMode.LIVE,
-            )
-        assert exc.value.missing == ["shaker_1"]
-
-    async def test_live_passes_with_both_cards_and_fresh_heartbeat(self) -> None:
+    async def test_both_cards_and_a_fresh_heartbeat_are_reachable(self) -> None:
         now = datetime.now(timezone.utc)
-        fresh_hb = now - timedelta(seconds=1)
         registry = _registry(
             topology=[_topology_entry("shaker_1")],
-            connections=[_connection_card("shaker_1", last_heartbeat=fresh_hb)],
+            connections=[_connection_card("shaker_1", last_heartbeat=now - timedelta(seconds=1))],
             now=now,
         )
-        await registry.assert_runnable(["shaker_1"], WorkflowRunMode.LIVE)
+        assert await registry.unreachable(["shaker_1"]) == {}
 
-    async def test_live_raises_when_heartbeat_stale(self) -> None:
+    async def test_a_stale_heartbeat_is_unreachable(self) -> None:
         now = datetime.now(timezone.utc)
-        # Stale = older than the heartbeat tolerance window.
         stale_hb = now - timedelta(seconds=_HEARTBEAT_TOLERANCE_SECONDS + 60)
         registry = _registry(
             topology=[_topology_entry("shaker_1")],
             connections=[_connection_card("shaker_1", last_heartbeat=stale_hb)],
             now=now,
         )
-        with pytest.raises(WorkflowDeviceNotConnectedError) as exc:
-            await registry.assert_runnable(
-                ["shaker_1"], WorkflowRunMode.LIVE,
-            )
-        assert exc.value.missing == ["shaker_1"]
+        assert list(await registry.unreachable(["shaker_1"])) == ["shaker_1"]
 
-    async def test_aggregates_every_offending_name(self) -> None:
+    async def test_every_unreachable_device_is_named(self) -> None:
         now = datetime.now(timezone.utc)
-        fresh_hb = now - timedelta(seconds=1)
-        # ok_1: both cards + fresh heartbeat (passes).
-        # broken_2: topology only (fails - not connected).
-        # broken_3: topology only (fails - not connected).
         registry = _registry(
-            topology=[
-                _topology_entry("ok_1"),
-                _topology_entry("broken_2"),
-                _topology_entry("broken_3"),
-            ],
-            connections=[_connection_card("ok_1", last_heartbeat=fresh_hb)],
+            topology=[_topology_entry("ok_1"), _topology_entry("broken_2"), _topology_entry("broken_3")],
+            connections=[_connection_card("ok_1", last_heartbeat=now - timedelta(seconds=1))],
             now=now,
         )
-        with pytest.raises(WorkflowDeviceNotConnectedError) as exc:
-            await registry.assert_runnable(
-                ["ok_1", "broken_2", "broken_3"], WorkflowRunMode.LIVE,
-            )
-        # Aggregation is the contract: error reports BOTH broken devices.
-        assert sorted(exc.value.missing) == ["broken_2", "broken_3"]
+        assert sorted(await registry.unreachable(["ok_1", "broken_2", "broken_3"])) == ["broken_2", "broken_3"]
 
-    async def test_pure_sim_aggregates_missing_topology_names(self) -> None:
-        registry = _registry(topology=[_topology_entry("present")])
-        with pytest.raises(WorkflowDeviceMissingError) as exc:
-            await registry.assert_runnable(
-                ["present", "absent_a", "absent_b"], WorkflowRunMode.PURE_SIM,
-            )
-        assert sorted(exc.value.missing) == ["absent_a", "absent_b"]
-
-    async def test_live_passes_for_sim_pinned_unconnected_device(self) -> None:
-        # A LIVE submission must NOT require a connection for a device the
-        # topology pins to PURE_SIM: it dispatches to its sim driver and
-        # never touches the wire. assert_runnable resolves the per-device
-        # effective mode, not the flat submission mode.
-        registry = _registry(
-            topology=[
-                _topology_entry(
-                    "sim_shaker", sim_override=WorkflowRunMode.PURE_SIM,
-                ),
-            ],
-        )
-        await registry.assert_runnable(["sim_shaker"], WorkflowRunMode.LIVE)
-
-    async def test_live_mixes_pinned_sim_and_required_live(self) -> None:
-        # One device pinned PURE_SIM (no connection needed) + one ordinary
-        # device that is unconnected. Only the ordinary one is an offender.
-        registry = _registry(
-            topology=[
-                _topology_entry(
-                    "sim_shaker", sim_override=WorkflowRunMode.PURE_SIM,
-                ),
-                _topology_entry("live_shaker"),
-            ],
-        )
-        with pytest.raises(WorkflowDeviceNotConnectedError) as exc:
-            await registry.assert_runnable(
-                ["sim_shaker", "live_shaker"], WorkflowRunMode.LIVE,
-            )
-        assert exc.value.missing == ["live_shaker"]
-
-    async def test_live_device_sim_pinned_still_requires_connection(self) -> None:
-        # A DEVICE_SIM pin exercises the wire (sim driver lives on the
-        # orca-client), so it STILL requires a live connection. The relaxation
-        # is only for PURE_SIM-resolved devices.
-        registry = _registry(
-            topology=[
-                _topology_entry(
-                    "wire_sim_shaker", sim_override=WorkflowRunMode.DEVICE_SIM,
-                ),
-            ],
-        )
-        with pytest.raises(WorkflowDeviceNotConnectedError) as exc:
-            await registry.assert_runnable(
-                ["wire_sim_shaker"], WorkflowRunMode.LIVE,
-            )
-        assert exc.value.missing == ["wire_sim_shaker"]
-
-    async def test_not_connected_error_hints_undeclared_connections(self) -> None:
-        # Declared 'shaker_1' is absent; a typo'd 'shaker1' connected as a
-        # ghost. The hard error names the undeclared connection so the
-        # operator can spot the mismatch.
+    async def test_the_reason_names_a_connected_device_the_topology_does_not_declare(self) -> None:
+        # A typo'd 'shaker1' connected while 'shaker_1' is declared: the reason names it so the mismatch shows.
         now = datetime.now(timezone.utc)
-        fresh_hb = now - timedelta(seconds=1)
         registry = _registry(
             topology=[_topology_entry("shaker_1")],
-            connections=[_connection_card("shaker1", last_heartbeat=fresh_hb)],
+            connections=[_connection_card("shaker1", last_heartbeat=now - timedelta(seconds=1))],
             now=now,
         )
-        with pytest.raises(WorkflowDeviceNotConnectedError) as exc:
-            await registry.assert_runnable(["shaker_1"], WorkflowRunMode.LIVE)
-        assert exc.value.missing == ["shaker_1"]
-        assert exc.value.undeclared_connected == ["shaker1"]
-        assert "shaker1" in str(exc.value)
+        assert "shaker1" in (await registry.unreachable(["shaker_1"]))["shaker_1"]
 
-    async def test_not_connected_error_no_hint_when_all_declared(self) -> None:
-        # No ghost connections -> the hint list is empty.
+    async def test_the_reason_has_no_hint_when_every_connection_is_declared(self) -> None:
         registry = _registry(topology=[_topology_entry("shaker_1")])
-        with pytest.raises(WorkflowDeviceNotConnectedError) as exc:
-            await registry.assert_runnable(["shaker_1"], WorkflowRunMode.LIVE)
-        assert exc.value.undeclared_connected == []
+        assert (await registry.unreachable(["shaker_1"]))["shaker_1"] == "its orca-client is not connected"
 
-    async def test_not_connected_hint_excludes_stale_undeclared(self) -> None:
-        # An undeclared connection whose heartbeat is stale is NOT live, so it
-        # must not be reported as a "connected" name-mismatch candidate.
+    async def test_a_stale_undeclared_connection_is_not_offered_as_the_mismatch(self) -> None:
         now = datetime.now(timezone.utc)
         stale_hb = now - timedelta(seconds=_HEARTBEAT_TOLERANCE_SECONDS + 60)
         registry = _registry(
@@ -530,10 +384,7 @@ class TestAssertRunnable:
             connections=[_connection_card("shaker1", last_heartbeat=stale_hb)],
             now=now,
         )
-        with pytest.raises(WorkflowDeviceNotConnectedError) as exc:
-            await registry.assert_runnable(["shaker_1"], WorkflowRunMode.LIVE)
-        assert exc.value.missing == ["shaker_1"]
-        assert exc.value.undeclared_connected == []
+        assert "shaker1" not in (await registry.unreachable(["shaker_1"]))["shaker_1"]
 
 
 # --- Heartbeat staleness ----------------------------------------------------
@@ -612,12 +463,12 @@ class TestRealConnectionSourceStaleness:
     The registry tests above use a fake source; this class exercises the real
     staleness computation. Offsets are fixed wall-clock seconds (not derived
     from the threshold constant) so a comparison-operator flip or an absurd
-    threshold change fails here. `test_threshold_is_30_seconds` pins the
+    threshold change fails here. `test_threshold_is_90_seconds` pins the
     value itself so a silent retune is caught loudly.
     """
 
-    async def test_threshold_is_30_seconds(self) -> None:
-        assert _HEARTBEAT_TOLERANCE_SECONDS == 30.0
+    async def test_threshold_is_90_seconds(self) -> None:
+        assert _HEARTBEAT_TOLERANCE_SECONDS == 90.0
 
     async def test_fresh_registration_is_connected(self) -> None:
         tracker = DeviceConnectionTracker()
@@ -634,7 +485,7 @@ class TestRealConnectionSourceStaleness:
         await _register_device(tracker)
         snapshot = await tracker.get_device("shaker_1")
         assert snapshot is not None
-        # 5 minutes old: stale under the 30s threshold.
+        # 5 minutes old: stale under the 90 s threshold.
         snapshot.last_seen = datetime.now(timezone.utc) - timedelta(seconds=300)
         source = DeviceConnectionSource(tracker)
         assert await source.is_connected("shaker_1") is False
@@ -644,7 +495,7 @@ class TestRealConnectionSourceStaleness:
         await _register_device(tracker)
         snapshot = await tracker.get_device("shaker_1")
         assert snapshot is not None
-        # 5s old: comfortably inside the 30s threshold.
+        # 5 s old: comfortably inside the 90 s threshold.
         snapshot.last_seen = datetime.now(timezone.utc) - timedelta(seconds=5)
         source = DeviceConnectionSource(tracker)
         assert await source.is_connected("shaker_1") is True
@@ -698,21 +549,8 @@ class TestIsInitialized:
     async def test_with_no_agent_the_answer_is_the_driver_the_verbs_bring_up(
         self,
     ) -> None:
-        """No device bridge means orca holds the drivers, so the read follows
-        dispatch.
-
-        Operator verbs resolve the LIVE write base (D4), so the read reports
-        the live slot. Reporting the other slot would describe a driver the
-        verb never touched, leaving an operator who ran it looking at a flag
-        nothing they can do will move.
-        """
-        resource = _StubResource(
-            live=_StubDriver(is_connected=True, is_initialized=True),
-            sim=_StubDriver(is_connected=False, is_initialized=False),
-        )
-        assert resource.driver is not resource.live_driver, (
-            "the slots must differ, or this proves nothing"
-        )
+        """No device bridge means orca holds the driver, so the read is the driver's."""
+        resource = _StubResource(_StubDriver(is_connected=True, is_initialized=True))
         registry = _registry(
             topology=[_topology_entry("shaker_1")],
             resources={"shaker_1": resource},
@@ -756,9 +594,9 @@ class TestKindMismatch:
         )
         entry = await registry.get("shaker_1")
         assert entry is not None
-        assert entry.effective_interfaces() == frozenset(
-            {"IShaker", "ITempSettable"},
-        )
+        assert entry.interface_mismatch is None
+        # Accepted, but a command is checked against what the topology declared: the extra is not dispatchable.
+        assert entry.effective_interfaces() == frozenset({"IShaker"})
 
     async def test_non_superset_raises_on_get(self) -> None:
         # Topology: IShaker. Connection: IDelidder. Not a superset.
@@ -803,6 +641,57 @@ class TestKindMismatch:
         assert "ITempSettable" in str(exc.value)
 
 
+class TestOneMismatchedDeviceInTheList:
+    """The list answers a mismatched device's row with the mismatch and keeps every other row."""
+
+    async def test_the_list_keeps_every_device_and_names_the_mismatch(self) -> None:
+        now = datetime.now(timezone.utc)
+        registry = _registry(
+            topology=[
+                _topology_entry("shaker_1", interfaces=("IShaker", "ITempSettable")),
+                _topology_entry("shaker_2", interfaces=("IShaker",)),
+            ],
+            connections=[
+                _connection_card(
+                    "shaker_1", advertised_interfaces=frozenset({"IShaker"}),
+                    last_heartbeat=now - timedelta(seconds=1),
+                ),
+            ],
+            now=now,
+        )
+
+        entries = {entry.name: entry for entry in await registry.list_all()}
+
+        assert set(entries) == {"shaker_1", "shaker_2"}
+        mismatch = entries["shaker_1"].interface_mismatch
+        assert mismatch is not None and "ITempSettable" in mismatch
+        assert entries["shaker_2"].interface_mismatch is None
+
+    async def test_the_blocker_read_still_reads_every_declared_device(self) -> None:
+        """The read an operator needs most when something is wrong must not fail for one device."""
+        now = datetime.now(timezone.utc)
+        registry = _registry(
+            topology=[
+                _topology_entry("shaker_1", interfaces=("IShaker", "ITempSettable")),
+                _topology_entry("shaker_2", interfaces=("IShaker",)),
+            ],
+            connections=[
+                _connection_card(
+                    "shaker_1", advertised_interfaces=frozenset({"IShaker"}),
+                    last_heartbeat=now - timedelta(seconds=1),
+                ),
+            ],
+            now=now,
+        )
+        devices = MagicMock()
+        devices.get_device_status = AsyncMock(side_effect=lambda name: name)
+
+        await declared_device_snapshots(registry, devices)
+
+        read = [call.args[0] for call in devices.get_device_status.await_args_list]
+        assert read == ["shaker_1", "shaker_2"]
+
+
 # --- effective_interfaces shape per card combo ------------------------------
 
 
@@ -834,7 +723,7 @@ class TestEffectiveInterfaces:
         assert entry is not None
         assert entry.effective_interfaces() == frozenset({"IShaker"})
 
-    async def test_neither_returns_empty(self) -> None:
+    async def test_neither_returns_none_so_the_controller_checks_against_what_is_advertised(self) -> None:
         # The registry returns None for neither-card; this exercises
         # DeviceRegistryEntry.effective_interfaces directly with both cards
         # absent (a state operators should never see in production).
@@ -854,7 +743,7 @@ class TestEffectiveInterfaces:
                 mode=None, is_connected=False, is_initialized=False,
             ),
         )
-        assert entry.effective_interfaces() == frozenset()
+        assert entry.effective_interfaces() is None
 
 
 class TestTheTwoConnectionsAreSeparate:
@@ -940,17 +829,11 @@ class TestTheTwoConnectionsAreSeparate:
     ) -> None:
         """`connect` dispatches under the LIVE write base, so the read does too.
 
-        This is the branch that decides what `orca device registry list` prints
+        This is the branch that decides what `orca device list` prints
         on a source-available bench, and there the operator's own verbs are the
         only thing that moves these flags.
         """
-        resource = _StubResource(
-            live=_StubDriver(is_connected=True, is_initialized=True),
-            sim=_StubDriver(is_connected=False, is_initialized=False),
-        )
-        assert resource.driver is not resource.live_driver, (
-            "the slots must differ, or this proves nothing"
-        )
+        resource = _StubResource(_StubDriver(is_connected=True, is_initialized=True))
         registry = _registry(
             topology=[_topology_entry("arm_1")],
             resources={"arm_1": resource},
@@ -974,10 +857,7 @@ class TestTheTwoConnectionsAreSeparate:
         """
         registry = _registry(
             topology=[_topology_entry("arm_1")],
-            resources={"arm_1": _StubResource(
-                live=_StubAgentHeldDriver(is_connected=True, is_initialized=True),
-                sim=_StubDriver(is_connected=True, is_initialized=True),
-            )},
+            resources={"arm_1": _StubResource(_StubAgentHeldDriver(is_connected=True, is_initialized=True))},
         )
         entry = await registry.get("arm_1")
         assert entry is not None

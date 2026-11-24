@@ -28,7 +28,7 @@ Layering (genuine Service-over-Store):
   those primitives. No lock, no resolution, no validation.
 - ``VariableService`` takes an ``IVariableStore``, owns the single
   ``threading.Lock``, and adds all resolution and validation as the full
-  consumer API. Production always injects ``VariableService(VariableStore())``.
+  consumer API, ``IVariableService``. Startup builds one per system build.
 - ``IVariableResolver`` is the narrow read interface authored-code contexts
   depend on (just ``resolve``). ``VariableService`` and ``NullVariableResolver``
   both satisfy it.
@@ -237,8 +237,8 @@ class VariableStore:
 
     def create_execution(self, execution_id: str, workflow_template_name: str) -> None:
         """Create an empty execution partition. Idempotent: a repeat call for the
-        same execution_id is a no-op so daemon-level profile loading can register
-        eagerly before _run_workflow reaches its own registration."""
+        same execution_id is a no-op so a submit can register eagerly before
+        _run_workflow reaches its own registration."""
         if execution_id in self._execution_stores:
             return
         self._execution_stores[execution_id] = {}
@@ -347,6 +347,50 @@ class VariableStore:
         for (exec_id, _sub_id), partition in self._submission_stores.items():
             if exec_id == execution_id:
                 yield partition
+
+
+class IVariableService(IVariableResolver, Protocol):
+    """The variables of one system build: definitions, values and resolution."""
+
+    def workflow_definitions(self, workflow_name: str) -> dict[str, VariableDefinition]: ...
+    def global_definitions(self) -> dict[str, VariableDefinition]: ...
+    def computed_names(self) -> frozenset[str]: ...
+    def global_value_names(self) -> frozenset[str]: ...
+    def execution_value_names(self, execution_id: str) -> frozenset[str]: ...
+    def create_execution(self, execution_id: str, workflow_template_name: str) -> None: ...
+    def remove_execution(self, execution_id: str) -> None: ...
+    def register_global_definitions(
+        self, definitions: dict[str, VariableDefinition],
+    ) -> None: ...
+    def register_workflow_definitions(
+        self, workflow_name: str, definitions: dict[str, VariableDefinition],
+    ) -> None: ...
+    def register_computed(self, computed: dict[str, str]) -> None: ...
+    def explain(self, name: str, execution_id: str) -> VariableResolution: ...
+    def resolve_global(self, name: str) -> OptionValue: ...
+    def set(self, name: str, value: OptionValue, execution_id: str) -> None: ...
+    def set_submission(
+        self, name: str, value: OptionValue, execution_id: str, submission_id: str,
+    ) -> None: ...
+    def unset(self, name: str, execution_id: str) -> None: ...
+    def unset_submission(
+        self, name: str, execution_id: str, submission_id: str,
+    ) -> None: ...
+    def set_global(self, name: str, value: OptionValue) -> None: ...
+    def unset_global(self, name: str) -> None: ...
+    def load_profile(self, execution_id: str, profile: DeploymentProfile) -> None: ...
+    def has(
+        self, name: str, execution_id: str, submission_id: str | None = None,
+    ) -> bool: ...
+    def has_global_value(self, name: str) -> bool: ...
+    def has_execution_value(self, name: str, execution_id: str) -> bool: ...
+    def has_submission_value(
+        self, name: str, execution_id: str, submission_id: str,
+    ) -> bool: ...
+    def get_all(self, execution_id: str) -> dict[str, OptionValue]: ...
+    def get_all_with_source(
+        self, execution_id: str,
+    ) -> dict[str, tuple[OptionValue, VariableSource]]: ...
 
 
 class VariableService(IVariableResolver):
@@ -605,6 +649,28 @@ class VariableService(IVariableResolver):
         with self._lock:
             return self._store.has_execution_value(execution_id, name)
 
+    def workflow_definitions(self, workflow_name: str) -> dict[str, VariableDefinition]:
+        with self._lock:
+            return dict(self._store.iter_workflow_definitions(workflow_name))
+
+    def global_definitions(self) -> dict[str, VariableDefinition]:
+        with self._lock:
+            return dict(self._store.iter_global_definitions())
+
+    def computed_names(self) -> frozenset[str]:
+        with self._lock:
+            return frozenset(self._store.iter_computed_names())
+
+    def global_value_names(self) -> frozenset[str]:
+        with self._lock:
+            return frozenset(name for name, _ in self._store.iter_global_values())
+
+    def execution_value_names(self, execution_id: str) -> frozenset[str]:
+        with self._lock:
+            if not self._store.has_execution(execution_id):
+                return frozenset()
+            return frozenset(name for name, _ in self._store.iter_execution_values(execution_id))
+
     def has_submission_value(
         self, name: str, execution_id: str, submission_id: str,
     ) -> bool:
@@ -701,10 +767,12 @@ class VariableService(IVariableResolver):
         return by_name
 
     def _find_definition(self, name: str, execution_id: str) -> VariableDefinition | None:
+        return self._definition_for(name, self._store.workflow_for(execution_id))
+
+    def _definition_for(self, name: str, workflow_name: str | None) -> VariableDefinition | None:
         if name.startswith(GLOBAL_PREFIX):
             bare = name[len(GLOBAL_PREFIX):]
             return self._store.get_global_definition(bare)
-        workflow_name = self._store.workflow_for(execution_id)
         if workflow_name is not None:
             return self._store.get_workflow_definition(workflow_name, name)
         return None

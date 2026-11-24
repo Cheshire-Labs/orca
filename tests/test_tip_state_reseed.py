@@ -9,6 +9,7 @@ runtime is down, so a restart writes an observation gap and the rack reads stale
 until an operator confirms or corrects it.
 """
 
+from orca.config import OrcaConfig
 import time
 from collections.abc import AsyncGenerator
 
@@ -39,10 +40,9 @@ from orca.state.records import (
     TrackingSource,
 )
 from orca.runtime.danger import ConfirmationRequired
-from orca.state.jsonl_store import JsonlOpsHistoryStore
+from orca.runtime.labware_service import LabwareService
 from orca.runtime.labware_store import InMemoryLabwareStore
-from orca.runtime.sim_labware import SimTipRackTemplate
-from orca.runtime.system_runtime import SystemRuntime
+from orca.resource_models.sim_labware import SimTipRackTemplate
 from orca.sdk.events import EventBus
 from orca.sdk.system import ResourceRegistry, SystemMap
 from orca.sdk.workflow import WorkflowTemplate
@@ -60,6 +60,13 @@ from tests.test_helpers import (
     create_test_transporter,
     wire_system_map,
 )
+from orca.state.ops_store import IOpsHistoryStore
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.ephemeral_ops_store import EphemeralOpsHistoryStore
+from tests.labware_catalog import bundled_labware_catalog
+from orca.resource_models.labware_service_interface import ILabwareService
+from tests.memory_activity import memory_labware_service
 
 
 def _op(
@@ -180,7 +187,7 @@ class TestHistoryTipState:
         assert tip_layout(ops, "r") == {"B1": True}
 
 
-async def _build_system_with_rack() -> ISystem:
+async def _build_system_with_rack(ops_store: IOpsHistoryStore | None = None, *, labware_service: ILabwareService | None = None) -> ISystem:
     """One device, one transporter, two pads, one plate workflow, plus a tip
     rack template registered for the operator surfaces."""
     device = create_test_device("shaker1")
@@ -237,7 +244,11 @@ async def _build_system_with_rack() -> ISystem:
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=EventBus(),
+        event_bus=EventBus(), config=OrcaConfig(), ops_history_store=ops_store or memory_ops_store(),
+        variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=labware_service or memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     return builder.get_system()
@@ -248,7 +259,7 @@ class TestSeedFromHistory:
         system = await _build_system_with_rack()
         template = system.get_labware_template("tips_96")
         instance = await template.create_instance()
-        history = OpsHistory(execution_id="exec_1")
+        history = OpsHistory(execution_id="exec_1", store=memory_ops_store())
         await history.append_initial_state(
             instance.name,
             InitialStateDetails(
@@ -272,7 +283,7 @@ class TestSeedFromHistory:
         instance = await template.create_instance()
         assert isinstance(instance, LabwareInstance)
 
-        instance.bind_contents(LabwareContentsLedger(OpsHistory()))
+        instance.bind_contents(LabwareContentsLedger(OpsHistory(store=memory_ops_store())))
         state = await instance.driver_well_state()
         assert state is None  # nothing has said what it holds; no claim rides the wire
 
@@ -290,7 +301,7 @@ class TestNeedingALook:
 
     async def _registered(self, template_name: str):
         system = await _build_system_with_rack()
-        runtime = SystemRuntime(system, labware_store=InMemoryLabwareStore())
+        runtime = await memory_runtime(system)
         await runtime.start()
         snap = await runtime.labware.register(template_name, confirm=True)
         instance = next(i for i in system.labwares if i.id == snap.id)
@@ -367,8 +378,8 @@ class _RowMintingStore(InMemoryLabwareStore):
 
 class TestOperatorVerbs:
     async def _started(self, store: InMemoryLabwareStore | None = None):
-        system = await _build_system_with_rack()
-        runtime = SystemRuntime(system, labware_store=store or InMemoryLabwareStore())
+        system = await _build_system_with_rack(labware_service=LabwareService(store or InMemoryLabwareStore()))
+        runtime = await memory_runtime(system)
         await runtime.start()
         return system, runtime
 
@@ -549,11 +560,10 @@ class TestRackSurvivesRestart:
         """The incident shape: run picks tips, restart, boot. The rack must
         come back at its folded layout and flagged for a human look."""
         labware_store = _RowMintingStore()
-        ops_store = JsonlOpsHistoryStore.ephemeral()
+        ops_store = EphemeralOpsHistoryStore()
 
-        system_a = await _build_system_with_rack()
-        system_a.ops_history.bind_store(ops_store)
-        runtime_a = SystemRuntime(system_a, labware_store=labware_store)
+        system_a = await _build_system_with_rack(ops_store, labware_service=LabwareService(labware_store))
+        runtime_a = await memory_runtime(system_a)
         await runtime_a.start()
         snap = await runtime_a.labware.register(
             "tips_96", location="pad1", confirm=True,
@@ -563,9 +573,8 @@ class TestRackSurvivesRestart:
         )
         await runtime_a.shutdown()
 
-        system_b = await _build_system_with_rack()
-        system_b.ops_history.bind_store(ops_store)
-        runtime_b = SystemRuntime(system_b, labware_store=labware_store)
+        system_b = await _build_system_with_rack(ops_store, labware_service=LabwareService(labware_store))
+        runtime_b = await memory_runtime(system_b)
         await runtime_b.start()
         try:
             state = await runtime_b.labware.get_tip_state(snap.id)

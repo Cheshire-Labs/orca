@@ -38,12 +38,16 @@ class _RecordingSink:
     def __init__(self) -> None:
         self.notify_calls: list[list[str]] = []
         self.clear_calls = 0
+        self.pause_requested = asyncio.Event()
 
     def notify_awaiting_reservation(self, candidate_position_ids: List[str]) -> None:
         self.notify_calls.append(list(candidate_position_ids))
 
     def clear_awaiting_reservation(self) -> None:
         self.clear_calls += 1
+
+    async def hold_for_pause(self) -> None:
+        raise AssertionError("nothing asked this thread to pause")
 
 
 def _build_resolver_world(reservation_config: ReservationConfig):

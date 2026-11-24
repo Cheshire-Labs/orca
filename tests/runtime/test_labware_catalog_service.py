@@ -1,18 +1,15 @@
 """LabwareCatalogService: the single CRUD surface + policy over the store.
 
 Policy: add forces source='operator_custom' and rejects duplicates; update/
-delete refuse PLR-seed rows (read-only) and 404 on missing; geometry must
-validate to a LabwareSeedEntry (fail-fast vs a hosted deployment's silent build-time drop).
-``seed_if_missing`` writes raw (source-preserving) and is idempotent; every
-method serializes on one lock.
+delete refuse built-in rows (read-only) and 404 on missing; geometry must
+validate to a LabwareSeedEntry. Every method serializes on one lock.
 """
 
 import asyncio
 
 import pytest
 
-from orca.runtime.db import create_memory_engine
-from orca.runtime.labware_catalog_protocol import LabwareNotFound
+from orca.resource_models.labware_catalog_protocol import LabwareNotFound
 from orca.runtime.labware_catalog_service import (
     LabwareCatalogConflict,
     LabwareCatalogService,
@@ -20,7 +17,8 @@ from orca.runtime.labware_catalog_service import (
     SeedLabwareReadOnly,
 )
 from orca.runtime.labware_catalog_store import LabwareCatalogEntry
-from orca.runtime.sqlite_labware_catalog_store import SqliteLabwareCatalogStore
+from orca.runtime.setup_file_stores import LabwareCatalogFileStore
+from tests.setup_package import fresh_root
 
 
 # A minimal valid plate seed-entry dump usable as geometry.
@@ -52,8 +50,12 @@ def _entry(labware_type: str, source: str = "operator_custom") -> LabwareCatalog
     )
 
 
+# A labware cheshire-drivers ships. Built-ins are read-only.
+_BUILT_IN = "Cor_96_wellplate_360ul_Fb"
+
+
 def _service() -> LabwareCatalogService:
-    return LabwareCatalogService(SqliteLabwareCatalogStore(create_memory_engine()))
+    return LabwareCatalogService(LabwareCatalogFileStore(fresh_root() / "labware"))
 
 
 async def test_add_forces_operator_custom_source() -> None:
@@ -116,11 +118,9 @@ async def test_get_missing_raises_not_found() -> None:
         await _service().get("missing")
 
 
-async def test_update_seed_row_is_read_only() -> None:
-    service = _service()
-    await service.seed_if_missing([_entry("seeded", source="plr_seed")])
+async def test_update_built_in_row_is_read_only() -> None:
     with pytest.raises(SeedLabwareReadOnly):
-        await service.update(_entry("seeded"))
+        await _service().update(_entry(_BUILT_IN))
 
 
 async def test_update_missing_raises_not_found() -> None:
@@ -137,11 +137,9 @@ async def test_update_custom_row_succeeds() -> None:
     assert updated.display_name == "Renamed"
 
 
-async def test_delete_seed_row_is_read_only() -> None:
-    service = _service()
-    await service.seed_if_missing([_entry("seeded", source="plr_seed")])
+async def test_delete_built_in_row_is_read_only() -> None:
     with pytest.raises(SeedLabwareReadOnly):
-        await service.delete("seeded")
+        await _service().delete(_BUILT_IN)
 
 
 async def test_delete_custom_row_succeeds() -> None:
@@ -159,25 +157,12 @@ async def test_contains_reflects_membership() -> None:
     assert not await service.contains("missing")
 
 
-async def test_seed_if_missing_preserves_source_and_is_idempotent() -> None:
-    # seed_if_missing writes raw, so the plr_seed source survives (unlike add,
-    # which forces operator_custom). Re-seeding never overwrites existing rows.
-    service = _service()
-    await service.seed_if_missing([_entry("s", source="plr_seed")])
-    assert (await service.get("s")).source == "plr_seed"
-    await service.seed_if_missing(
-        [_entry("s", source="plr_seed").model_copy(update={"display_name": "X"})],
-    )
-    # Existing row wins; the re-declared seed body is ignored.
-    assert (await service.get("s")).display_name == "S"
-
-
 async def test_concurrent_distinct_adds_both_land() -> None:
     # Concurrent adds of distinct rows both persist (smoke: no corruption).
     service = _service()
     await asyncio.gather(service.add(_entry("a")), service.add(_entry("b")))
     rows = await service.list()
-    assert {r.labware_type for r in rows} == {"a", "b"}
+    assert {r.labware_type for r in rows if r.source == "operator_custom"} == {"a", "b"}
 
 
 async def test_concurrent_same_key_adds_one_conflicts_under_the_lock() -> None:
@@ -193,4 +178,4 @@ async def test_concurrent_same_key_adds_one_conflicts_under_the_lock() -> None:
     successes = [r for r in results if isinstance(r, LabwareCatalogEntry)]
     assert len(conflicts) == 1
     assert len(successes) == 1
-    assert len(await service.list()) == 1
+    assert [r.labware_type for r in await service.list() if r.source == "operator_custom"] == ["dup"]

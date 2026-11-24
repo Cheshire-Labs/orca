@@ -31,11 +31,11 @@ import pytest
 from tests.test_helpers import execution_outcome
 
 from orca.runtime.execution import Execution
-from orca.runtime.labware_group import LabwareGroup, LabwareGroupMember
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.submission import BatchMode
-from orca.runtime.system_runtime import SystemRuntime
+from orca.workflow_models.labware_group import LabwareGroup, LabwareGroupMember
+from orca.modes.run_modes import WorkflowRunMode
+from orca.workflow_models.submission import BatchMode
 from tests.test_multi_lineage_demo import _build_multi_lineage_system
+from tests.memory_activity import memory_runtime
 
 
 def _group() -> LabwareGroup:
@@ -56,11 +56,11 @@ class TestGrouplessSubmitsAreIndependent:
     @pytest.mark.asyncio
     async def test_two_groupless_submits_get_distinct_execution_ids(self) -> None:
         system, workflow, event_bus = await _build_multi_lineage_system()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
         await runtime.start()
         try:
-            sub1 = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
-            sub2 = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+            sub1 = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
+            sub2 = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
             assert sub1.execution_id != sub2.execution_id, (
                 "Groupless submits must create independent executions"
             )
@@ -77,16 +77,16 @@ class TestGroupedSubmitsShareExecution:
         """Golden-path JOIN_EXISTING reuse: the second submission sees
         the first's still-ACCEPTING execution and injects into it."""
         system, workflow, event_bus = await _build_multi_lineage_system()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
         await runtime.start()
         try:
             sub1 = await runtime.submit(
                 workflow, groups=[_group()], batch_mode=BatchMode.JOIN_EXISTING,
-                mode=WorkflowRunMode.PURE_SIM,
+                mode=WorkflowRunMode.CHECK_RUN,
             )
             sub2 = await runtime.submit(
                 workflow, groups=[_group()], batch_mode=BatchMode.JOIN_EXISTING,
-                mode=WorkflowRunMode.PURE_SIM,
+                mode=WorkflowRunMode.CHECK_RUN,
             )
             assert sub1.execution_id == sub2.execution_id, (
                 "JOIN_EXISTING grouped submits for the same workflow must "
@@ -112,16 +112,16 @@ class TestGroupedSubmitsShareExecution:
         consulted when the existing execution was DRAINING.
         """
         system, workflow, event_bus = await _build_multi_lineage_system()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
         await runtime.start()
         try:
             sub1 = await runtime.submit(
                 workflow, groups=[_group()], batch_mode=BatchMode.STANDALONE,
-                mode=WorkflowRunMode.PURE_SIM,
+                mode=WorkflowRunMode.CHECK_RUN,
             )
             sub2 = await runtime.submit(
                 workflow, groups=[_group()], batch_mode=BatchMode.STANDALONE,
-                mode=WorkflowRunMode.PURE_SIM,
+                mode=WorkflowRunMode.CHECK_RUN,
             )
             assert sub1.execution_id != sub2.execution_id, (
                 "STANDALONE grouped submits must each boot a fresh execution; "
@@ -138,18 +138,18 @@ class TestGroupedSubmitsShareExecution:
         independent regardless of what kind of execution is in flight.
         """
         system, workflow, event_bus = await _build_multi_lineage_system()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
         await runtime.start()
         try:
             sub_join = await runtime.submit(
                 workflow, groups=[_group()],
                 batch_mode=BatchMode.JOIN_EXISTING,
-                mode=WorkflowRunMode.PURE_SIM,
+                mode=WorkflowRunMode.CHECK_RUN,
             )
             sub_standalone = await runtime.submit(
                 workflow, groups=[_group()],
                 batch_mode=BatchMode.STANDALONE,
-                mode=WorkflowRunMode.PURE_SIM,
+                mode=WorkflowRunMode.CHECK_RUN,
             )
             assert sub_join.execution_id != sub_standalone.execution_id
         finally:
@@ -160,15 +160,15 @@ class TestGroupedSubmitsShareExecution:
         """A groupless submit always gets a fresh execution, even if a live
         grouped execution exists for the same workflow."""
         system, workflow, event_bus = await _build_multi_lineage_system()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
         await runtime.start()
         try:
             sub_grouped = await runtime.submit(
                 workflow, groups=[_group()],
                 batch_mode=BatchMode.JOIN_EXISTING,
-                mode=WorkflowRunMode.PURE_SIM,
+                mode=WorkflowRunMode.CHECK_RUN,
             )
-            sub_groupless = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+            sub_groupless = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
             assert sub_grouped.execution_id != sub_groupless.execution_id
         finally:
             await runtime.shutdown()
@@ -182,20 +182,20 @@ class TestExecutionIndexClearedOnCompletion:
     @pytest.mark.asyncio
     async def test_fresh_execution_after_prior_completion(self) -> None:
         system, workflow, event_bus = await _build_multi_lineage_system()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
         await runtime.start()
         try:
             sub1 = await runtime.submit(
                 workflow, groups=[_group()],
                 batch_mode=BatchMode.JOIN_EXISTING,
-                mode=WorkflowRunMode.PURE_SIM,
+                mode=WorkflowRunMode.CHECK_RUN,
             )
             await execution_outcome(runtime, sub1, timeout=60.0)
 
             sub2 = await runtime.submit(
                 workflow, groups=[_group()],
                 batch_mode=BatchMode.JOIN_EXISTING,
-                mode=WorkflowRunMode.PURE_SIM,
+                mode=WorkflowRunMode.CHECK_RUN,
             )
             assert sub1.execution_id != sub2.execution_id, (
                 "Once an execution completes, even a JOIN_EXISTING submit "
@@ -214,12 +214,12 @@ class TestInjectSubmissionReCheck:
 
     @pytest.mark.asyncio
     async def test_inject_raises_when_execution_task_done(self) -> None:
-        from orca.runtime.submission import Submission, SubmissionStatus
+        from orca.workflow_models.submission import Submission, SubmissionStatus
         from datetime import datetime, timezone
         from uuid import uuid4
 
         system, workflow, event_bus = await _build_multi_lineage_system()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
         await runtime.start()
         try:
             # Build a synthetic Execution with a task that is already done.
@@ -245,7 +245,7 @@ class TestInjectSubmissionReCheck:
                 variables={},
                 batch_mode=BatchMode.STANDALONE,
                 submitted_at=datetime.now(timezone.utc),
-                run_mode=WorkflowRunMode.PURE_SIM,
+                run_mode=WorkflowRunMode.CHECK_RUN,
                 operator_id=None,
                 deployment_profile=None,
                 status=SubmissionStatus.ACCEPTED,
@@ -268,10 +268,10 @@ class TestWorkflowAttachedEventFiresOnce:
     @pytest.mark.asyncio
     async def test_workflow_attached_set_after_submit(self) -> None:
         system, workflow, event_bus = await _build_multi_lineage_system()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
         await runtime.start()
         try:
-            sub = await runtime.submit(workflow, groups=[_group()], mode=WorkflowRunMode.PURE_SIM)
+            sub = await runtime.submit(workflow, groups=[_group()], mode=WorkflowRunMode.CHECK_RUN)
             execution = runtime._executions[sub.execution_id]
             # The task runs on the loop; give it a tick to attach.
             await asyncio.wait_for(execution.workflow_attached.wait(), timeout=10.0)

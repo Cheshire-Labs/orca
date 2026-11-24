@@ -15,9 +15,10 @@ import pytest
 import orca.runtime.danger as danger
 import orca.runtime.facades as facades
 
-# mutate_on_next_pause is engine-internal. A recovery is audited without a
-# reason.
-_TAKES_NO_REASON = {"ThreadFacade.mutate_on_next_pause", "ThreadFacade.recover"}
+# mutate_on_next_pause is engine-internal. A submission is audited without a reason.
+_TAKES_NO_REASON = {
+    "ThreadFacade.mutate_on_next_pause", "SubmissionFacade.submit_group", "SubmissionFacade.submit_method",
+}
 
 
 def _audited_methods() -> Iterator[tuple[str, Callable[..., None]]]:
@@ -37,7 +38,7 @@ AUDITED = [m for m in _audited_methods() if m[0] not in _TAKES_NO_REASON]
 
 def test_the_walk_finds_the_audited_verbs() -> None:
     names = {name for name, _ in AUDITED}
-    assert {"DeviceFacade.execute", "LabwareFacade.edit_location", "ThreadFacade.pause"} <= names
+    assert {"DeviceFacade.reconcile_deck", "LabwareFacade.edit_location", "ThreadFacade.pause"} <= names
 
 
 @pytest.mark.parametrize("name,inner", AUDITED, ids=[name for name, _ in AUDITED])

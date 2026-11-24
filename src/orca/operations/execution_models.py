@@ -1,3 +1,5 @@
+from orca.operations.binding import RestBinding, Route
+from orca.operations.route_tags import RouteTag
 """Wire models for the execution operations.
 
 Apart from `execution.py` because the Operation classes there take
@@ -5,14 +7,15 @@ Apart from `execution.py` because the Operation classes there take
 ever wanting the engine.
 """
 
+from orca.modes.sim_pacing import SIM_SPEEDUP_RANGE
 import dataclasses
 from typing import Literal
 from typing_extensions import Self
 from pydantic import BaseModel, ConfigDict, Field
-from orca.daemon.schemas import ThreadSnapshotDTO
+from orca.operations.wire_models import ThreadSnapshotResponse
 from orca.runtime.execution_phase import ExecutionPhase
 from orca.runtime.execution_record import ExecutionRecord
-from orca.runtime.status_models import ExecutionDetail, ExecutionStatus, ThreadSnapshot
+from orca.runtime.status_models import ExecutionDetail, ThreadSnapshot
 
 
 class CloseExecutionRequest(BaseModel):
@@ -26,11 +29,6 @@ class CloseExecutionResponse(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     execution_id: str
     phase: str
-
-
-class GetExecutionRequest(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-    execution_id: str
 
 
 class ExecutionRecordModel(BaseModel):
@@ -55,9 +53,14 @@ class ExecutionRecordModel(BaseModel):
     abort_armed: bool = False
     """Whether a second confirmed stop would abort. Set by the first stop
     call, cleared by resume."""
-    sim_time_scale: float | None = None
-    """Simulated time scale: 1 is real time, 0 is no pacing. None for a LIVE
-    run, and for a finished run read back from the store, which does not keep it."""
+    simulated: bool = False
+    """Whether the run is a sim run, so its speed-up can be set.
+    False for a LIVE run, a check run and a finished run read back from the store."""
+    sim_speedup: float | None = None
+    """The sim speed-up in force: 1 is real time. None when a sim run does not wait at all,
+    for a LIVE run or a check run, and for a finished run read back from the store, which does not keep it."""
+    check_run: bool = False
+    """Whether this was a check run, which worked on a copy of the record; read its labware with get-check-run-labware."""
 
     @classmethod
     def from_record(cls, rec: ExecutionRecord) -> Self:
@@ -69,36 +72,10 @@ class ExecutionRecordModel(BaseModel):
             paused=rec.paused,
             pause_reason=rec.pause_reason,
             abort_armed=rec.abort_armed,
-            sim_time_scale=rec.sim_time_scale,
+            simulated=rec.simulated,
+            sim_speedup=rec.sim_speedup,
+            check_run=rec.check_run,
         )
-
-    @classmethod
-    def from_status(cls, status: ExecutionStatus) -> Self:
-        """Build from `ExecutionStatus` (rich-phase shape).
-
-        Callers use `runtime.get_execution_status` which returns the
-        rich `ExecutionPhase` vocabulary; we surface that as the wire
-        `status` so summary and detail endpoints align (Bug FFF).
-        `ExecutionPhase.value` is the lowercase wire string
-        (`"accepting"` etc.); `str(phase)` would give
-        `"ExecutionPhase.ACCEPTING"` on Python 3.10 which is wrong on
-        the wire.
-        """
-        return cls(
-            id=status.id,
-            workflow_name=status.workflow_name,
-            status=status.status.value,
-            error=status.error,
-            paused=status.paused,
-            pause_reason=status.pause_reason,
-            abort_armed=status.abort_armed,
-            sim_time_scale=status.sim_time_scale,
-        )
-
-
-class GetExecutionResponse(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-    execution: ExecutionRecordModel
 
 
 class ListExecutionsRequest(BaseModel):
@@ -120,23 +97,26 @@ class GetExecutionDetailResponse(BaseModel):
     Counters mirror the dataclass and let polling clients show
     progress without walking the full thread list.
     """
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     id: str
     workflow_name: str
     status: str
     error: str | None = None
-    threads: list[ThreadSnapshotDTO] = []
+    threads: list[ThreadSnapshotResponse] = []
     total_thread_count: int = 0
     completed_thread_count: int = 0
     active_thread_count: int = 0
     paused: bool = False
     pause_reason: str | None = None
     abort_armed: bool = False
-    sim_time_scale: float | None = None
+    simulated: bool = False
+    sim_speedup: float | None = None
+    check_run: bool = False
+    """Whether this was a check run, which worked on a copy of the record; read its labware with get-check-run-labware."""
 
     @classmethod
-    def from_detail(cls, detail: ExecutionDetail) -> Self:
+    def from_detail(cls, detail: ExecutionDetail, *, check_run: bool = False) -> Self:
         # ``detail.status`` may be an ``ExecutionPhase`` enum (when produced
         # by the live runtime, despite the dataclass's ``str`` annotation)
         # or a raw string from the sink-rehydrate path (already mapped
@@ -160,7 +140,15 @@ class GetExecutionDetailResponse(BaseModel):
             paused=detail.paused,
             pause_reason=detail.pause_reason,
             abort_armed=detail.abort_armed,
-            sim_time_scale=detail.sim_time_scale,
+            simulated=detail.simulated,
+            sim_speedup=detail.sim_speedup,
+            check_run=check_run,
+        )
+
+    def record(self) -> ExecutionRecordModel:
+        """The summary row the execution list shows for this execution."""
+        return ExecutionRecordModel.model_validate(
+            self.model_dump(include=set(ExecutionRecordModel.model_fields)),
         )
 
 
@@ -198,22 +186,22 @@ class StopExecutionResponse(BaseModel):
     message: str
 
 
-class SetExecutionTimeScaleRequest(BaseModel):
-    """Change a simulated run's time scale while it runs. Applies at once, to
+class SetExecutionSimSpeedupRequest(BaseModel):
+    """Change a simulated run's speed-up while it runs. Applies at once, to
     the step in progress too. Refused for a LIVE execution, which the
     hardware paces."""
     model_config = ConfigDict(frozen=True, extra="forbid")
     execution_id: str
-    sim_time_scale: float = Field(
-        ..., ge=0, allow_inf_nan=False, strict=True,
-        description="1 is real time, 0.1 is ten times faster, 0 is no pacing.",
+    sim_speedup: float = Field(
+        ..., ge=SIM_SPEEDUP_RANGE[0], le=SIM_SPEEDUP_RANGE[1], allow_inf_nan=False, strict=True,
+        description="How many times faster than real time, 0.1 to 1000: 1 is real time, 100 a hundred times faster.",
     )
 
 
-class SetExecutionTimeScaleResponse(BaseModel):
+class SetExecutionSimSpeedupResponse(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     execution_id: str
-    sim_time_scale: float
+    sim_speedup: float
     message: str
 
 
@@ -230,13 +218,68 @@ class RemoveExecutionResponse(BaseModel):
     execution_id: str
 
 
-def _thread_snapshot_to_dto(snap: ThreadSnapshot) -> ThreadSnapshotDTO:
+def _thread_snapshot_to_dto(snap: ThreadSnapshot) -> ThreadSnapshotResponse:
     """Convert a ThreadSnapshot dataclass to its wire DTO mirror.
 
-    ``ThreadSnapshotDTO`` (orca.daemon.schemas) mirrors ThreadSnapshot
+    ``ThreadSnapshotResponse`` (orca.operations.wire_models) mirrors ThreadSnapshot
     field-for-field; ``dataclasses.asdict`` recursively flattens
     nested dataclasses (``current_method: MethodSnapshot | None``) so
     ``model_validate`` constructs the full typed DTO without per-field
     extraction.
     """
-    return ThreadSnapshotDTO.model_validate(dataclasses.asdict(snap))
+    return ThreadSnapshotResponse.model_validate(dataclasses.asdict(snap))
+
+
+CLOSE_EXECUTION_ROUTE = Route(
+    CloseExecutionRequest,
+    CloseExecutionResponse,
+    RestBinding(
+        method="POST", path="/executions/{execution_id}/close", tag=RouteTag.EXECUTIONS,
+    ),
+)
+
+
+LIST_EXECUTIONS_ROUTE = Route(
+    ListExecutionsRequest,
+    ListExecutionsResponse,
+    RestBinding(
+        method="GET", path="/executions", tag=RouteTag.EXECUTIONS,
+    ),
+)
+
+
+GET_EXECUTION_DETAIL_ROUTE = Route(
+    GetExecutionDetailRequest,
+    GetExecutionDetailResponse,
+    RestBinding(
+        method="GET", path="/executions/{execution_id}", tag=RouteTag.EXECUTIONS,
+    ),
+)
+
+
+STOP_EXECUTION_ROUTE = Route(
+    StopExecutionRequest,
+    StopExecutionResponse,
+    RestBinding(
+        method="POST", path="/executions/{execution_id}/stop", tag=RouteTag.EXECUTIONS,
+        carries_blockers=True,
+    ),
+)
+
+
+SET_EXECUTION_SIM_SPEEDUP_ROUTE = Route(
+    SetExecutionSimSpeedupRequest,
+    SetExecutionSimSpeedupResponse,
+    RestBinding(
+        method="PUT", path="/executions/{execution_id}/sim-speedup", tag=RouteTag.EXECUTIONS,
+    ),
+)
+
+
+REMOVE_EXECUTION_ROUTE = Route(
+    RemoveExecutionRequest,
+    RemoveExecutionResponse,
+    RestBinding(
+        method="DELETE", path="/executions/{execution_id}", tag=RouteTag.EXECUTIONS,
+    ),
+)

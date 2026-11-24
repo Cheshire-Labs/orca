@@ -21,7 +21,7 @@ from orca.resource_models.capacity import (
     CapacityPolicy,
     OverflowAction,
 )
-from orca.resource_models.labware_state import LabwareSlot
+from orca.workflow_models.labware_state import LabwareSlot
 from orca.workflow_models.method import ExecutingMethod
 from orca.workflow_models.overflow_strategy import (
     IOverflowStrategy,

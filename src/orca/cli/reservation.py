@@ -1,7 +1,7 @@
 """`orca reservation ...` noun sub-app.
 
-Reservations are per-execution. `list` reads GET /executions/{id}/reservations
-and `cancel` hits DELETE /executions/{id}/reservations/{rsv}.
+Reservations are per-execution. `list` reads GET /api/reservations, filtered by
+`?execution_id=`, and `cancel` hits DELETE /api/executions/{id}/reservations/{rsv}.
 """
 
 import typer
@@ -34,7 +34,7 @@ def list_reservations(
                 "--all is mutually exclusive with --execution",
                 code=output.EXIT_USAGE,
             )
-        rows = client.reservations_list_all()
+        rows = client.reservations_list()
         if output.get_mode().value == "json":
             output.emit_json([r.model_dump(mode="json") for r in rows])
             return
@@ -74,7 +74,7 @@ def list_reservations(
     else:
         eid = resolve.resolve_execution_id(execution, ids)
 
-    snaps = client.list_reservations(eid)
+    snaps = client.reservations_list(eid)
     if output.get_mode().value == "json":
         output.emit_json([s.model_dump(mode="json") for s in snaps])
         return

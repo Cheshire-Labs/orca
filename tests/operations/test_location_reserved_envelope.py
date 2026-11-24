@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from orca.operations._protocol import OperationError, OperationErrorCode
+from orca.operations.protocol import OperationError
 from orca.operations.labware import (
     EditLabwareLocationOperation,
     RegisterLabwareOperation,
@@ -21,7 +21,7 @@ from orca.operations.labware_models import (
     RegisterLabwareRequest,
     ResetLabwareLocationRequest,
 )
-from orca.runtime.runtime_interface import LocationReservedError
+from orca.runtime.errors import LocationReservedError
 
 
 def _runtime_refusing(method: str, error: LocationReservedError) -> MagicMock:
@@ -47,9 +47,9 @@ async def test_the_refusal_carries_the_claim_to_the_wire() -> None:
         "shaker1/slot", "rsv-1", "thread-7", "plate_96-a1b2c3d4",
     ))
 
-    assert raised.code is OperationErrorCode.CONFLICT
-    assert raised.wire_code == "location_reserved"
-    assert raised.status_code == 409
+    assert raised.http_status == 409
+    assert raised.surface_code() == "location_reserved"
+    assert raised.http_status == 409
     assert raised.extras == {
         "position_id": "shaker1/slot",
         "reservation_id": "rsv-1",
@@ -67,7 +67,7 @@ async def test_a_hold_no_thread_owns_still_refuses_and_says_so() -> None:
     to go and look at."""
     raised = await _edit(LocationReservedError("pad2", "rsv-2", None))
 
-    assert raised.wire_code == "location_reserved"
+    assert raised.surface_code() == "location_reserved"
     assert raised.extras == {
         "position_id": "pad2",
         "reservation_id": "rsv-2",
@@ -96,8 +96,8 @@ async def test_the_sibling_verb_refuses_through_the_same_envelope() -> None:
             labware_id="lw1", location="pad2", reason="operator moved it",
         ))
 
-    assert exc_info.value.wire_code == "location_reserved"
-    assert exc_info.value.status_code == 409
+    assert exc_info.value.surface_code() == "location_reserved"
+    assert exc_info.value.http_status == 409
 
 
 async def test_register_refuses_through_the_same_envelope() -> None:
@@ -116,8 +116,8 @@ async def test_register_refuses_through_the_same_envelope() -> None:
             template_name="plate_96", location="pad2",
         ))
 
-    assert exc_info.value.wire_code == "location_reserved"
-    assert exc_info.value.status_code == 409
+    assert exc_info.value.surface_code() == "location_reserved"
+    assert exc_info.value.http_status == 409
     assert exc_info.value.extras is not None
     assert exc_info.value.extras["holder_thread_name"] == "plate_96-ee"
 

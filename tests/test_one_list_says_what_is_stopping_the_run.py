@@ -12,12 +12,13 @@ from datetime import datetime
 
 import pytest
 
+from orca.runtime.remedies import RemedyAction
 from orca.runtime.blockers import (
+    Blocker,
     BlockerKind,
     BlockerSeverity,
+    LabwareOccupant,
     derive_blockers,
-    runtime_not_built_blocker,
-    runtime_torn_down_blocker,
 )
 from orca.runtime.incident_store import (
     IncidentCategory,
@@ -27,7 +28,8 @@ from orca.runtime.incident_store import (
     RecoveryAction,
     SystemIncident,
 )
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.device_modes import DeviceMode
+from orca.modes.run_modes import WorkflowRunMode
 from orca.runtime.status_models import (
     DeviceFaultSummary,
     DeviceSnapshot,
@@ -47,6 +49,7 @@ class FakeSources:
     manual_steps: list[PendingManualStepRecord] = field(default_factory=list)
     reservations: list[ReservationSnapshot] = field(default_factory=list)
     incidents: list[SystemIncident] = field(default_factory=list)
+    occupants: dict[str, LabwareOccupant] = field(default_factory=dict)
 
     async def blocker_device_snapshots(self) -> list[DeviceSnapshot]:
         return self.devices
@@ -63,6 +66,9 @@ class FakeSources:
     async def blocker_open_incidents(self) -> list[SystemIncident]:
         return self.incidents
 
+    def blocker_occupants(self) -> dict[str, LabwareOccupant]:
+        return self.occupants
+
 
 def device(
     name: str,
@@ -76,6 +82,7 @@ def device(
         is_initialized=True,
         is_busy=False,
         effective_mode=WorkflowRunMode.LIVE,
+        setting=DeviceMode.LIVE,
         position_ids=(),
         loaded_labware_ids=(),
         under_external_control=held is not None,
@@ -107,12 +114,13 @@ def thread(
     paused_device_command: str | None = None,
     waiting_for: str | None = None,
     last_error: str | None = None,
+    current_location: str = "pad_1",
 ) -> ThreadSnapshot:
     return ThreadSnapshot(
         id=thread_id,
         name=name,
         status=status,
-        current_location="pad_1",
+        current_location=current_location,
         current_method=None,
         completed_method_count=0,
         last_error=last_error,
@@ -236,8 +244,42 @@ async def test_a_move_pause_never_offers_the_verbs_that_kill_the_execution():
     assert "thread.recover.ABORT_THREAD" in offered
 
 
+def explain_of(blockers: list[Blocker], decision: str) -> str:
+    return next(
+        r.explain for b in blockers for r in b.remedies
+        if r.id == f"thread.recover.{decision}"
+    )
+
+
 @pytest.mark.asyncio
-async def test_the_op_level_retry_is_offered_only_inside_a_device_call():
+@pytest.mark.parametrize("site", [PauseSite.DEADLOCK, PauseSite.ACTION_RESOLUTION])
+async def test_drop_and_abort_method_say_they_end_the_plate_where_nothing_is_bound(
+    site: PauseSite,
+):
+    """No action is bound at these sites, so the narrower aborts end the thread."""
+    blockers = await derive_blockers(FakeSources(executions=[execution([
+        thread("t1", pause_reason="error", pause_site=site),
+    ])]))
+    for decision in ("ABORT_ACTION", "ABORT_METHOD"):
+        said = explain_of(blockers, decision)
+        assert "ends this plate's journey" in said
+        assert "Ends this action here" not in said
+        assert "Abandons the rest of this method" not in said
+
+
+@pytest.mark.asyncio
+async def test_drop_and_abort_method_keep_their_own_sentence_where_an_action_is_bound():
+    blockers = await derive_blockers(FakeSources(executions=[execution([
+        thread("t1", pause_reason="error", pause_site=PauseSite.ACTION_BODY),
+    ])]))
+    assert explain_of(blockers, "ABORT_ACTION") == (
+        "Ends this action here. Every command it already ran stays on the record."
+    )
+    assert explain_of(blockers, "ABORT_METHOD") == "Abandons the rest of this method."
+
+
+@pytest.mark.asyncio
+async def test_the_step_retry_is_offered_inside_a_device_call_and_the_action_retry_outside():
     inside = FakeSources(executions=[execution([
         thread(
             "t1", pause_reason="error", pause_site=PauseSite.DEVICE_OP,
@@ -247,8 +289,12 @@ async def test_the_op_level_retry_is_offered_only_inside_a_device_call():
     outside = FakeSources(executions=[execution([
         thread("t1", pause_reason="error", pause_site=PauseSite.ACTION_BODY),
     ])])
-    assert "thread.recover.RETRY_OP" in verbs_of(await derive_blockers(inside))
-    assert "thread.recover.RETRY_OP" not in verbs_of(await derive_blockers(outside))
+    offered_inside = verbs_of(await derive_blockers(inside))
+    offered_outside = verbs_of(await derive_blockers(outside))
+    assert "thread.recover.RETRY" in offered_inside
+    assert "thread.recover.RETRY_ACTION" not in offered_inside
+    assert "thread.recover.RETRY" not in offered_outside
+    assert "thread.recover.RETRY_ACTION" in offered_outside
 
 
 @pytest.mark.asyncio
@@ -287,6 +333,112 @@ async def test_a_thread_starved_by_a_parked_holder_is_reported():
     cancel = starved[0].remedies[0].steps[0]
     assert cancel.verb == "reservation.cancel"
     assert cancel.args["reservation_id"] == "rsv-1"
+
+
+@pytest.mark.asyncio
+async def test_a_thread_waiting_on_a_plate_no_run_owns_is_reported():
+    """Nothing will ever move that plate, so the wait never ends unless a person acts."""
+    sources = FakeSources(
+        executions=[execution([
+            thread("plate_2", name="plate_2", status="AWAITING_MOVE_RESERVATION", waiting_for="pad_2"),
+        ])],
+        occupants={"pad_2": LabwareOccupant(labware_id="lw-stray", labware_name="stray_plate")},
+    )
+    blockers = await derive_blockers(sources)
+    stuck = [b for b in blockers if b.kind is BlockerKind.WAITING_ON_UNOWNED_LABWARE]
+    assert len(stuck) == 1
+    assert stuck[0].severity is BlockerSeverity.WARNING
+    assert stuck[0].thread_id == "plate_2"
+    assert "stray_plate" in stuck[0].headline and "pad_2" in stuck[0].headline
+    assert [r.steps[0].verb for r in stuck[0].remedies] == ["labware.discharge", "labware.edit_location"]
+    assert stuck[0].remedies[0].steps[0].args == {"labware_id": "lw-stray"}
+
+
+@pytest.mark.asyncio
+async def test_a_plate_left_by_a_finished_thread_is_still_stray():
+    sources = FakeSources(
+        executions=[execution([
+            thread("plate_1", name="plate_1", status="FAILED"),
+            thread("plate_2", name="plate_2", status="AWAITING_MOVE_RESERVATION", waiting_for="pad_2"),
+        ])],
+        occupants={"pad_2": LabwareOccupant(labware_id="plate_1", labware_name="plate_1")},
+    )
+    blockers = await derive_blockers(sources)
+    assert [b.thread_id for b in blockers if b.kind is BlockerKind.WAITING_ON_UNOWNED_LABWARE] == ["plate_2"]
+
+
+@pytest.mark.asyncio
+async def test_a_person_moving_existing_labware_is_asked_to_record_the_move_not_to_register():
+    """Registering at the start is refused: the thread holds it for the labware it already has."""
+    sources = FakeSources(executions=[execution([
+        thread("plate_2", name="plate_2", status="AWAITING_MANUAL_PLACE", waiting_for="pad_1", current_location="shelf_3"),
+    ])])
+    [place] = [b for b in await derive_blockers(sources) if b.kind is BlockerKind.MANUAL_PLACE]
+    step = place.remedies[0].steps[0]
+    assert step.verb == "labware.edit_location"
+    assert step.args == {"labware_id": "plate_2", "location": "pad_1"}
+    assert "shelf_3" in place.headline
+
+
+@pytest.mark.asyncio
+async def test_a_plate_another_live_thread_carries_is_ordinary_contention():
+    sources = FakeSources(
+        executions=[execution([
+            thread("plate_1", name="plate_1", status="EXECUTING_ACTION"),
+            thread("plate_2", name="plate_2", status="AWAITING_MOVE_RESERVATION", waiting_for="pad_2"),
+        ])],
+        occupants={"pad_2": LabwareOccupant(labware_id="plate_1", labware_name="plate_1")},
+    )
+    blockers = await derive_blockers(sources)
+    assert not [b for b in blockers if b.kind is BlockerKind.WAITING_ON_UNOWNED_LABWARE]
+
+
+@pytest.mark.asyncio
+async def test_a_wait_with_one_free_candidate_is_not_stuck():
+    sources = FakeSources(
+        executions=[execution([
+            thread("plate_2", name="plate_2", status="AWAITING_ACTION_RESERVATION", waiting_for="pad_2, pad_3"),
+        ])],
+        occupants={"pad_2": LabwareOccupant(labware_id="lw-stray", labware_name="stray_plate")},
+    )
+    blockers = await derive_blockers(sources)
+    assert not [b for b in blockers if b.kind is BlockerKind.WAITING_ON_UNOWNED_LABWARE]
+
+
+@pytest.mark.asyncio
+async def test_a_plate_waiting_on_one_an_operator_paused_is_a_warning():
+    """A deliberate pause holds its reservations; the plates behind it wait for Resume, nothing is broken."""
+    sources = FakeSources(
+        executions=[execution([
+            thread("plate_1", name="plate_1", status="PAUSED", pause_reason="manual"),
+            thread("plate_2", name="plate_2", status="AWAITING_MOVE_RESERVATION",
+                   waiting_for="flex_1"),
+        ], paused=True, pause_reason="manual")],
+        reservations=[ReservationSnapshot(
+            position_id="flex_1", reservation_id="rsv-1", thread_id="plate_1",
+        )],
+    )
+    blockers = await derive_blockers(sources)
+    assert {b.severity for b in blockers} == {BlockerSeverity.WARNING}
+    starved = [b for b in blockers if b.kind is BlockerKind.WAITING_ON_A_PARKED_HOLDER]
+    assert [b.thread_id for b in starved] == ["plate_2"]
+@pytest.mark.asyncio
+async def test_a_plate_waiting_on_one_the_runtime_paused_stays_an_error():
+    """A timed-out command pauses its plate as "system" without pausing the run; the plate behind it is a problem."""
+    sources = FakeSources(
+        executions=[execution([
+            thread("plate_1", name="plate_1", status="PAUSED", pause_reason="system"),
+            thread("plate_2", name="plate_2", status="AWAITING_MOVE_RESERVATION",
+                   waiting_for="flex_1"),
+        ])],
+        reservations=[ReservationSnapshot(
+            position_id="flex_1", reservation_id="rsv-1", thread_id="plate_1",
+        )],
+    )
+    blockers = await derive_blockers(sources)
+    starved = [b for b in blockers if b.kind is BlockerKind.WAITING_ON_A_PARKED_HOLDER]
+    assert [b.severity for b in starved] == [BlockerSeverity.ERROR]
+
 
 
 @pytest.mark.asyncio
@@ -344,7 +496,7 @@ async def test_a_named_remedy_wins_the_recommendation_from_the_bare_verbs():
     assert len(recommended) == 1
     assert recommended[0].id == "record_the_real_volume"
     assert [s.verb for s in recommended[0].steps] == [
-        "labware.set_well_volumes", "thread.recover.RETRY_OP",
+        "labware.set_well_volumes", "thread.recover.RETRY",
     ]
 
 
@@ -363,7 +515,7 @@ async def test_an_unrecognised_failure_still_offers_the_bare_verbs():
     blocker = (await derive_blockers(sources))[0]
     recommended = [r for r in blocker.remedies if r.recommended]
     assert len(recommended) == 1
-    assert recommended[0].id == "thread.recover.RETRY"
+    assert recommended[0].id == "thread.recover.RETRY_ACTION"
 
 
 @pytest.mark.asyncio
@@ -377,6 +529,26 @@ async def test_a_manual_park_is_a_warning_and_a_broken_device_is_an_error():
     by_kind = {b.kind: b for b in await derive_blockers(sources)}
     assert by_kind[BlockerKind.MANUAL_PLACE].severity is BlockerSeverity.WARNING
     assert by_kind[BlockerKind.DEVICE_FAULT].severity is BlockerSeverity.ERROR
+
+
+@pytest.mark.asyncio
+async def test_an_operator_pause_is_a_warning_and_a_system_pause_is_an_error():
+    operator = FakeSources(executions=[execution([], execution_id="by-hand", paused=True, pause_reason="manual")])
+    system = FakeSources(executions=[execution([], execution_id="by-runtime", paused=True, pause_reason="system")])
+    [by_hand] = await derive_blockers(operator)
+    [by_runtime] = await derive_blockers(system)
+    assert (by_hand.kind, by_hand.severity) == (BlockerKind.EXECUTION_PAUSED, BlockerSeverity.WARNING)
+    assert (by_runtime.kind, by_runtime.severity) == (BlockerKind.EXECUTION_PAUSED, BlockerSeverity.ERROR)
+
+
+@pytest.mark.asyncio
+async def test_a_pause_with_a_system_stall_on_the_run_stays_an_error():
+    sources = FakeSources(
+        executions=[execution([], paused=True, pause_reason="manual")],
+        incidents=[incident(IncidentCategory.SYSTEM_STALL)],
+    )
+    paused = next(b for b in await derive_blockers(sources) if b.kind is BlockerKind.EXECUTION_PAUSED)
+    assert paused.severity is BlockerSeverity.ERROR
 
 
 @pytest.mark.asyncio
@@ -395,14 +567,6 @@ async def test_a_pending_manual_step_is_on_the_list():
 @pytest.mark.asyncio
 async def test_a_healthy_system_reports_nothing():
     assert await derive_blockers(FakeSources()) == []
-
-
-def test_a_runtime_that_will_not_build_is_a_blocker_without_a_runtime():
-    blocker = runtime_not_built_blocker(
-        "KeyError", "Location dmso_reservoir does not exist", "Fix the workflow.",
-    )
-    assert blocker.kind is BlockerKind.RUNTIME_NOT_BUILT
-    assert blocker.remedies[0].steps[0].verb == "runtime.reload"
 
 
 @pytest.mark.asyncio
@@ -443,8 +607,8 @@ async def test_a_dated_row_sorts_above_one_whose_start_nobody_recorded():
 
 
 @pytest.mark.asyncio
-async def test_the_cancel_step_says_the_reason_rides_in_the_query_string():
-    """A hosted deployment takes `reason` as a query parameter, so a JSON body gets a 400."""
+async def test_the_cancel_step_names_the_cancel_and_the_execution():
+    """The surface turns the action into its own route; the step carries the ids it needs."""
     sources = FakeSources(
         executions=[execution([
             thread("plate_1", name="plate_1", status="AWAITING_MANUAL_REMOVE",
@@ -461,21 +625,9 @@ async def test_the_cancel_step_says_the_reason_rides_in_the_query_string():
         b for b in blockers if b.kind is BlockerKind.WAITING_ON_A_PARKED_HOLDER
     )
     cancel = starved.remedies[0].steps[0]
-    assert cancel.query == ("reason",)
-    assert "{" not in cancel.rest, "the route must carry real ids, not placeholders"
-
-
-def test_no_runtime_and_no_build_error_still_says_nothing_can_run():
-    """A topology delete tears the runtime down on purpose.
-
-    An empty list here would report a deployment that cannot run anything as
-    free to move.
-    """
-    blocker = runtime_torn_down_blocker()
-    assert blocker.kind is BlockerKind.RUNTIME_NOT_BUILT
-    assert blocker.severity is BlockerSeverity.ERROR
-    assert "no runtime" in blocker.headline.lower()
-    assert blocker.remedies[0].steps[0].verb == "runtime.reload"
+    assert cancel.action is RemedyAction.CANCEL_RESERVATION
+    assert cancel.args["execution_id"] == "exec-1"
+    assert cancel.args["reservation_id"] == "rsv-1"
 
 
 @pytest.mark.asyncio
@@ -502,8 +654,8 @@ async def test_two_rows_of_one_kind_put_the_dated_one_first():
 
 
 @pytest.mark.asyncio
-async def test_the_other_cancel_step_also_says_the_reason_rides_in_the_url():
-    """There are two reservation-cancel steps and both hit the same route."""
+async def test_the_other_cancel_step_names_the_same_action():
+    """There are two reservation-cancel steps and both run the same action."""
     sources = FakeSources(
         executions=[execution([
             thread("plate_1", name="plate_1", pause_reason="error",
@@ -524,9 +676,7 @@ async def test_the_other_cancel_step_also_says_the_reason_rides_in_the_url():
         if step.verb == "reservation.cancel"
     ]
     assert steps, "the position-already-reserved remedy offers a cancel"
-    for step in steps:
-        assert step.query == ("reason",)
-        assert "{" not in step.rest
+    assert {step.action for step in steps} == {RemedyAction.CANCEL_RESERVATION}
 
 
 @pytest.mark.asyncio

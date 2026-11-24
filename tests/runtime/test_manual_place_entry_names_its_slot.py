@@ -18,11 +18,10 @@ import asyncio
 
 import pytest
 
-from orca.runtime.labware_group import LabwareGroup, LabwareGroupMember
-from orca.runtime.labware_store import InMemoryLabwareStore
-from orca.runtime.registries import NullGatewayRegistry
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.submission import BatchMode
+from orca.workflow_models.labware_group import LabwareGroup, LabwareGroupMember
+from tests.no_devices import NullGatewayRegistry
+from orca.modes.run_modes import WorkflowRunMode
+from orca.workflow_models.submission import BatchMode
 from orca.workflow_models.status_enums import LabwareThreadStatus
 from orca.runtime.system_runtime import SystemRuntime
 
@@ -30,6 +29,7 @@ from tests.runtime.manual_place_fixtures import (
     _build_manual_place_system,
     _live_connection_source,
 )
+from tests.memory_activity import memory_runtime
 
 
 async def _await_parked_at_manual_place(
@@ -70,9 +70,8 @@ async def _explicit_manual_place_runtime(workflow_name: str) -> SystemRuntime:
     system = await _build_manual_place_system(
         workflow_name, explicit_manual_place=True,
     )
-    runtime = SystemRuntime(
+    runtime = await memory_runtime(
         system,
-        labware_store=InMemoryLabwareStore(),
         gateway_registry=NullGatewayRegistry(),
         connection_source=_live_connection_source(),
     )

@@ -39,7 +39,7 @@ class PersistedExecution:
 
 @dataclass(frozen=True)
 class PersistedThread:
-    """One thread's last-known summary, upserted from THREAD lifecycle events.
+    """One thread's last-known summary, upserted on each of its status changes.
 
     What survives a restart so ``get_execution_detail`` can still say what a
     finished run did. Location/method progress are not here; the ops history
@@ -52,6 +52,7 @@ class PersistedThread:
     status: str
     last_error: str | None = None
     pause_reason: str | None = None
+    group_id: str | None = None
 
 
 class IExecutionRecordStore(Protocol):
@@ -92,13 +93,17 @@ class IExecutionRecordStore(Protocol):
         """Every persisted row, newest-first by submitted_at."""
         ...
 
+    async def delete(self, execution_id: str) -> None:
+        """Remove the run's row and its threads; nothing happens when there is none."""
+        ...
+
     async def list_non_terminal(self) -> list[PersistedExecution]:
         """Rows still in a non-terminal state (boot-scan input)."""
         ...
 
     async def create_schema(self) -> None:
         """Create the executions table if absent (in-memory/sim setup; file and
-        Postgres deployments use migrations, where this is an idempotent no-op)."""
+        hosted deployments use migrations, where this is an idempotent no-op)."""
         ...
 
     async def aclose(self) -> None:

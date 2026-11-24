@@ -19,12 +19,12 @@ import pytest
 from tests.test_helpers import execution_outcome
 
 from orca.runtime.execution import ExecutionPhase
-from orca.runtime.labware_group import LabwareGroup, LabwareGroupMember
-from orca.runtime.submission import BatchMode
-from orca.runtime.system_runtime import SystemRuntime
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.workflow_models.labware_group import LabwareGroup, LabwareGroupMember
+from orca.workflow_models.submission import BatchMode
+from orca.modes.run_modes import WorkflowRunMode
 
 from tests.test_multi_lineage_demo import _build_multi_lineage_system
+from tests.memory_activity import memory_runtime
 
 
 def _group() -> LabwareGroup:
@@ -39,10 +39,10 @@ class TestExecutionStateMachine:
     @pytest.mark.asyncio
     async def test_execution_starts_accepting(self) -> None:
         system, workflow, event_bus = await _build_multi_lineage_system()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
         await runtime.start()
         try:
-            submission = await runtime.submit(workflow, groups=[_group()], mode=WorkflowRunMode.PURE_SIM)
+            submission = await runtime.submit(workflow, groups=[_group()], mode=WorkflowRunMode.CHECK_RUN)
             execution = runtime._executions[submission.execution_id]
             assert execution.phase is ExecutionPhase.ACCEPTING
             await execution_outcome(runtime, submission, timeout=30.0)
@@ -56,10 +56,10 @@ class TestExecutionStateMachine:
         in the active-executions index so JOIN_EXISTING submits against this
         execution can be distinguished from "no such execution"."""
         system, workflow, event_bus = await _build_multi_lineage_system()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
         await runtime.start()
         try:
-            submission = await runtime.submit(workflow, groups=[_group()], mode=WorkflowRunMode.PURE_SIM)
+            submission = await runtime.submit(workflow, groups=[_group()], mode=WorkflowRunMode.CHECK_RUN)
             execution = runtime._executions[submission.execution_id]
             result = runtime.close_execution(execution.id)
             assert result is ExecutionPhase.DRAINING
@@ -74,12 +74,12 @@ class TestExecutionStateMachine:
         starts a fresh execution that replaces the draining one in the
         active-executions index."""
         system, workflow, event_bus = await _build_multi_lineage_system()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
         await runtime.start()
         try:
-            sub1 = await runtime.submit(workflow, groups=[_group()], mode=WorkflowRunMode.PURE_SIM)
+            sub1 = await runtime.submit(workflow, groups=[_group()], mode=WorkflowRunMode.CHECK_RUN)
             runtime.close_execution(sub1.execution_id)
-            sub2 = await runtime.submit(workflow, groups=[_group()], mode=WorkflowRunMode.PURE_SIM)
+            sub2 = await runtime.submit(workflow, groups=[_group()], mode=WorkflowRunMode.CHECK_RUN)
             assert sub1.execution_id != sub2.execution_id
             assert runtime._executions[sub2.execution_id].phase is ExecutionPhase.ACCEPTING
             assert runtime._active_executions[workflow.name].id == sub2.execution_id
@@ -91,16 +91,16 @@ class TestExecutionStateMachine:
         """JOIN_EXISTING targeting a DRAINING execution is rejected with
         RuntimeError; there's no ACCEPTING execution for it to join."""
         system, workflow, event_bus = await _build_multi_lineage_system()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
         await runtime.start()
         try:
-            sub1 = await runtime.submit(workflow, groups=[_group()], mode=WorkflowRunMode.PURE_SIM)
+            sub1 = await runtime.submit(workflow, groups=[_group()], mode=WorkflowRunMode.CHECK_RUN)
             runtime.close_execution(sub1.execution_id)
             with pytest.raises(RuntimeError, match="DRAINING"):
                 await runtime.submit(
                     workflow, groups=[_group()],
                     batch_mode=BatchMode.JOIN_EXISTING,
-                    mode=WorkflowRunMode.PURE_SIM,
+                    mode=WorkflowRunMode.CHECK_RUN,
                 )
         finally:
             await runtime.shutdown()
@@ -113,17 +113,17 @@ class TestExecutionStateMachine:
         instead of signalling to the operator that the join target is gone.
         """
         system, workflow, event_bus = await _build_multi_lineage_system()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
         await runtime.start()
         try:
-            sub1 = await runtime.submit(workflow, groups=[_group()], mode=WorkflowRunMode.PURE_SIM)
+            sub1 = await runtime.submit(workflow, groups=[_group()], mode=WorkflowRunMode.CHECK_RUN)
             await runtime.abort_execution(sub1.execution_id)
             assert runtime._executions[sub1.execution_id].phase is ExecutionPhase.STOPPING
             with pytest.raises(RuntimeError, match="STOPPING"):
                 await runtime.submit(
                     workflow, groups=[_group()],
                     batch_mode=BatchMode.JOIN_EXISTING,
-                    mode=WorkflowRunMode.PURE_SIM,
+                    mode=WorkflowRunMode.CHECK_RUN,
                 )
         finally:
             await runtime.shutdown()
@@ -131,7 +131,7 @@ class TestExecutionStateMachine:
     @pytest.mark.asyncio
     async def test_close_unknown_execution_raises(self) -> None:
         system, workflow, event_bus = await _build_multi_lineage_system()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
         await runtime.start()
         try:
             with pytest.raises(KeyError, match="does-not-exist"):
@@ -146,10 +146,10 @@ class TestExecutionStateMachine:
         KeyError on the second call because finalize_execution deleted the
         active-executions entry on the first call."""
         system, workflow, event_bus = await _build_multi_lineage_system()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
         await runtime.start()
         try:
-            sub = await runtime.submit(workflow, groups=[_group()], mode=WorkflowRunMode.PURE_SIM)
+            sub = await runtime.submit(workflow, groups=[_group()], mode=WorkflowRunMode.CHECK_RUN)
             runtime.close_execution(sub.execution_id)
             # Second call is a no-op (phase unchanged).
             result = runtime.close_execution(sub.execution_id)
@@ -165,10 +165,10 @@ class TestExecutionStateMachine:
         raised KeyError. Under the execution_id-keyed close this just
         works."""
         system, workflow, event_bus = await _build_multi_lineage_system()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
         await runtime.start()
         try:
-            sub = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+            sub = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
             phase = runtime.close_execution(sub.execution_id)
             assert phase is ExecutionPhase.DRAINING
         finally:
@@ -179,15 +179,15 @@ class TestExecutionStateMachine:
         """Two separate executions for two different workflows: closing one
         must not touch the other."""
         system, workflow, event_bus = await _build_multi_lineage_system()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
         await runtime.start()
         try:
-            sub_a = await runtime.submit(workflow, groups=[_group()], mode=WorkflowRunMode.PURE_SIM)
+            sub_a = await runtime.submit(workflow, groups=[_group()], mode=WorkflowRunMode.CHECK_RUN)
             # Close A, then verify a fresh STANDALONE submission for the same
             # workflow starts a distinct execution unaffected by A's DRAINING
             # phase.
             runtime.close_execution(sub_a.execution_id)
-            sub_b = await runtime.submit(workflow, groups=[_group()], mode=WorkflowRunMode.PURE_SIM)
+            sub_b = await runtime.submit(workflow, groups=[_group()], mode=WorkflowRunMode.CHECK_RUN)
 
             exec_a = runtime._executions[sub_a.execution_id]
             exec_b = runtime._executions[sub_b.execution_id]

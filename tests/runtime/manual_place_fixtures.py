@@ -6,6 +6,7 @@ hand-placed entry: bare `start=pad_loc` and explicit
 it lives here rather than in whichever test file happened to build it first.
 """
 
+from orca.config import OrcaConfig
 from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 
@@ -15,7 +16,7 @@ from orca.runtime.status_models import ConnectionCard
 from orca.sdk.events import EventBus
 from orca.sdk.system import ResourceRegistry, SystemMap
 from orca.sdk.workflow import MethodTemplate, WorkflowTemplate
-from orca.spawn import MANUAL_PLACE
+from orca.spawn import LEAVE_IN_PLACE, MANUAL_PLACE
 from orca.system.SdkToSystemBuilder import SdkToSystemBuilder
 from orca.system.system_interface import ISystem
 from orca.workflow_models.action_context import ActionContext
@@ -31,6 +32,11 @@ from tests.test_helpers import (
     create_test_transporter,
     wire_system_map,
 )
+from tests.memory_activity import memory_ops_store, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from orca.resource_models.labware_service_interface import ILabwareService
+from tests.memory_activity import memory_labware_service
 
 
 # -- Fixture helpers --------------------------------------------------------
@@ -56,7 +62,7 @@ def _live_connection_source(
     extra_device_names: tuple[str, ...] = (),
 ) -> FakeConnectionSource:
     """Connection source reporting shaker1 + robot1 (+ any extras) as
-    live-connected so `assert_runnable` lets LIVE submissions through to
+    live-connected so `unreachable` lets LIVE submissions through to
     the typed-error path under test."""
     now = datetime.now(timezone.utc)
     cards = [
@@ -76,6 +82,9 @@ async def _build_manual_place_system(
     workflow_name: str = "wf_manual_place",
     plate_name: str | None = None,
     explicit_manual_place: bool = False,
+    leave_in_place: bool = False,
+    *,
+    labware_service: ILabwareService | None = None,
 ) -> ISystem:
     """One-device workflow with a `start=pad1, end=pad1` ManualPlace entry thread.
 
@@ -85,12 +94,14 @@ async def _build_manual_place_system(
 
     `explicit_manual_place` switches the entry between the two spellings of
     the same intent: bare `start=pad_loc` and `start=(pad_loc, MANUAL_PLACE)`.
+
+    `leave_in_place` keeps the plate on the system at its end; otherwise SIM takes it away.
     """
     if plate_name is None:
         plate_name = f"plate_{workflow_name}"
     plate = create_test_plate_template(plate_name)
     registry = ResourceRegistry()
-    shaker = create_test_device("shaker1", sim_override=None)
+    shaker = create_test_device("shaker1")
     registry.add_resource(shaker)
     transporter = create_test_transporter("robot1", ["shaker1", "pad1"])
     registry.add_resource(transporter)
@@ -115,7 +126,7 @@ async def _build_manual_place_system(
         (pad_loc, MANUAL_PLACE) if explicit_manual_place else pad_loc
     )
 
-    @orca.thread(labware=plate, start=start_arg, end=pad_loc)
+    @orca.thread(labware=plate, start=start_arg, end=(pad_loc, LEAVE_IN_PLACE) if leave_in_place else pad_loc)
     async def plate_thread(
         ctx: ThreadContext,
     ) -> AsyncGenerator[MethodTemplate, None]:
@@ -132,7 +143,10 @@ async def _build_manual_place_system(
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=EventBus(),
+        event_bus=EventBus(), config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=labware_service or memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     return builder.get_system()

@@ -14,9 +14,9 @@ from unittest.mock import Mock
 
 from orca.resource_models.labware import PlateTemplate
 from orca.resource_models.sharing import GroupSharing, SubmissionBatching
-from orca.runtime.group_aware_labware_registry import GroupAwareLabwareRegistry
-from orca.runtime.group_execution_context import GroupExecutionContext
-from orca.runtime.submission import BatchMode
+from orca.workflow_models.group_aware_labware_registry import GroupAwareLabwareRegistry
+from orca.workflow_models.group_execution_context import GroupExecutionContext
+from orca.workflow_models.submission import BatchMode
 
 
 def _make_template(

@@ -1,9 +1,7 @@
 """`orca var ...` noun sub-app.
 
-Dispatches to the active backend via `get_client()` (local daemon or cloud
-cloud). Profile loading moved to `orca run <workflow> --profile <path>` (see
-cli/app.py): profiles are applied at submission time so the new execution's
-variable partition is populated before any thread reads it.
+Dispatches to the active backend via `get_client()` (local daemon or cloud).
+A saved profile is picked at submission with `orca run <workflow> --profile <name>`.
 """
 
 import typer
@@ -12,6 +10,7 @@ from orca.cli import output, resolve
 from orca.cli.app import STATE
 from orca.cli.backend import get_client
 from orca.variables.errors import OptionValue
+from orca.variables.resolution import VariableSource
 
 
 app = typer.Typer(help="Read and write execution / global variables.", no_args_is_help=True)
@@ -52,35 +51,20 @@ def get(
     output.emit_json(result.model_dump(mode="json"))
     if output.get_mode().value == "table":
         rows: list[tuple[str, str | None]] = [
-            ("value", str(result.value)), ("source", result.source.value),
+            ("value", _shown(result.value)), ("source", _shown(result.source)),
         ]
         output.emit_kv(f"var {name}", rows)
-        _warn_if_shadowed(name, eid, result.shadowed_by)
+        if result.overrides:
+            output.emit_table(
+                "Submission overrides",
+                ["submission", "value"],
+                [[o.submission_id[:8], str(o.value)] for o in result.overrides],
+            )
 
 
-@app.command("explain")
-def explain(
-    name: str = typer.Argument(...),
-    execution: str = typer.Option(..., "--execution", help="Execution id or prefix."),
-) -> None:
-    """Show what each submission of an execution resolves for a variable."""
-    client = get_client()
-    ids = [r.id for r in client.list_executions()]
-    eid = resolve.resolve_execution_id(execution, ids)
-    result = client.variables_resolution(eid, name)
-    if output.get_mode().value == "json":
-        output.emit_json(result.model_dump(mode="json"))
-        return
-    source = "none" if result.source is None else result.source.value
-    output.emit_kv(
-        f"var {name} ({eid[:8]})",
-        [("value", str(result.value)), ("source", source)],
-    )
-    output.emit_table(
-        "Submission overrides",
-        ["submission", "value"],
-        [[o.submission_id[:8], str(o.value)] for o in result.overrides],
-    )
+def _shown(field: OptionValue | VariableSource | None) -> str:
+    """A null value or source means only submissions hold the name."""
+    return "(only in submissions)" if field is None else str(field)
 
 
 def _warn_if_shadowed(name: str, execution_id: str, shadowed_by: list[str]) -> None:
@@ -91,7 +75,7 @@ def _warn_if_shadowed(name: str, execution_id: str, shadowed_by: list[str]) -> N
     output.info(
         f"{name} is overridden by submission(s) {ids}, whose threads resolve "
         f"their own value. See them with "
-        f"'orca var explain {name} --execution {execution_id}', and clear one "
+        f"'orca var get {name} --execution {execution_id}', and clear one "
         f"with 'orca var unset {name} --execution {execution_id} "
         f"--submission <id>'."
     )
@@ -212,6 +196,30 @@ def set_global(
             output.confirmation_denied()
     client.variables_set_global(name, coerced, reason=reason)
     output.info(f"global {name} = {coerced}")
+
+
+@app.command("get-global")
+def get_global(name: str = typer.Argument(..., help="The bare name, without `global.`.")) -> None:
+    """Get a global variable's value, or its declared default."""
+    result = get_client().variables_get_global(name)
+    output.emit_json(result.model_dump(mode="json"))
+    if output.get_mode().value == "table":
+        output.emit_kv(f"global {name}", [("value", _shown(result.value)), ("source", _shown(result.source))])
+
+
+@app.command("unset-global")
+def unset_global(
+    name: str = typer.Argument(..., help="The bare name, without `global.`."),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Why, for the audit trail.",
+    ),
+) -> None:
+    """Remove a global value; a declared global falls back to its default."""
+    if not STATE.force:
+        if not typer.confirm(f"Unset global {name!r}?", default=False):
+            output.confirmation_denied()
+    removed = get_client().variables_unset_global(name, reason=reason)
+    output.info(f"global {name} unset" if removed else f"global {name} had no value set")
 
 
 @app.command("unset")

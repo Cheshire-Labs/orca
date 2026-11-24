@@ -1,10 +1,9 @@
 """Submission carries the resolved ``run_mode`` so operators can confirm
-"this is PURE_SIM, not LIVE" via MCP without re-deriving it.
+"this is CHECK_RUN, not LIVE" via MCP without re-deriving it.
 
-The run mode is resolved at submit time (per the C1 precedence:
-submit_override > topology per-device sim_override > deployment base).
-Once resolved, it stamps the Submission and surfaces unchanged through
-``SubmissionSnapshot`` and ``SubmissionDTO`` to the operator.
+The run mode is chosen at submit time. It stamps the Submission and surfaces
+unchanged through ``SubmissionSnapshot`` and ``SubmissionDTO`` to the
+operator. Each device's own sim or live setting applies under it at dispatch.
 """
 
 import dataclasses
@@ -13,15 +12,15 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import ValidationError
 
-from orca.daemon.schemas import SubmissionDTO
+from orca.operations.wire_models import SubmissionDTO
 from orca.runtime.facades.submissions import _snapshot
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from orca.runtime.status_models import SubmissionSnapshot
-from orca.runtime.submission import BatchMode, Submission, SubmissionStatus
+from orca.workflow_models.submission import BatchMode, Submission, SubmissionStatus
 
 
 def _make_submission(
-    run_mode: WorkflowRunMode = WorkflowRunMode.PURE_SIM,
+    run_mode: WorkflowRunMode = WorkflowRunMode.CHECK_RUN,
 ) -> Submission:
     return Submission(
         id="sub-1",
@@ -48,8 +47,8 @@ def test_facade_snapshot_carries_submission_run_mode() -> None:
     snap = _snapshot(sub)
     assert snap.run_mode is WorkflowRunMode.LIVE
 
-    other = _make_submission(WorkflowRunMode.DEVICE_SIM)
-    assert _snapshot(other).run_mode is WorkflowRunMode.DEVICE_SIM
+    other = _make_submission(WorkflowRunMode.SIM)
+    assert _snapshot(other).run_mode is WorkflowRunMode.SIM
 
 
 def test_submission_dto_round_trips_run_mode() -> None:

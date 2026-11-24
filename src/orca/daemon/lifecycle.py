@@ -2,11 +2,11 @@
 
 One running daemon per user. State lives at `~/.orca/daemon.json`:
 
-    {"pid": 12345, "port": 51293, "started_at": 1712345678.9, "spec": "..."}
+    {"pid": 12345, "port": 51293, "started_at": 1712345678.9}
 
-`orca start` writes this file; `orca shutdown` removes it; `orca topology mount`/
-`unload` update the `spec` field. Stale entries (daemon died without cleanup) are
-detected via psutil.pid_exists and removed on the next `orca start`.
+`orca start` writes this file; `orca shutdown` removes it. Stale entries (daemon
+died without cleanup) are detected via psutil.pid_exists and removed on the next
+`orca start`.
 
 psutil is used for cross-platform liveness (Windows + POSIX in one call).
 """
@@ -56,9 +56,8 @@ class DaemonInfo(BaseModel):
 
     Intentionally minimal: what a CLI client needs to dial the daemon
     (port) and verify it's really running (pid for liveness check, plus
-    started_at for display). The loaded spec lives in in-memory daemon
-    state and is surfaced via GET /health -- no need to duplicate it on
-    disk where it could drift.
+    started_at for display). Whether a system is loaded is daemon state,
+    surfaced via GET /health, so it is not duplicated on disk where it could drift.
     """
     pid: int
     port: int

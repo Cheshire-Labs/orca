@@ -1,6 +1,8 @@
 import asyncio
 import logging
+from orca.async_util import drain_cancelled_waiters
 from orca.resource_models.devices import Device
+from orca.resource_models.resources import IResource
 from orca.resource_models.labware import AnyLabwareTemplate, LabwareInstance, LabwareTemplate
 from orca.resource_models.location import Location
 from orca.resource_models.resource_pool import ResourcePool
@@ -50,6 +52,31 @@ class IActionReservationStatusSink(Protocol):
     def clear_awaiting_reservation(self) -> None:
         """Called on grant or before raising; resets the snapshot field."""
         ...
+
+    @property
+    def pause_requested(self) -> asyncio.Event:
+        """Set while the run asks the thread to pause; a reservation wait gives way to it."""
+        ...
+
+    async def hold_for_pause(self) -> None:
+        """Pause where the thread waits; returns on resume and raises on a stop."""
+        ...
+
+async def _wait_for_release_or_pause(
+    coordinator: IThreadReservationCoordinator,
+    snapshot: Dict[str, int],
+    timeout: float,
+    pause_requested: asyncio.Event,
+) -> None:
+    waiters = [
+        asyncio.ensure_future(coordinator.wait_for_location_release(snapshot, timeout)),
+        asyncio.ensure_future(pause_requested.wait()),
+    ]
+    try:
+        await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        await drain_cancelled_waiters(*waiters)
+
 
 class LocationCollectionReservationRequest(IReservationCollection):
     def __init__(self, thread_id: str, locations: List[LocationReservation], system_map: SystemMap, reference_point: Location) -> None:
@@ -183,7 +210,7 @@ class ResourcePoolResolver:
         """Resolve which location in the action's resource pool to reserve.
 
         ``requesting_labware`` lets the reservation layer tell own-labware
-        from cross-thread occupancy (Round 5 S1-B). Each candidate
+        from cross-thread occupancy. Each candidate
         ``LocationReservation`` carries the labware reference so
         ``LocationReservationManager.can_reserve`` can grant the
         own-labware-at-target case (entry thread's first action against
@@ -209,7 +236,7 @@ class ResourcePoolResolver:
                 await thread_reservation_manager.submit_reservation_request(thread_id, request)
                 await request.processed.wait()
 
-                # S3 Round 1: detector declared an unresolvable deadlock
+                # The detector declared an unresolvable deadlock
                 # (e.g., blocker thread is `immovable=True`). Raise the typed
                 # error to break out of the retry loop -- no amount of waiting
                 # will free the blocker.
@@ -256,12 +283,27 @@ class ResourcePoolResolver:
                     )
 
                 request.clear()
-                await thread_reservation_manager.wait_for_location_release(
-                    release_snapshot, retry_interval
+                if status_sink is None:
+                    await thread_reservation_manager.wait_for_location_release(release_snapshot, retry_interval)
+                    continue
+                await _wait_for_release_or_pause(
+                    thread_reservation_manager, release_snapshot, retry_interval, status_sink.pause_requested,
                 )
+                if status_sink.pause_requested.is_set():
+                    # A thread waiting for a device moves nothing, so it pauses here and asks again on resume.
+                    status_sink.clear_awaiting_reservation()
+                    await status_sink.hold_for_pause()
+                    start_time = asyncio.get_event_loop().time()
         finally:
             if status_sink is not None:
                 status_sink.clear_awaiting_reservation()
+
+    def _available_members(self) -> List[IResource]:
+        """The pool without its offline devices, so a thread waits for a busy one instead.
+
+        A run whose pool had no device come up was refused at its start, so at least one member is left.
+        """
+        return [r for r in self._resource_pool.resources if not (isinstance(r, Device) and r.is_offline)]
 
     def _get_potential_action_locations(
         self,
@@ -269,7 +311,7 @@ class ResourcePoolResolver:
         requesting_labware: LabwareInstance | None = None,
     ) -> List[LocationReservation]:
         potential_locations: Set[Location] = set()
-        for resource in self._resource_pool.resources:
+        for resource in self._available_members():
             if isinstance(resource, Device) and resource.locations:
                 for loc in resource.locations:
                     potential_locations.add(loc)

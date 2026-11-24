@@ -1,7 +1,7 @@
 
 import asyncio
 import logging
-from typing import Callable, Dict, Iterable, List
+from typing import Callable, Dict, Iterable, List, Set
 from orca.resource_models.location import ILabwareLocationObserver, Location
 from orca.system.reservation_manager.location_reservation import (
     LocationReservation,
@@ -11,7 +11,7 @@ from orca.system.reservation_manager.location_reservation import (
 from orca.system.reservation_manager.deadlock_manager import DeadlockStarvationRegistry, ThreadDeadlockDetector
 from orca.system.reservation_manager.interfaces import IAvailabilityManager, IReservationCollection, IReservationManager, IThreadReservationCoordinator
 from orca.system.system_map import ILocationRegistry
-from orca.system.thread_registry_interface import IThreadRegistry
+from orca.system.reservation_manager.thread_registry_interface import IThreadRegistry
 
 orca_logger = logging.getLogger("orca")
 
@@ -26,6 +26,8 @@ class LocationReservationManager(IReservationManager, IAvailabilityManager, ILab
         # the other taught stations of the same physical pad.
         self._exclusion_siblings_of = exclusion_siblings_of
         self._reservations: Dict[str, LocationReservation] = {}
+        # position_id -> the thread a deadlock yield freed it for. Nobody else is granted it.
+        self._promised: Dict[str, str] = {}
         self._lock = asyncio.Lock()  # Protects reservation operations from race conditions
         self._on_release_callback: Callable[[str], None] | None = None
 
@@ -37,6 +39,17 @@ class LocationReservationManager(IReservationManager, IAvailabilityManager, ILab
     def get_reservation_at(self, position_id: str) -> LocationReservation | None:
         """Returns the reservation for the given position_id, if it exists."""
         return self._reservations.get(position_id, None)
+
+    def promise(self, position_id: str, thread_id: str) -> None:
+        """Keep ``position_id`` for ``thread_id`` until it is granted there or stops waiting."""
+        self._promised[position_id] = thread_id
+
+    def promised_to(self, position_id: str) -> str | None:
+        return self._promised.get(position_id)
+
+    def withdraw_promises_to(self, thread_ids: Set[str]) -> None:
+        for position_id in [p for p, thread_id in self._promised.items() if thread_id in thread_ids]:
+            del self._promised[position_id]
 
     async def attempt_reservation(self, position_id: str, request: LocationReservation,
                                    thread_id: str | None = None) -> None:
@@ -51,11 +64,10 @@ class LocationReservationManager(IReservationManager, IAvailabilityManager, ILab
         thread, the reservation is re-granted (re-entrant). This supports
         same-location consecutive actions without release-and-reacquire.
 
-        Round 5 S1-B: when ``request.labware`` is set the reservation
+        When ``request.labware`` is set the reservation
         becomes thread-aware about labware identity. ``can_reserve`` grants
         if the location's current labware IS the requester's own labware
-        (entry thread targeting own start_location -- the user's session
-        repro). Cross-thread occupancy still rejects so
+        (entry thread targeting own start_location). Cross-thread occupancy still rejects so
         ``ThreadDeadlockDetector`` continues to see the cycle signal.
         """
         requesting_labware_id = request.labware.id if request.labware is not None else None
@@ -91,6 +103,8 @@ class LocationReservationManager(IReservationManager, IAvailabilityManager, ILab
                 f"(thread {old.thread_id} -> {thread_id})"
             )
         self._reservations[position_id] = request
+        if thread_id is not None and self._promised.get(position_id) == thread_id:
+            del self._promised[position_id]
         request.thread_id = thread_id
         request.set_location(self._location_reg.get_location(position_id))
         request.set_reservation_release_callback(lambda: self.release_reservation(position_id))
@@ -109,19 +123,16 @@ class LocationReservationManager(IReservationManager, IAvailabilityManager, ILab
         Three outcomes when ``existing is None`` (no current reservation):
 
         1. Location empty -> grant. Standard case.
-        2. Location holds the requester's OWN labware -> grant. This is
-           the user's Round 5 session repro: entry thread with its own
-           labware at its own start_location. Pre-fix this returned False
-           because the layer conflated reservation-holder exclusivity
-           with labware-slot availability; the thread sat in
-           ``RESOLVING_ACTION_LOCATION`` forever because nothing else
-           would ever release "the reservation" (there was no reservation
-           to release). Identifies "own labware" by labware id match.
+        2. Location holds the requester's OWN labware -> grant, such as an
+           entry thread with its own labware at its own start_location.
+           Rejecting it would park the thread forever: there is no
+           reservation for anyone to release. Identifies "own labware" by
+           labware id match.
         3. Location holds another thread's labware -> reject. Cross-thread
            occupancy still trips the rejection path that
            ``ThreadDeadlockDetector`` uses to find cycles. This is the
-           genuine wait-for-other-thread case; rejecting here preserves
-           the cycle-detection signal pre-fix relied on.
+           genuine wait-for-other-thread case; rejecting here keeps
+           the cycle-detection signal.
 
         ``existing is not None`` (someone holds a reservation): grants
         re-entrantly for the matching ``thread_id`` (hold-over for
@@ -130,9 +141,11 @@ class LocationReservationManager(IReservationManager, IAvailabilityManager, ILab
         and an outranking requester still has to clear the occupancy outcomes
         above: a plate standing on the spot beats every tier.
 
-        Callers that did not previously pass labware identity still get
-        the old "any-occupancy rejects" behavior because
-        ``requesting_labware_id is None`` falls into outcome 3.
+        A location promised to another thread (``promise``) rejects every
+        requester but that thread and the plate still standing there.
+
+        A caller that passes no labware identity gets "any occupancy rejects",
+        because ``requesting_labware_id is None`` falls into outcome 3.
 
         """
         location = self._location_reg.get_location(position_id)
@@ -151,6 +164,8 @@ class LocationReservationManager(IReservationManager, IAvailabilityManager, ILab
                     return False
         if self._sibling_blocked(position_id, thread_id, requesting_labware_id):
             return False
+        if self._promised_to_another(location, thread_id, requesting_labware_id):
+            return False
         existing = self._reservations.get(position_id)
         if existing is not None:
             if thread_id is not None and existing.thread_id == thread_id:
@@ -163,6 +178,19 @@ class LocationReservationManager(IReservationManager, IAvailabilityManager, ILab
         if requesting_labware_id is not None and current_labware.id == requesting_labware_id:
             return True
         return False
+
+    def _promised_to_another(
+        self, location: Location, thread_id: str | None, requesting_labware_id: str | None,
+    ) -> bool:
+        """True when a deadlock yield freed this location for a different thread.
+
+        The plate still standing there is not refused: it is the one leaving, and it may
+        hold its own slot until it is carried off."""
+        promised = self._promised.get(location.position_id)
+        if promised is None or promised == thread_id:
+            return False
+        standing = location.labware
+        return standing is None or requesting_labware_id is None or standing.id != requesting_labware_id
 
     def _sibling_blocked(
         self,
@@ -193,9 +221,7 @@ class LocationReservationManager(IReservationManager, IAvailabilityManager, ILab
     def is_location_available(self, location: Location) -> bool:
         """``IAvailabilityManager``: True iff the location holds no labware.
 
-        Round 5 S1-B: was previously a stub even though
-        ``LocationReservationManager`` declared ``IAvailabilityManager``
-        as a parent. Delegates to ``Location.labware`` so callers can
+        Delegates to ``Location.labware`` so callers can
         ask the manager without reaching into the location registry.
         """
         return location.labware is None
@@ -305,6 +331,8 @@ class ThreadReservationCoordinator(IThreadReservationCoordinator, IAvailabilityM
             reservation_at=self._reservation_manager.get_reservation_at,
             owned_sites_of=self._owned_sites_of_mutex,
             exclusion_siblings_of=exclusion_siblings_of,
+            hand_over=self._reservation_manager.promise,
+            promised_to=self._reservation_manager.promised_to,
         )
 
         self.ticker_started = False
@@ -372,10 +400,8 @@ class ThreadReservationCoordinator(IThreadReservationCoordinator, IAvailabilityM
         event is only a nudge. A ``clear`` cannot steal an already-scheduled
         wakeup (``Event.set`` resolves every current waiter's future before any
         later ``clear``), and a waiter that calls ``wait`` after a ``clear`` is
-        guarded by the recheck below. That clear->recheck->wait reasoning is
-        exact on 3.12 (``wait_for`` awaits inline); on 3.10 ``wait_for`` routes
-        through ``ensure_future`` so registration lands a loop-iteration later
-        -- the ``timeout`` cap is what makes any missed wakeup benign there.
+        guarded by the recheck below. The wait registers a loop turn after the
+        recheck, so the ``timeout`` cap is what makes a missed wakeup benign.
         """
         def candidate_freed() -> bool:
             return any(
@@ -393,9 +419,14 @@ class ThreadReservationCoordinator(IThreadReservationCoordinator, IAvailabilityM
             self._release_event.clear()
             if candidate_freed():
                 return
+            # Not `wait_for`: before 3.12 it returns normally when a cancel lands in the
+            # same loop turn as the release, and an aborted thread then waits forever.
+            released = asyncio.ensure_future(self._release_event.wait())
             try:
-                await asyncio.wait_for(self._release_event.wait(), remaining)
-            except (asyncio.TimeoutError, TimeoutError):
+                await asyncio.wait({released}, timeout=remaining)
+            finally:
+                released.cancel()
+            if not released.done():
                 return
 
     @property
@@ -441,6 +472,26 @@ class ThreadReservationCoordinator(IThreadReservationCoordinator, IAvailabilityM
         granting a fresh orphan.
         """
         self._deadlock_detector.forget_threads(thread_ids)
+        self._reservation_manager.withdraw_promises_to(thread_ids)
+
+    def note_location_wait(self, thread_id: str, request: LocationReservation) -> None:
+        self._deadlock_detector.note_location_wait(thread_id, request)
+        # A wait is a retry loop, so nothing else wakes the detector for a deadlock it completes.
+        self._work_available.set()
+
+    def end_location_wait(self, thread_id: str) -> None:
+        self._deadlock_detector.end_location_wait(thread_id)
+        self._reservation_manager.withdraw_promises_to({thread_id})
+
+    def note_co_labware_wait(self, thread_id: str, missing_labware_ids: Callable[[], Set[str]]) -> None:
+        self._deadlock_detector.note_co_labware_wait(thread_id, missing_labware_ids)
+        self._work_available.set()
+
+    def end_co_labware_wait(self, thread_id: str) -> None:
+        self._deadlock_detector.end_co_labware_wait(thread_id)
+
+    def note_cannot_yield(self, thread_id: str) -> None:
+        self._deadlock_detector.note_cannot_yield(thread_id)
 
     def get_reserved_position_ids(self, exclude_thread_id: str | None = None) -> set[str]:
         """Return position_ids with active reservations, optionally excluding one thread."""
@@ -488,7 +539,10 @@ class ThreadReservationCoordinator(IThreadReservationCoordinator, IAvailabilityM
             while True:
                 await self._work_available.wait()
                 self._work_available.clear()
-                await self._on_tick()
+                try:
+                    await self._on_tick()
+                except Exception:
+                    orca_logger.exception("Reservation tick failed; the loop keeps serving requests")
         except asyncio.CancelledError:
             self.ticker_started = False
             raise
@@ -512,48 +566,59 @@ class ThreadReservationCoordinator(IThreadReservationCoordinator, IAvailabilityM
         )
 
         for collection in queue_snapshot:
-            if collection.thread_id in self._dead_thread_ids:
-                collection.rejected.set()
-                collection.processed.set()
-                continue
-
-            if self._deadlock_detector.is_flagged_for_deadlock(collection.thread_id):
-                collection.deadlocked.set()
-                collection.processed.set()
-                continue
-
-            for r in collection.get_reservations():
-                await self._reservation_manager.attempt_reservation(
-                    r.requested_location.name, r, thread_id=collection.thread_id)
-
-            collection.resolve_final_reservation()
-            # S3 Round 1: detect immovable-blocker rejections BEFORE the
-            # resolver wakes on `processed` so it observes the event on
-            # the SAME collection it submitted, not a fresh one
-            # constructed on the next retry iteration. Single-collection
-            # check; out-of-queue blockers reachable via the full thread
-            # registry.
-            #
-            # Race-safety invariant: `resolve_final_reservation` already
-            # calls `processed.set()` itself (util.py + move_handler.py).
-            # The detector + `set_unresolvable_deadlock` call below run
-            # synchronously, before any `await` that would yield to the
-            # resolver's `await request.processed.wait()`. The trailing
-            # `processed.set()` is a defensive no-op for the case where
-            # a future `IReservationCollection` implementation does NOT
-            # set `processed` inside `resolve_final_reservation`.
-            # DO NOT add an `await` between resolve_final_reservation and
-            # collection.processed.set() -- it reopens the race window.
-            unresolvable_context = self._deadlock_detector.find_unresolvable_blocker(collection)
-            if unresolvable_context is not None:
-                collection.set_unresolvable_deadlock(unresolvable_context)
-            collection.processed.set()
+            try:
+                await self._process_collection(collection)
+            except Exception:
+                orca_logger.exception(
+                    "Reservation request from thread %s failed; answering it as not granted",
+                    collection.thread_id,
+                )
+                self._fail_collection(collection)
 
         # Exclude dead threads: a dead thread's rejected request must not re-enter
         # the deadlock carry (cross-tick detection has no liveness check).
         self._deadlock_detector.process_tick_results(
             [c for c in queue_snapshot if c.thread_id not in self._dead_thread_ids]
         )
+
+    @staticmethod
+    def _fail_collection(collection: IReservationCollection) -> None:
+        """Answer a request whose processing raised: neither granted nor rejected, so its waiter
+        raises. An action's thread pauses for the operator; a move's thread fails. A request already
+        answered keeps its answer."""
+        if collection.processed.is_set():
+            return
+        try:
+            partial = collection.get_reservations()
+        except Exception:
+            partial = []
+        for reservation in partial:
+            if reservation.granted.is_set():
+                reservation.release_reservation()
+        collection.processed.set()
+
+    async def _process_collection(self, collection: IReservationCollection) -> None:
+        if collection.thread_id in self._dead_thread_ids:
+            collection.rejected.set()
+            collection.processed.set()
+            return
+
+        if self._deadlock_detector.is_flagged_for_deadlock(collection.thread_id):
+            collection.deadlocked.set()
+            collection.processed.set()
+            return
+
+        for r in collection.get_reservations():
+            await self._reservation_manager.attempt_reservation(
+                r.requested_location.name, r, thread_id=collection.thread_id)
+
+        collection.resolve_final_reservation()
+        # No `await` until processed is set: the waiter must see the unresolvable flag on
+        # the collection it submitted, before it wakes and retries with a new one.
+        unresolvable_context = self._deadlock_detector.find_unresolvable_blocker(collection)
+        if unresolvable_context is not None:
+            collection.set_unresolvable_deadlock(unresolvable_context)
+        collection.processed.set()
 
     async def submit_reservation_request(self, thread_id: str, request: IReservationCollection) -> None:
         if self.ticker_started is False:
@@ -567,12 +632,11 @@ class ThreadReservationCoordinator(IThreadReservationCoordinator, IAvailabilityM
     ) -> bool:
         """Single-shot attempt to reserve a location. Returns True iff granted.
 
-        Bypasses the move queue on purpose. Two callers, and only one of them
-        stays out of the wait-for graph: `_await_location_reservation` loops on
-        this under `move_reservation_timeout` and does wait, while
-        `hold_the_source` takes the slot its plate has not left yet and waits
-        for nothing. The underlying manager lock still serializes both against
-        tick-loop grants.
+        Bypasses the move queue on purpose. `_await_location_reservation` loops
+        on this and does wait, so it registers that wait with the deadlock
+        detector (`note_location_wait`). `hold_the_source` takes the slot its
+        plate has not left yet and waits for nothing. The underlying manager
+        lock still serializes both against tick-loop grants.
         """
         await self._reservation_manager.attempt_reservation(position_id, request, thread_id)
         return request.granted.is_set() and not request.is_displaced

@@ -18,7 +18,7 @@ The bare-string defaults shift semantics in v3: today's bare-string maps
 to the auto-dispatch `select_spawn_action(location)` (IPlateSource-vs-
 PlatePad). Under v3, bare-string maps to ManualPlace/ManualRemove and
 the engine dispatches by template flag, not by resource shape. Sim
-modes (PURE_SIM/DEVICE_SIM) auto-fulfill so the test corpus stays
+modes (CHECK_RUN/SIM) auto-fulfill so the test corpus stays
 green; LIVE mode parks the thread at AWAITING_MANUAL_* until the
 operator calls `labware_register` / `labware_discharge`.
 """

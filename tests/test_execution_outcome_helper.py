@@ -12,7 +12,7 @@ from _pytest.outcomes import Failed
 
 from orca.runtime.execution import ExecutionPhase
 from orca.runtime.status_models import ExecutionStatus
-from orca.runtime.submission import Submission
+from orca.workflow_models.submission import Submission
 from tests.test_helpers import execution_outcome
 
 
@@ -59,7 +59,7 @@ class TestExecutionOutcome:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("phase", [
-        ExecutionPhase.COMPLETED, ExecutionPhase.FAILED, ExecutionPhase.ABORTED,
+        ExecutionPhase.COMPLETED, ExecutionPhase.PARTIAL_COMPLETED, ExecutionPhase.FAILED, ExecutionPhase.ABORTED,
     ])
     async def test_terminal_phase_returns_the_status(
         self, phase: ExecutionPhase,

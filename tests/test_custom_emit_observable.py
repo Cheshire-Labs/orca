@@ -9,15 +9,15 @@ run's 83 lifecycle events all showed. The bridge must carry ALL THREE emit
 sites: ``ThreadContext.emit``, ``MethodContext.emit``, ``ActionContext.emit``.
 """
 
+from orca.config import OrcaConfig
 from collections.abc import AsyncGenerator
 
 import orca.orca as orca
 from orca.events.event_bus import EventBus
 from orca.events.execution_context import CustomEventContext
 from orca.resource_models.resource_pool import ResourcePool
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from orca.runtime.sinks import CollectorSink
-from orca.runtime.system_runtime import SystemRuntime
 from orca.sdk.system import ResourceRegistry, SystemMap
 from orca.sdk.workflow import WorkflowTemplate
 from orca.system.SdkToSystemBuilder import SdkToSystemBuilder
@@ -33,6 +33,10 @@ from tests.test_helpers import (
     execution_outcome,
     wire_system_map,
 )
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 
 async def _run_emitting_workflow(collector: CollectorSink) -> str:
@@ -65,7 +69,7 @@ async def _run_emitting_workflow(collector: CollectorSink) -> str:
 
     @orca.thread(labware=plate, start=pad_loc, end=pad_loc)
     async def plate_thread(ctx: ThreadContext) -> AsyncGenerator[IMethodTemplate, None]:
-        await ctx.emit("thread.checkpoint", value="started", data={"note": "n1"})
+        await ctx.emit("thread_checkpoint", value="started", data={"note": "n1"})
         yield qc_method
 
     workflow = WorkflowTemplate("emitting_workflow")
@@ -79,16 +83,19 @@ async def _run_emitting_workflow(collector: CollectorSink) -> str:
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=event_bus,
+        event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     system = builder.get_system()
 
-    runtime = SystemRuntime(system, event_bus=event_bus)
+    runtime = await memory_runtime(system, event_bus=event_bus)
     runtime.register_sink(collector)
     await runtime.start()
     try:
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
         await execution_outcome(runtime, submission, timeout=30.0)
         return submission.execution_id
     finally:
@@ -132,8 +139,7 @@ async def test_method_emit_reaches_the_event_surface() -> None:
 
 
 async def test_thread_emit_reaches_the_event_surface_with_its_thread() -> None:
-    """The bus-safe entity id sanitizes dots; the context keeps the real
-    name, and a thread-level emit names its thread."""
+    """A thread-level emit reaches the surface under its own name and names its thread."""
     collector = CollectorSink()
     await _run_emitting_workflow(collector)
 
@@ -144,7 +150,7 @@ async def test_thread_emit_reaches_the_event_surface_with_its_thread() -> None:
     )
     context = checkpoint[0].context
     assert isinstance(context, CustomEventContext)
-    assert context.event_name == "thread.checkpoint"
+    assert context.event_name == "thread_checkpoint"
     assert context.value == "started"
     assert context.data == {"note": "n1"}
     assert context.thread_id is not None
@@ -215,15 +221,18 @@ async def test_emit_still_reaches_wait_for() -> None:
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=event_bus,
+        event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     system = builder.get_system()
 
-    runtime = SystemRuntime(system, event_bus=event_bus)
+    runtime = await memory_runtime(system, event_bus=event_bus)
     await runtime.start()
     try:
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
         await execution_outcome(runtime, submission, timeout=30.0)
     finally:
         await runtime.shutdown()

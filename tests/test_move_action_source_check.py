@@ -7,11 +7,13 @@ whatever the slot held, so a second plate at the source got carried away under
 the first one's name, and the ledger recorded the wrong labware in the gripper.
 """
 
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from cheshire_drivers.sims import SimTransporterValidationError
+from tests.real_device_path import the_real_device_path
+
+from orca.gateway.controller.exceptions import CommandExecutionError, MoveNotSavedError
 from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.labware_location_service import PlacementState
 from orca.resource_models.location import Location
@@ -25,7 +27,7 @@ from orca.workflow_models.actions.move_action import (
 )
 from tests.test_helpers import (
     no_source_hold,
-    make_labware_placer,
+    make_command_pipeline,
     create_test_labware_instance,
     create_test_transporter,
 )
@@ -44,6 +46,7 @@ def _thread_context() -> Mock:
     ctx.thread_id = "thread_1"
     ctx.thread_name = "thread1"
     ctx.template_name = "tmpl_1"
+    ctx.group_id = None
     return ctx
 
 
@@ -64,7 +67,7 @@ async def _build_move(
         context=_thread_context(),
         action=move,
         labware_location_service=labware_location_service,
-        labware_placer=make_labware_placer(labware_location_service),
+        command_pipeline=make_command_pipeline(labware_location_service),
         slot_holder=no_source_hold(),
     )
     return executing, labware
@@ -150,6 +153,31 @@ async def test_a_retry_that_already_holds_the_labware_reaches_the_place() -> Non
         ),
     )
     await transporter.gripper_location.place_labware(labware)
+    await the_real_device_path().connect_built()
 
-    with pytest.raises(SimTransporterValidationError):
+    with pytest.raises(CommandExecutionError, match="place rejected: gripper is empty"):
         await executing.execute()
+
+
+@pytest.mark.asyncio
+async def test_a_retry_after_a_place_that_ran_but_was_not_saved_never_sends_the_place_again() -> None:
+    """The arm let go at the target and the record kept the plate in the jaws. A second place would go out with empty
+    jaws onto whatever now sits at the target."""
+    source = Location("source_loc", resource=PlatePad("source_pad"))
+    target = Location("target_loc", resource=PlatePad("target_pad"))
+    transporter = create_test_transporter("robot1", ["source_loc", "target_loc"])
+
+    executing, labware = await _build_move(
+        source=source, target=target, transporter=transporter,
+        labware_location_service=_service_placing_at(transporter.gripper_location),
+    )
+    await transporter.gripper_location.place_labware(labware)
+    await the_real_device_path().connect_built()
+    executing.set_target_still_to_be_told(True)
+    with patch.object(transporter.driver, "place_at_coords", new_callable=AsyncMock) as place, pytest.raises(
+        MoveNotSavedError, match="the place is not sent again",
+    ):
+        await executing.execute()
+
+    assert place.await_count == 0
+    assert transporter.labware is labware, "the record is left for the operator to settle"

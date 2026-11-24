@@ -11,18 +11,17 @@ and the runtime records a DECK_RECONCILE_CONFLICT incident naming the labware
 and the vanished site.
 """
 
+import pytest
 from cheshire_drivers import DeckLayoutConfig, DeckResourceConfig
-from cheshire_drivers import RecordingLiquidHandlerDriver
-from cheshire_drivers.plr import ChatterboxLiquidHandlerDriver
 from orca.runtime.incident_store import IncidentCategory
-from orca.runtime.labware_store import InMemoryLabwareStore
-from orca.runtime.system_runtime import SystemRuntime
 from orca.system.system_interface import DeckReconcileConflict
 from tests.test_labware_state_reconciliation import (
     DECK_CONFIG,
     RESERVOIR_SITE,
     _build,
 )
+from tests.memory_activity import memory_runtime
+from tests.recording_handler import RecordingHandler
 
 CONFIG_WITHOUT_RESERVOIR_CARRIER = DeckLayoutConfig(
     deck_type="STARlet",
@@ -33,10 +32,9 @@ CONFIG_WITHOUT_RESERVOIR_CARRIER = DeckLayoutConfig(
 
 
 async def _runtime_with_resident():
-    recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    recorder = RecordingHandler()
     build, lh = await _build(recorder, wf_name="deck_conflict")
-    runtime = SystemRuntime(build.system, event_bus=build.event_bus,
-                            labware_store=InMemoryLabwareStore())
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
     await runtime.start()
     snap = await runtime.labware.register(
         "reservoir", location=RESERVOIR_SITE, confirm=True,
@@ -44,6 +42,7 @@ async def _runtime_with_resident():
     return build, lh, runtime, snap
 
 
+@pytest.mark.out_of_run
 async def test_vanished_site_reports_a_conflict() -> None:
     build, lh, runtime, snap = await _runtime_with_resident()
     try:
@@ -53,6 +52,8 @@ async def test_vanished_site_reports_a_conflict() -> None:
         await lh.deck_layout_store.update(
             "default", CONFIG_WITHOUT_RESERVOIR_CARRIER,
         )
+        # The driver session was rebuilt, so the next reconcile lays the new layout out.
+        await lh.invalidate_deck_world()
         lh_location = build.system.system_map.get_resource_location(lh.name)
         await build.system.reconcile_lh_deck_occupancy(lh_location)
 
@@ -65,12 +66,15 @@ async def test_vanished_site_reports_a_conflict() -> None:
         await runtime.shutdown()
 
 
+@pytest.mark.out_of_run
 async def test_runtime_records_the_conflict_as_an_incident() -> None:
     build, lh, runtime, snap = await _runtime_with_resident()
     try:
         await lh.deck_layout_store.update(
             "default", CONFIG_WITHOUT_RESERVOIR_CARRIER,
         )
+        # The driver session was rebuilt, so the next reconcile lays the new layout out.
+        await lh.invalidate_deck_world()
         lh_location = build.system.system_map.get_resource_location(lh.name)
         await build.system.reconcile_lh_deck_occupancy(lh_location)
 
@@ -93,6 +97,8 @@ async def test_conflict_does_not_drop_the_record_or_block_other_sites(
         await lh.deck_layout_store.update(
             "default", CONFIG_WITHOUT_RESERVOIR_CARRIER,
         )
+        # The driver session was rebuilt, so the next reconcile lays the new layout out.
+        await lh.invalidate_deck_world()
         lh_location = build.system.system_map.get_resource_location(lh.name)
         await build.system.reconcile_lh_deck_occupancy(lh_location)
 
@@ -113,5 +119,31 @@ async def test_unchanged_layout_reports_no_conflict() -> None:
         await build.system.reconcile_lh_deck_occupancy(lh_location)
 
         assert conflicts == []
+    finally:
+        await runtime.shutdown()
+
+
+@pytest.mark.out_of_run
+async def test_the_ledgers_deck_is_read_without_sending_the_driver_anything() -> None:
+    """A watcher asks what the ledger places on the deck: the layout and each occupant at its carrier site.
+
+    It does not get what each occupant holds, which costs a read of the occupant's whole record.
+    """
+    recorder = RecordingHandler()
+    build, lh = await _build(recorder, wf_name="deck_read")
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
+    await runtime.start()
+    try:
+        snap = await runtime.labware.register("reservoir", location=RESERVOIR_SITE, confirm=True)
+        sent_before = len(recorder.calls)
+
+        projection = await build.system.lh_deck_projection(build.system.system_map.get_resource_location(lh.name))
+
+        assert projection is not None
+        layout, occupancy = projection
+        assert layout == DECK_CONFIG
+        assert [(entry.name, entry.parent_id, entry.site_index) for entry in occupancy] == [(snap.name, "carrier-25", 0)]
+        assert [entry.well_state for entry in occupancy] == [None]
+        assert len(recorder.calls) == sent_before
     finally:
         await runtime.shutdown()

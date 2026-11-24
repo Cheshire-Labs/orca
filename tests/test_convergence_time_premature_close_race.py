@@ -20,20 +20,21 @@ instant (asserted directly via ``slot.is_closed``) and a second receiver is spaw
 The assertion fails every time on unfixed code, never intermittently.
 """
 
+from orca.config import OrcaConfig
 import asyncio
 from collections.abc import AsyncGenerator
 
 import pytest
 
 import orca.orca as orca
-from orca.plugins import MethodTracker
+from tests.thread_recorder import ThreadRecorder
 from orca.resource_models.labware import PlateTemplate
-from orca.resource_models.labware_state import LabwareSlot
+from orca.workflow_models.labware_state import LabwareSlot
 from orca.resource_models.resource_pool import ResourcePool
 from orca.resource_models.sharing import GroupSharing, SubmissionBatching
-from orca.runtime.labware_group import LabwareGroup, LabwareGroupMember
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.submission import BatchMode
+from orca.workflow_models.labware_group import LabwareGroup, LabwareGroupMember
+from orca.modes.run_modes import WorkflowRunMode
+from orca.workflow_models.submission import BatchMode
 from orca.runtime.system_runtime import SystemRuntime
 from orca.sdk.events import EventBus
 from orca.sdk.system import ResourceRegistry, SystemMap
@@ -51,6 +52,10 @@ from tests.test_helpers import (
     create_test_device,
     create_test_transporter,
 )
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 _TERMINAL = {"COMPLETED", "ABORTED", "STOPPED", "FAILED"}
 
@@ -210,7 +215,10 @@ async def _build_gated_convergence_system(
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=event_bus,
+        event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     return builder.get_system(), workflow, event_bus
@@ -261,8 +269,8 @@ def _sink_slot(runtime: SystemRuntime, eid: str) -> LabwareSlot | None:
     )
 
 
-def _sink_count(tracker: MethodTracker) -> int:
-    return sum(1 for n in tracker.thread_names.values() if n.startswith("sink"))
+def _sink_count(recorder: ThreadRecorder) -> int:
+    return sum(1 for n in recorder.thread_names.values() if n.startswith("sink"))
 
 
 @pytest.mark.slow
@@ -274,16 +282,16 @@ async def test_convergence_shared_slot_survives_feeder_gap() -> None:
     """
     gate = _SecondProducerGate()
     system, workflow, event_bus = await _build_gated_convergence_system(gate)
-    runtime = SystemRuntime(system, event_bus=event_bus)
-    tracker = MethodTracker()
-    runtime.register_plugin(tracker)
+    runtime = await memory_runtime(system, event_bus=event_bus)
+    recorder = ThreadRecorder()
+    runtime.register_plugin(recorder)
     await runtime.start()
     try:
         sub = await runtime.submit(
             workflow,
             groups=[_producer_group("grp-1"), _producer_group("grp-2")],
             batch_mode=BatchMode.STANDALONE,
-            mode=WorkflowRunMode.PURE_SIM,
+            mode=WorkflowRunMode.CHECK_RUN,
         )
         eid = sub.execution_id
         await _wait_for_boot(runtime, eid)
@@ -307,16 +315,16 @@ async def test_convergence_shared_slot_survives_feeder_gap() -> None:
         gate.release.set()
         await runtime.shutdown()
 
-    assert _sink_count(tracker) == 1, (
+    assert _sink_count(recorder) == 1, (
         "SHARED_ACROSS_GROUPS receiver must converge on ONE sink; a premature slot "
-        f"close spawned a duplicate: got {_sink_count(tracker)}"
+        f"close spawned a duplicate: got {_sink_count(recorder)}"
     )
     sink_tid = next(
-        tid for tid, name in tracker.thread_names.items()
+        tid for tid, name in recorder.thread_names.items()
         if name.startswith("sink")
     )
     contributions = sum(
-        1 for m in tracker.all_completed_snapshots.get(sink_tid, [])
+        1 for m in recorder.completed_methods.get(sink_tid, [])
         if m == "mid_method"
     )
     assert contributions == 2, (

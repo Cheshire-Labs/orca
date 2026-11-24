@@ -230,7 +230,7 @@ class TestF25ExecutableMoveActionEventsThroughSharedMachine:
         from unittest.mock import MagicMock
 
         from orca.events.execution_context import ThreadExecutionContext
-        from tests.test_helpers import make_labware_placer, no_source_hold
+        from tests.test_helpers import make_command_pipeline, no_source_hold
         from orca.workflow_models.actions.move_action import ExecutableMoveAction
 
         status_manager = MagicMock()
@@ -250,7 +250,7 @@ class TestF25ExecutableMoveActionEventsThroughSharedMachine:
             context=context,
             action=action,
             labware_location_service=lls,
-            labware_placer=make_labware_placer(lls),
+            command_pipeline=make_command_pipeline(lls),
         slot_holder=no_source_hold(),
         )
 

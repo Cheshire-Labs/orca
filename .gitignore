@@ -15,6 +15,7 @@ mypy.ini
 **/~*.sub
 **/~*.hsl
 .orca_logs/
+.orca/
 **/logs/*.log
 tests/logs/
 *.jsol

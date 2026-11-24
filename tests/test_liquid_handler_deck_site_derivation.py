@@ -17,6 +17,9 @@ deck_positions, or a REUSE_EXISTING resident). See the DeckResourceConfig
 docstring and DeckLayoutConfig's validator.
 """
 
+from orca.modes.run_modes import OUT_OF_RUN_BASE
+from orca.events.event_bus import EventBus
+from orca.runtime.startup import build_device_gateway
 import pytest
 from pydantic import ValidationError
 from cheshire_drivers import (
@@ -31,9 +34,13 @@ from orca.devices.devices import LiquidHandler, LiquidHandlerProtocol
 from orca.resource_models.device_deck_site import DeviceDeckSite
 from orca.resource_models.plate_pad import PlatePad
 from orca.resource_models.transporter import Transporter
-from orca.runtime.store_factory import InMemoryRuntimeStoreFactory
-from orca.runtime.registries.null_gateway_registry import NullDeviceConnectionSource
-from orca.sdk.build import SystemBuild, Topology, build_system
+from tests.no_devices import NullDeviceConnectionSource
+from orca.sdk.build import SystemBuild, Topology
+from orca.sdk.package import build_system
+from tests.setup_package import package_stores, write_deck_layouts, write_teachpoints
+from tests.setup_package import with_teachpoints, with_deck_layouts
+from tests.memory_activity import memory_ops_store
+from orca.runtime.server_events import ServerEvents
 
 
 _TIPRACK = "hamilton_96_tiprack_10uL_filter"
@@ -46,29 +53,27 @@ async def _build_with_lh(
 ) -> SystemBuild:
     """Build a one-LH topology. ``arm_teaches`` is the point the external arm is
     taught: a deck LH is multi-site, so its arm point must be site-qualified."""
-    stores = InMemoryRuntimeStoreFactory()
+    stores = package_stores()
     if deck_layout is None:
         lh = LiquidHandler("lh")
     else:
-        lh = LiquidHandler(
+        lh = with_deck_layouts(LiquidHandler(
             "lh",
-            deck_layout_store=stores.deck_layouts("lh", seed={"default": deck_layout}),
             deck_layout="default",
-        )
+        ), write_deck_layouts(stores, "lh", {"default": deck_layout}))
     pad = PlatePad("pad")
     c = CartesianCoordinates
-    arm = Transporter(
+    arm = with_teachpoints(Transporter(
         "arm",
-        teachpoint_store=stores.teachpoints("arm", seed=[
+    ), write_teachpoints(stores, "arm", [
             Teachpoint(arm_teaches, c(0, 0, 0, 0, 90, 180), orientation="right"),
             Teachpoint("pad", c(100, 0, 0, 0, 90, 180), orientation="right"),
-        ]),
-    )
+        ]))
     topology = Topology(
         locations={"lh": lh, "pad": pad},
         transporters=[arm],
     )
-    return await build_system(name="t", topology=topology, stores=stores)
+    return await build_system(name="t", topology=topology, stores=stores, event_bus=EventBus(), ops_history_store=memory_ops_store())
 
 
 def _site_names(system_build: SystemBuild) -> set[str]:
@@ -173,19 +178,18 @@ class TestDeriveChildLocationsFromCarriers:
         LiquidHandler -- it gets only the generic single-slot bridge site every
         non-deck device gets. This is the sibling invariant the deck/protocol
         split rests on."""
-        stores = InMemoryRuntimeStoreFactory()
+        stores = package_stores()
         lh = LiquidHandlerProtocol("lh")
         pad = PlatePad("pad")
         c = CartesianCoordinates
-        arm = Transporter(
+        arm = with_teachpoints(Transporter(
             "arm",
-            teachpoint_store=stores.teachpoints("arm", seed=[
+        ), write_teachpoints(stores, "arm", [
                 Teachpoint("lh",  c(0, 0, 0, 0, 90, 180), orientation="right"),
                 Teachpoint("pad", c(100, 0, 0, 0, 90, 180), orientation="right"),
-            ]),
-        )
+            ]))
         topology = Topology(locations={"lh": lh, "pad": pad}, transporters=[arm])
-        build = await build_system(name="t", topology=topology, stores=stores)
+        build = await build_system(name="t", topology=topology, stores=stores, event_bus=EventBus(), ops_history_store=memory_ops_store())
         assert _site_names(build) == {"lh/slot"}
 
     def test_labware_entries_in_deck_config_are_rejected(self) -> None:
@@ -257,6 +261,8 @@ class TestFacadeListsDeckSites:
             list_reservations_fn=lambda eid: [],
             cancel_reservation_fn=lambda eid, rid: None,
             connections=NullDeviceConnectionSource(),
+            faults=build_device_gateway(ServerEvents(), None).controller,
+            base_mode=lambda: OUT_OF_RUN_BASE,
         )
         locs = {loc.name: loc for loc in facade.list_locations()}
 

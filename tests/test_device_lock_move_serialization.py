@@ -9,12 +9,15 @@ path does not also hold ``device.lock``, the two overlap and a downstream
 gateway with a fail-fast per-device lock rejects the second command -- the
 ``journey_probe`` ``DeviceLockedError`` wedge.
 """
+from tests.test_helpers import engine_pipeline
 from tests.mock import EXTERNAL_MOVER
 
 import asyncio
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+
+from tests.test_helpers import command_recorder
 from cheshire_drivers import SimDriver
 
 from orca.resource_models.devices import Device
@@ -22,7 +25,6 @@ from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.labware_staging_bridge import LabwareStagingBridge
 from orca.resource_models.location import Location
 from orca.resource_models.plate_pad import PlatePad
-from orca.runtime.run_modes import WorkflowRunMode
 from orca.system.reservation_manager.location_reservation import (
     LocationReservation,
 )
@@ -37,10 +39,11 @@ from orca.workflow_models.device_handle import ActionRequest
 from orca.workflow_models.status_enums import ActionStatus
 from tests.test_helpers import (
     no_source_hold,
-    make_labware_placer,
+    make_command_pipeline,
     create_test_labware_instance,
     create_test_transporter,
 )
+from tests.mock import outside_any_system
 
 
 class _ConcurrencyTracker:
@@ -81,11 +84,9 @@ class _InstrDevice(Device[_InstrDriver]):
         self,
         name: str,
         driver: _InstrDriver,
-        sim_driver: _InstrDriver,
         tracker: _ConcurrencyTracker | None = None,
-        sim_override: WorkflowRunMode | None = None,
     ) -> None:
-        super().__init__(name, driver, sim_driver, sim_override=sim_override)
+        super().__init__(name, driver)
         self._tracker = tracker
 
     async def busy_op(self) -> None:
@@ -107,6 +108,7 @@ def _mock_thread_context() -> Mock:
     ctx.thread_id = "thread_1"
     ctx.thread_name = "thread1"
     ctx.template_name = "tmpl_1"
+    ctx.group_id = None
     return ctx
 
 
@@ -114,7 +116,7 @@ def _mock_thread_context() -> Mock:
 async def test_move_prepare_serializes_with_device_lock() -> None:
     tracker = _ConcurrencyTracker()
     driver = _InstrDriver("dev", tracker)
-    device = _InstrDevice("dev", driver, driver)
+    device = outside_any_system(_InstrDevice("dev", driver))
     bridge = LabwareStagingBridge("dev", device)
     labware = LabwareInstance("plate", "96_well")
 
@@ -149,7 +151,7 @@ async def test_real_move_path_serializes_with_dispatch_and_does_not_deadlock() -
     """
     tracker = _ConcurrencyTracker()
     driver = _InstrDriver("target", tracker)
-    target_device = _InstrDevice("target", driver, driver, tracker=tracker)
+    target_device = outside_any_system(_InstrDevice("target", driver, tracker=tracker))
     target_bridge = LabwareStagingBridge("target", target_device)
 
     labware = await create_test_labware_instance("plate_1")
@@ -169,16 +171,16 @@ async def test_real_move_path_serializes_with_dispatch_and_does_not_deadlock() -
         context=_mock_thread_context(),
         action=move,
         labware_location_service=Mock(),
-        labware_placer=make_labware_placer(Mock()),
+        command_pipeline=make_command_pipeline(Mock()),
         slot_holder=no_source_hold(),
     )
 
     dispatcher = DeviceCallDispatcher(
         device=target_device,
-        interpreter=None,
-        operation_log=[],
-        action_id="a1",
-        thread_id="t1",
+        
+        
+        recorder=command_recorder(), pipeline=engine_pipeline(), action_id="a1",
+        
         execution_id="e1",
     )
     request = ActionRequest(

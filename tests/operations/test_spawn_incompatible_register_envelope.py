@@ -9,10 +9,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from orca.operations._protocol import OperationError, OperationErrorCode
+from orca.operations.protocol import OperationError
 from orca.operations.labware import RegisterLabwareOperation
 from orca.operations.labware_models import RegisterLabwareRequest
-from orca.runtime.runtime_interface import SpawnIncompatibleError
+from orca.workflow_models.errors import SpawnIncompatibleError
 
 
 @pytest.mark.asyncio
@@ -28,9 +28,9 @@ async def test_register_of_the_wrong_template_answers_409_naming_both_templates(
         )
 
     raised = exc_info.value
-    assert raised.code is OperationErrorCode.CONFLICT
-    assert raised.wire_code == "spawn_incompatible"
-    assert raised.status_code == 409
+    assert raised.http_status == 409
+    assert raised.surface_code() == "spawn_incompatible"
+    assert raised.http_status == 409
     assert "expects labware of template 'plate_a', but got 'plate_b'" in raised.message
     assert raised.extras == {
         "location": "pad_1",

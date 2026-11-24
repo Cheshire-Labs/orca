@@ -6,8 +6,8 @@ mutable substrate the ``LabwareCatalogService`` orchestrates; everything
 (operator CRUD, build-time reads) routes through that Service.
 
 Pure storage CRUD: policy (force operator_custom, refuse seed mutation,
-conflict, geometry validation) lives in ``LabwareCatalogService``. Impls:
-``SqliteLabwareCatalogStore`` (source-available persistence) and a hosted deployment's DB-backed store.
+conflict, geometry validation) lives in ``LabwareCatalogService``. The store is
+``LabwareCatalogFileStore``: built-ins from cheshire-drivers plus ``labware/<name>.json``.
 """
 
 from typing import Protocol
@@ -18,25 +18,6 @@ from pydantic import BaseModel, ConfigDict, JsonValue
 
 SEED_SOURCE = "plr_seed"
 OPERATOR_CUSTOM_SOURCE = "operator_custom"
-
-
-class LabwareCatalogSummary(BaseModel):
-    """One catalog row WITHOUT the geometry blob: identity + facets only.
-
-    The list surface returns these; geometry is fetched per row via ``get``.
-    A 384-well plate's geometry is ~77 KB, so a full-catalog list of geometry
-    blobs runs to megabytes -- past the MCP 1 MB result cap. Discovery needs
-    identity only.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    labware_type: str
-    display_name: str
-    category: str
-    vendor: str | None = None
-    source: str
-    plr_class_name: str | None = None
 
 
 class LabwareCatalogEntry(BaseModel):
@@ -58,16 +39,6 @@ class LabwareCatalogEntry(BaseModel):
     geometry: dict[str, JsonValue]
     plr_class_name: str | None = None
 
-    def to_summary(self) -> LabwareCatalogSummary:
-        return LabwareCatalogSummary(
-            labware_type=self.labware_type,
-            display_name=self.display_name,
-            category=self.category,
-            vendor=self.vendor,
-            source=self.source,
-            plr_class_name=self.plr_class_name,
-        )
-
 
 def seed_entry_to_catalog_entry(seed: LabwareSeedEntry) -> LabwareCatalogEntry:
     """Project a PLR seed entry into a catalog row (source='plr_seed')."""
@@ -83,7 +54,7 @@ def seed_entry_to_catalog_entry(seed: LabwareSeedEntry) -> LabwareCatalogEntry:
 
 
 class ILabwareCatalogStore(Protocol):
-    """Async CRUD over catalog rows. Swap SQLite / Postgres.
+    """Async CRUD over catalog rows. The backing database is swappable.
 
     Pure storage: no policy. ``put`` is an upsert; ``delete`` is idempotent.
     The ``LabwareCatalogService`` enforces read-only-seed, conflict, and

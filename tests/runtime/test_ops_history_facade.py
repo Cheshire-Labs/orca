@@ -9,7 +9,8 @@ from orca.state.records import (
     TrackingSource,
 )
 from orca.runtime.facades.ops_history import OpsHistoryFacade
-from orca.state.jsonl_store import JsonlOpsHistoryStore
+from orca.runtime.sqlite_ops_history_store import SqliteOpsHistoryStore
+from tests.ephemeral_ops_store import ops_history_engine
 from orca.state.ops_store import OpsHistorySearchQuery
 
 
@@ -27,7 +28,7 @@ class TestOpsHistoryFacade:
     async def test_list_returns_only_target_execution_records(
         self, tmp_path: Path,
     ) -> None:
-        store = JsonlOpsHistoryStore(tmp_path)
+        store = SqliteOpsHistoryStore(ops_history_engine(tmp_path / "ops.db"))
         await store.append("exec-1", _record("a1", "exec-1"))
         await store.append("exec-1", _record("a2", "exec-1"))
         await store.append("exec-2", _record("a3", "exec-2"))
@@ -44,7 +45,7 @@ class TestOpsHistoryFacade:
 
     @pytest.mark.asyncio
     async def test_search_routes_through_store(self, tmp_path: Path) -> None:
-        store = JsonlOpsHistoryStore(tmp_path)
+        store = SqliteOpsHistoryStore(ops_history_engine(tmp_path / "ops.db"))
         await store.append("exec-1", _record("needle", "exec-1"))
         await store.append("exec-2", _record("hay", "exec-2"))
         facade = OpsHistoryFacade(store)

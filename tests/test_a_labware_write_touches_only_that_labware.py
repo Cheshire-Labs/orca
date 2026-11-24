@@ -13,6 +13,7 @@ wrong tool for a delta the engine can name, and every operator labware verb
 names one.
 """
 
+from orca.events.event_bus import EventBus
 import pytest
 from pydantic import JsonValue
 
@@ -25,17 +26,16 @@ from cheshire_drivers import (
     Teachpoint,
 )
 from cheshire_drivers.liquid_handler_models import GetDeckStateRequest
-from cheshire_drivers.plr import ChatterboxLiquidHandlerDriver
 from cheshire_drivers.sims import RecordedCall
 from orca.devices.devices import LiquidHandler, Storage
 from orca.resource_models.transporter import Transporter
-from orca.runtime.device_factory_context import use_device_factory
-from orca.runtime.device_factory_protocol import DriverPairElement
-from orca.runtime.labware_store import InMemoryLabwareStore
-from orca.runtime.store_factory import InMemoryRuntimeStoreFactory
-from orca.runtime.system_runtime import SystemRuntime
 from orca.sdk.build import Topology
 from orca.sdk.labware import PlateTemplate, TipRackTemplate
+from tests.setup_package import package_stores, write_deck_layouts, write_teachpoints
+from tests.setup_package import with_teachpoints, with_deck_layouts
+from tests.memory_activity import memory_ops_store, memory_runtime
+from tests.real_device_path import the_real_device_path
+from tests.recording_handler import RecordingHandler
 
 DECK_CONFIG = DeckLayoutConfig(
     deck_type="STARlet",
@@ -50,54 +50,36 @@ SPARE_PLATE_SITE = "lh/carrier-7-1"
 RACK_SITE = "lh/carrier-15-0"
 
 
-class _LhFactory:
-    """Hand every liquid handler the recording driver; sim defaults elsewhere."""
-
-    def __init__(self, lh: RecordingLiquidHandlerDriver) -> None:
-        self._lh = lh
-        from orca.runtime.device_factory import SimDeviceFactory
-        self._fallback = SimDeviceFactory()
-
-    def build_drivers(
-        self, device_type: str, name: str, *, deck_modeling: bool = False,
-    ) -> tuple[DriverPairElement, DriverPairElement]:
-        if device_type == "liquid_handler":
-            return self._lh, self._lh
-        return self._fallback.build_drivers(device_type, name, deck_modeling=deck_modeling)
-
-
 async def _deck_with_a_rack_and_a_plate(recorder: RecordingLiquidHandlerDriver):
     """A liquid handler holding one tip rack and one plate, both registered by
     an operator. Returns the handler, the runtime, and each labware snapshot."""
-    stores = InMemoryRuntimeStoreFactory()
+    stores = package_stores()
     plate = PlateTemplate(
         "sample_plate", labware_type="Cor_Falcon_96_wellplate_340ul_Fb_Black")
     tips = TipRackTemplate(
         "tips", labware_type="hamilton_96_tiprack_10uL_filter", with_tips=True)
 
-    with use_device_factory(_LhFactory(recorder)):
-        lh = LiquidHandler(
-            "lh",
-            deck_layout_store=stores.deck_layouts("lh", seed={"default": DECK_CONFIG}),
-            deck_layout="default",
-        )
-        pad = Storage("pad")
-        arm = Transporter(
-            "arm",
-            teachpoint_store=stores.teachpoints("arm", seed=[
-                Teachpoint("pad", C(0, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("lh/carrier-7-2", C(400, 200, 300, 0, 90, 180), orientation="right"),
-            ]),
-        )
+    the_real_device_path().simulate_with("lh", recorder)
+    lh = with_deck_layouts(LiquidHandler(
+        "lh",
+        deck_layout="default",
+    ), write_deck_layouts(stores, "lh", {"default": DECK_CONFIG}))
+    pad = Storage("pad")
+    arm = with_teachpoints(Transporter(
+        "arm",
+    ), write_teachpoints(stores, "arm", [
+            Teachpoint("pad", C(0, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("lh/carrier-7-2", C(400, 200, 300, 0, 90, 180), orientation="right"),
+        ]))
 
     build = await orca.build_system(
         name="TargetedWrite",
         topology=Topology(locations={"lh": lh, "pad": pad}, transporters=[arm]),
         stores=stores,
-        labwares=[plate, tips],
+        labwares=[plate, tips], event_bus=EventBus(), ops_history_store=memory_ops_store(),
     )
-    runtime = SystemRuntime(
-        build.system, event_bus=build.event_bus, labware_store=InMemoryLabwareStore(),
+    runtime = await memory_runtime(
+        build.system, event_bus=build.event_bus
     )
     await runtime.start()
     rack = await runtime.labware.register("tips", location=RACK_SITE, confirm=True)
@@ -159,7 +141,7 @@ def _tip_layout_pushed_for(
 
 @pytest.mark.timeout(30)
 async def test_a_tip_state_write_does_not_reproject_the_plate_beside_it() -> None:
-    recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    recorder = RecordingHandler()
     _, runtime, rack, plate = await _deck_with_a_rack_and_a_plate(recorder)
     try:
         recorder.calls.clear()
@@ -184,7 +166,7 @@ async def test_a_tip_state_write_does_not_reproject_the_plate_beside_it() -> Non
 async def test_a_tip_state_write_still_carries_the_layout_to_the_driver() -> None:
     """Narrowing the push must not quietly drop it: the rack still reaches the
     driver carrying the tip layout the operator asserted."""
-    recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    recorder = RecordingHandler()
     _, runtime, rack, _ = await _deck_with_a_rack_and_a_plate(recorder)
     try:
         recorder.calls.clear()
@@ -204,7 +186,7 @@ async def test_a_tip_state_write_still_carries_the_layout_to_the_driver() -> Non
 
 @pytest.mark.timeout(30)
 async def test_discharging_one_labware_leaves_its_neighbour_projected() -> None:
-    recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    recorder = RecordingHandler()
     _, runtime, rack, plate = await _deck_with_a_rack_and_a_plate(recorder)
     try:
         recorder.calls.clear()
@@ -232,7 +214,7 @@ async def test_moving_a_labware_across_the_deck_leaves_it_at_the_new_site() -> N
     """edit_location places at the target and then clears the source. The
     source clear must not un-materialize the labware the placement just put
     down one site over."""
-    recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    recorder = RecordingHandler()
     _, runtime, rack, plate = await _deck_with_a_rack_and_a_plate(recorder)
     try:
         recorder.calls.clear()
@@ -259,7 +241,7 @@ async def test_a_write_into_a_rebuilt_driver_session_rebuilds_the_whole_deck() -
     for a single-labware delta to land on. The first write after that has to
     re-project everything, or the labware it did not mention stays invisible to
     the instrument."""
-    recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    recorder = RecordingHandler()
     lh, runtime, rack, plate = await _deck_with_a_rack_and_a_plate(recorder)
     try:
         await lh.invalidate_deck_world()
@@ -283,7 +265,7 @@ async def test_a_write_into_a_rebuilt_driver_session_rebuilds_the_whole_deck() -
 async def test_clear_all_still_wipes_the_whole_deck() -> None:
     """The panic button stays deck-wide: narrowing single-labware writes must
     not narrow the one verb that is supposed to reach everything."""
-    recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    recorder = RecordingHandler()
     _, runtime, rack, plate = await _deck_with_a_rack_and_a_plate(recorder)
     try:
         await runtime.labware.clear_all_labware(force=True, confirm=True)
@@ -302,7 +284,7 @@ async def test_taking_a_labware_off_a_bare_driver_world_rebuilds_the_deck() -> N
     """A removal is still a deck write, so it meets a rebuilt driver session
     the same way an arrival does: lay the deck out, then re-project the ledger,
     which by then already excludes the labware that left."""
-    recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    recorder = RecordingHandler()
     lh, runtime, rack, plate = await _deck_with_a_rack_and_a_plate(recorder)
     try:
         await lh.invalidate_deck_world()

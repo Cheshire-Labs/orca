@@ -1,11 +1,10 @@
 """WebSocket router for device-bridge connections.
 
 Provides the /ws/devices endpoint for on-prem device bridges to connect, handles
-protocol message exchange, and integrates with the connection tracker.
+protocol message exchange, and feeds the server's device gateway.
 
-Authentication is delegated to an injected ``IConnectionAuthenticator`` read off
-``app.state.connection_authenticator`` (defaults to allow-all for single-node
-operation). Connection state is purely in-memory; orca-core has no database.
+Each server builds the router once at startup with its gateway and its connection
+authenticator. Connection state is purely in-memory; orca-core has no database.
 """
 
 import logging
@@ -15,226 +14,224 @@ from fastapi import APIRouter, Header, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 
 from cheshire_drivers.gateway_protocol import (
+    CLIENT_ID_IN_USE_CLOSE_CODE,
     PROTOCOL_VERSION,
-    ConnectMessage,
+    AssignmentResult,
+    ClientHello,
     HeartbeatMessage,
     MessageEnvelope,
     ResponseMessage,
     StatusMessage,
 )
-from orca.gateway.auth import IConnectionAuthenticator, NullConnectionAuthenticator
-from orca.gateway.controller import device_controller
-from orca.gateway.registry import device_connection_tracker
-from orca.gateway.registry.connection_tracker import DeviceNameConflictError
-from orca.gateway.websocket.collision_check import (
-    check_collision,
-    format_violations_for_close_reason,
-)
-from orca.gateway.websocket.connection_events import connection_events
-from orca.gateway.websocket.manager import connection_manager
+from orca.gateway.auth import IConnectionAuthenticator
+from orca.gateway.device_gateway import ServerDeviceGateway
+from orca.gateway.registry.connection_tracker import HEARTBEAT_TOLERANCE_SECONDS
+from orca.gateway.websocket.connection_events import take_status_report
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
 
+def create_gateway_router(gateway: ServerDeviceGateway, *, authenticator: IConnectionAuthenticator) -> APIRouter:
+    """The /ws/devices router over this server's gateway."""
+    router = APIRouter()
+    tracker = gateway.tracker
+    connections = gateway.sockets
+    events = gateway.events
+    controller = gateway.controller
+    assignments = gateway.assignments
 
-def _authenticator_from_websocket(websocket: WebSocket) -> IConnectionAuthenticator:
-    """Resolve the injected authenticator, or allow-all when none is set.
+    async def apply_assignment_result(hello: ClientHello, result: AssignmentResult) -> None:
+        """Record what the client built. A device it no longer runs goes offline; a new or rebuilt one is announced."""
+        if not assignments.is_latest(result.assignment_id):
+            logger.info("Ignoring client %s's result for an older assignment", hello.client_id)
+            return
+        applied = result.error is None
+        rebuilt = assignments.changed_since_last_build(hello.client_id) if applied else set()
+        connection = await connections.get_connection(hello.client_id)
+        built = {device.name for device in result.devices}
+        attached = [] if connection is None else list(connection.device_ids)
+        dropped = [name for name in attached if name not in built]
+        for name in await tracker.forget_devices(hello.client_id, dropped):
+            await events.emit_disconnected(name)
+        for name, error in _build_errors(hello.client_id, result, built).items():
+            logger.error("Client %s could not build device %s: %s", hello.client_id, name, error)
+            await tracker.record_build_error(hello.client_id, name, error)
 
-    A standalone daemon leaves this unset and trusts its LAN; a hosting layer
-    stores its own check on ``app.state.connection_authenticator``.
-    """
-    authenticator = getattr(websocket.app.state, "connection_authenticator", None)
-    if authenticator is None:
-        return NullConnectionAuthenticator()
-    return authenticator
+        await tracker.register_client(
+            client_id=hello.client_id,
+            site=hello.site,
+            lab=hello.lab,
+            workcell=hello.workcell,
+            devices=result.devices,
+        )
+        await connections.attach_devices(hello.client_id, sorted(built))
+        for device in result.devices:
+            if device.name not in attached or device.name in rebuilt:
+                await events.emit_connected(device, hello.client_id)
+        assignments.record_build(hello.client_id, result.assignment_id, applied=applied)
+        logger.info(f"Client {hello.client_id} runs {len(result.devices)} device(s)")
 
+    def _build_errors(client_id: str, result: AssignmentResult, built: set[str]) -> dict[str, str]:
+        """Each device's build error. A failed assignment is the error of every assigned device that did not build."""
+        if result.error is None:
+            return result.errors
+        logger.error("Client %s could not apply its assignment: %s", client_id, result.error)
+        assigned = assignments.for_client(client_id)
+        failed = [] if assigned is None else [d.name for d in assigned.devices if d.name not in built]
+        whole = f"orca-client could not apply its assignment: {result.error}"
+        return {**{name: whole for name in failed}, **result.errors}
 
-def _runtime_from_websocket(websocket: WebSocket):
-    """Extract the live runtime from app state, or ``None`` when not built yet.
+    @router.websocket("/ws/devices")
+    async def websocket_endpoint(
+        websocket: WebSocket,
+        x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    ):
+        """WebSocket endpoint for device-bridge connections.
 
-    The collision check tolerates ``None``: when the runtime isn't ready we
-    accept the connection and rely on the runtime's full collision pass at
-    deployment-load time to catch any mismatch.
-    """
-    return getattr(websocket.app.state, "system_runtime", None)
+        Authentication:
+            Delegated to the injected IConnectionAuthenticator (X-API-Key header).
 
+        Protocol:
+            Expects MessageEnvelope-wrapped messages.
+            Message types: hello, assignment_result, heartbeat, status, response.
 
-@router.websocket("/ws/devices")
-async def websocket_endpoint(
-    websocket: WebSocket,
-    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
-):
-    """WebSocket endpoint for device-bridge connections.
-
-    Authentication:
-        Delegated to the injected IConnectionAuthenticator (X-API-Key header).
-
-    Protocol:
-        Expects MessageEnvelope-wrapped messages.
-        Message types: connect, heartbeat, status, response.
-
-    Flow:
-        1. Device bridge connects with optional API key.
-        2. Server validates via the injected authenticator.
-        3. Device bridge sends ConnectMessage.
-        4. Server registers the device bridge and its devices (in-memory).
-        5. Message loop: receive -> handle -> repeat (in-memory only).
-        6. On disconnect: cleanup.
-    """
-    authenticator = _authenticator_from_websocket(websocket)
-    try:
-        authenticated = await authenticator.authenticate(x_api_key)
-    except Exception as e:
-        logger.error(f"Error during connection authentication: {e}")
-        await websocket.close(code=1008, reason="Authentication error")
-        return
-
-    if not authenticated:
-        logger.warning("WebSocket connection rejected: authentication failed")
-        await websocket.close(code=1008, reason="Authentication failed")
-        return
-
-    await websocket.accept()
-    logger.info("WebSocket connection accepted")
-
-    client_id: Optional[str] = None
-
-    try:
-        data = await websocket.receive_text()
-        envelope = MessageEnvelope.model_validate_json(data)
-
-        if envelope.type != "connect":
-            logger.warning(f"Expected connect message, got {envelope.type}")
-            await websocket.close(code=1002, reason="Expected connect message")
+        Flow:
+            1. Device bridge connects with optional API key.
+            2. Server validates via the injected authenticator.
+            3. Device bridge sends ClientHello; the authenticator decides whether its key may use that client ID.
+            4. Server sends the devices it must run (the last successful build's).
+            5. Device bridge builds them and answers AssignmentResult.
+            6. Message loop: receive -> handle -> repeat (in-memory only).
+            7. On disconnect: cleanup.
+        """
+        # Browsers apply no cross-origin blocking to WebSockets, and no browser client uses this route.
+        if "origin" in websocket.headers:
+            logger.warning("WebSocket connection rejected: it came from a web page")
+            await websocket.close(code=1008, reason="Web pages may not connect to this route")
             return
 
-        # Negotiate the protocol version from the RAW payload before strict
-        # parsing. ConnectMessage types protocol_version as a Literal, so a
-        # mismatched version fails model_validate with a generic ValidationError
-        # (caught below, socket left open, client hangs) instead of this clean
-        # 1002 close. Version negotiation must precede full message validation.
-        client_version = envelope.payload.get("protocol_version")
-        if client_version != PROTOCOL_VERSION:
-            logger.warning(
-                f"Protocol version mismatch: client={client_version}, "
-                f"server={PROTOCOL_VERSION}"
-            )
-            await websocket.close(
-                code=1002,
-                reason=f"Incompatible protocol version: expected {PROTOCOL_VERSION}",
-            )
-            return
-
-        connect_msg = ConnectMessage.model_validate(envelope.payload)
-        client_id = f"{connect_msg.site}-{connect_msg.lab}-client"
-
-        # Re-run the contract check on every connect: a late-connecting device
-        # bridge whose advertised contract contradicts topology must be refused
-        # (e.g. the operator swapped a driver class on-prem). Mismatch closes
-        # 1002 with the offending device named in the close reason.
-        runtime = _runtime_from_websocket(websocket)
-        violations = await check_collision(runtime, connect_msg.devices)
-        if violations:
-            reason = format_violations_for_close_reason(violations)
-            logger.warning(
-                "Late-connect contract collision; refusing client %s: %s",
-                client_id, reason,
-            )
-            await websocket.close(code=1002, reason=reason)
-            return
-
-        # Claim the device names first. A name another live client already holds
-        # means two device bridges wired to one instrument, so the newcomer is
-        # refused before it takes the socket and before the incumbent is
-        # displaced.
         try:
-            await device_connection_tracker.register_client(
-                client_id=client_id,
-                site=connect_msg.site,
-                lab=connect_msg.lab,
-                workcell=connect_msg.workcell,
-                devices=connect_msg.devices,
-            )
-        except DeviceNameConflictError as conflict:
-            logger.warning(
-                "Refusing client %s, device already connected elsewhere: %s",
-                client_id, conflict,
-            )
-            await websocket.close(code=1002, reason=str(conflict)[:120])
+            authenticated = await authenticator.authenticate(x_api_key)
+        except Exception as e:
+            logger.error(f"Error during connection authentication: {e}")
+            await websocket.close(code=1008, reason="Authentication error")
             return
 
-        displaced = await connection_manager.connect(
-            websocket=websocket,
-            client_id=client_id,
-            site=connect_msg.site,
-            lab=connect_msg.lab,
-            workcell=connect_msg.workcell,
-        )
-        # Fire device.disconnected for the previous connection's devices
-        # so subscribers see the displacement before the new attach lands.
-        for displaced_device_id in displaced:
-            await connection_events.emit_disconnected(displaced_device_id)
+        if not authenticated:
+            logger.warning("WebSocket connection rejected: authentication failed")
+            await websocket.close(code=1008, reason="Authentication failed")
+            return
 
-        device_names = [d.name for d in connect_msg.devices]
-        await connection_manager.attach_devices(client_id, device_names)
-        for device in connect_msg.devices:
-            await connection_events.emit_connected(device, client_id)
+        await websocket.accept()
+        logger.info("WebSocket connection accepted")
 
-        logger.info(
-            f"Client {client_id} registered with {len(connect_msg.devices)} devices"
-        )
+        client_id: Optional[str] = None
 
-        while True:
+        try:
             data = await websocket.receive_text()
             envelope = MessageEnvelope.model_validate_json(data)
 
-            if envelope.type == "heartbeat":
-                HeartbeatMessage.model_validate(envelope.payload)
-                await connection_manager.update_heartbeat(client_id)
-                await device_connection_tracker.update_heartbeat(client_id)
-                logger.debug(f"Heartbeat from {client_id}")
+            if envelope.type != "hello":
+                logger.warning(f"Expected hello message, got {envelope.type}")
+                await websocket.close(code=1002, reason="Expected hello message")
+                return
 
-            elif envelope.type == "status":
-                status_msg = StatusMessage.model_validate(envelope.payload)
-                for device_id, reported in status_msg.devices.items():
-                    await device_connection_tracker.apply_agent_report(device_id, reported)
-                    await connection_events.emit_reported(device_id, reported)
-                logger.debug(
-                    f"Status update from {client_id}: {len(status_msg.devices)} devices"
+            # Negotiate the protocol version from the RAW payload before strict
+            # parsing, so a mismatch closes 1002 instead of a generic ValidationError.
+            client_version = envelope.payload.get("protocol_version")
+            if client_version != PROTOCOL_VERSION:
+                logger.warning(
+                    f"Protocol version mismatch: client={client_version}, "
+                    f"server={PROTOCOL_VERSION}"
                 )
-
-            elif envelope.type == "response":
-                response_msg = ResponseMessage.model_validate(envelope.payload)
-                await device_controller.handle_response(response_msg)
-                logger.debug(
-                    f"Routed response for command {response_msg.command_id} "
-                    f"from {client_id}"
+                await websocket.close(
+                    code=1002,
+                    reason=f"Incompatible protocol version: expected {PROTOCOL_VERSION}",
                 )
+                return
 
-            else:
-                logger.warning(f"Unknown message type from {client_id}: {envelope.type}")
+            hello = ClientHello.model_validate(envelope.payload)
 
-    except ValidationError as e:
-        # A malformed envelope/connect (or any later message) must close the
-        # socket EXPLICITLY. The implicit close-on-return does not reliably
-        # propagate the close frame, so the client would hang on its receive
-        # (the protocol-version mismatch above is the same hazard, handled
-        # inline). Without client_id yet, this is a handshake-phase reject.
-        logger.warning(f"Malformed message from client {client_id}: {e}")
-        await websocket.close(code=1002, reason="Malformed message")
-    except WebSocketDisconnect:
-        logger.info(f"Client {client_id} disconnected")
-    except Exception as e:
-        logger.error(
-            f"Error in WebSocket handler for {client_id}: {e}", exc_info=True
-        )
-    finally:
-        if client_id:
-            disconnected_devices = await connection_manager.disconnect(client_id)
-            try:
-                await device_connection_tracker.unregister_client(client_id)
-            except Exception as e:
-                logger.warning(f"Failed to unregister client {client_id}: {e}")
-            for device_id in disconnected_devices:
-                await connection_events.emit_disconnected(device_id)
+            if not await authenticator.may_claim(x_api_key, hello.client_id):
+                logger.warning("Refusing client %s: its key may not use that client ID.", hello.client_id)
+                await websocket.close(code=1008, reason="This key may not use that client ID")
+                return
+
+            held = await connections.get_connection(hello.client_id)
+            if held is not None and not held.closing and not held.is_stale(HEARTBEAT_TOLERANCE_SECONDS):
+                logger.warning("Refusing client %s: another connection is still heartbeating.", hello.client_id)
+                await websocket.close(
+                    code=CLIENT_ID_IN_USE_CLOSE_CODE,
+                    reason="Another connection with this client ID is still heartbeating",
+                )
+                return
+
+            client_id = hello.client_id
+            displaced = await connections.connect(
+                websocket=websocket,
+                client_id=client_id,
+                site=hello.site,
+                lab=hello.lab,
+                workcell=hello.workcell,
+            )
+            for displaced_device_id in displaced:
+                await events.emit_disconnected(displaced_device_id)
+
+            await assignments.send_to(client_id)
+            logger.info(f"Client {client_id} connected")
+
+            while True:
+                data = await websocket.receive_text()
+                envelope = MessageEnvelope.model_validate_json(data)
+
+                if envelope.type == "assignment_result":
+                    await apply_assignment_result(hello, AssignmentResult.model_validate(envelope.payload))
+
+                elif envelope.type == "heartbeat":
+                    HeartbeatMessage.model_validate(envelope.payload)
+                    await connections.update_heartbeat(client_id)
+                    await tracker.update_heartbeat(client_id)
+                    logger.debug(f"Heartbeat from {client_id}")
+
+                elif envelope.type == "status":
+                    status_msg = StatusMessage.model_validate(envelope.payload)
+                    await take_status_report(tracker, events, client_id, status_msg.devices)
+                    logger.debug(
+                        f"Status update from {client_id}: {len(status_msg.devices)} devices"
+                    )
+
+                elif envelope.type == "response":
+                    response_msg = ResponseMessage.model_validate(envelope.payload)
+                    await controller.handle_response(response_msg)
+                    logger.debug(
+                        f"Routed response for command {response_msg.command_id} "
+                        f"from {client_id}"
+                    )
+
+                else:
+                    logger.warning(f"Unknown message type from {client_id}: {envelope.type}")
+
+        except ValidationError as e:
+            # A malformed message must close the socket explicitly: the implicit
+            # close-on-return does not reliably send the close frame, so the client would hang.
+            logger.warning(f"Malformed message from client {client_id}: {e}")
+            await websocket.close(code=1002, reason="Malformed message")
+        except WebSocketDisconnect:
+            logger.info(f"Client {client_id} disconnected")
+        except Exception as e:
+            logger.error(
+                f"Error in WebSocket handler for {client_id}: {e}", exc_info=True
+            )
+        finally:
+            if client_id:
+                disconnected_devices = await connections.disconnect(client_id, websocket)
+                # None: a newer connection replaced this socket, and its registration stays.
+                if disconnected_devices is not None:
+                    try:
+                        await tracker.unregister_client(client_id)
+                    except Exception as e:
+                        logger.warning(f"Failed to unregister client {client_id}: {e}")
+                    for device_id in disconnected_devices:
+                        await events.emit_disconnected(device_id)
+
+    return router

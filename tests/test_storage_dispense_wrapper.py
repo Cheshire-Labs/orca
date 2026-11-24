@@ -14,11 +14,13 @@ from cheshire_drivers.sims import SimStorageDriver
 
 from orca.devices.devices import Storage
 from orca.devices.device_interfaces import IPlateSource
+from tests.mock import outside_any_system
+from tests.real_device_path import connected, the_real_device_path
 
 
 class TestStorageDispenseWrapper:
     async def test_storage_dispense_calls_driver_dispense(self) -> None:
-        storage = Storage("test_stacker")
+        storage = outside_any_system(Storage("test_stacker"))
         mock_dispense = AsyncMock(return_value=None)
         storage.driver.dispense = mock_dispense  # type: ignore[method-assign]
 
@@ -41,12 +43,11 @@ class TestStorageDispenseWrapper:
         storage driver, and the wrapper delegates to that driver's own
         ``dispense`` (wrapped so the genuine sim body still runs).
         """
-        storage = Storage("test_stacker")
-        assert isinstance(storage.driver, SimStorageDriver)
+        storage = await connected(outside_any_system(Storage("test_stacker")))
+        simulator = the_real_device_path().simulator("test_stacker")
+        assert isinstance(simulator, SimStorageDriver)
 
-        with patch.object(
-            storage.driver, "dispense", wraps=storage.driver.dispense,
-        ) as spy:
+        with patch.object(simulator, "dispense", wraps=simulator.dispense) as spy:
             result = await storage.dispense()
 
         assert result is None

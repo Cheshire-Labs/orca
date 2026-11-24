@@ -12,23 +12,27 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from orca.resource_models.deck_site import DeckSite
-from orca.state.current import placement_ledger
+from orca.resource_models.labware_directory import LabwareDirectory, LabwarePlacements
+from orca.state.placement import PlacementLedger
 from orca.resource_models.labware import LabwareInstance
+from orca.resource_models.labware_placement import Arrival
 from orca.resource_models.location import Location
 from orca.state.contents import LabwareContentsLedger
 from orca.state.ops_history import OpsHistory
+from orca.runtime.labware_service import LabwareService
 from orca.runtime.labware_store import InMemoryLabwareStore
-from orca.runtime.runtime_interface import (
-    SpawnIncompatibleError,
-)
+from orca.workflow_models.errors import SpawnIncompatibleError
 from orca.workflow_models.workflows.executing_workflow import ExecutingWorkflow
+from tests.memory_activity import memory_ops_store
 
 RESIDENT_POSITION = "lh/carrier-25-0"
 
 
-def _deck_site_start() -> Location:
+def _deck_site_start(ledger: PlacementLedger | None = None) -> Location:
     # Flat model: a deck site is a top-level node with no parent.
-    return Location(RESIDENT_POSITION, resource=DeckSite(RESIDENT_POSITION))
+    start = Location(RESIDENT_POSITION, resource=DeckSite(RESIDENT_POSITION))
+    start.bind_placements(LabwarePlacements(ledger or PlacementLedger(), LabwareDirectory()))
+    return start
 
 
 def _reuse_template(start_location: Location, template_name: str = "reservoir") -> MagicMock:
@@ -45,14 +49,20 @@ def _reuse_template(start_location: Location, template_name: str = "reservoir") 
 
 def _executing_workflow(store: InMemoryLabwareStore) -> ExecutingWorkflow:
     ew = object.__new__(ExecutingWorkflow)
-    ew._labware_store = store
+    service = LabwareService(store)
+    ew._labware_service = service
+
+    async def _arrived(labware: LabwareInstance, at: Location, how: Arrival) -> None:
+        await service.update_location(labware.id, at.position_id)
+
     system = MagicMock()
-    system.reconcile_lh_deck_occupancy = AsyncMock()
-    # Reuse-bind finishes through the placement chokepoint (bind_resident).
-    system.labware_placer = MagicMock(bind_resident=AsyncMock())
+    # Reuse-bind finishes through the placement chokepoint (arrived with Arrival.BOUND), which saves the position.
+    system.labware_placer = MagicMock(
+        arrived=AsyncMock(side_effect=_arrived), claim=lambda labware, at: at.initialize_labware(labware),
+    )
     # A real ledger: the bound labware must get its opening entry BEFORE
-    # bind_resident projects it, or the driver keeps its own default.
-    system.labware_contents = LabwareContentsLedger(OpsHistory())
+    # arrived projects it, or the driver keeps its own default.
+    system.labware_contents = LabwareContentsLedger(OpsHistory(store=memory_ops_store()))
     ew._system = system
     ew._workflow = MagicMock(id="exec-test")
     return ew
@@ -151,18 +161,18 @@ class TestReuseBindIdentity:
 
     async def test_stable_id_across_two_binds_after_slot_drift(self) -> None:
         store = InMemoryLabwareStore()
-        start = _deck_site_start()
+        ledger = PlacementLedger()
+        start = _deck_site_start(ledger)
         ew = _executing_workflow(store)
 
         first = await ew._resolve_reuse_bind(_reuse_template(start))
         assert first is not None and first.created_fresh is True
-        # The fresh bind persisted the resident's position itself (no manual
-        # sync). Simulate the in-memory slot emptying (post-rehydrate / cross-execution).
+        # The placer saved the fresh resident's position. Simulate the in-memory slot emptying (post-rehydrate / cross-execution).
         assert await store.get_by_position(RESIDENT_POSITION) is not None
         # One record, so emptying the slot means vacating it. Swapping the
         # holder object no longer hides a plate the ledger still holds.
         start.resource = DeckSite(RESIDENT_POSITION)
-        placement_ledger().vacate(first.labware_instance.ref)
+        ledger.vacate(first.labware_instance.ref)
         assert start.labware is None
 
         second = await ew._resolve_reuse_bind(_reuse_template(start))

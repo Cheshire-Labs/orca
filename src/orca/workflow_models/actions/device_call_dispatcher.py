@@ -1,6 +1,6 @@
 """Per-request dispatch body for ActionBodyLocationAction.execute().
 
-OperationLogBuilder owns the three-step interpreter contract:
+CommandRecorder owns the three-step interpreter contract:
 ``interpret_per_channel_outcomes`` -> ``interpret`` -> ``interpret_driver_state``.
 DeviceCallDispatcher owns the per-request body of the action's queue loop:
 error short-circuit, method resolution, external-control gate, locked
@@ -15,40 +15,48 @@ and on failure -- so user code parked on
 propagates out of ``dispatch``.
 """
 
-import asyncio
+import json
 import logging
 import time
 from typing import Any, Awaitable, Callable, Iterable, List, Mapping, Protocol, Sequence, runtime_checkable
 
+from cheshire_drivers.command_table import COMMANDS
+from pydantic import BaseModel, JsonValue
 from cheshire_drivers.liquid_handler_models import (
     LabwareStateResponse,
     ReconcileHardwareStateResponse,
 )
 
+from orca.gateway.controller.command_events import params_as_sent
+from orca.gateway.controller.command_pipeline import IDeviceCommandRunner, PartialChannelFailureError
+from orca.gateway.controller.exceptions import CommandNotSavedError
 from orca.resource_models.tracked_lock import TrackedLock
 from orca.resource_models.device_error import (
     CommandTimeoutAbortedError,
     DeviceStateDivergenceError,
     DeviceUnderExternalControlError,
-    TipsNotPresentError,
+    ReagentRanOutError,
 )
 from orca.resource_models.labware import LabwareInstance
+from orca.resource_models.tip_preflight import refuse_a_pick_from_empty_spots, tips_claimed_by
+from orca.state.command_operations import labware_named_in
 from orca.state.records import OperationRecord
 from orca.resource_models.tracking_interpreter import IOperationInterpreter
-from orca.runtime.recoverable_timeout import (
-    DEFAULT_COMMAND_TIMEOUT_SECONDS,
-    recoverable_timeout_coordinator,
-)
-from orca.runtime.run_modes import current_execution_id
-from orca.runtime.sim_pacing import PacingOutcome, current_sim_pacer, nominal_step_seconds
+from orca.runtime.recoverable_timeout import time_limit, within_the_time_limit
+
+from orca.modes.run_modes import WorkflowRunMode, current_run_mode
+from orca.modes.sim_pacing import declared_duration
+from orca.resource_models.resources import IModeAware
 from orca.workflow_models.actions.operation_recovery import (
+    DeviceOpRecoveryHandler,
     OperationDecisionSignal,
+    UnsavedResult,
     device_op_recovery_handler,
 )
 from orca.workflow_models.device_handle import ActionRequest
-from orca.workflow_models.error_policy_overrides import OverrideWithPauseError
+from orca.resource_models.error_policy_overrides import OverrideWithPauseError
 from orca.workflow_models.pause_checkpoint import IPauseCheckpoint
-from orca.workflow_models.status_enums import RecoveryDecision
+from orca.workflow_models.status_enums import PauseSite, RecoveryDecision
 
 logger = logging.getLogger("orca")
 
@@ -60,6 +68,10 @@ class IHardwareReconcilable(Protocol):
     dispatcher stays independent of concrete device classes."""
 
     async def reconcile_hardware_state(self) -> ReconcileHardwareStateResponse: ...
+
+
+class NotAWorkflowCommandError(AttributeError):
+    """A workflow named one of Orca's own device methods that is not a device command."""
 
 
 @runtime_checkable
@@ -86,76 +98,99 @@ class IDispatchableDevice(Protocol):
     def command_typical_seconds(self, command: str) -> float | None: ...
 
 
-class PartialChannelFailureError(RuntimeError):
-    """Raised when a driver call returned partial-channel failure records.
+def _jsonable(value: Any) -> JsonValue:
+    """A model as its JSON; anything JSON cannot hold as its repr."""
+    return value.model_dump(mode="json") if isinstance(value, BaseModel) else repr(value)
 
-    Drivers signal partial failure by returning a structured response rather
-    than raising. The builder emits one record per affected well and raises
-    this so the workflow's failure policy fires.
+
+def _as_json(value: Any) -> str:
+    return json.dumps(value, default=_jsonable)
+
+
+def refuse_an_engine_method(device: IDispatchableDevice, name: str) -> None:
+    """Refuse a method Orca's device classes define for the engine, such as a deck wipe, and a lifecycle command.
+
+    A device command is allowed, and so is any method a user's own device class adds. A lifecycle command is
+    refused as the operator's `execute` refuses it: only its own Operation brings the deck in line after it.
     """
-
-    def __init__(self, records: List[OperationRecord]) -> None:
-        super().__init__(
-            f"liquid handler call had {len(records)} per-channel records "
-            f"(at least one channel errored)."
+    if name in COMMANDS.lifecycle_names():
+        raise NotAWorkflowCommandError(
+            f"{name!r} is a lifecycle command, so a workflow may not call it on {device.name!r}. "
+            f"Send it with its own operation, which brings Orca's record of the device in line after it."
         )
-        self.records = records
+    defined_by = next((cls for cls in type(device).__mro__ if name in vars(cls)), None)
+    if defined_by is None or not defined_by.__module__.startswith("orca."):
+        return
+    if name in COMMANDS.external_names():
+        return
+    raise NotAWorkflowCommandError(
+        f"{name!r} is not a device command, so a workflow may not call it on {device.name!r}. "
+        f"It is part of how Orca keeps its own record of the device."
+    )
 
 
-class OperationLogBuilder:
-    """Runs an interpreter against a device-call result and extends the log.
+class CommandRecorder:
+    """Saves what a completed device command did, before the command counts as done, whichever route sent it.
 
-    Three-step dispatch matching the interpreter contract:
-    1. ``interpret_per_channel_outcomes`` -- if it returns records, extend
-       the log and raise ``PartialChannelFailureError`` so the workflow
-       fails over.
-    2. ``interpret`` -- every OBSERVED record the call produced, appended in order.
-    3. ``interpret_driver_state`` -- zero or more DRIVER_OBSERVED records
-       extracted from the result, always extended.
+    ``DeviceCallDispatcher`` cannot be built without one, the operator runner saves through one too, and a
+    failed save fails the command.
     """
 
     def __init__(
         self,
         interpreter: IOperationInterpreter,
-        operation_log: List[OperationRecord],
+        save: Callable[[list[OperationRecord]], Awaitable[None]],
         device_name: str,
         action_id: str,
         thread_id: str,
     ) -> None:
-        self._interpreter = interpreter
-        self._operation_log = operation_log
+        self.interpreter = interpreter
+        self._save = save
         self._device_name = device_name
         self._action_id = action_id
         self._thread_id = thread_id
 
-    def _record(self, records: object, source: str) -> None:
-        """Append interpreted operations, refusing anything that is not one.
-
-        An interpreter branch that returns a bare record instead of a list gets
-        iterated field-by-field here, and the tuples it yields fail validation
-        later, where they take the whole action's history down with them.
-        """
+    @staticmethod
+    def _checked(
+        records: Iterable[OperationRecord] | OperationRecord, source: str,
+    ) -> list[OperationRecord]:
+        """An interpreter branch returning a bare record would otherwise be iterated field by field."""
         if isinstance(records, OperationRecord) or not isinstance(records, Iterable):
             raise TypeError(
                 f"{source} produced {type(records).__name__}, not a list of "
                 f"OperationRecord; its operations would be lost"
             )
+        checked: list[OperationRecord] = []
         for entry in records:
             if not isinstance(entry, OperationRecord):
                 raise TypeError(
                     f"{source} produced a {type(entry).__name__} where an "
                     f"OperationRecord belongs: {entry!r}"
                 )
-            self._operation_log.append(entry)
+            checked.append(entry)
+        return checked
 
-    def process(
+    def labware_named_by(self, request: ActionRequest) -> list[str]:
+        """The labware the command names as its own: empty for one that names none, such as a shake or a discard."""
+        try:
+            operations = self.interpreter.interpret(
+                command=request.command, args=request.args, kwargs=request.kwargs, result=None,
+                device_name=self._device_name, affected_labware=[], affected_labware_ids=[],
+                action_id=self._action_id, thread_id=self._thread_id,
+            )
+        except Exception:
+            # A call the reader cannot read is refused by the device call itself. Here it names nothing.
+            return []
+        return labware_named_in(operations)
+
+    async def save_completed(
         self,
         request: ActionRequest,
         result: LabwareStateResponse | None,
         affected_labware: List[str],
         affected_labware_ids: List[str],
     ) -> None:
-        per_channel = self._interpreter.interpret_per_channel_outcomes(
+        per_channel = self.interpreter.interpret_per_channel_outcomes(
             command=request.command,
             args=request.args,
             kwargs=request.kwargs,
@@ -167,10 +202,10 @@ class OperationLogBuilder:
             thread_id=self._thread_id,
         )
         if per_channel:
-            self._record(per_channel, f"per-channel interpretation of {request.command}")
+            await self.save_operations(per_channel, f"per-channel interpretation of {request.command}")
             raise PartialChannelFailureError(per_channel)
 
-        self._record(self._interpreter.interpret(
+        operations = self._checked(self.interpreter.interpret(
             command=request.command,
             args=request.args,
             kwargs=request.kwargs,
@@ -181,8 +216,7 @@ class OperationLogBuilder:
             action_id=self._action_id,
             thread_id=self._thread_id,
         ), f"interpretation of {request.command}")
-
-        state_records = self._interpreter.interpret_driver_state(
+        operations += self._checked(self.interpreter.interpret_driver_state(
             command=request.command,
             result=result,
             device_name=self._device_name,
@@ -190,8 +224,14 @@ class OperationLogBuilder:
             affected_labware_ids=affected_labware_ids,
             action_id=self._action_id,
             thread_id=self._thread_id,
-        )
-        self._record(state_records, f"state records for {request.command}")
+        ), f"state records for {request.command}")
+        await self.save_operations(operations, f"interpretation of {request.command}")
+
+    async def save_operations(self, operations: Iterable[OperationRecord] | OperationRecord, source: str) -> None:
+        """The one save point: what a command did, written to the record before the command counts as done."""
+        checked = self._checked(operations, source)
+        if checked:
+            await self._save(checked)
 
 
 class DeviceCallDispatcher:
@@ -201,8 +241,8 @@ class DeviceCallDispatcher:
     ``request.completion`` set. On the success path ``request.result`` is
     populated; on the failure path ``request.error`` is populated and the
     exception re-raises out of ``dispatch``. Either way the user task
-    waiting on ``request.completion.wait()`` wakes at the next event-loop
-    tick.
+    waiting on ``request.completion.wait()`` wakes once it is set, which on
+    success waits out any pause asked for during the command.
 
     The external-control gate is checked twice (before and after the
     device lock acquire) because the gateway flag-write is not
@@ -213,22 +253,18 @@ class DeviceCallDispatcher:
     def __init__(
         self,
         device: IDispatchableDevice,
-        interpreter: IOperationInterpreter | None,
-        operation_log: List[OperationRecord],
+        recorder: CommandRecorder,
+        pipeline: IDeviceCommandRunner,
         action_id: str,
-        thread_id: str,
         execution_id: str,
         pause_checkpoint: IPauseCheckpoint | None = None,
     ) -> None:
         self._device = device
+        self._pipeline = pipeline
         self._action_id = action_id
         self._execution_id = execution_id
-        self._interpreter = interpreter
+        self._recorder = recorder
         self._pause_checkpoint = pause_checkpoint
-        self._log_builder = (
-            OperationLogBuilder(interpreter, operation_log, device.name, action_id, thread_id)
-            if interpreter is not None else None
-        )
 
     async def dispatch(
         self,
@@ -240,6 +276,7 @@ class DeviceCallDispatcher:
         try:
             if request.error is not None:
                 raise request.error
+            refuse_an_engine_method(self._device, request.command)
             method = getattr(self._device, request.command, None)
             if method is None:
                 available = [
@@ -251,37 +288,56 @@ class DeviceCallDispatcher:
                     f"Device '{self._device.name}' has no method "
                     f"'{request.command}'. Available: {available}"
                 )
-            result = await self._call_with_op_recovery(request, method, instances)
-            if self._log_builder is not None:
-                # Interpreters consume only structured driver state; other
-                # returns (mock strings, None) narrow to None here, once.
-                state = result if isinstance(result, LabwareStateResponse) else None
-                self._log_builder.process(
-                    request, state, affected_labware, affected_labware_ids,
-                )
-            request.result = result
+            request.result = await self._call_with_op_recovery(
+                request, method, instances, affected_labware, affected_labware_ids,
+            )
+            await self._hold_between_commands()
         except Exception as exc:
             request.error = exc
             raise
         finally:
             request.completion.set()
 
+    async def _hold_between_commands(self) -> None:
+        """Honour a pending pause here, so an action stops after the command that was running."""
+        if self._pause_checkpoint is not None:
+            await self._pause_checkpoint.hold_if_pause_requested(
+                message="held between instrument commands; resume to run the next one",
+            )
+
     async def _call_with_op_recovery(
         self,
         request: ActionRequest,
         method: Callable[..., Awaitable[Any]],
         instances: Sequence[LabwareInstance],
+        affected_labware: List[str],
+        affected_labware_ids: List[str],
     ) -> Any:
-        """Run the device call; on a driver failure consult the per-thread
-        operation-recovery seam. RETRY_OP re-invokes ONLY this call while the
-        action body stays suspended at its await; an action-level decision (RETRY
-        / ABORT_*) propagates as an OperationDecisionSignal for the existing
-        whole-action path. With no seam armed, or for an external-coordination /
-        already-aborted error, the exception propagates unchanged.
+        """Run the device call and save it; on a failure consult the per-thread operation-recovery seam.
+
+        A failed call pauses at DEVICE_OP, where RETRY re-invokes only this call. A call that ran and whose save
+        failed pauses at COMMAND_SAVE, where RETRY saves the same answer again and sends nothing. Either way the
+        action body stays suspended at its await, and an action-level decision propagates as an
+        OperationDecisionSignal. With no seam armed, or for an external-coordination / already-aborted error, the
+        exception propagates unchanged.
         """
         handler = device_op_recovery_handler.get()
+        named = self._recorder.labware_named_by(request)
+        params = self._params_as_sent(request)
         reconcile_pending = False
+        unsaved: list[Any] = []
+
+        async def save(answer: Any) -> None:
+            try:
+                await self._save(request, answer, affected_labware, affected_labware_ids)
+            except PartialChannelFailureError:
+                raise
+            except Exception:
+                unsaved.append(answer)
+                raise
+
         while True:
+            unsaved.clear()
             self._raise_if_under_external_control()
             try:
                 async with self._device.lock.held_for(request.command):
@@ -289,133 +345,128 @@ class DeviceCallDispatcher:
                     if reconcile_pending:
                         reconcile_pending = False
                         await self._reconcile_before_retry()
-                    await self._check_tips_present(request, instances)
-                    started_at = time.monotonic()
-                    result = await self._call_with_recoverable_timeout(
-                        request.command, method, request.args, request.kwargs,
+                    # A command cut off at the device is the pipeline's no-answer stage.
+                    return await self._pipeline.run_device_command(
+                        self._device.name, request.command,
+                        lambda: self._call_with_recoverable_timeout(
+                            request.command, method, request.args, request.kwargs,
+                        ),
+                        save,
+                        checks=(
+                            lambda: self._check_tips_present(request, instances),
+                            lambda: self._check_reagent_present(request, instances),
+                        ),
+                        execution_id=self._execution_id, named=named, params=params,
                     )
-                    owed = await self._pace_simulated_step(request, method, started_at)
-                await self._pace_what_a_pause_left(request.command, owed)
-                return result
+            except CommandNotSavedError as not_saved:
+                # A command that ran is never re-run. A no-answer report that was not filed has no answer to save.
+                if handler is None or not unsaved:
+                    raise
+                try:
+                    return await self._save_again_until_saved(
+                        request, unsaved[0], not_saved, handler, affected_labware, affected_labware_ids,
+                    )
+                except PartialChannelFailureError as partial:
+                    failed: Exception = partial
             except (OverrideWithPauseError, CommandTimeoutAbortedError):
                 raise
             except Exception as exc:
                 if handler is None:
                     raise
-                # Consult the recovery seam OUTSIDE the device lock: an operator
-                # pause can take hours; holding it would block the multi-site device.
-                decision = await handler(exc, request.command)
-                if decision == RecoveryDecision.RETRY_OP:
-                    reconcile_pending = True
-                    continue
-                raise OperationDecisionSignal(decision, exc) from exc
+                failed = exc
+            # Consult the recovery seam OUTSIDE the device lock: an operator
+            # pause can take hours; holding it would block the multi-site device.
+            decision = await handler(failed, request.command, PauseSite.DEVICE_OP)
+            if decision == RecoveryDecision.RETRY:
+                reconcile_pending = True
+                continue
+            raise OperationDecisionSignal(decision, failed) from failed
 
-    async def _pace_simulated_step(
+    async def _save_again_until_saved(
         self,
         request: ActionRequest,
-        method: Callable[..., Awaitable[Any]],
-        started_at: float,
-    ) -> float:
-        """Hold the device for the rest of the step's simulated length.
-
-        Only a simulated thread seeds a pacer; a LIVE thread returns here at
-        once, and so does a run at scale 0, which owes nothing. Returns the
-        simulated seconds still owed when a pause cut the wait short, else 0.
-        """
-        pacer = current_sim_pacer.get()
-        if pacer is None or pacer.time_scale == 0:
-            return 0.0
-        nominal = nominal_step_seconds(
-            method, request.args, request.kwargs,
-            typical_seconds=self._device.command_typical_seconds(request.command),
-        )
-        result = await pacer.pace(
-            pacer.remaining_after(nominal, started_at),
-            pause_requested=self._pause_requested(),
-        )
-        if result.outcome is PacingOutcome.PAUSE_REQUESTED:
-            return result.remaining_sim_seconds
-        return 0.0
-
-    def _pause_requested(self) -> asyncio.Event | None:
-        if self._pause_checkpoint is None:
-            return None
-        return self._pause_checkpoint.pause_requested
-
-    async def _pace_what_a_pause_left(self, command: str, owed: float) -> None:
-        """A pause landed mid-step: give the device back, hold at the thread's
-        checkpoint, then take the device again for what is left. Time spent
-        paused is not simulated time."""
-        pacer = current_sim_pacer.get()
-        while owed > 0 and pacer is not None and self._pause_checkpoint is not None:
-            carry_on = await self._pause_checkpoint.hold_if_pause_requested(
-                message="held inside a simulated step; resume to continue it",
-            )
-            if not carry_on:
-                return
-            async with self._device.lock.held_for(command):
-                result = await pacer.pace(
-                    owed, pause_requested=self._pause_checkpoint.pause_requested,
+        answer: Any,
+        not_saved: CommandNotSavedError,
+        handler: DeviceOpRecoveryHandler,
+        affected_labware: List[str],
+        affected_labware_ids: List[str],
+    ) -> Any:
+        """Pause at COMMAND_SAVE until the answer the device gave is saved. RETRY saves it again; nothing is sent."""
+        while True:
+            decision = await handler(not_saved, request.command, PauseSite.COMMAND_SAVE)
+            if decision != RecoveryDecision.RETRY:
+                unsaved = UnsavedResult(
+                    request.command, _as_json({"args": list(request.args), "kwargs": request.kwargs}), _as_json(answer),
                 )
-            if result.outcome is not PacingOutcome.PAUSE_REQUESTED:
-                return
-            owed = result.remaining_sim_seconds
+                raise OperationDecisionSignal(decision, not_saved, unsaved) from not_saved
+            try:
+                await self._save(request, answer, affected_labware, affected_labware_ids)
+            except PartialChannelFailureError:
+                raise
+            except Exception as again:
+                not_saved = CommandNotSavedError.of(self._device.name, request.command, again)
+                continue
+            return answer
+
+    async def _save(
+        self,
+        request: ActionRequest,
+        result: Any,
+        affected_labware: List[str],
+        affected_labware_ids: List[str],
+    ) -> None:
+        # Interpreters consume only structured driver state; other
+        # returns (mock strings, None) narrow to None here, once.
+        state = result if isinstance(result, LabwareStateResponse) else None
+        await self._recorder.save_completed(
+            request, state, affected_labware, affected_labware_ids,
+        )
+
+    def _params_as_sent(self, request: ActionRequest) -> dict[str, JsonValue] | None:
+        """The request's params as the wire carries them, so a command refused before it is sent names them too.
+
+        None when the interpreter has no request for the call, or the args do not read as one: the tip check then
+        fails the call inside the pipeline, as any refusal does.
+        """
+        try:
+            typed = self._recorder.interpreter.request_of(request.command, request.args, request.kwargs)
+        except Exception:
+            return None
+        return None if typed is None else params_as_sent(typed)
 
     async def _check_tips_present(
         self, request: ActionRequest, instances: Sequence[LabwareInstance],
     ) -> None:
-        """Refuse a tip pick whose requested positions the ledger reads
-        empty, before the call reaches the driver.
+        """Refuse a tip pick the record reads empty, the check every tip pick-up passes.
 
-        Only on a reading nobody has questioned. A STALE rack was last
-        described before a restart, a reconnect or an error pause, and
-        nobody has looked since; the same gap is when an operator reloads a
-        rack by hand. Refusing on that would stop the first pick after every
-        restart on a reading that is not evidence, and the operator could
-        only clear it by restating the whole rack. It logs and lets the pick
-        go instead; the rack is already on the unsettled worklist.
-
-        Runs every attempt, including a RETRY_OP re-issue: an operator who
-        loaded tips and corrected the ledger between attempts needs the
-        retry to see that, not repeat the same doomed check. No interpreter
-        (or one with no tip concept, or a rack this action never had
-        assigned) claims no positions, so this is a no-op for every other
-        device call.
+        Runs every attempt, including a RETRY re-issue: an operator who loaded tips and corrected the record
+        between attempts needs the retry to see that. A rack this action never had assigned claims nothing.
         """
-        if self._interpreter is None:
-            return
-        claimed = self._interpreter.claimed_tip_positions(
+        typed = self._recorder.interpreter.request_of(request.command, request.args, request.kwargs)
+        by_name = {instance.name: instance for instance in instances}
+        await refuse_a_pick_from_empty_spots(tips_claimed_by(typed, by_name.get), by_name.get)
+
+    async def _run_mode_of_this_device(self) -> WorkflowRunMode | None:
+        """A device under a sim override is simulated even inside a LIVE run."""
+        if isinstance(self._device, IModeAware):
+            return await self._device.effective_mode()
+        return current_run_mode.get(None)
+
+    async def _check_reagent_present(
+        self, request: ActionRequest, instances: Sequence[LabwareInstance],
+    ) -> None:
+        """Stop an aspirate the record says a trough cannot supply. Runs every attempt, like the tip check."""
+        by_name = {instance.name: instance for instance in instances}
+        claimed = self._recorder.interpreter.claimed_reagent_volumes(
             request.command, request.args, request.kwargs,
         )
-        if not claimed:
-            return
-        by_name = {instance.name: instance for instance in instances}
-        for rack_name, positions in claimed.items():
-            rack = by_name.get(rack_name)
-            if rack is None:
-                logger.warning(
-                    "_check_tips_present: interpreter claimed positions on "
-                    "rack '%s' but no matching instance was passed to "
-                    "dispatch() -- the pre-flight check did not run for it.",
-                    rack_name,
-                )
+        for name, volume in claimed.items():
+            labware = by_name.get(name)
+            if labware is None:
                 continue
-            missing = await rack.missing_tip_positions(positions)
-            if not missing:
-                continue
-            if await rack.went_unobserved():
-                logger.warning(
-                    "_check_tips_present: rack '%s' reads empty at %s, but "
-                    "nobody has looked at it since the last observation gap; "
-                    "letting the pick through. Look at the rack, then `orca "
-                    "labware confirm-tips %s` if the record was right, or "
-                    "`orca labware set-tips %s --position ...` if it was "
-                    "reloaded. Either one makes this check meaningful again.",
-                    rack.name, ", ".join(missing), rack.id, rack.id,
-                )
-                continue
-            remaining = await rack.tip_count_present()
-            raise TipsNotPresentError(rack.name, rack.id, missing, remaining)
+            short = await labware.reagent_short_by(volume, await self._run_mode_of_this_device())
+            if short > 0:
+                raise ReagentRanOutError(labware.name, labware.id, short)
 
     async def _reconcile_before_retry(self) -> None:
         """Re-read hardware ground truth before re-issuing the failed call.
@@ -432,20 +483,27 @@ class DeviceCallDispatcher:
         signals still propagate, so external control and an aborted timeout are
         not overridden here.
 
-        Only RETRY_OP is guarded; a whole-action RETRY re-drives unreconciled
-        and a dead session then fails its first call with the typed run-death
-        error.
+        Only a step RETRY of a device call is guarded; RETRY_ACTION re-runs an
+        action whose own code failed, so it re-drives unreconciled and a dead
+        session then fails its first call with the typed run-death error. A reconcile that ran is saved like any command: it can clear
+        tips the driver was tracking.
         """
-        if not isinstance(self._device, IHardwareReconcilable):
+        device = self._device
+        if not isinstance(device, IHardwareReconcilable):
             return
+        reconcile = ActionRequest(
+            device_name=self._device.name, command="reconcile_hardware_state", args=(), kwargs={},
+        )
         try:
-            report = await self._call_with_recoverable_timeout(
-                "reconcile_hardware_state",
-                self._device.reconcile_hardware_state,
-                (),
-                {},
+            report = await self._pipeline.run_device_command(
+                self._device.name, reconcile.command,
+                lambda: self._call_with_recoverable_timeout(
+                    "reconcile_hardware_state", device.reconcile_hardware_state, (), {},
+                ),
+                lambda answer: self._save(reconcile, answer, [], []),
+                checks=(), execution_id=self._execution_id, named=(), params=None,
             )
-        except (OverrideWithPauseError, CommandTimeoutAbortedError):
+        except (OverrideWithPauseError, CommandTimeoutAbortedError, CommandNotSavedError, PartialChannelFailureError):
             raise
         except Exception as reconcile_error:
             logger.warning(
@@ -477,34 +535,12 @@ class DeviceCallDispatcher:
         args: Sequence[Any],
         kwargs: Mapping[str, Any],
     ) -> Any:
-        """Run the device call under the engine's recoverable timeout if armed.
-
-        The coordinator and the execution id are both read from the per-thread
-        context seeded at thread start (the single source for both). With no
-        coordinator or no execution id (unit tests, direct dispatch with no
-        runtime) the call runs unbounded -- the prior behavior. An un-annotated
-        command (no advertised ``max_seconds``) is bounded by
-        ``DEFAULT_COMMAND_TIMEOUT_SECONDS`` so it can never hang the execution
-        unboundedly; a non-positive ``max_seconds`` (driver metadata
-        misconfigured) is treated as "no timeout" rather than an immediate
-        timeout that would wedge the execution.
-        """
-        coordinator = recoverable_timeout_coordinator.get()
-        execution_id = current_execution_id.get()
-        if coordinator is None or execution_id is None:
-            return await method(*args, **kwargs)
-        max_seconds = self._device.command_max_seconds(command)
-        if max_seconds is None:
-            max_seconds = DEFAULT_COMMAND_TIMEOUT_SECONDS
-        elif max_seconds <= 0:
-            return await method(*args, **kwargs)
-        return await coordinator.run_with_timeout(
-            execution_id=execution_id,
-            device_id=self._device.name,
-            command=command,
-            max_seconds=max_seconds,
-            coro_factory=lambda: method(*args, **kwargs),
+        """Run the device call under the run's recoverable timeout, at the command's time limit for this request."""
+        limit = time_limit(
+            self._device.command_max_seconds(command), self._device.command_typical_seconds(command),
+            declared_duration(method, args, kwargs),
         )
+        return await within_the_time_limit(self._device.name, command, limit, lambda: method(*args, **kwargs))
 
     def _raise_if_under_external_control(self) -> None:
         if self._device.under_external_control:

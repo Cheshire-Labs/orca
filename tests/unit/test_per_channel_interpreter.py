@@ -12,15 +12,27 @@ import pytest
 
 from cheshire_drivers.liquid_handler_models import (
     ChannelError,
+    DropTipsRequest,
     LabwareStateResponse,
     LabwareWellState,
+    TipPick,
 )
 
+from orca.gateway.controller.command_pipeline import PartialChannelFailureError
 from orca.plugins.liquid_handler_interpreter import LiquidHandlerInterpreter
+from orca.state.command_operations import operations_for_channels, outside_a_run
+from orca.state.mounted import fold_mounted
+from orca.workflow_models.actions.device_call_dispatcher import CommandRecorder
+from orca.workflow_models.device_handle import ActionRequest
 from orca.state.records import (
     AspirateDetails,
     DeviceOperation,
     DispenseDetails,
+    OperationRecord,
+    TipDiscardDetails,
+    TipDropDetails,
+    TipPickUpDetails,
+    TrackingSource,
 )
 
 
@@ -205,9 +217,8 @@ class TestInterpretPerChannelAspirate:
         assert records[1].details.certainty == "confirmed_transferred"
 
     def test_unknown_command_returns_empty(self) -> None:
-        """Per-channel outcomes are only meaningful for aspirate/dispense today."""
+        """A command with no per-channel reader saves no per-channel records."""
         interpreter = LiquidHandlerInterpreter()
-        wells = [_FakeWell("plate_1", "A1")]
         result = LabwareStateResponse(
             success=False,
             per_channel_errors=[
@@ -216,8 +227,8 @@ class TestInterpretPerChannelAspirate:
             ],
         )
         records = interpreter.interpret_per_channel_outcomes(
-            command="pick_up_tips",
-            args=(wells,),
+            command="return_tips96",
+            args=(),
             kwargs={},
             result=result,
             device_name="lh",
@@ -266,7 +277,7 @@ class TestInterpretPerChannelAspirate:
                 ),
             ],
         )
-        with caplog.at_level(logging.WARNING, logger="orca.plugins.liquid_handler_interpreter"):
+        with caplog.at_level(logging.WARNING, logger="orca"):
             records = interpreter.interpret_per_channel_outcomes(
                 command="aspirate",
                 args=(wells, [100.0]),
@@ -278,16 +289,13 @@ class TestInterpretPerChannelAspirate:
                 action_id="a1",
                 thread_id="t1",
             )
-        assert any("orphan ChannelError" in r.getMessage() for r in caplog.records)
+        assert any("which the request did not name" in r.getMessage() for r in caplog.records)
         assert len(records) == 1
 
-    def test_unrecognized_command_with_per_channel_errors_logs_warning(
+    def test_a_command_not_read_per_channel_logs_a_warning(
         self, caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """An unrecognized command (e.g., pick_up_tips) with per_channel_errors
-        logs loud rather than silently returning [] and dropping the
-        attribution. Pin this so a future deferred slice can't quietly mask
-        a wrapper that started populating per_channel_errors on tip ops."""
+        """A command with no per-channel reader that reports channel errors says so in the log and saves none of them."""
         interpreter = LiquidHandlerInterpreter()
         result = LabwareStateResponse(
             success=False,
@@ -298,9 +306,9 @@ class TestInterpretPerChannelAspirate:
                 ),
             ],
         )
-        with caplog.at_level(logging.WARNING, logger="orca.plugins.liquid_handler_interpreter"):
+        with caplog.at_level(logging.WARNING, logger="orca"):
             records = interpreter.interpret_per_channel_outcomes(
-                command="pick_up_tips",
+                command="return_tips96",
                 args=(),
                 kwargs={},
                 result=result,
@@ -311,11 +319,122 @@ class TestInterpretPerChannelAspirate:
                 thread_id="t1",
             )
         assert records == []
-        assert any("no per-channel branch" in r.getMessage() for r in caplog.records)
+        assert any("is not read per channel" in r.getMessage() for r in caplog.records)
+
+
+class _FakeTipSpot:
+    def __init__(self, parent_name: str, identifier: str) -> None:
+        self.parent_name = parent_name
+        self.identifier = identifier
+        self.has_tip = True
+
+    def set_tip(self, has_tip: bool) -> None:
+        self.has_tip = has_tip
+
+
+def _tip_error(rack: str, position: str | None, channel: int) -> ChannelError:
+    return ChannelError(
+        channel_id=channel, well_position=position, labware=rack,
+        attempted_volume=0.0, error_code="TipNotMoved", error_message="the channel did not go",
+    )
+
+
+def _per_channel(
+    command: str, args: tuple[list[_FakeTipSpot] | list[int], ...], errors: list[ChannelError],
+) -> list[OperationRecord]:
+    return LiquidHandlerInterpreter().interpret_per_channel_outcomes(
+        command=command, args=args, kwargs={},
+        result=LabwareStateResponse(success=False, per_channel_errors=errors),
+        device_name="lh", affected_labware=["rack_1"], affected_labware_ids=["id-of-rack-1"],
+        action_id="a1", thread_id="t1",
+    )
+
+
+class TestATipCommandWithAFailedChannel:
+    """A run's tip command that a channel failed is one record per channel, and only a channel that went moves a tip."""
+
+    def test_a_pick_up_takes_only_the_tips_that_went(self) -> None:
+        spots = [_FakeTipSpot("rack_1", position) for position in ("A1", "B1", "C1")]
+
+        records = _per_channel("pick_up_tips", (spots,), [_tip_error("rack_1", "B1", 1)])
+
+        details = [record.details for record in records]
+        assert all(isinstance(d, TipPickUpDetails) for d in details)
+        assert [(d.positions, d.use_channels, d.failed_positions, d.failed_channels, d.error_code) for d in details if isinstance(d, TipPickUpDetails)] == [
+            (["A1"], [0], [], [], None),
+            ([], [], ["B1"], [1], "TipNotMoved"),
+            (["C1"], [2], [], [], None),
+        ]
+        assert sorted(fold_mounted(records, "lh").by_channel) == [0, 2]
+
+    async def test_a_runs_pick_up_fails_its_step_after_saving_each_channel(self) -> None:
+        saved: list[OperationRecord] = []
+
+        async def save(records: list[OperationRecord]) -> None:
+            saved.extend(records)
+
+        spots = [_FakeTipSpot("rack_1", position) for position in ("A1", "B1")]
+        recorder = CommandRecorder(LiquidHandlerInterpreter(), save, "lh", "a1", "t1")
+        request = ActionRequest(device_name="lh", command="pick_up_tips", args=(spots,), kwargs={})
+
+        with pytest.raises(PartialChannelFailureError):
+            await recorder.save_completed(
+                request, LabwareStateResponse(success=False, per_channel_errors=[_tip_error("rack_1", "B1", 1)]),
+                ["rack_1"], ["id-of-rack-1"],
+            )
+
+        assert sorted(fold_mounted(saved, "lh").by_channel) == [0]
+
+    def test_a_drop_returns_only_the_tips_that_went(self) -> None:
+        spots = [_FakeTipSpot("rack_1", position) for position in ("A1", "B1")]
+        picked = LiquidHandlerInterpreter().interpret(
+            command="pick_up_tips", args=(spots,), kwargs={}, result=None, device_name="lh",
+            affected_labware=["rack_1"], affected_labware_ids=["id-of-rack-1"], action_id="a0", thread_id="t1",
+        )
+
+        records = _per_channel("drop_tips", (spots,), [_tip_error("rack_1", "B1", 1)])
+
+        details = [record.details for record in records]
+        assert [(d.positions, d.use_channels, d.failed_positions, d.failed_channels, d.error_code) for d in details if isinstance(d, TipDropDetails)] == [
+            (["A1"], [0], [], [], None),
+            ([], [], ["B1"], [1], "TipNotMoved"),
+        ]
+        assert sorted(fold_mounted([*picked, *records], "lh").by_channel) == [1]
+
+    def test_a_drop_to_waste_that_names_its_spots_is_read_by_channel(self) -> None:
+        """The driver reports a failed drop to waste against the waste and the channel, with no rack spot."""
+        request = DropTipsRequest(
+            drops=[TipPick(tip_rack="rack_1", positions=["A1", "B1"])], to_waste=True, use_channels=[0, 1],
+        )
+        context = outside_a_run("lh", "drop_tips", TrackingSource.OPERATOR)
+
+        records = operations_for_channels("drop_tips", request, [_tip_error("trash", None, 1)], context)
+
+        details = [record.details for record in records]
+        assert [(d.positions, d.failed_positions, d.failed_channels) for d in details if isinstance(d, TipDropDetails)] == [
+            (["A1"], [], []),
+            ([], ["B1"], [1]),
+        ]
+
+    def test_a_discard_of_named_channels_bins_only_the_tips_that_went(self) -> None:
+        spots = [_FakeTipSpot("rack_1", position) for position in ("A1", "B1")]
+        picked = LiquidHandlerInterpreter().interpret(
+            command="pick_up_tips", args=(spots,), kwargs={}, result=None, device_name="lh",
+            affected_labware=["rack_1"], affected_labware_ids=["id-of-rack-1"], action_id="a0", thread_id="t1",
+        )
+
+        records = _per_channel("discard_tips", ([0, 1],), [_tip_error("trash", None, 1)])
+
+        details = [record.details for record in records]
+        assert [(d.use_channels, d.failed_channels, d.error_code) for d in details if isinstance(d, TipDiscardDetails)] == [
+            ([0], [], None),
+            ([], [1], "TipNotMoved"),
+        ]
+        assert sorted(fold_mounted([*picked, *records], "lh").by_channel) == [1]
 
 
 class TestFilterStatePreservesPerChannelErrors:
-    """LiquidHandler._filter_state preserves per_channel_errors regardless
+    """LiquidHandler.filter_driver_state preserves per_channel_errors regardless
     of trust_driver_state.
 
     Outcome attribution must reach the interpreter even when the operator opts
@@ -324,24 +443,10 @@ class TestFilterStatePreservesPerChannelErrors:
     asymmetry was caught in plan review; this test guards it from regression.
     """
 
-    def test_filter_state_with_trust_disabled_preserves_per_channel_errors(self) -> None:
-        from cheshire_drivers.sims import SimLiquidHandlerDriver
+    def test_filter_driver_state_with_trust_disabled_preserves_per_channel_errors(self) -> None:
         from orca.devices.devices import LiquidHandlerProtocol
-        from orca.runtime.device_factory_context import use_device_factory
-        from orca.runtime.device_factory_protocol import DriverPairElement
 
-        class _Factory:
-            def __init__(self, driver: SimLiquidHandlerDriver) -> None:
-                self._d = driver
-
-            def build_drivers(
-                self, device_type: str, name: str,
-            ) -> tuple[DriverPairElement, DriverPairElement]:
-                return self._d, self._d
-
-        sim = SimLiquidHandlerDriver("lh1")
-        with use_device_factory(_Factory(sim)):
-            handler = LiquidHandlerProtocol("lh1", trust_driver_state=False)
+        handler = LiquidHandlerProtocol("lh1", trust_driver_state=False)
 
         response = LabwareStateResponse(
             success=False,
@@ -357,33 +462,19 @@ class TestFilterStatePreservesPerChannelErrors:
                 ),
             ],
         )
-        filtered = handler._filter_state(response)
+        filtered = handler.filter_driver_state(response)
 
         assert filtered.success is False
         assert filtered.labware_state == {}
         assert len(filtered.per_channel_errors) == 1
         assert filtered.per_channel_errors[0].channel_id == 2
 
-    def test_filter_state_with_trust_enabled_preserves_everything(self) -> None:
-        from cheshire_drivers.sims import RecordingLiquidHandlerDriver, SimLiquidHandlerDriver
+    def test_filter_driver_state_with_trust_enabled_preserves_everything(self) -> None:
         from orca.devices.devices import LiquidHandlerProtocol
-        from orca.runtime.device_factory_context import use_device_factory
-        from orca.runtime.device_factory_protocol import DriverPairElement
 
-        class _Factory:
-            def __init__(self, driver: RecordingLiquidHandlerDriver) -> None:
-                self._d = driver
-
-            def build_drivers(
-                self, device_type: str, name: str,
-            ) -> tuple[DriverPairElement, DriverPairElement]:
-                return self._d, self._d
-
-        # RecordingLiquidHandlerDriver advertises provides_state=True so
+        # The forwarding driver advertises provides_state=True, so
         # trust_driver_state survives the AND with the driver capability.
-        sim = RecordingLiquidHandlerDriver(SimLiquidHandlerDriver("lh1"))
-        with use_device_factory(_Factory(sim)):
-            handler = LiquidHandlerProtocol("lh1", trust_driver_state=True)
+        handler = LiquidHandlerProtocol("lh1", trust_driver_state=True)
 
         response = LabwareStateResponse(
             success=False,
@@ -395,7 +486,7 @@ class TestFilterStatePreservesPerChannelErrors:
                 ),
             ],
         )
-        filtered = handler._filter_state(response)
+        filtered = handler.filter_driver_state(response)
         assert filtered is response
         assert filtered.labware_state != {}
         assert len(filtered.per_channel_errors) == 1

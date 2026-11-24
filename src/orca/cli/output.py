@@ -2,7 +2,7 @@
 
 Every CLI verb goes through this module for its final write. Keeps Rich (or
 its absence under `--no-color`) centralized and lets `--json` produce a
-schema that's identical to what a future REST/MCP surface would return --
+schema that's identical to what a future REST surface would return --
 since snapshots are frozen dataclasses, `dataclasses.asdict()` is the single
 JSON contract.
 
@@ -45,7 +45,7 @@ def exit_code_for_status(http_status: int | None) -> int:
         return EXIT_NOT_FOUND
     if http_status == 409:
         return EXIT_CONFLICT
-    if http_status == 400:
+    if http_status in (400, 422):
         return EXIT_USAGE
     return EXIT_GENERIC
 
@@ -151,6 +151,12 @@ def emit_json(value: Any) -> None:
     sys.stdout.flush()
 
 
+def emit_document(value: Any) -> None:
+    """Write a JSON document to stdout in every mode, for an answer that has no table form."""
+    sys.stdout.write(to_json(value) + "\n")
+    sys.stdout.flush()
+
+
 def emit_ndjson(value: Any) -> None:
     """Write a single NDJSON line to stdout (streaming verbs).
 
@@ -183,8 +189,9 @@ def emit_table(
     if _mode != OutputMode.TABLE:
         return
     table = Table(title=title, show_lines=False, header_style="bold cyan")
-    for col in columns:
-        table.add_column(col)
+    for index, col in enumerate(columns):
+        # The first column is the row's key, so it is never cut short.
+        table.add_column(col, no_wrap=index == 0)
     for row in rows:
         table.add_row(*(cell or "" for cell in row))
     _stdout().print(table)
@@ -254,3 +261,9 @@ def not_connected(msg: str = "no runtime available") -> NoReturn:
 
 def confirmation_denied(msg: str = "confirmation denied") -> NoReturn:
     fail(msg, code=EXIT_CONFIRMATION_DENIED)
+
+
+def sim_speedup_cell(simulated: bool, speedup: float | None) -> str:
+    if speedup is not None:
+        return f"{speedup:g}"
+    return "(no waiting)" if simulated else "(hardware pace, or not kept after the run)"

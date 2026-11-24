@@ -1,0 +1,93 @@
+{
+  "biotek_1": {
+    "access": "default_vertical",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 100.0,
+      "y": 200.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "bravo_96": {
+    "access": "default_vertical",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 300.0,
+      "y": 200.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "pad_1": {
+    "access": "default_vertical",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 200.0,
+      "y": 100.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "pad_2": {
+    "access": "default_vertical",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 200.0,
+      "y": 300.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "pad_3": {
+    "access": "default_vertical",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 400.0,
+      "y": 100.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "translator_1_start": {
+    "access": "default_horizontal",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 450.0,
+      "y": 200.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "waste_1": {
+    "access": "default_vertical",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 100.0,
+      "y": 400.0,
+      "yaw": 0.0,
+      "z": 200.0
+    },
+    "orientation": "right"
+  }
+}

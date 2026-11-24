@@ -15,6 +15,7 @@ statuses; the transition table itself stays strict (the pure TSM
 unit tests still pin that contract).
 """
 import asyncio
+from tests.thread_builder import build_executing_thread
 from unittest.mock import MagicMock
 
 import pytest
@@ -22,7 +23,7 @@ import pytest
 from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.location import Location
 from orca.resource_models.plate_pad import PlatePad
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from orca.workflow_models.labware_threads.executing_labware_thread import (
     ExecutingLabwareThread,
 )
@@ -42,7 +43,7 @@ def _build_executing_thread() -> ExecutingLabwareThread:
         labware=labware,
         start_location=location,
         end_locations=[location],
-        run_mode=WorkflowRunMode.PURE_SIM,
+        run_mode=WorkflowRunMode.CHECK_RUN,
     )
 
     status_state = ["CREATED"]
@@ -63,7 +64,7 @@ def _build_executing_thread() -> ExecutingLabwareThread:
     loc_service = MagicMock()
     loc_service.get_history.return_value = MagicMock()
 
-    et = ExecutingLabwareThread(
+    et = build_executing_thread(
         thread=thread,
         event_bus=MagicMock(),
         move_handler=MagicMock(),

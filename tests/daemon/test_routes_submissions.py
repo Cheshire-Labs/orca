@@ -1,13 +1,11 @@
 """Tests for the daemon's submission Operation bindings.
 
-Every submission URL lives on the unified ``/operations/*`` surface:
+- ``POST /executions`` accepts a workflow name + zero-or-more groups.
+- ``GET /submissions`` (with an optional ``execution_id`` query filter)
+  lists known submissions.
+- ``GET /submissions/{submission_id}`` fetches one by id.
 
-- ``POST /operations/submit-execution`` accepts a workflow name + zero-or-more groups.
-- ``POST /operations/list-submissions`` (with optional ``execution_id``
-  filter in the body) lists known submissions.
-- ``POST /operations/get-submission`` fetches one by id.
-
-Closing an execution lives at ``POST /operations/close-execution`` (see
+Closing an execution lives at ``POST /executions/{execution_id}/close`` (see
 ``test_routes_executions.py``). A submission is a unit of work inside
 an execution, not a closable container.
 """
@@ -15,7 +13,7 @@ an execution, not a closable container.
 from httpx import AsyncClient
 
 from orca.resource_models.labware import LabwareInstance
-from orca.runtime.sim_labware import SimPlateTemplate
+from orca.resource_models.sim_labware import SimPlateTemplate
 from orca.state.records import ObservationGapCause
 from orca.runtime.system_runtime import SystemRuntime
 
@@ -24,33 +22,22 @@ from orca.runtime.system_runtime import SystemRuntime
 
 
 async def test_submissions_submit_gated(empty_client: AsyncClient) -> None:
-    """No system loaded -> 503 service_unavailable.
-
-    The SubmitExecutionOperation binder maps
-    ``OperationError.service_unavailable`` to 503 to align with the
-    REST convention for "service not ready". The gating contract --
-    submissions are rejected without a runtime -- is preserved
-    regardless of the URL the request lands at.
-    """
+    """No system loaded -> 503 runtime_not_ready, the Operation's answer."""
     resp = await empty_client.post(
-        "/operations/submit-execution",
-        json={"workflow_name": "simple_workflow", "run_mode": "PURE_SIM"},
+        "/api/executions",
+        json={"workflow_name": "simple_workflow", "run_mode": "CHECK_RUN"},
     )
     assert resp.status_code == 503
+    assert resp.json()["detail"]["code"] == "runtime_not_ready"
 
 
 async def test_submissions_list_gated(empty_client: AsyncClient) -> None:
-    resp = await empty_client.post(
-        "/operations/list-submissions", json={},
-    )
+    resp = await empty_client.get("/api/submissions")
     assert resp.status_code == 503
 
 
 async def test_submissions_get_gated(empty_client: AsyncClient) -> None:
-    resp = await empty_client.post(
-        "/operations/get-submission",
-        json={"submission_id": "any-id"},
-    )
+    resp = await empty_client.get("/api/submissions/any-id")
     assert resp.status_code == 503
 
 
@@ -61,8 +48,8 @@ async def test_submissions_submit_unknown_workflow_returns_404(
     client: AsyncClient,
 ) -> None:
     resp = await client.post(
-        "/operations/submit-execution",
-        json={"workflow_name": "no_such_workflow", "run_mode": "PURE_SIM"},
+        "/api/executions",
+        json={"workflow_name": "no_such_workflow", "run_mode": "CHECK_RUN"},
     )
     assert resp.status_code == 404
 
@@ -74,8 +61,8 @@ async def test_submissions_submit_groupless_accepts(
     a SubmitExecutionResponse with the same field shape as a
     SubmissionDTO."""
     resp = await client.post(
-        "/operations/submit-execution",
-        json={"workflow_name": "simple_workflow", "run_mode": "PURE_SIM"},
+        "/api/executions",
+        json={"workflow_name": "simple_workflow", "run_mode": "CHECK_RUN"},
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -89,7 +76,7 @@ async def test_submissions_submit_invalid_batch_mode_returns_400(
     client: AsyncClient,
 ) -> None:
     resp = await client.post(
-        "/operations/submit-execution",
+        "/api/executions",
         json={"workflow_name": "simple_workflow", "batch_mode": "NOT_A_MODE"},
     )
     # Pydantic rejects at validation layer (422) because batch_mode is a Literal.
@@ -103,12 +90,12 @@ async def test_a_submission_says_what_nobody_has_settled(
     """Committing a deck to a run is the one moment an operator is certainly
     looking, so what a person still owes the system rides back with it.
 
-    The same list is readable at `/operations/unsettled`, and that needs
+    The same list is readable at `GET /unsettled`, and that needs
     somebody to think of asking. This does not.
     """
     resp = await client.post(
-        "/operations/submit-execution",
-        json={"workflow_name": "simple_workflow", "run_mode": "PURE_SIM"},
+        "/api/executions",
+        json={"workflow_name": "simple_workflow", "run_mode": "CHECK_RUN"},
     )
 
     assert resp.status_code == 200
@@ -119,10 +106,7 @@ async def test_a_submission_says_what_nobody_has_settled(
     )
     for row in body["unsettled"]:
         assert row["provenance"] in ("unknown", "stale")
-        # A row either names the verb that settles it, or names none because
-        # only ending an unfinished action helps. Both say what to do; a row
-        # that does neither asks for nothing.
-        assert row["settle_with"] or "settle the action" in row["detail"]
+        assert row["settle_with"]
 
 
 async def test_a_rack_nobody_has_looked_at_rides_back_with_the_submission(
@@ -137,12 +121,12 @@ async def test_a_rack_nobody_has_looked_at_rides_back_with_the_submission(
     plate = await SimPlateTemplate("assay_plate").create_instance()
     await plate.enter_record(runtime.system.labware_contents)
     runtime.system.add_labware(plate)
-    await runtime.system.labware_contents.assert_volumes(plate, {"A1": 100.0})
+    await runtime.system.labware_contents.assert_volumes(plate.ref, {"A1": 100.0})
     await plate.note_observation_gap(ObservationGapCause.RUNTIME_RESTART)
 
     resp = await client.post(
-        "/operations/submit-execution",
-        json={"workflow_name": "simple_workflow", "run_mode": "PURE_SIM"},
+        "/api/executions",
+        json={"workflow_name": "simple_workflow", "run_mode": "CHECK_RUN"},
     )
 
     assert resp.status_code == 200, resp.text
@@ -170,8 +154,8 @@ async def test_reading_the_worklist_never_fails_a_submission(
     monkeypatch.setattr(SystemRuntime, "unsettled_state", _explode)
 
     resp = await client.post(
-        "/operations/submit-execution",
-        json={"workflow_name": "simple_workflow", "run_mode": "PURE_SIM"},
+        "/api/executions",
+        json={"workflow_name": "simple_workflow", "run_mode": "CHECK_RUN"},
     )
 
     assert resp.status_code == 200, resp.text
@@ -185,24 +169,19 @@ async def test_reading_the_worklist_never_fails_a_submission(
 
 async def test_submissions_list_after_submit(client: AsyncClient) -> None:
     submit_resp = await client.post(
-        "/operations/submit-execution",
-        json={"workflow_name": "simple_workflow", "run_mode": "PURE_SIM"},
+        "/api/executions",
+        json={"workflow_name": "simple_workflow", "run_mode": "CHECK_RUN"},
     )
     assert submit_resp.status_code == 200
     submission_id = submit_resp.json()["id"]
     execution_id = submit_resp.json()["execution_id"]
 
-    resp = await client.post(
-        "/operations/list-submissions", json={},
-    )
+    resp = await client.get("/api/submissions")
     assert resp.status_code == 200
     items = resp.json()["submissions"]
     assert any(s["id"] == submission_id for s in items)
 
-    filtered = await client.post(
-        "/operations/list-submissions",
-        json={"execution_id": execution_id},
-    )
+    filtered = await client.get("/api/submissions", params={"execution_id": execution_id})
     assert filtered.status_code == 200
     filtered_items = filtered.json()["submissions"]
     assert all(s["execution_id"] == execution_id for s in filtered_items)
@@ -212,24 +191,18 @@ async def test_submissions_list_after_submit(client: AsyncClient) -> None:
 async def test_submissions_get_unknown_returns_404(
     client: AsyncClient,
 ) -> None:
-    resp = await client.post(
-        "/operations/get-submission",
-        json={"submission_id": "no-such-submission"},
-    )
+    resp = await client.get("/api/submissions/no-such-submission")
     assert resp.status_code == 404
 
 
 async def test_submissions_get_after_submit(client: AsyncClient) -> None:
     submit_resp = await client.post(
-        "/operations/submit-execution",
-        json={"workflow_name": "simple_workflow", "run_mode": "PURE_SIM"},
+        "/api/executions",
+        json={"workflow_name": "simple_workflow", "run_mode": "CHECK_RUN"},
     )
     submission_id = submit_resp.json()["id"]
 
-    resp = await client.post(
-        "/operations/get-submission",
-        json={"submission_id": submission_id},
-    )
+    resp = await client.get(f"/api/submissions/{submission_id}")
     assert resp.status_code == 200
     body = resp.json()
     assert body["submission"]["id"] == submission_id
@@ -259,14 +232,15 @@ async def test_submission_refused_when_start_location_occupied(
     not test scheduler timing.
     """
     pad1 = runtime.system.system_map.get_location("pad1")
-    leftover = LabwareInstance("plate_96", "96_well")
+    # A plate of another template: an unused plate of the thread's own one is adopted.
+    leftover = LabwareInstance("other_plate", "96_well")
     runtime.system.add_labware(leftover)
     pad1.initialize_labware(leftover)
     assert pad1.labware is leftover
 
     resp = await client.post(
-        "/operations/submit-execution",
-        json={"workflow_name": "simple_workflow", "run_mode": "PURE_SIM"},
+        "/api/executions",
+        json={"workflow_name": "simple_workflow", "run_mode": "CHECK_RUN"},
     )
     assert resp.status_code == 409, resp.text
     body = resp.json()

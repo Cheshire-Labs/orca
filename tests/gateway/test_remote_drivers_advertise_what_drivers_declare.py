@@ -5,7 +5,7 @@ The gap this pins: `ITransporterDriver` gained `IHomeable`, and orca's
 `RemoteTransporterDriver` went on advertising `{"ITransporter"}` from a literal
 of its own. Topology cards derive the declared set from the interface, so every
 transporter became a card whose connection could not satisfy it, and
-`assert_runnable` refused the device with a `TopologyCollisionError` before any
+the submit check refused the device with a `TopologyCollisionError` before any
 workflow ran. Nothing failed at import; it failed on the bench.
 
 Each remote driver restates `interfaces` rather than inheriting it (Python
@@ -25,7 +25,7 @@ from cheshire_drivers.interfaces import (
     IThermocyclerDriver,
     ITransporterDriver,
 )
-from orca.gateway.registry.capabilities import NAME_TO_INTERFACE
+from cheshire_drivers.command_table import COMMANDS
 from orca.gateway.remote_drivers import (
     RemoteCentrifugeDriver,
     RemoteDelidderDriver,
@@ -77,12 +77,12 @@ def test_remote_advertises_its_interfaces_declared_set(
 def test_every_advertised_name_is_mappable(
     remote_cls: type, interface_cls: type,
 ) -> None:
-    """An advertised name with no `NAME_TO_INTERFACE` entry cannot be resolved
+    """An advertised name with no interface in the command table cannot be resolved
     back to a class, so the capability gate drops it and the commands behind it
     read as unsupported."""
     del interface_cls
-    unmapped = sorted(set(remote_cls.interfaces) - set(NAME_TO_INTERFACE))
+    unmapped = sorted(set(remote_cls.interfaces) - COMMANDS.interface_names())
     assert not unmapped, (
-        f"{remote_cls.__name__} advertises {unmapped} which NAME_TO_INTERFACE "
+        f"{remote_cls.__name__} advertises {unmapped} which the command table "
         f"cannot resolve; add the interface there in the same change."
     )

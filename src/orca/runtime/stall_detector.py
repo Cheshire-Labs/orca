@@ -28,8 +28,9 @@ progress. Any thread whose status genuinely means acting still blocks a verdict,
 including the owner it is waiting on, and so does an operator wait the parked
 thread has taken on top (a contributor PAUSED by its group's failed action).
 
-Reservation waits (``AWAITING_ACTION_RESERVATION`` / ``AWAITING_MOVE_RESERVATION``
-/ ``AWAITING_MOVE_TARGET_AVAILABILITY`` / ``RESOLVING_ACTION_LOCATION``) are
+Reservation waits (``AWAITING_START_LOCATION`` / ``AWAITING_ACTION_RESERVATION`` /
+``AWAITING_MOVE_RESERVATION`` / ``AWAITING_MOVE_TARGET_AVAILABILITY`` /
+``RESOLVING_ACTION_LOCATION``) are
 never a stall ALONE: the reservation manager progresses even while every
 thread waits, routine contention legitimately lasts minutes to hours (the
 physical-timing reality), and genuine reservation cycles are the
@@ -37,11 +38,11 @@ reservation-layer deadlock detector's. But a reservation is only ever released
 by a thread that acts, so a MIXED stable state -- every live thread in a
 co-labware or reservation wait, at least one of each, none in flight -- cannot
 self-resolve either: nothing will deliver the co-labware and nothing will
-release what the manager could grant. This catches the cross-mechanism wedge
-that escapes both single-layer detectors (a co-labware waiter holding a
-resource a reservation waiter needs has no edge in the reservation wait-for
-graph). The stability window absorbs in-flight grants and transient
-all-waiting moments.
+release what the manager could grant. The reservation-layer deadlock detector
+sees a co-labware wait too, and breaks such a wedge when a plate in it can move
+aside to a pad. This rule catches the ones it cannot break: no pad to move to,
+or no thread in the wedge that can yield. The stability window absorbs
+in-flight grants and transient all-waiting moments.
 
 The "only an acting thread releases a reservation" premise spans EXECUTIONS:
 the holder can be an in-flight thread of a concurrent sibling execution that
@@ -83,6 +84,7 @@ _STALL_CANDIDATE_WAITS: frozenset[LabwareThreadStatus] = frozenset({
 # Manager-granted waits: never a stall alone (plain contention), but they
 # cannot resolve without a thread acting, so they join the mixed rule.
 _RESERVATION_WAITS: frozenset[LabwareThreadStatus] = frozenset({
+    LabwareThreadStatus.AWAITING_START_LOCATION,
     LabwareThreadStatus.AWAITING_ACTION_RESERVATION,
     LabwareThreadStatus.AWAITING_MOVE_RESERVATION,
     LabwareThreadStatus.AWAITING_MOVE_TARGET_AVAILABILITY,
@@ -92,13 +94,6 @@ _RESERVATION_WAITS: frozenset[LabwareThreadStatus] = frozenset({
 _INTERNALLY_BLOCKED: frozenset[LabwareThreadStatus] = (
     _STALL_CANDIDATE_WAITS | _RESERVATION_WAITS
 )
-
-_TERMINAL: frozenset[LabwareThreadStatus] = frozenset({
-    LabwareThreadStatus.COMPLETED,
-    LabwareThreadStatus.STOPPED,
-    LabwareThreadStatus.ABORTED,
-    LabwareThreadStatus.FAILED,
-})
 
 # Operator/external waits: not progress, not internally blocked -- they gate
 # detection in their own execution and read as quiescent system-wide.
@@ -115,7 +110,7 @@ def is_stall_candidate_wait(status: LabwareThreadStatus) -> bool:
 
 
 def is_live(status: LabwareThreadStatus) -> bool:
-    return status not in _TERMINAL
+    return not status.is_terminal()
 
 
 def is_in_flight(status: LabwareThreadStatus) -> bool:

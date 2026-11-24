@@ -8,7 +8,7 @@ executes the action and signals completion.
 ActionRequest is the runtime equivalent of ActionTemplate. Both converge at
 UnresolvedLocationAction -- ActionTemplate does it at factory time via
 MethodActionFactory, ActionRequest does it at runtime inside
-resolve_next_action().
+consume_next_unresolved_action().
 """
 
 import asyncio

@@ -40,11 +40,10 @@ from orca.devices.devices import Storage
 from orca.resource_models.device_error import SlotOccupiedError
 from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.labware_staging_bridge import LabwareStagingBridge
-from orca.runtime.labware_store import InMemoryLabwareStore
-from orca.runtime.runtime_interface import StartLocationsOccupiedError
-from orca.runtime.system_runtime import SystemRuntime
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.runtime.errors import StartLocationsOccupiedError
+from orca.modes.run_modes import WorkflowRunMode
 from tests.test_system_runtime import _build_simple_system
+from tests.memory_activity import memory_runtime
 
 
 class TestRegisterWithLocationWritesSlot:
@@ -52,7 +51,7 @@ class TestRegisterWithLocationWritesSlot:
 
     async def test_register_with_location_writes_target_slot(self) -> None:
         system, _ = await _build_simple_system()
-        runtime = SystemRuntime(system, labware_store=InMemoryLabwareStore())
+        runtime = await memory_runtime(system)
         await runtime.start()
         try:
             pad1 = system.system_map.get_location("pad1")
@@ -92,7 +91,7 @@ class TestRegisterWithLocationWritesSlot:
                 seen_events.append((event, labware.template_name))
 
         system, _ = await _build_simple_system()
-        runtime = SystemRuntime(system, labware_store=InMemoryLabwareStore())
+        runtime = await memory_runtime(system)
         await runtime.start()
         try:
             pad1 = system.system_map.get_location("pad1")
@@ -114,7 +113,7 @@ class TestRegisterWithLocationWritesSlot:
     ) -> None:
         """The existing tracker update path is preserved (no regression)."""
         system, _ = await _build_simple_system()
-        runtime = SystemRuntime(system, labware_store=InMemoryLabwareStore())
+        runtime = await memory_runtime(system)
         await runtime.start()
         try:
             snap = await runtime.labware.register(
@@ -145,7 +144,7 @@ class TestRegisterRefusesIfSlotOccupied:
 
     async def test_register_at_occupied_pad_raises_slot_occupied(self) -> None:
         system, _ = await _build_simple_system()
-        runtime = SystemRuntime(system, labware_store=InMemoryLabwareStore())
+        runtime = await memory_runtime(system)
         await runtime.start()
         try:
             pad1 = system.system_map.get_location("pad1")
@@ -183,7 +182,7 @@ class TestRegisterWithoutLocationDoesNotWriteSlot:
         self,
     ) -> None:
         system, _ = await _build_simple_system()
-        runtime = SystemRuntime(system, labware_store=InMemoryLabwareStore())
+        runtime = await memory_runtime(system)
         await runtime.start()
         try:
             await runtime.labware.register(
@@ -218,12 +217,12 @@ class TestSilentStallReproduction:
         self,
     ) -> None:
         system, _ = await _build_simple_system()
-        runtime = SystemRuntime(system, labware_store=InMemoryLabwareStore())
+        runtime = await memory_runtime(system)
         await runtime.start()
         try:
-            # Operator places labware and registers it.
+            # Operator places a plate the thread cannot adopt, and registers it.
             await runtime.labware.register(
-                "plate_96", location="pad1", confirm=True,
+                labware_type="Cor_96_wellplate_360ul_Fb", location="pad1", confirm=True,
             )
 
             # Same workflow that uses pad1 as start. Before register wrote the
@@ -231,7 +230,7 @@ class TestSilentStallReproduction:
             # this submit was accepted, the thread overwrote the operator's
             # plate, no error was raised.
             with pytest.raises(StartLocationsOccupiedError) as exc_info:
-                await runtime.submit_workflow("simple_workflow", mode=WorkflowRunMode.PURE_SIM)
+                await runtime.submit_workflow("simple_workflow", mode=WorkflowRunMode.CHECK_RUN)
             err = exc_info.value
             assert any(
                 slot.position_id == "pad1" for slot in err.occupied
@@ -249,15 +248,15 @@ class TestSilentStallReproduction:
         succeeds normally. Pins the full register -> stall-refuse ->
         discharge -> retry-submit lifecycle."""
         system, _ = await _build_simple_system()
-        runtime = SystemRuntime(system, labware_store=InMemoryLabwareStore())
+        runtime = await memory_runtime(system)
         await runtime.start()
         try:
             snap = await runtime.labware.register(
-                "plate_96", location="pad1", confirm=True,
+                labware_type="Cor_96_wellplate_360ul_Fb", location="pad1", confirm=True,
             )
             # First submit refuses (the stall protection).
             with pytest.raises(StartLocationsOccupiedError):
-                await runtime.submit_workflow("simple_workflow", mode=WorkflowRunMode.PURE_SIM)
+                await runtime.submit_workflow("simple_workflow", mode=WorkflowRunMode.CHECK_RUN)
 
             # Operator physically picks the plate off the deck and informs
             # the engine via discharge.
@@ -266,7 +265,7 @@ class TestSilentStallReproduction:
             assert pad1.labware is None
 
             # Retry-submit now succeeds.
-            sub = await runtime.submit_workflow("simple_workflow", mode=WorkflowRunMode.PURE_SIM)
+            sub = await runtime.submit_workflow("simple_workflow", mode=WorkflowRunMode.CHECK_RUN)
             assert sub is not None
         finally:
             await runtime.shutdown()
@@ -280,7 +279,7 @@ class TestRegisterClearToolIntegration:
         self,
     ) -> None:
         system, _ = await _build_simple_system()
-        runtime = SystemRuntime(system, labware_store=InMemoryLabwareStore())
+        runtime = await memory_runtime(system)
         await runtime.start()
         try:
             snap = await runtime.labware.register(
@@ -298,7 +297,7 @@ class TestRegisterClearToolIntegration:
         self,
     ) -> None:
         system, _ = await _build_simple_system()
-        runtime = SystemRuntime(system, labware_store=InMemoryLabwareStore())
+        runtime = await memory_runtime(system)
         await runtime.start()
         try:
             snap = await runtime.labware.register(
@@ -323,7 +322,7 @@ class TestRegisterAtIPlateSource:
         self,
     ) -> None:
         system, _ = await _build_simple_system()
-        runtime = SystemRuntime(system, labware_store=InMemoryLabwareStore())
+        runtime = await memory_runtime(system)
         await runtime.start()
         try:
             pad1 = system.system_map.get_location("pad1")
@@ -351,7 +350,7 @@ class TestRegisterAtIPlateSource:
         the pre-check semantic for plate sources is unchanged.
         """
         system, _ = await _build_simple_system()
-        runtime = SystemRuntime(system, labware_store=InMemoryLabwareStore())
+        runtime = await memory_runtime(system)
         await runtime.start()
         try:
             pad1 = system.system_map.get_location("pad1")
@@ -366,7 +365,7 @@ class TestRegisterAtIPlateSource:
 
             # Storage-backed start_location with output occupied: pre-check
             # skips and accepts.
-            sub = await runtime.submit_workflow("simple_workflow", mode=WorkflowRunMode.PURE_SIM)
+            sub = await runtime.submit_workflow("simple_workflow", mode=WorkflowRunMode.CHECK_RUN)
             assert sub is not None
         finally:
             await runtime.shutdown()

@@ -1,7 +1,7 @@
 """DB-neutral mapping between ``SystemIncident`` and ``IncidentRow``.
 
 Lives in orca-core and is reused by every per-DB incident store (orca's
-``SqliteIncidentStore`` and a hosted deployment's ``PostgresIncidentStore``). Mapping a
+``SqliteIncidentStore`` and a hosted deployment's store). Mapping a
 domain object to a shared table schema is dialect-independent; it carries no
 knowledge of which engine is behind the row.
 """
@@ -10,11 +10,11 @@ import dataclasses
 
 from pydantic import BaseModel, ConfigDict, JsonValue
 
+from orca.system.reservation_manager.errors import AutoSpawnFailedDetail
 from orca.runtime.db.models import IncidentRow
+from orca.resource_models.unheld_command import StoredMotion, StoredSiteNotice, UnheldCommand
 from orca.runtime.incident_store import (
-    AutoSpawnFailedDetail,
     BarcodeMismatchDetail,
-    CoLabwareTimeoutDetail,
     DeadlockDetail,
     DeckReconcileConflictDetail,
     LedgerContradictionDetail,
@@ -26,6 +26,7 @@ from orca.runtime.incident_store import (
     IncidentSeverity,
     OtherIncidentDetail,
     PluginHandlerExceptionDetail,
+    RecordNotSavedDetail,
     RecoverableTimeoutContext,
     RecoveryAction,
     SystemIncident,
@@ -37,6 +38,7 @@ from orca.runtime.incident_store import (
 from orca.system.reservation_manager.errors import (
     ActionContinuedContext,
     ActionFailedContext,
+    CoLabwareTimeoutDetail,
     MoveContinuedContext,
     MoveFailedContext,
     OrphanedBacklogContext,
@@ -151,7 +153,7 @@ class _UnresolvedAnchorInsertPayload(BaseModel):
     target_type: str
     item_name: str
     # Absent on rows written before the field existed. False matches the
-    # message those rows already carry; the old code could not tell.
+    # message those rows already carry.
     anchor_reached: bool = False
 
 
@@ -181,6 +183,10 @@ class _ActionContinuedPayload(BaseModel):
     method_name: str
     error_type: str
     error_message: str
+    # Defaulted so rows written before the fields existed still rehydrate.
+    unsaved_command: str | None = None
+    unsaved_request: str | None = None
+    unsaved_result: str | None = None
 
 
 class _MoveFailedPayload(BaseModel):
@@ -203,6 +209,29 @@ class _MoveContinuedPayload(BaseModel):
     error_message: str
 
 
+class _StoredMotionPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    labware_id: str
+    source_position_id: str | None
+    target_position_id: str
+    carried: str
+
+
+class _StoredSiteNoticePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    position_id: str
+    labware_id: str | None
+    mover_name: str
+    event: str
+
+
+class _UnheldCommandPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    device_name: str
+    motion: _StoredMotionPayload | None
+    site: _StoredSiteNoticePayload | None
+
+
 class _RecoverableTimeoutPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     device_id: str
@@ -210,11 +239,21 @@ class _RecoverableTimeoutPayload(BaseModel):
     command_id: str
     elapsed_seconds: float
     max_seconds: float
+    # Absent on a row written before an unheld command was stored with its incident.
+    unheld: _UnheldCommandPayload | None = None
 
 
 class _OtherIncidentPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     message_extra: str
+
+
+class _RecordNotSavedPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    record_kind: str
+    record: str
+    error_type: str
+    error_message: str
 
 
 class _LedgerContradictionPayload(BaseModel):
@@ -230,8 +269,8 @@ class _LedgerContradictionPayload(BaseModel):
 class _DeckReconcileConflictPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     device_name: str
-    labware_id: str
-    labware_name: str
+    labware_id: str | None
+    labware_name: str | None
     position_id: str
     # Defaulted so a row written before conflicts carried a reason still loads,
     # as the layout case is the only one that could have produced one.
@@ -418,6 +457,9 @@ def json_to_detail(
             method_name=parsed_ac.method_name,
             error_type=parsed_ac.error_type,
             error_message=parsed_ac.error_message,
+            unsaved_command=parsed_ac.unsaved_command,
+            unsaved_request=parsed_ac.unsaved_request,
+            unsaved_result=parsed_ac.unsaved_result,
         )
     if category is IncidentCategory.MOVE_FAILED:
         parsed_mf = _MoveFailedPayload.model_validate(payload)
@@ -447,6 +489,13 @@ def json_to_detail(
             command_id=parsed_rt.command_id,
             elapsed_seconds=parsed_rt.elapsed_seconds,
             max_seconds=parsed_rt.max_seconds,
+            unheld=None if parsed_rt.unheld is None else UnheldCommand(
+                device_name=parsed_rt.unheld.device_name,
+                motion=None if parsed_rt.unheld.motion is None else StoredMotion(
+                    **parsed_rt.unheld.motion.model_dump(),
+                ),
+                site=None if parsed_rt.unheld.site is None else StoredSiteNotice(**parsed_rt.unheld.site.model_dump()),
+            ),
         )
     if category is IncidentCategory.DECK_RECONCILE_CONFLICT:
         parsed_dc = _DeckReconcileConflictPayload.model_validate(payload)
@@ -469,6 +518,14 @@ def json_to_detail(
             labware_name=parsed_lc.labware_name,
             positions=list(parsed_lc.positions),
             believed=parsed_lc.believed,
+        )
+    if category is IncidentCategory.RECORD_NOT_SAVED:
+        parsed_rn = _RecordNotSavedPayload.model_validate(payload)
+        return RecordNotSavedDetail(
+            record_kind=parsed_rn.record_kind,
+            record=parsed_rn.record,
+            error_type=parsed_rn.error_type,
+            error_message=parsed_rn.error_message,
         )
     if category is IncidentCategory.OTHER:
         parsed_o = _OtherIncidentPayload.model_validate(payload)

@@ -3,7 +3,7 @@
 Three sites enforce this invariant:
 
 * ``LocationReservation.clear()`` (system/reservation_manager/location_reservation.py)
-* ``MoveActionCollectionReservationRequest.clear()`` (system/reservation_manager/move_handler.py)
+* ``MoveActionCollectionReservationRequest.clear()`` (workflow_models/actions/move_handler.py)
 * ``LocationCollectionReservationRequest.clear()`` (workflow_models/actions/util.py)
 
 Each one was previously labeled "I haven't looked into the implications yet"
@@ -19,7 +19,7 @@ import pytest
 
 from orca.resource_models.location import Location
 from orca.system.reservation_manager.location_reservation import LocationReservation
-from orca.system.reservation_manager.move_handler import (
+from orca.workflow_models.actions.move_handler import (
     MoveActionCollectionReservationRequest,
 )
 from orca.workflow_models.actions.util import LocationCollectionReservationRequest

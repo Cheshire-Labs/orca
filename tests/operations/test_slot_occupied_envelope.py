@@ -6,13 +6,14 @@ place onto a full slot got a stripped ``internal_error`` 500 that named
 neither the slot nor its occupant.
 """
 
+from tests.test_helpers import make_labware_placer
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from orca.operations._protocol import OperationError, OperationErrorCode
+from orca.operations.protocol import OperationError
 from orca.operations.labware import (
-    _slot_occupied,
+    slot_occupied,
     EditLabwareLocationOperation,
     RegisterLabwareOperation,
     ResetLabwareLocationOperation,
@@ -27,8 +28,7 @@ from orca.resource_models.device_error import SlotOccupiedError
 from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.labware_staging_bridge import LabwareStagingBridge
 from orca.resource_models.plate_pad import PlatePad
-from orca.runtime.labware_store import InMemoryLabwareStore
-from orca.runtime.system_runtime import SystemRuntime
+from tests.placements_for_tests import this_tests_placements
 from orca.resource_models.labware_location_service import (
     InMemoryLabwareLocationService,
 )
@@ -36,6 +36,7 @@ from orca.workflow_models import spawn_actions
 
 from tests.mock import EXTERNAL_MOVER, UniversalMockDevice
 from tests.test_system_runtime import _build_simple_system
+from tests.memory_activity import memory_runtime
 
 
 def _occupant() -> LabwareInstance:
@@ -58,9 +59,9 @@ def _runtime_refusing(method_name: str) -> MagicMock:
 
 
 def _assert_typed_409(raised: OperationError) -> None:
-    assert raised.code is OperationErrorCode.CONFLICT
-    assert raised.wire_code == "slot_occupied"
-    assert raised.status_code == 409
+    assert raised.http_status == 409
+    assert raised.surface_code() == "slot_occupied"
+    assert raised.http_status == 409
     assert raised.extras == {
         "position_id": "pad1",
         "existing_labware_name": "Plate 1",
@@ -113,7 +114,7 @@ async def test_spawn_placement_still_retries_the_richer_refusal(
     location.place_labware = _place
 
     await spawn_actions._place_retrying_on_busy(
-        location, arriving, "test", InMemoryLabwareLocationService(),
+        location, arriving, "test", make_labware_placer(InMemoryLabwareLocationService(this_tests_placements())),
     )
 
     assert attempts == [arriving, arriving]
@@ -216,7 +217,7 @@ async def test_register_onto_a_genuinely_occupied_pad_answers_the_typed_409() ->
     and the object it raises is the one the operation converts, occupant and
     all. Nothing else covers that the two halves meet."""
     system, _ = await _build_simple_system()
-    runtime = SystemRuntime(system, labware_store=InMemoryLabwareStore())
+    runtime = await memory_runtime(system)
     await runtime.start()
     try:
         occupant = await runtime.labware.register(
@@ -228,10 +229,9 @@ async def test_register_onto_a_genuinely_occupied_pad_answers_the_typed_409() ->
                 "plate_96", location="pad1", confirm=True,
             )
 
-        envelope = _slot_occupied(exc_info.value)
-        assert envelope.code is OperationErrorCode.CONFLICT
-        assert envelope.wire_code == "slot_occupied"
-        assert envelope.status_code == 409
+        envelope = slot_occupied(exc_info.value)
+        assert envelope.http_status == 409
+        assert envelope.surface_code() == "slot_occupied"
         assert envelope.extras == {
             "position_id": "pad1",
             "existing_labware_name": occupant.name,
@@ -239,3 +239,15 @@ async def test_register_onto_a_genuinely_occupied_pad_answers_the_typed_409() ->
         }
     finally:
         await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_place_onto_an_occupied_plate_pad_names_the_occupant() -> None:
+    pad = PlatePad("pad1")
+    pad.initialize_labware(_occupant())
+
+    with pytest.raises(SlotOccupiedError) as exc_info:
+        await pad.prepare_for_place(LabwareInstance("plate_2", "corning_96_wellplate_360ul_flat"), EXTERNAL_MOVER)
+
+    assert exc_info.value.position_id == "pad1"
+    assert exc_info.value.existing_labware_name == "Plate 1"

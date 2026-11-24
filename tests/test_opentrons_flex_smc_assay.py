@@ -15,8 +15,8 @@ cannot do. The DDR arm drops each transit labware at one of the Flex's two
 handoff slots and the Flex's internal gripper relays it to the working slot the
 action names -- ``test_transit_relays_through_a_handoff_slot`` pins that path.
 
-The full assay runs ONCE per module (`flex_run` fixture) with MethodTracker +
-LabwareJourneyTracker attached (read-only observers). The pipetting operations are
+The full assay runs ONCE per module (`flex_run` fixture) with a ThreadRecorder
+attached (a read-only observer). The pipetting operations are
 read back from ``system.ops_history`` -- the ISystem-owned single source of truth
 that every tracked device writes to via its operation interpreter, driver-agnostic.
 Individual tests assert:
@@ -41,21 +41,23 @@ from dataclasses import dataclass
 
 import pytest
 
-from examples.opentrons_flex_smc.opentrons_flex_smc_example import (
-    WORKFLOW_NAME,
-    build_opentrons_flex_smc,
-)
+from tests.real_device_path import on_its_own_device_path
 
-from orca.plugins import LabwareJourneyTracker, MethodTracker
+from tests.example_builds import OPENTRONS_FLEX_SMC_WORKFLOW as WORKFLOW_NAME, build_opentrons_flex_smc
+
+from tests.thread_recorder import ThreadRecorder
 from orca.state.records import (
     AspirateDetails,
     DeviceOperation,
     DispenseDetails,
     OperationRecord,
 )
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from tests.test_helpers import assert_translator_carriage_pairs, named_for_template, template_of
-from orca.runtime.system_runtime import SystemRuntime
+from tests.memory_activity import close_memory_activity, memory_runtime
+
+# The system build must reach every position these runs touch.
+pytestmark = pytest.mark.positions_bound_by_the_build
 
 
 # Deck-resident reagents (LEAVE_IN_PLACE) by template -> trough slot: beads +
@@ -100,35 +102,33 @@ _TIP_CONSUMERS = {
 
 @dataclass
 class FlexRun:
-    method_tracker: MethodTracker
-    journey_tracker: LabwareJourneyTracker
+    recorder: ThreadRecorder
     all_ops: list[OperationRecord]
 
 
 async def _run_flex() -> FlexRun:
     build = await build_opentrons_flex_smc()
-    runtime = SystemRuntime(build.system, event_bus=build.event_bus)
-    method_tracker = MethodTracker()
-    journey_tracker = LabwareJourneyTracker()
-    runtime.register_plugin(method_tracker)
-    runtime.register_plugin(journey_tracker)
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
+    recorder = ThreadRecorder()
+    runtime.register_plugin(recorder)
 
     template = build.system.get_workflow_template(WORKFLOW_NAME)
     await runtime.start()
-    submission = await runtime.submit(template, mode=WorkflowRunMode.PURE_SIM)
+    submission = await runtime.submit(template, mode=WorkflowRunMode.CHECK_RUN)
     final = await asyncio.wait_for(runtime.wait_for_execution(submission), timeout=300.0)
     assert final.status == "completed", f"assay did not complete: {final.status}: {final.error}"
 
     history = build.system.ops_history.for_execution(submission.execution_id)
     all_ops = await history.all_operations()
     await runtime.shutdown()
+    await close_memory_activity()
 
-    return FlexRun(method_tracker, journey_tracker, all_ops)
+    return FlexRun(recorder, all_ops)
 
 
 @pytest.fixture(scope="module")
 def flex_run() -> FlexRun:
-    return asyncio.run(_run_flex())
+    return asyncio.run(on_its_own_device_path(_run_flex))
 
 
 async def test_deck_sites_are_derived() -> None:
@@ -166,10 +166,10 @@ async def test_translators_declare_single_carriage() -> None:
 class TestOpentronsFlexSmcAssay:
 
     def _thread_methods(self, run: FlexRun, prefix: str) -> list[list[str]]:
-        snaps = run.method_tracker.all_completed_snapshots
+        snaps = run.recorder.completed_methods
         return [
             methods for tid, methods in snaps.items()
-            if run.method_tracker.thread_names.get(tid, "").startswith(prefix)
+            if run.recorder.thread_names.get(tid, "").startswith(prefix)
         ]
 
     def test_method_sequences_are_exact(self, flex_run: FlexRun) -> None:
@@ -216,12 +216,12 @@ class TestOpentronsFlexSmcAssay:
         (elution/neutralize) -- an ordering guard so a step swap can't pass.
         """
         run = flex_run
-        journeys = run.journey_tracker.all_completed_journeys
+        journeys = run.recorder.completed_journeys
 
         def paths(prefix: str) -> list[list[str]]:
             return [
                 j for tid, j in journeys.items()
-                if run.journey_tracker.thread_names.get(tid, "").startswith(prefix)
+                if run.recorder.thread_names.get(tid, "").startswith(prefix)
             ]
 
         def devices_of(journey: list[str]) -> set[str]:
@@ -233,8 +233,8 @@ class TestOpentronsFlexSmcAssay:
                 assert dev in visited, f"{label} never visited {dev}: {' -> '.join(journey)}"
 
         counts: Counter[str] = Counter()
-        for tid in run.journey_tracker.thread_names:
-            counts[run.journey_tracker.thread_names[tid].rsplit("-", 1)[0]] += 1
+        for tid in run.recorder.thread_names:
+            counts[run.recorder.thread_names[tid].rsplit("-", 1)[0]] += 1
         assert counts["plate_1"] == 1
         assert counts["sample_plate"] == 1
         assert counts["neut_plate"] == 1
@@ -295,12 +295,12 @@ class TestOpentronsFlexSmcAssay:
         from direct placement.
         """
         run = flex_run
-        journeys = run.journey_tracker.all_completed_journeys
+        journeys = run.recorder.completed_journeys
 
         def path_for(prefix: str) -> list[str]:
             (path,) = [
                 j for tid, j in journeys.items()
-                if run.journey_tracker.thread_names.get(tid, "").startswith(prefix)
+                if run.recorder.thread_names.get(tid, "").startswith(prefix)
             ]
             return path
 

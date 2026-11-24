@@ -16,6 +16,7 @@ from abc import ABC, abstractmethod
 from typing import Callable, Optional, Protocol
 
 from orca.events.custom_emit import EventEmitter
+from orca.events.event_channel import EventChannel
 from orca.events.execution_context import WorkflowExecutionContext
 from orca.resource_models.labware import LabwareInstance, LabwareTemplate
 from orca.resource_models.location import Location
@@ -32,7 +33,7 @@ class IMySlotView(Protocol):
     """Narrow view of the thread's LabwareSlot exposed to template
     ``schedule()`` bodies via ``ctx.my_slot()``.
 
-    The concrete ``LabwareSlot`` (``resource_models/labware_state.py``)
+    The concrete ``LabwareSlot`` (``workflow_models/labware_state.py``)
     satisfies this Protocol structurally. Templates code against this
     surface so they cannot reach the slot's queue internals directly.
     """
@@ -120,17 +121,25 @@ class IThreadContext(ABC):
     def my_slot_key(self) -> str: ...
 
     @abstractmethod
+    async def wait_for_event(self, channel: EventChannel, step_timeout: float | None) -> str | None:
+        """Wait for ``channel``'s latest value, for the step's timeout or else the system's ``event_timeout``.
+
+        A timeout pauses the thread at ``WAIT_EVENT_TIMEOUT``; RETRY waits again with a fresh timeout.
+        """
+        ...
+
+    @abstractmethod
     def bind_method(self, method: IMethod) -> None:
         """Assign this thread's labware to ``method`` so the method
         knows which labware to act on. No-op if the thread has no
-        labware template (e.g. pre-T6 paths).
+        labware template.
         """
         ...
 
     @abstractmethod
     def my_slot(self) -> IMySlotView | None:
         """Return the thread's labware slot, or ``None`` if no slot has
-        been provisioned (pre-T6 paths).
+        been provisioned.
         """
         ...
 

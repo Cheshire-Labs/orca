@@ -31,11 +31,10 @@ from orca.resource_models.capacity import (
     CapacityExceededError,
     CapacityPolicy,
     OverflowAction,
-    RecoverableCapacityExceededError,
 )
 from orca.resource_models.devices import Device
 from orca.resource_models.labware import AnyLabwareTemplate, LabwareTemplate
-from orca.resource_models.labware_state import LabwareSlot
+from orca.workflow_models.labware_state import LabwareSlot
 from orca.resource_models.location import Location
 from orca.resource_models.resource_pool import ResourcePool
 from orca.state.records import DeclaredTracking
@@ -55,7 +54,6 @@ from orca.workflow_models.method_template import (
 from orca.workflow_models.overflow_strategy import (
     IOverflowStrategy,
     IWorkflowRef,
-    RecoverableRejectStrategy,
     RejectStrategy,
     SequentialStashStrategy,
 )
@@ -68,8 +66,8 @@ from orca.workflow_models.thread_template import (
     drain_pending_thread_templates,
     register_pending_thread,
 )
-from orca.sdk.build import SystemBuild, Topology, build_system
-from orca.sdk.package import build_system_from_package, build_topology_from_module
+from orca.sdk.build import SystemBuild, Topology
+from orca.sdk.package import build_system, build_system_from_package, build_topology_from_module
 from orca.workflow_models.workflow_context import WorkflowContext
 from orca.workflow_models.workflow_templates import WorkflowTemplate
 
@@ -210,7 +208,8 @@ def thread(
     a LabwareGroupMember whose thread_template_name matches this thread.
     Set ``required=False`` to allow groups to omit this thread; the thread
     only spawns for groups that explicitly name it. Useful for conditional
-    per-group optional threads (e.g., spike-in controls).
+    per-group optional threads (e.g., spike-in controls). An action that asks
+    for the plate of a thread its group left out pauses at CO_LABWARE_LOST.
 
     immovable (S3-R1): default False. When True, the engine's deadlock
     detector treats this thread's labware as a terminal blocker: any other

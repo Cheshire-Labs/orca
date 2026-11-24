@@ -20,7 +20,7 @@ from orca.resource_models.labware import (
     TroughTemplate,
     TubeRackTemplate,
 )
-from orca.runtime.labware_catalog_protocol import ILabwareCatalog, LabwareNotFound
+from orca.resource_models.labware_catalog_protocol import ILabwareCatalog, LabwareNotFound
 
 
 def _catalog_returning(category: str) -> MagicMock:

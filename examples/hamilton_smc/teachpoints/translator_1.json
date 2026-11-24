@@ -1,0 +1,28 @@
+{
+  "translator_1_end": {
+    "access": "default_horizontal",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 500.0,
+      "y": 0.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "translator_1_start": {
+    "access": "default_horizontal",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 0.0,
+      "y": 0.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  }
+}

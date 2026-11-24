@@ -1,44 +1,47 @@
-from typing import Sequence
+from typing import Iterable, Sequence
 
 from orca.resource_models.labware import LabwareInstance
 from orca.state.contents import LabwareContentsLedger
-from orca.state.ops_history import OpsHistory
-from orca.runtime.labware_group import LabwareGroup
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.submission import ResolvedAcquisition
-from orca.runtime.submission_modes import BatchMode
-from orca.workflow_models.action_template import ActionTemplate
-from orca.workflow_models.actions.dynamic_resource_action import UnresolvedLocationAction
+from orca.resource_models.sharing import GroupSharing, SubmissionBatching
+from orca.workflow_models.labware_group import LabwareGroup
+from orca.modes.run_modes import WorkflowRunMode
+from orca.workflow_models.submission import ResolvedAcquisition
+from orca.workflow_models.submission_modes import BatchMode
 from orca.workflow_models.interfaces import IMethod
 from orca.workflow_models.labware_threads.labware_thread import (
     LabwareThreadInstance,
 )
 from orca.workflow_models.method import ExecutingMethod, MethodInstance
 from orca.workflow_models.method_template import IMethodTemplate, MethodTemplate
-from orca.workflow_models.thread_template import ThreadTemplate
+from orca.workflow_models.thread_template import ThreadTemplate, threads_a_group_names
 from orca.workflow_models.workflows.workflow import WorkflowInstance
 from orca.workflow_models.workflow_templates import WorkflowTemplate
 
 
-class MethodActionFactory:
+def _resolved_for(
+    resolved_map: dict[tuple[str, str], ResolvedAcquisition], group_id: str, named: dict[str, str], thread: ThreadTemplate,
+) -> ResolvedAcquisition | None:
+    member = named.get(thread.name)
+    return None if member is None else resolved_map.get((group_id, member))
 
-    def __init__(self, template: ActionTemplate) -> None:
-        self._template = template
 
-    def create_instance(self) -> UnresolvedLocationAction:
-
-        instance = UnresolvedLocationAction(self._template.resource_pool,
-                                        self._template.get_location_action(),
-                                        self._template.inputs,
-                                        self._template.outputs,
-                                        self._template.options,
-                                        self._template.failure_policy,
-                                        self._template.deck_positions,
-                                        self._template.well_selectors,
-                                        self._template.declares,
-                                        tag=self._template.tag,
-                                        )
-        return instance
+def _left_out_by(named: dict[str, str], named_by_group: Iterable[dict[str, str]], workflow: WorkflowTemplate) -> dict[str, str]:
+    """The optional entry threads whose plate will never reach this group, by labware name."""
+    left_out: dict[str, str] = {}
+    every_group = list(named_by_group)
+    for thread in workflow.entry_thread_templates:
+        labware = thread.labware_template
+        if (
+            thread.required
+            or thread.name in named
+            or thread.name in workflow.auto_spawn_registry
+            or labware.submission_batching is SubmissionBatching.BATCHABLE
+        ):
+            continue
+        if labware.group_sharing is GroupSharing.SHARED_ACROSS_GROUPS and any(thread.name in g for g in every_group):
+            continue
+        left_out[thread.name] = thread.func_name
+    return left_out
 
 
 class MethodFactory:
@@ -52,11 +55,9 @@ class MethodFactory:
 class ThreadFactory:
     def __init__(self,
                  method_factory: MethodFactory,
-                 ops_history: OpsHistory) -> None:
+                 labware_contents: LabwareContentsLedger) -> None:
         self._method_factory = method_factory
-        # Stateless over the same OpsHistory, so it answers identically to the
-        # System's own; holding one here keeps the constructor unchanged.
-        self._labware_contents = LabwareContentsLedger(ops_history)
+        self._labware_contents = labware_contents
 
     async def create_instance(
         self,
@@ -127,8 +128,7 @@ class WorkflowFactory:
         run_mode: WorkflowRunMode,
         id: str | None = None,
     ) -> WorkflowInstance:
-        """Single-lineage workflow instance (pre-T6 path, still used when
-        no submission is available).
+        """Single-lineage workflow instance, used when no submission is available.
 
         `id` is injected by SystemRuntime so the WorkflowInstance's id equals
         the execution_id returned from submit_workflow. See WorkflowInstance.__init__.
@@ -158,7 +158,7 @@ class WorkflowFactory:
         WorkflowInstance. Used by both initial boot and mid-run injection.
 
         Empty ``groups`` falls back to single-lineage (one thread per entry
-        template, untagged by group) — preserves the legacy pre-T6 path.
+        template, untagged by group).
 
         ``resolved_acquisitions``: per-(group_id, thread_template_name) map
         populated at submit time. When a member has a non-Pool acquisition,
@@ -177,15 +177,23 @@ class WorkflowFactory:
                     batch_mode=batch_mode,
                 ))
         else:
+            entry_templates = template.entry_thread_templates
+            named_by_group = {group.id: threads_a_group_names(group, template.thread_templates) for group in groups}
             for group in groups:
+                named = named_by_group[group.id]
+                # A barcode the group gave for a partner thread names that partner for the group's own threads.
+                named_partners: dict[str, str] = {}
+                for partner_template in template.thread_templates:
+                    if any(partner_template is entry for entry in entry_templates):
+                        continue
+                    partner = _resolved_for(resolved_map, group.id, named, partner_template)
+                    if partner is not None and partner.labware_instance is not None and partner.labware_instance.barcode:
+                        named_partners[partner_template.labware_template.name] = partner.labware_instance.barcode
+                left_out = _left_out_by(named, named_by_group.values(), template)
                 for start_thread_template in template.entry_thread_templates:
-                    # Members may reference a thread by its func_name OR its
-                    # labware name. Try both when looking up the resolved
-                    # acquisition captured at submit time.
-                    resolved = (
-                        resolved_map.get((group.id, start_thread_template.name))
-                        or resolved_map.get((group.id, start_thread_template.func_name))
-                    )
+                    if not start_thread_template.required and start_thread_template.name not in named:
+                        continue
+                    resolved = _resolved_for(resolved_map, group.id, named, start_thread_template)
                     threads.append(await self._thread_factory.create_instance(
                         start_thread_template,
                         run_mode=run_mode,
@@ -194,6 +202,8 @@ class WorkflowFactory:
                         batch_mode=batch_mode,
                         resolved=resolved,
                     ))
+                    threads[-1].set_named_partners(named_partners)
+                    threads[-1].set_left_out(left_out)
         return threads
 
     async def create_instance_for_submission(
@@ -229,5 +239,3 @@ class WorkflowFactory:
             workflow.add_event_hook(event)
         return workflow
     
-
-

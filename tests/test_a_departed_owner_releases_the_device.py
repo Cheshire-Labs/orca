@@ -12,6 +12,7 @@ on its own condition. The only other arming site runs after the move to the end
 location, and here the successor is standing on that location.
 """
 
+from orca.events.event_bus import EventBus
 import asyncio
 
 import pytest
@@ -22,9 +23,8 @@ from cheshire_drivers import CartesianCoordinates as C
 from orca.devices.devices import LiquidHandler
 from orca.resource_models.plate_pad import PlatePad
 from orca.resource_models.transporter import Transporter
-from orca.runtime.labware_group import LabwareGroup, LabwareGroupMember
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.store_factory import InMemoryRuntimeStoreFactory
+from orca.workflow_models.labware_group import LabwareGroup, LabwareGroupMember
+from orca.modes.run_modes import WorkflowRunMode
 from orca.runtime.system_runtime import SystemRuntime
 from orca.sdk.build import Topology
 from orca.sdk.labware import PlateTemplate
@@ -37,6 +37,9 @@ from orca.workflow_models.action_context import ActionContext
 from orca.workflow_models.method_context import MethodContext
 from orca.workflow_models.thread_context import ThreadContext
 from tests.test_helpers import run_to_quiescence, wait_for_runtime_condition
+from tests.setup_package import package_stores, write_deck_layouts, write_teachpoints
+from tests.setup_package import with_teachpoints, with_deck_layouts
+from tests.memory_activity import memory_ops_store, memory_runtime
 
 
 _DECK_CONFIG = DeckLayoutConfig(
@@ -60,25 +63,23 @@ async def _build():
     exit of the plate before it. ``park`` gives the deadlock resolver somewhere
     to move a plate to, which is what the bench had.
     """
-    stores = InMemoryRuntimeStoreFactory()
+    stores = package_stores()
     sample = PlateTemplate("sample", labware_type="Cor_Falcon_96_wellplate_340ul_Fb_Black")
     reservoir = PlateTemplate("reservoir", labware_type="AGenBio_1_troughplate_190000uL_Fl")
 
-    lh = LiquidHandler(
+    lh = with_deck_layouts(LiquidHandler(
         "lh",
-        deck_layout_store=stores.deck_layouts("lh", seed={"default": _DECK_CONFIG}),
         deck_layout="default",
-    )
+    ), write_deck_layouts(stores, "lh", {"default": _DECK_CONFIG}))
     pad = PlatePad("pad")
     park = PlatePad("park")
-    arm = Transporter(
+    arm = with_teachpoints(Transporter(
         "arm",
-        teachpoint_store=stores.teachpoints("arm", seed=[
+    ), write_teachpoints(stores, "arm", [
             Teachpoint("pad", C(0, 200, 300, 0, 90, 180), orientation="right"),
             Teachpoint("park", C(200, 200, 300, 0, 90, 180), orientation="right"),
             Teachpoint(_SAMPLE_SITE, C(400, 200, 300, 0, 90, 180), orientation="right"),
-        ]),
-    )
+        ]))
 
     @orca.action(device=lh, inputs=[sample, reservoir], deck_positions={sample: "carrier-7-0"})
     async def add_reagent(ctx: ActionContext) -> None:
@@ -112,7 +113,7 @@ async def _build():
         transporters=[arm],
     )
     return await orca.build_system(
-        name="One Pad", workflow=workflow, topology=topology, stores=stores)
+        name="One Pad", workflow=workflow, topology=topology, stores=stores, event_bus=EventBus(), ops_history_store=memory_ops_store())
 
 
 async def _submit_two_groups(build, runtime: SystemRuntime):
@@ -124,7 +125,7 @@ async def _submit_two_groups(build, runtime: SystemRuntime):
         )
         for i in range(2)
     ]
-    return await runtime.submit(template, groups=groups, mode=WorkflowRunMode.PURE_SIM)
+    return await runtime.submit(template, groups=groups, mode=WorkflowRunMode.CHECK_RUN)
 
 
 def _finished_sample(runtime: SystemRuntime, execution_id: str) -> str | None:
@@ -163,7 +164,7 @@ async def test_a_finished_owner_arms_the_device_release() -> None:
     """A hold kept past the owner's last action has to be armed to drain, so the
     successor's next ask takes it over. Unarmed, nothing frees it."""
     build = await _build()
-    runtime = SystemRuntime(build.system, event_bus=build.event_bus)
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
     await runtime.start()
     try:
         submission = await _submit_two_groups(build, runtime)
@@ -201,7 +202,7 @@ async def test_both_groups_finish_when_the_exit_pad_is_the_next_entry() -> None:
     group 1 cannot leave until group 2 vacates the pad. Only the device release
     breaks that cycle; parking a plate cannot."""
     build = await _build()
-    runtime = SystemRuntime(build.system, event_bus=build.event_bus)
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
     await runtime.start()
     submission = await _submit_two_groups(build, runtime)
     statuses = await run_to_quiescence(runtime, submission.execution_id, timeout=150.0)

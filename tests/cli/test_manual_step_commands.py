@@ -2,8 +2,8 @@
 
 list is global by default and scopes with --execution; confirm is SAFE
 (no prompt) and routes to client.manual_step_confirm. Both verbs are
-backend-aware: local vs cloud is chosen via active_backend(), so the
-same fake client stands in for either path.
+backend-aware: `get_client()` picks local or cloud, so the same fake
+client stands in for either path.
 """
 
 from collections.abc import Iterator
@@ -13,7 +13,9 @@ import pytest
 from typer.testing import CliRunner
 
 from orca.cli.app import app
-from orca.cli.control_plane import ExecutionRecordDTO
+from orca.operations.execution_models import (
+    ExecutionRecordModel,
+)
 from orca.operations.manual_step_models import PendingManualStepDTO
 
 
@@ -25,7 +27,7 @@ class _FakeClient:
         self.list_called_with: object = "unset"
         self.confirm_called_with: tuple[str, str] | None = None
         self.executions = [
-            ExecutionRecordDTO(
+            ExecutionRecordModel(
                 id="exec-1234abcd", workflow_name="smc", status="running",
             ),
         ]
@@ -38,7 +40,7 @@ class _FakeClient:
             ),
         ]
 
-    def list_executions(self) -> list[ExecutionRecordDTO]:
+    def list_executions(self) -> list[ExecutionRecordModel]:
         return self.executions
 
     def manual_steps_list(
@@ -53,23 +55,21 @@ class _FakeClient:
         self.confirm_called_with = (execution_id, step_id)
 
 
-def _patch(monkeypatch: pytest.MonkeyPatch, backend: str, stub: _FakeClient) -> None:
-    monkeypatch.setattr("orca.cli.manual_step.active_backend", lambda: backend)
-    monkeypatch.setattr("orca.cli.manual_step.cloud_client", lambda: stub)
-    monkeypatch.setattr("orca.cli.manual_step.local_client", lambda: stub)
+def _patch(monkeypatch: pytest.MonkeyPatch, stub: _FakeClient) -> None:
+    monkeypatch.setattr("orca.cli.manual_step.get_client", lambda: stub)
 
 
 @pytest.fixture
 def local(monkeypatch: pytest.MonkeyPatch) -> Iterator[_FakeClient]:
     stub = _FakeClient()
-    _patch(monkeypatch, "local", stub)
+    _patch(monkeypatch, stub)
     yield stub
 
 
 @pytest.fixture
 def cloud(monkeypatch: pytest.MonkeyPatch) -> Iterator[_FakeClient]:
     stub = _FakeClient()
-    _patch(monkeypatch, "cloud", stub)
+    _patch(monkeypatch, stub)
     yield stub
 
 

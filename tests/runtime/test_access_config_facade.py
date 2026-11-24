@@ -2,8 +2,7 @@
 
 - Reads pass through to the underlying store.
 - Writes pass through; the store is the source of truth on safety checks.
-- Exceptions raised by the store (`ProtectedAccessConfigError`,
-  `AccessConfigInUseError`) propagate cleanly so REST/MCP can translate.
+- `AccessConfigInUseError` raised by the store propagates cleanly so REST/MCP can translate.
 """
 
 from typing import Iterable, List
@@ -12,13 +11,9 @@ import pytest
 from cheshire_drivers.teachpoints import AccessConfig
 
 from orca.runtime.access_config_service import AccessConfigService
-from orca.runtime.access_config_store import (
-    AccessConfigInUseError,
-    ProtectedAccessConfigError,
-)
-from orca.runtime.db import create_memory_engine
+from orca.runtime.access_config_store import AccessConfigInUseError
 from orca.runtime.facades.access_configs import AccessConfigFacade
-from orca.runtime.sqlite_access_config_store import SqliteAccessConfigStore
+from tests.setup_package import fresh_access_configs
 
 
 def _cfg(name: str, gripper_offset: float = 10.0) -> AccessConfig:
@@ -32,7 +27,7 @@ def _cfg(name: str, gripper_offset: float = 10.0) -> AccessConfig:
 
 
 async def _service(seed: Iterable[AccessConfig] = ()) -> AccessConfigService:
-    service = AccessConfigService(SqliteAccessConfigStore(create_memory_engine()))
+    service = AccessConfigService(fresh_access_configs())
     for cfg in seed:
         await service.add(cfg)
     return service
@@ -93,23 +88,6 @@ class TestSafetyExceptionPropagation:
     """The facade does not enforce safety; it propagates whatever the store
     raises. This isolates REST/MCP from the impl detail of which store is
     behind the facade."""
-
-    async def test_protected_error_propagates(self) -> None:
-
-        class ProtectingStore:
-            async def get(self, name: str) -> AccessConfig | None: return None
-            async def list(self) -> List[AccessConfig]: return []
-            async def add(self, config: AccessConfig) -> None: ...
-            async def update(self, config: AccessConfig) -> None: ...
-            async def delete(self, name: str) -> bool:
-                raise ProtectedAccessConfigError(name)
-            async def create_schema(self) -> None: ...
-            async def aclose(self) -> None: ...
-
-        facade = AccessConfigFacade(ProtectingStore())
-        with pytest.raises(ProtectedAccessConfigError) as excinfo:
-            await facade.delete("default_vertical", confirm=True)
-        assert excinfo.value.name == "default_vertical"
 
     async def test_in_use_error_propagates(self) -> None:
 

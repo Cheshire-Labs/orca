@@ -1,5 +1,5 @@
-"""Tests for /executions/{id}/remove and
-/executions/{id}/reservations/{rsv_id} DELETE.
+"""Tests for DELETE /executions/{id} and
+DELETE /executions/{id}/reservations/{rsv_id}.
 
 What these catch:
 - Gating on both routes.
@@ -22,27 +22,21 @@ async def test_execution_remove_gated(
     """No system loaded -> the Operations binder surfaces
     ``service_unavailable`` (503) rather than 409 (the legacy
     ``_require_system_runtime`` gate)."""
-    resp = await empty_client.post(
-        "/operations/remove-execution",
-        json={"execution_id": "any-id"},
-    )
+    resp = await empty_client.delete("/api/executions/any-id")
     assert resp.status_code == 503
 
 
 async def test_reservation_cancel_gated(
     empty_client: AsyncClient,
 ) -> None:
-    resp = await empty_client.delete("/executions/any-id/reservations/rsv-1")
-    assert resp.status_code == 409
+    resp = await empty_client.delete("/api/executions/any-id/reservations/rsv-1?reason=test")
+    assert resp.status_code == 503
 
 
 async def test_execution_remove_unknown_id_returns_404(
     client: AsyncClient,
 ) -> None:
-    resp = await client.post(
-        "/operations/remove-execution",
-        json={"execution_id": "does-not-exist"},
-    )
+    resp = await client.delete("/api/executions/does-not-exist")
     assert resp.status_code == 404
 
 
@@ -50,7 +44,7 @@ async def test_reservation_cancel_unknown_execution_returns_404(
     client: AsyncClient,
 ) -> None:
     resp = await client.delete(
-        "/executions/does-not-exist/reservations/rsv-1?reason=test",
+        "/api/executions/does-not-exist/reservations/rsv-1?reason=test",
     )
     assert resp.status_code == 404
 
@@ -62,15 +56,12 @@ async def test_execution_remove_running_rejects_with_409(
     The Operation surfaces it as 409 ``conflict``.
     """
     submit = await client.post(
-        "/executions", json={"workflow_name": "simple_workflow", "run_mode": "PURE_SIM"},
+        "/api/executions", json={"workflow_name": "simple_workflow", "run_mode": "CHECK_RUN"},
     )
     assert submit.status_code == 200
-    exec_id = submit.json()["id"]
+    exec_id = submit.json()["execution_id"]
 
-    resp = await client.post(
-        "/operations/remove-execution",
-        json={"execution_id": exec_id},
-    )
+    resp = await client.delete(f"/api/executions/{exec_id}")
     # The execution just got submitted; it's almost certainly still running
     # (the fixture workflow takes ~1 second). Remove should reject with 409.
     assert resp.status_code in (409, 200), f"unexpected status {resp.status_code}"
@@ -85,47 +76,42 @@ async def test_execution_remove_running_rejects_with_409(
         )
 
 
-async def test_execution_remove_completed_succeeds(
+async def test_removing_a_finished_run_keeps_its_record_in_the_list(
     client: AsyncClient,
 ) -> None:
-    """Once an execution has reached a terminal state, remove must
-    succeed and the execution must disappear from the operations list."""
+    """Remove clears a finished run from the runtime; its run record stays, so the list still shows it finished."""
     import asyncio
 
     submit = await client.post(
-        "/executions", json={"workflow_name": "simple_workflow", "run_mode": "PURE_SIM"},
+        "/api/executions", json={"workflow_name": "simple_workflow", "run_mode": "CHECK_RUN"},
     )
     assert submit.status_code == 200
-    exec_id = submit.json()["id"]
+    exec_id = submit.json()["execution_id"]
 
     # Wait for the fixture workflow to finish (it's tiny, < 1s in sim).
     for _ in range(60):
-        detail = await client.post(
-            "/operations/get-execution-detail",
-            json={"execution_id": exec_id},
-        )
+        detail = await client.get(f"/api/executions/{exec_id}")
         assert detail.status_code == 200
-        if detail.json()["status"] in ("completed", "failed", "aborted"):
+        if detail.json()["status"] in ("completed", "partial_completed", "failed", "aborted"):
             break
         await asyncio.sleep(0.1)
     else:
         assert False, "fixture workflow never reached a terminal state"
 
-    remove_resp = await client.post(
-        "/operations/remove-execution",
-        json={"execution_id": exec_id},
-    )
+    remove_resp = await client.delete(f"/api/executions/{exec_id}")
     assert remove_resp.status_code == 200, (
         f"terminal removal should succeed; got {remove_resp.status_code} "
         f"{remove_resp.json()}"
     )
 
-    listing = await client.get("/operations/list-executions")
+    listing = await client.get("/api/executions")
     assert listing.status_code == 200
-    remaining_ids = [r["id"] for r in listing.json()["executions"]]
-    assert exec_id not in remaining_ids, (
-        f"removed execution must disappear from list-executions; still got {remaining_ids}"
-    )
+    rows = {r["id"]: r for r in listing.json()["executions"]}
+    assert exec_id in rows, "a removed run keeps its run record"
+    assert rows[exec_id]["status"] in ("completed", "partial_completed", "failed", "aborted")
+
+    again = await client.delete(f"/api/executions/{exec_id}")
+    assert again.status_code == 404, "the runtime no longer holds the removed run"
 
 
 async def test_execution_remove_aborted_succeeds(
@@ -136,41 +122,29 @@ async def test_execution_remove_aborted_succeeds(
     first call arms, the second (confirm=true) aborts.
     """
     submit = await client.post(
-        "/executions", json={"workflow_name": "simple_workflow", "run_mode": "PURE_SIM"},
+        "/api/executions", json={"workflow_name": "simple_workflow", "run_mode": "CHECK_RUN"},
     )
     assert submit.status_code == 200
-    exec_id = submit.json()["id"]
+    exec_id = submit.json()["execution_id"]
 
-    arm_resp = await client.post(
-        "/operations/stop-execution",
-        json={"execution_id": exec_id},
-    )
+    arm_resp = await client.post(f"/api/executions/{exec_id}/stop", json={})
     assert arm_resp.status_code == 200
     assert arm_resp.json()["status"] == "armed"
 
-    stop_resp = await client.post(
-        "/operations/stop-execution",
-        json={"execution_id": exec_id, "confirm": True},
-    )
+    stop_resp = await client.post(f"/api/executions/{exec_id}/stop", json={"confirm": True})
     assert stop_resp.status_code == 200
     assert stop_resp.json()["status"] == "aborted"
 
     # Abort propagates asynchronously; wait for state to settle.
     for _ in range(60):
-        detail = await client.post(
-            "/operations/get-execution-detail",
-            json={"execution_id": exec_id},
-        )
+        detail = await client.get(f"/api/executions/{exec_id}")
         if detail.status_code == 200 and detail.json()["status"] == "aborted":
             break
         await asyncio.sleep(0.1)
     else:
         assert False, "execution never transitioned to aborted"
 
-    remove_resp = await client.post(
-        "/operations/remove-execution",
-        json={"execution_id": exec_id},
-    )
+    remove_resp = await client.delete(f"/api/executions/{exec_id}")
     assert remove_resp.status_code == 200
 
 
@@ -187,12 +161,12 @@ async def _submit_and_catch_reservation(
     """Submit the fixture workflow and poll until at least one reservation
     is active. Returns (execution_id, reservation_row)."""
     submit = await client.post(
-        "/executions", json={"workflow_name": "simple_workflow", "run_mode": "PURE_SIM"},
+        "/api/executions", json={"workflow_name": "simple_workflow", "run_mode": "CHECK_RUN"},
     )
     assert submit.status_code == 200
-    exec_id = submit.json()["id"]
+    exec_id = submit.json()["execution_id"]
     for _ in range(poll_attempts):
-        listing = await client.get(f"/executions/{exec_id}/reservations")
+        listing = await client.get("/api/reservations", params={"execution_id": exec_id})
         if listing.status_code == 200 and listing.json():
             return exec_id, listing.json()[0]
         await asyncio.sleep(poll_interval)
@@ -204,13 +178,13 @@ async def test_reservation_cancel_unknown_id_in_known_execution_returns_404(
 ) -> None:
     """A valid execution with no such reservation id returns 404, not 500."""
     submit = await client.post(
-        "/executions", json={"workflow_name": "simple_workflow", "run_mode": "PURE_SIM"},
+        "/api/executions", json={"workflow_name": "simple_workflow", "run_mode": "CHECK_RUN"},
     )
     assert submit.status_code == 200
-    exec_id = submit.json()["id"]
+    exec_id = submit.json()["execution_id"]
 
     resp = await client.delete(
-        f"/executions/{exec_id}/reservations/does-not-exist?reason=test",
+        f"/api/executions/{exec_id}/reservations/does-not-exist?reason=test",
     )
     assert resp.status_code == 404
 
@@ -223,7 +197,7 @@ async def test_reservation_cancel_before_workflow_starts_returns_404(
     not crash on a None dereference."""
     # No submit -- manufacture an execution id we know doesn't exist.
     resp = await client.delete(
-        "/executions/00000000-0000-0000-0000-000000000000/reservations/rsv-1?reason=test",
+        "/api/executions/00000000-0000-0000-0000-000000000000/reservations/rsv-1?reason=test",
     )
     assert resp.status_code == 404
 
@@ -237,14 +211,14 @@ async def test_reservation_cancel_active_reservation_succeeds(
     rsv_id = reservation["reservation_id"]
 
     cancel = await client.delete(
-        f"/executions/{exec_id}/reservations/{rsv_id}?reason=test",
+        f"/api/executions/{exec_id}/reservations/{rsv_id}?reason=test",
     )
     assert cancel.status_code == 200, (
         f"cancel failed: {cancel.status_code} {cancel.json()}"
     )
     assert cancel.json()["status"] == "cancelled"
 
-    post_listing = await client.get(f"/executions/{exec_id}/reservations")
+    post_listing = await client.get("/api/reservations", params={"execution_id": exec_id})
     assert post_listing.status_code == 200
     remaining = [r["reservation_id"] for r in post_listing.json()]
     assert rsv_id not in remaining, (
@@ -262,12 +236,12 @@ async def test_reservation_cancel_twice_returns_404_on_second_call(
     rsv_id = reservation["reservation_id"]
 
     first = await client.delete(
-        f"/executions/{exec_id}/reservations/{rsv_id}?reason=test",
+        f"/api/executions/{exec_id}/reservations/{rsv_id}?reason=test",
     )
     assert first.status_code == 200
 
     second = await client.delete(
-        f"/executions/{exec_id}/reservations/{rsv_id}?reason=test",
+        f"/api/executions/{exec_id}/reservations/{rsv_id}?reason=test",
     )
     assert second.status_code == 404
 
@@ -291,13 +265,13 @@ async def test_reservation_cancel_cross_execution_returns_404(
     # still occupies pad1 -- the pre-submit check refuses with
     # StartLocationsOccupiedError.
     submit_b = await client.post(
-        "/executions", json={"workflow_name": "simple_workflow_b", "run_mode": "PURE_SIM"},
+        "/api/executions", json={"workflow_name": "simple_workflow_b", "run_mode": "CHECK_RUN"},
     )
     assert submit_b.status_code == 200
-    exec_b = submit_b.json()["id"]
+    exec_b = submit_b.json()["execution_id"]
 
     resp = await client.delete(
-        f"/executions/{exec_b}/reservations/{rsv_id}?reason=test",
+        f"/api/executions/{exec_b}/reservations/{rsv_id}?reason=test",
     )
     assert resp.status_code == 404, (
         f"cross-execution cancel must return 404; got {resp.status_code}"
@@ -305,9 +279,10 @@ async def test_reservation_cancel_cross_execution_returns_404(
     # Reservation still belongs to exec_a -- prove it by listing there.
     # (The reservation may have completed between catch and this check in
     # fast sim runs; only assert the positive case if still active.)
-    listing_a = await client.get(f"/executions/{exec_a}/reservations")
+    listing_a = await client.get("/api/reservations", params={"execution_id": exec_a})
     if listing_a.status_code == 200 and any(
         r["reservation_id"] == rsv_id for r in listing_a.json()
     ):
         # Good: the failed cross-execution attempt did not release it.
         pass
+

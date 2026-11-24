@@ -3,7 +3,7 @@
 Bring-up stopped homing devices by itself, so homing a handler before the first
 move of the day is the operator's own call. On the gateway path that call is
 resolved by name: the gate looks the advertised interface up in
-`NAME_TO_INTERFACE` and asks whether the command is on it. A name with no entry
+the command table and asks whether the command is on it. A name with no entry
 resolves to no class, so every command behind it reads as unsupported.
 
 An arm hid this. `home` also sits on `ITransporterDriver`, which IS mapped, so
@@ -13,16 +13,18 @@ a transporter kept working while a liquid handler -- which advertises
 
 import pytest
 
-from orca.devices.devices import LiquidHandlerProtocol
+from cheshire_drivers.device_setup import DeviceSetup
+from cheshire_drivers.driver_lookup import DriverRequest, build_sim_driver
+from cheshire_drivers.command_table import COMMANDS
 from orca.gateway.registry.capabilities import (
-    NAME_TO_INTERFACE,
     validate_capability_for_device,
 )
 from orca.gateway.remote_transporter_driver import RemoteTransporterDriver
 
 
 def _advertised_by_sim_handler() -> frozenset[str]:
-    return frozenset(type(LiquidHandlerProtocol("lh1").live_driver).interfaces)
+    """What orca-client advertises for a handler whose setup names no real driver: its simulator's interfaces."""
+    return frozenset(type(build_sim_driver(DriverRequest(name="lh1", kind="liquid_handler", setup=DeviceSetup()))).interfaces)
 
 
 def test_a_handler_that_advertises_homing_can_be_homed() -> None:
@@ -53,8 +55,8 @@ def test_an_arm_can_still_be_homed() -> None:
 def test_every_advertised_interface_resolves_to_a_class(advertised) -> None:
     """The general rule. An unmapped name is not a loud failure anywhere; it
     silently subtracts whatever commands sat behind it."""
-    unmapped = sorted(set(advertised()) - set(NAME_TO_INTERFACE))
+    unmapped = sorted(set(advertised()) - COMMANDS.interface_names())
     assert not unmapped, (
-        f"advertised {unmapped} with no NAME_TO_INTERFACE entry; the gate "
+        f"advertised {unmapped} with no interface in the command table; the gate "
         f"cannot resolve them and the commands behind them read as unsupported"
     )

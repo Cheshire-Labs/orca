@@ -2,7 +2,7 @@ from types import MappingProxyType
 from typing import List, Dict
 
 from orca.system.interfaces import IMethodTemplateRegistry, IWorkflowTemplateRegistry
-from orca.system.labware_registry_interfaces import ILabwareRegistry, ILabwareTemplateRegistry
+from orca.resource_models.labware_registry_interfaces import ILabwareRegistry, ILabwareTemplateRegistry
 from orca.resource_models.labware import LabwareInstance, LabwareTemplate
 from orca.system.interfaces import IThreadTemplateRegistry
 from orca.workflow_models.method_template import MethodTemplate, MethodTemplateNameCollisionError

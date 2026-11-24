@@ -3,9 +3,8 @@
 The gateway's websocket handshake is authenticated through an injected
 ``IConnectionAuthenticator``. orca-core ships ``NullConnectionAuthenticator``
 (allow-all): a single-node engine trusts its own LAN and needs no shared secret.
-A hosting layer (running the gateway remotely, at scale) stores its own
-authenticator on ``app.state.connection_authenticator`` to enforce a real check
-(e.g. a deployment secret).
+A hosting layer passes its own authenticator to ``create_gateway_router`` to
+enforce a real check (e.g. a deployment secret).
 """
 
 from typing import Optional, Protocol, runtime_checkable
@@ -20,13 +19,21 @@ class IConnectionAuthenticator(Protocol):
     implementation owns the whole decision, including whether a missing key is
     acceptable, so a single-node deployment can allow keyless localhost clients
     while a hosted deployment requires the secret.
+
+    ``may_claim`` runs once the client has said who it is, and decides whether
+    that key may use that client ID.
     """
 
     async def authenticate(self, api_key: Optional[str]) -> bool: ...
+
+    async def may_claim(self, api_key: Optional[str], client_id: str) -> bool: ...
 
 
 class NullConnectionAuthenticator:
     """Allow-all authenticator for standalone single-node operation."""
 
     async def authenticate(self, api_key: Optional[str]) -> bool:
+        return True
+
+    async def may_claim(self, api_key: Optional[str], client_id: str) -> bool:
         return True

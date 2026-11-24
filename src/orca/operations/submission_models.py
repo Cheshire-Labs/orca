@@ -1,3 +1,5 @@
+from orca.operations.binding import RestBinding, Route
+from orca.operations.route_tags import RouteTag
 """Wire models for the submission operations.
 
 Apart from `submission.py` because the Operation classes there take
@@ -5,25 +7,19 @@ Apart from `submission.py` because the Operation classes there take
 ever wanting the engine.
 """
 
+from orca.modes.sim_pacing import SIM_SPEEDUP_RANGE
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import Self
-from orca.daemon.schemas import LabwareGroupDTO, SubmissionDTO
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.operations.wire_models import LabwareGroupDTO, RunModeStr, SubmissionDTO
+from orca.modes.run_modes import WorkflowRunMode
 from orca.operations.state_models import UnsettledSubjectDTO
 from orca.runtime.status_models import SubmissionSnapshot
 from orca.variables.errors import OptionValue
 
 
 class SubmitExecutionRequest(BaseModel):
-    """Unified wire shape across all three surfaces.
-
-    Identical to a hosted deployment's pre-Phase-2 `SubmitExecutionRequest` and a
-    superset of orca-core's pre-Phase-2 `SubmissionSubmitRequest` —
-    `groups` defaults to None (legacy single-group path), and absent
-    `operator_id` / `deployment_profile` / non-default `batch_mode`
-    routes through the legacy `submit_workflow` codepath.
-    """
+    """One submission of a workflow. No `groups` submits it as one default group."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -40,8 +36,7 @@ class SubmitExecutionRequest(BaseModel):
             "collecting from N samples) coalesces into ONE instance "
             "per submission when `len(groups) > 1`; "
             "`GroupSharing.PER_GROUP` labware gets one instance per "
-            "group. Omit or pass null for the legacy single-group "
-            "default."
+            "group. Omit or pass null for one default group."
         ),
     )
     batch_mode: Literal["STANDALONE", "JOIN_EXISTING"] = Field(
@@ -73,7 +68,7 @@ class SubmitExecutionRequest(BaseModel):
             "registry afterwards does NOT affect the running execution."
         ),
     )
-    run_mode: Literal["PURE_SIM", "DEVICE_SIM", "LIVE"] = Field(
+    run_mode: Literal["CHECK_RUN", "SIM", "LIVE"] = Field(
         ...,
         description=(
             "Submit-time selector for the workflow run mode. REQUIRED: "
@@ -83,38 +78,22 @@ class SubmitExecutionRequest(BaseModel):
             "at the engine layer. The resolved value is stamped on the "
             "returned response so the caller can confirm which mode "
             "this submission actually runs under. Choose from "
-            "PURE_SIM / DEVICE_SIM / LIVE."
+            "CHECK_RUN / SIM / LIVE."
         ),
     )
-    acknowledge_warnings: bool = Field(
-        default=False,
-        description=(
-            "Bypasses the LIVE-with-sim-overrides gate added in "
-            "the run mode. When a LIVE submission references "
-            "devices whose topology declares ``sim_override``, the "
-            "runtime raises "
-            "``LiveSubmissionWithSimOverridesUnacknowledgedError`` "
-            "unless this flag is set. CLI surfaces should map "
-            "``--confirm`` to this field."
-        ),
-    )
-    sim_time_scale: float | None = Field(
+    sim_speedup: float | None = Field(
         default=None,
-        ge=0,
+        ge=SIM_SPEEDUP_RANGE[0], le=SIM_SPEEDUP_RANGE[1],
         allow_inf_nan=False,
         strict=True,
         description=(
-            "Simulated time scale for this run: wall seconds per real second "
-            "of a step. 1 is real time, 0.1 is ten times faster, 0 is no "
-            "pacing. Omit for the deployment default (0). Only for PURE_SIM "
-            "and DEVICE_SIM: a LIVE submission that carries it is refused, "
-            "and so is a JOIN_EXISTING one (change the execution's scale with "
-            "set-execution-time-scale instead)."
+            "How many times faster than real time this simulated run goes, "
+            "0.1 to 1000: 1 is real time, 100 a hundred times faster. Omit for "
+            "the server's default, which each server sets (a local install uses 100). "
+            "Only for SIM: a LIVE or CHECK_RUN submission that carries it "
+            "is refused, and so is a JOIN_EXISTING one (change the execution's "
+            "speed-up with PUT /api/executions/{execution_id}/sim-speedup instead)."
         ),
-    )
-    reason: str | None = Field(
-        default=None,
-        description="Why this run was submitted. Written onto the audit row.",
     )
 
 
@@ -137,6 +116,8 @@ class SubmitExecutionResponse(BaseModel):
     run_mode: WorkflowRunMode
     operator_id: str | None = None
     deployment_profile: str | None = None
+    sim_speedup: float | None = None
+    """The execution's sim speed-up: 1 is real time. Null for a LIVE run and for a simulated run that does not wait."""
     unsettled: list[UnsettledSubjectDTO] = Field(default_factory=list)
     """What nobody has settled, as of this submission.
 
@@ -149,29 +130,22 @@ class SubmitExecutionResponse(BaseModel):
     def from_snapshot(
         cls, snap: SubmissionSnapshot,
         unsettled: list[UnsettledSubjectDTO] | None = None,
+        sim_speedup: float | None = None,
     ) -> Self:
         return cls(
             id=snap.id,
             execution_id=snap.execution_id,
             workflow_name=snap.workflow_name,
             group_count=snap.group_count,
-            status=snap.status.value if hasattr(snap.status, "value") else str(snap.status),
-            batch_mode=snap.batch_mode.value if hasattr(snap.batch_mode, "value") else str(snap.batch_mode),
+            status=snap.status,
+            batch_mode=snap.batch_mode,
             submitted_at=snap.submitted_at,
             run_mode=snap.run_mode,
             operator_id=snap.operator_id,
             deployment_profile=snap.deployment_profile,
+            sim_speedup=sim_speedup,
             unsettled=list(unsettled or []),
         )
-
-
-class _LiveSimOverrideDeviceExtra(BaseModel):
-    """One ``extras.devices[]`` row on the
-    ``LIVE_SUBMISSION_WITH_SIM_OVERRIDES_UNACKNOWLEDGED`` envelope."""
-    model_config = ConfigDict(frozen=True, extra="forbid")
-    name: str
-    sim_override: str
-    resolved_mode: str
 
 
 class _OccupiedSlotExtra(BaseModel):
@@ -179,6 +153,7 @@ class _OccupiedSlotExtra(BaseModel):
     ``START_LOCATION_OCCUPIED`` envelope."""
     model_config = ConfigDict(frozen=True, extra="forbid")
     position_id: str
+    existing_labware_id: str
     existing_labware_name: str | None
     existing_template_name: str | None
     source: str
@@ -206,3 +181,102 @@ class GetSubmissionRequest(BaseModel):
 class GetSubmissionResponse(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     submission: SubmissionDTO
+
+
+class MethodExecutionRequest(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    workflow_name: str = Field(
+        ...,
+        pattern=r"^[a-z_][a-z0-9_]*$",
+        max_length=64,
+        description="Registered workflow that owns the method.",
+    )
+    method_name: str = Field(
+        ...,
+        pattern=r"^[a-z_][a-z0-9_]*$",
+        max_length=64,
+        description="Method template name within that workflow's bundle.",
+    )
+    labware_start: dict[str, str] = Field(
+        ..., description="Map of labware-template-name to start location-name.",
+    )
+    labware_end: dict[str, str] = Field(
+        ..., description="Map of labware-template-name to end location-name.",
+    )
+    variables: dict[str, OptionValue] = Field(default_factory=dict)
+    deployment_profile: str | None = Field(
+        default=None,
+        description="Optional registered deployment profile, applied once at submit time as for a workflow submission.",
+    )
+    event_hooks: list[str] | None = Field(
+        default=None,
+        description=(
+            "Which of the workflow's wf.on handlers the run fires, by event name. Omitted fires every "
+            "handler; [] fires none. An event the workflow has no handler for is refused."
+        ),
+    )
+    run_mode: RunModeStr = Field(
+        ...,
+        description=(
+            "Required per-submission run mode: CHECK_RUN, SIM, or "
+            "LIVE. Same selector as workflow submission. Under LIVE each device "
+            "runs as its own sim or live setting. No deployment-level fallback."
+        ),
+    )
+    sim_speedup: float | None = Field(
+        default=None,
+        ge=SIM_SPEEDUP_RANGE[0], le=SIM_SPEEDUP_RANGE[1],
+        allow_inf_nan=False,
+        strict=True,
+        description=(
+            "How many times faster than real time this simulated run goes, as for a workflow "
+            "submission. Only for SIM."
+        ),
+    )
+
+
+class MethodExecutionResponse(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    execution_id: str
+    workflow_name: str
+    status: str
+
+
+SUBMIT_EXECUTION_ROUTE = Route(
+    SubmitExecutionRequest,
+    SubmitExecutionResponse,
+    RestBinding(
+        method="POST", path="/executions", tag=RouteTag.EXECUTIONS,
+        drives_device=True,
+    ),
+)
+
+
+LIST_SUBMISSIONS_ROUTE = Route(
+    ListSubmissionsRequest,
+    ListSubmissionsResponse,
+    RestBinding(
+        method="GET", path="/submissions", tag=RouteTag.SUBMISSIONS,
+    ),
+)
+
+
+GET_SUBMISSION_ROUTE = Route(
+    GetSubmissionRequest,
+    GetSubmissionResponse,
+    RestBinding(
+        method="GET", path="/submissions/{submission_id}", tag=RouteTag.SUBMISSIONS,
+    ),
+)
+
+
+SUBMIT_METHOD_EXECUTION_ROUTE = Route(
+    MethodExecutionRequest,
+    MethodExecutionResponse,
+    RestBinding(
+        method="POST", path="/method-executions", tag=RouteTag.EXECUTIONS,
+        status_code=201,
+        drives_device=True,
+    ),
+)

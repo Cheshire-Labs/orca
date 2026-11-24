@@ -9,20 +9,24 @@ even name the device. `IncidentCategory.DEVICE_INIT_FAILED` and
 recorded one.
 """
 
+from orca.config import OrcaConfig
 import asyncio
-import contextlib
 from collections.abc import AsyncGenerator
 
 import orca.orca as orca
+from orca.system.errors import DevicesNotReadyError
+import pytest
 from orca.resource_models.resource_pool import ResourcePool
 from orca.runtime.incident_store import (
     DeviceInitFailedDetail,
     IncidentCategory,
     RecoveryAction,
 )
-from orca.runtime.registries import NullGatewayRegistry
-from orca.runtime.run_modes import WorkflowRunMode
+from tests.no_devices import NullGatewayRegistry
+from orca.modes.run_modes import WorkflowRunMode
 from orca.runtime.system_runtime import SystemRuntime
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
 from orca.sdk.events import EventBus
 from orca.sdk.system import ResourceRegistry, SystemMap
 from orca.sdk.workflow import MethodTemplate, WorkflowTemplate
@@ -44,6 +48,8 @@ from tests.test_helpers import (
     create_test_transporter,
     wire_system_map,
 )
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 # Deliberately does not name the device: what the runtime adds is the point.
 INIT_ERROR = "controller did not answer"
@@ -92,14 +98,17 @@ async def _system_with(workflow_name: str, shaker: UniversalMockDevice) -> ISyst
     builder = SdkToSystemBuilder(
         name=f"{workflow_name}_system", description="",
         labwares=[plate], resources_registry=registry,
-        system_map=system_map, workflows=[workflow], event_bus=EventBus(),
+        system_map=system_map, workflows=[workflow], event_bus=EventBus(), config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     return builder.get_system()
 
 
-def _runtime_over(system: ISystem) -> SystemRuntime:
-    return SystemRuntime(
+async def _runtime_over(system: ISystem) -> SystemRuntime:
+    return await memory_runtime(
         system,
         gateway_registry=NullGatewayRegistry(),
         connection_source=_live_connection_source(),
@@ -113,13 +122,6 @@ async def _wait_for_bringup(driver: CountingInitDriver) -> None:
             return
         await asyncio.sleep(0.05)
     raise AssertionError("the device was never initialized")
-
-
-async def _run_to_completion(runtime: SystemRuntime, execution_id: str) -> None:
-    """Wait out the execution however it ends. A bring-up failure raises out of
-    the execution task, and these tests are about what it leaves behind."""
-    with contextlib.suppress(Exception):
-        await runtime._executions[execution_id].task
 
 
 class TestTheTypedError:
@@ -137,15 +139,13 @@ class TestTheTypedError:
 
 class TestBringUpFailureIsDeclared:
     async def test_a_device_that_will_not_come_up_records_an_incident(self) -> None:
-        """The bench failure, as a test: the incidents table was empty."""
+        """The bench failure, as a test: the incidents table was empty. The run is now refused at its start."""
         shaker = UniversalMockDevice("shaker1", driver=AlwaysFailsInitDriver("shaker1"))
-        runtime = _runtime_over(await _system_with("wf_init_fail", shaker))
+        runtime = await _runtime_over(await _system_with("wf_init_fail", shaker))
         await runtime.start()
         try:
-            record = await runtime.submit_workflow(
-                "wf_init_fail", mode=WorkflowRunMode.LIVE,
-            )
-            await _run_to_completion(runtime, record.id)
+            with pytest.raises(DevicesNotReadyError):
+                await runtime.submit_workflow("wf_init_fail", mode=WorkflowRunMode.LIVE)
             incidents = await runtime.incidents.list(
                 category=IncidentCategory.DEVICE_INIT_FAILED,
             )
@@ -160,29 +160,23 @@ class TestBringUpFailureIsDeclared:
                 "operator cannot tell which one to go look at"
             )
             assert INIT_ERROR in incident.detail.driver_error
-            assert incident.execution_id == record.id, (
-                "the incident must link to the execution it killed"
-            )
-            assert incident.recovery_action is RecoveryAction.RESTART_EXECUTION
+            assert incident.execution_id is None, "a refused run has no execution"
+            assert incident.recovery_action is RecoveryAction.RESUBMIT, "nothing ran, so there is no execution to restart"
         finally:
             await runtime.shutdown()
 
-    async def test_the_execution_still_fails(self) -> None:
-        """Recording the incident must not swallow the failure."""
+    async def test_the_refusal_names_the_device_and_starts_no_execution(self) -> None:
+        """Recording the incident must not swallow the refusal."""
         shaker = UniversalMockDevice("shaker1", driver=AlwaysFailsInitDriver("shaker1"))
-        runtime = _runtime_over(await _system_with("wf_init_fail_phase", shaker))
+        runtime = await _runtime_over(await _system_with("wf_init_fail_phase", shaker))
         await runtime.start()
         try:
-            record = await runtime.submit_workflow(
-                "wf_init_fail_phase", mode=WorkflowRunMode.LIVE,
+            with pytest.raises(DevicesNotReadyError) as refused:
+                await runtime.submit_workflow("wf_init_fail_phase", mode=WorkflowRunMode.LIVE)
+            assert "shaker1" in str(refused.value), (
+                "the refusal has to name the device, since that is what a client reads first"
             )
-            await _run_to_completion(runtime, record.id)
-            execution = runtime._executions[record.id]
-            assert execution.phase.name == "FAILED"
-            assert "shaker1" in str(execution.error), (
-                "the execution error has to name the device too, since that is "
-                f"what a client reads first; got {execution.error!r}"
-            )
+            assert runtime.list_executions() == []
         finally:
             await runtime.shutdown()
 
@@ -195,7 +189,7 @@ class TestBringUpFailureIsDeclared:
         """
         driver = CountingInitDriver("shaker1")
         shaker = UniversalMockDevice("shaker1", driver=driver)
-        runtime = _runtime_over(await _system_with("wf_init_ok", shaker))
+        runtime = await _runtime_over(await _system_with("wf_init_ok", shaker))
         await runtime.start()
         try:
             await runtime.submit_workflow("wf_init_ok", mode=WorkflowRunMode.LIVE)

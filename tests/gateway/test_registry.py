@@ -12,7 +12,6 @@ from cheshire_drivers.gateway_protocol import (
     DeviceStatusInfo,
 )
 from orca.gateway.registry import DeviceConnectionTracker
-from orca.gateway.registry.connection_tracker import DeviceNameConflictError
 
 # Test UUIDs for multi-tenant testing
 TEST_DEPLOYMENT_ID_1 = UUID("11111111-1111-1111-1111-111111111111")
@@ -97,37 +96,8 @@ class TestDeviceConnectionTracker:
         assert registry.get_active_device_count() == 0
         assert await registry.get_device("shaker_2") is None
 
-    async def test_a_second_client_cannot_claim_a_device_another_one_holds(self, registry):
-        """One instrument, one connection. Two device bridges advertising the
-        same device name is a misconfiguration, not a handover: both sockets
-        stay open, both believe they own it, and every later command silently
-        routes to whichever registered last. Refuse the newcomer and leave the
-        incumbent in place."""
-        held = [DeviceConnectInfo.model_validate(
-            {"type": "transporter", "name": "pf400_1", "interfaces": ["ITransporter"]}
-        )]
-
-        await registry.register_client(
-            client_id="boston-molbio-client", site="boston", lab="molbio",
-            workcell=None, devices=held,
-        )
-
-        with pytest.raises(DeviceNameConflictError) as caught:
-            await registry.register_client(
-                client_id="cambridge-cellculture-client", site="cambridge",
-                lab="cellculture", workcell=None, devices=held,
-            )
-
-        assert "pf400_1" in str(caught.value)
-        assert "boston-molbio-client" in str(caught.value), "name the incumbent"
-
-        # The incumbent still owns it, and the newcomer left no trace.
-        assert await registry.get_client_for_device("pf400_1") == "boston-molbio-client"
-        assert registry.get_active_client_count() == 1
-
     async def test_the_same_client_reconnecting_keeps_its_own_devices(self, registry):
-        """A reconnect re-advertises the same names under the same client id.
-        That is the normal path and must not be mistaken for a second claim."""
+        """A reconnect re-advertises the same names under the same client id."""
         devices = [DeviceConnectInfo.model_validate(
             {"type": "shaker", "name": "shaker_1", "interfaces": ["IShaker"]}
         )]
@@ -152,7 +122,7 @@ class TestDeviceConnectionTracker:
             client_id="boston-molbio-client", site="boston", lab="molbio",
             workcell=None, devices=devices,
         )
-        # Simulate a lapsed heartbeat: the tracker judges liveness off last_seen.
+        # Simulate a lapsed heartbeat.
         stale = datetime.now(timezone.utc) - timedelta(seconds=90)
         registry._devices["shaker_1"].snapshot.last_seen = stale
 
@@ -210,30 +180,6 @@ class TestDeviceConnectionTracker:
         # Non-existent device
         client_id = await registry.get_client_for_device("nonexistent")
         assert client_id is None
-
-    async def test_peek_interfaces(self, registry):
-        """Sync read of a device's advertised interface set, used by the
-        device factory to pick a liquid handler's per-instance profile.
-        """
-        await registry.register_client(
-            client_id="lab1-client",
-            site="boston",
-            lab="molbio",
-            workcell=None,
-            devices=[
-                DeviceConnectInfo.model_validate({
-                    "type": "liquid_handler",
-                    "name": "mlstar",
-                    "interfaces": ["ILiquidHandler", "IProtocolRunner"],
-                }),
-            ],
-        )
-
-        assert registry.peek_interfaces("mlstar") == frozenset(
-            {"ILiquidHandler", "IProtocolRunner"}
-        )
-        # Unknown device -> None (cold start; factory falls back to default).
-        assert registry.peek_interfaces("nonexistent") is None
 
     async def test_list_devices(self, registry):
         """Test listing devices with filters."""
@@ -302,6 +248,7 @@ class TestDeviceConnectionTracker:
         assert fresh.link_mode is None
 
         await registry.apply_agent_report(
+            "lab1-client",
             "shaker_1",
             DeviceStatusInfo(
                 status="busy",
@@ -319,7 +266,7 @@ class TestDeviceConnectionTracker:
     async def test_an_open_simulator_link_is_recorded_as_the_simulators(self, registry):
         """The roster answers no run mode, so it must say which driver answered.
 
-        A DEVICE_SIM bench answers every command, and a reader shown only
+        A SIM bench answers every command, and a reader shown only
         "connected" would report a simulator as the instrument.
         """
         await registry.register_client(
@@ -335,12 +282,13 @@ class TestDeviceConnectionTracker:
         )
 
         await registry.apply_agent_report(
+            "lab1-client",
             "shaker_1",
             DeviceStatusInfo(
                 status="ready",
                 links={
                     "LIVE": DeviceLinkInfo(is_connected=False, is_initialized=False),
-                    "DEVICE_SIM": DeviceLinkInfo(
+                    "SIM": DeviceLinkInfo(
                         is_connected=True, is_initialized=True,
                     ),
                 },
@@ -350,11 +298,12 @@ class TestDeviceConnectionTracker:
         device = await registry.get_device("shaker_1")
         assert device is not None
         assert device.is_connected is True
-        assert device.link_mode == "DEVICE_SIM"
+        assert device.link_mode == "SIM"
 
     async def test_a_report_for_an_unknown_device_is_dropped(self, registry):
         """A device nobody advertised has no row to write into."""
         await registry.apply_agent_report(
+            "lab1-client",
             "ghost_1",
             DeviceStatusInfo(
                 status="ready",
@@ -468,3 +417,16 @@ class TestDeviceConnectionTracker:
         client2 = await registry.get_client_for_device("lab2-shaker-01")
         assert client1 == "lab1-client"
         assert client2 == "lab2-client"
+
+
+async def test_a_device_that_moved_stays_with_the_client_that_now_runs_it() -> None:
+    """The new PC may answer its assignment before the old PC answers that it dropped the device."""
+    registry = DeviceConnectionTracker()
+    shaker = DeviceConnectInfo.model_validate({"type": "shaker", "name": "shaker_1", "interfaces": ["IShaker"]})
+    await registry.register_client(client_id="old_pc", site="s", lab="l", workcell=None, devices=[shaker])
+    await registry.register_client(client_id="new_pc", site="s", lab="l", workcell=None, devices=[shaker])
+
+    forgotten = await registry.forget_devices("old_pc", ["shaker_1"])
+
+    assert forgotten == []
+    assert await registry.get_client_for_device("shaker_1") == "new_pc"

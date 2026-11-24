@@ -10,7 +10,7 @@ Both verbs work against the local daemon and a cloud deployment.
 import typer
 
 from orca.cli import output, resolve
-from orca.cli.backend import active_backend, cloud_client, local_client
+from orca.cli.backend import get_client
 
 
 app = typer.Typer(
@@ -34,10 +34,7 @@ def list_pending(
 
     Global by default (all executions). Pass --execution to scope to one.
     """
-    if active_backend() == "cloud":
-        client = cloud_client()
-    else:
-        client = local_client()
+    client = get_client()
     if execution is not None and all_executions:
         output.fail(
             "--all is mutually exclusive with --execution",
@@ -81,10 +78,7 @@ def confirm(
 
     Fires immediately, with no confirmation prompt.
     """
-    if active_backend() == "cloud":
-        client = cloud_client()
-    else:
-        client = local_client()
+    client = get_client()
     ids = [r.id for r in client.list_executions()]
     eid = resolve.resolve_execution_id(execution, ids)
     client.manual_step_confirm(eid, step_id, reason=reason)

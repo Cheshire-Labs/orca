@@ -8,13 +8,14 @@ the pause is not consulted again until the action finishes. A manual step is
 the safest point the thread ever occupies, so the pause is honoured there.
 """
 
+from orca.config import OrcaConfig
 import asyncio
 from typing import AsyncGenerator
 
 import pytest
 
 import orca.orca as orca
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from orca.runtime.system_runtime import ExecutionState, SystemRuntime
 from orca.resource_models.labware import LabwareTemplate
 from orca.resource_models.resource_pool import ResourcePool
@@ -40,6 +41,10 @@ from tests.test_helpers import (
     wait_for_runtime_condition,
     wire_system_map,
 )
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 INSTRUCTION = "swap the reagent trough, then confirm"
 
@@ -110,10 +115,13 @@ async def _build_manual_step_system() -> _Fixture:
     builder = SdkToSystemBuilder(
         name="test_system", description="", labwares=[plate],
         resources_registry=registry, system_map=system_map,
-        workflows=[workflow], event_bus=event_bus,
+        workflows=[workflow], event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
-    runtime = SystemRuntime(builder.get_system(), event_bus=event_bus)
+    runtime = await memory_runtime(builder.get_system(), event_bus=event_bus)
     return _Fixture(runtime, workflow, device, pool, plate)
 
 
@@ -133,7 +141,7 @@ async def test_confirmed_manual_step_holds_the_body_until_resume() -> None:
     f = await _build_manual_step_system()
     await f.runtime.start()
     record = await f.runtime.submit_workflow(
-        f.workflow.name, mode=WorkflowRunMode.PURE_SIM,
+        f.workflow.name, mode=WorkflowRunMode.CHECK_RUN,
     )
     await wait_for_threads(f.runtime, record.id)
     step_id = await _await_pending_step(f.runtime, record.id)
@@ -162,7 +170,7 @@ async def test_unpaused_manual_step_confirm_runs_straight_on() -> None:
     f = await _build_manual_step_system()
     await f.runtime.start()
     record = await f.runtime.submit_workflow(
-        f.workflow.name, mode=WorkflowRunMode.PURE_SIM,
+        f.workflow.name, mode=WorkflowRunMode.CHECK_RUN,
     )
     await wait_for_threads(f.runtime, record.id)
     step_id = await _await_pending_step(f.runtime, record.id)
@@ -181,7 +189,7 @@ async def test_thread_held_after_confirm_is_visibly_paused() -> None:
     f = await _build_manual_step_system()
     await f.runtime.start()
     record = await f.runtime.submit_workflow(
-        f.workflow.name, mode=WorkflowRunMode.PURE_SIM,
+        f.workflow.name, mode=WorkflowRunMode.CHECK_RUN,
     )
     threads = await wait_for_threads(f.runtime, record.id)
     step_id = await _await_pending_step(f.runtime, record.id)
@@ -214,7 +222,7 @@ async def test_abort_reaches_a_thread_held_after_confirm() -> None:
     f = await _build_manual_step_system()
     await f.runtime.start()
     record = await f.runtime.submit_workflow(
-        f.workflow.name, mode=WorkflowRunMode.PURE_SIM,
+        f.workflow.name, mode=WorkflowRunMode.CHECK_RUN,
     )
     await wait_for_threads(f.runtime, record.id)
     step_id = await _await_pending_step(f.runtime, record.id)
@@ -243,7 +251,7 @@ async def test_held_thread_accepts_a_mutation_the_running_body_refuses() -> None
     f = await _build_manual_step_system()
     await f.runtime.start()
     record = await f.runtime.submit_workflow(
-        f.workflow.name, mode=WorkflowRunMode.PURE_SIM,
+        f.workflow.name, mode=WorkflowRunMode.CHECK_RUN,
     )
     threads = await wait_for_threads(f.runtime, record.id)
     thread_id = threads[0].id
@@ -282,7 +290,7 @@ async def test_held_thread_can_have_its_method_aborted() -> None:
     f = await _build_manual_step_system()
     await f.runtime.start()
     record = await f.runtime.submit_workflow(
-        f.workflow.name, mode=WorkflowRunMode.PURE_SIM,
+        f.workflow.name, mode=WorkflowRunMode.CHECK_RUN,
     )
     threads = await wait_for_threads(f.runtime, record.id)
     thread_id = threads[0].id

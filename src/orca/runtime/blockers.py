@@ -25,7 +25,13 @@ from enum import Enum
 from typing import Protocol
 
 from orca.runtime.incident_store import IncidentCategory, SystemIncident
-from orca.runtime.remedies import Remedy, RemedyContext, RemedyStep, remedies_for
+from orca.runtime.remedies import (
+    Remedy,
+    RemedyAction,
+    RemedyContext,
+    RemedyStep,
+    remedies_for,
+)
 from orca.runtime.status_models import (
     DeviceSnapshot,
     ExecutionDetail,
@@ -35,6 +41,7 @@ from orca.runtime.status_models import (
 )
 from orca.workflow_models.status_enums import (
     ESCALATION_ORDER,
+    NARROW_ABORTS_END_THE_THREAD_AT,
     LabwareThreadStatus,
     PauseSite,
     RecoveryDecision,
@@ -49,6 +56,7 @@ class BlockerKind(str, Enum):
     THREAD_ERROR_PAUSE = "THREAD_ERROR_PAUSE"
     EXECUTION_PAUSED = "EXECUTION_PAUSED"
     WAITING_ON_A_PARKED_HOLDER = "WAITING_ON_A_PARKED_HOLDER"
+    WAITING_ON_UNOWNED_LABWARE = "WAITING_ON_UNOWNED_LABWARE"
     MANUAL_PLACE = "MANUAL_PLACE"
     MANUAL_REMOVE = "MANUAL_REMOVE"
     MANUAL_STEP = "MANUAL_STEP"
@@ -63,8 +71,8 @@ class BlockerSeverity(str, Enum):
 
 
 _VERB_LABELS: dict[RecoveryDecision, str] = {
-    RecoveryDecision.RETRY: "Retry the whole action",
-    RecoveryDecision.RETRY_OP: "Retry just the device call",
+    RecoveryDecision.RETRY: "Retry the step that failed",
+    RecoveryDecision.RETRY_ACTION: "Retry the whole action",
     RecoveryDecision.CONTINUE: "I dealt with it, carry on",
     RecoveryDecision.ABORT_ACTION: "Drop this action",
     RecoveryDecision.ABORT_METHOD: "Drop the rest of this method",
@@ -73,24 +81,39 @@ _VERB_LABELS: dict[RecoveryDecision, str] = {
 
 _VERB_EXPLAIN: dict[RecoveryDecision, str] = {
     RecoveryDecision.RETRY: (
-        "Re-runs the action body from the top, so every device call it already "
-        "completed runs a second time."
+        "Repeats only the step that failed. Inside an action that is the "
+        "device call: the body stays parked and the work it already did stays done."
     ),
-    RecoveryDecision.RETRY_OP: (
-        "Re-runs only the call that failed. The body stays parked and the work "
-        "it already did stays done."
+    RecoveryDecision.RETRY_ACTION: (
+        "Re-runs the action body from the top, so every device call it already "
+        "completed runs a second time. Offered where the action's own code failed."
     ),
     RecoveryDecision.CONTINUE: (
         "Says a person has dealt with it and the run may proceed. Records that "
         "state past this point is unverified."
     ),
-    RecoveryDecision.ABORT_ACTION: "Discards this action as work that did not happen.",
+    RecoveryDecision.ABORT_ACTION: (
+        "Ends this action here. Every command it already ran stays on the record."
+    ),
     RecoveryDecision.ABORT_METHOD: "Abandons the rest of this method.",
     RecoveryDecision.ABORT_THREAD: (
-        "Ends this plate's journey here. The execution finishes at ABORTED, "
-        "not COMPLETED."
+        "Ends this plate's journey here. The execution finishes at PARTIAL_COMPLETED if "
+        "another plate completes, at FAILED if another plate failed, otherwise at ABORTED."
     ),
 }
+
+_RETRIES = frozenset({RecoveryDecision.RETRY, RecoveryDecision.RETRY_ACTION})
+
+_NARROW_ABORTS = frozenset({
+    RecoveryDecision.ABORT_ACTION,
+    RecoveryDecision.ABORT_METHOD,
+})
+
+_NARROW_ABORT_ENDS_THE_PLATE = (
+    "No action is bound at this pause, so this ends this plate's journey here. "
+    "The execution finishes at PARTIAL_COMPLETED if another plate completes, at FAILED if another plate "
+    "failed, otherwise at ABORTED."
+)
 
 _PARKED_STATUSES = frozenset({
     LabwareThreadStatus.PAUSED.value,
@@ -99,6 +122,7 @@ _PARKED_STATUSES = frozenset({
 })
 
 _RESERVATION_WAIT_STATUSES = frozenset({
+    LabwareThreadStatus.AWAITING_START_LOCATION.value,
     LabwareThreadStatus.AWAITING_ACTION_RESERVATION.value,
     LabwareThreadStatus.AWAITING_MOVE_RESERVATION.value,
     LabwareThreadStatus.AWAITING_MOVE_TARGET_AVAILABILITY.value,
@@ -109,6 +133,7 @@ _SYSTEM_PAUSE_CATEGORIES = frozenset({
     IncidentCategory.ORPHANED_BACKLOG,
     IncidentCategory.UNRESOLVABLE_DEADLOCK,
     IncidentCategory.RESERVATION_DEADLOCK,
+    IncidentCategory.RECORD_NOT_SAVED,
 })
 
 
@@ -141,6 +166,14 @@ class Blocker:
     """
 
 
+@dataclass(frozen=True)
+class LabwareOccupant:
+    """The labware standing at one position."""
+
+    labware_id: str
+    labware_name: str
+
+
 class BlockerSources(Protocol):
     """The reads the derivation needs. ``SystemRuntime`` satisfies it."""
 
@@ -149,6 +182,7 @@ class BlockerSources(Protocol):
     def blocker_pending_manual_steps(self) -> list[PendingManualStepRecord]: ...
     def blocker_reservations(self) -> list[ReservationSnapshot]: ...
     async def blocker_open_incidents(self) -> list[SystemIncident]: ...
+    def blocker_occupants(self) -> dict[str, LabwareOccupant]: ...
 
 
 _KIND_ORDER: dict[BlockerKind, int] = {
@@ -157,10 +191,11 @@ _KIND_ORDER: dict[BlockerKind, int] = {
     BlockerKind.THREAD_ERROR_PAUSE: 2,
     BlockerKind.EXECUTION_PAUSED: 3,
     BlockerKind.WAITING_ON_A_PARKED_HOLDER: 4,
-    BlockerKind.MANUAL_PLACE: 5,
-    BlockerKind.MANUAL_REMOVE: 6,
-    BlockerKind.MANUAL_STEP: 7,
-    BlockerKind.DEVICE_EXTERNAL_CONTROL: 8,
+    BlockerKind.WAITING_ON_UNOWNED_LABWARE: 5,
+    BlockerKind.MANUAL_PLACE: 6,
+    BlockerKind.MANUAL_REMOVE: 7,
+    BlockerKind.MANUAL_STEP: 8,
+    BlockerKind.DEVICE_EXTERNAL_CONTROL: 9,
 }
 
 
@@ -198,11 +233,10 @@ def _recover_step(
             "thread_id": thread_id,
             "decision": decision.value,
         },
-        mcp_tool="operations_recover_thread",
-        rest="POST /api/operations/recover-thread",
+        action=RemedyAction.RECOVER_THREAD,
         cli=(
-            f"orca thread recover {execution_id} {thread_id} "
-            f"--decision {decision.value}"
+            f"orca execution thread recover {execution_id} {thread_id} "
+            f"{decision.cli_word}"
         ),
     )
 
@@ -226,35 +260,44 @@ def _bare_verb_remedies(
         (RecoveryDecision(d) for d in thread.honoured_decisions),
         key=ESCALATION_ORDER.index,
     ):
-        if decision is RecoveryDecision.RETRY_OP and thread.paused_device_command is None:
+        if (
+            decision is RecoveryDecision.RETRY and site is PauseSite.DEVICE_OP
+            and thread.paused_device_command is None
+        ):
             continue
         explain = _VERB_EXPLAIN[decision]
+        if decision is RecoveryDecision.RETRY and site is PauseSite.COMMAND_SAVE:
+            explain = (
+                "Saves again what the device answered. The command already ran, so "
+                "nothing is sent to the device."
+            )
         if decision is RecoveryDecision.CONTINUE and site is PauseSite.MOVE:
             explain = (
                 "Accepted only once the ledger puts the plate at the move's "
                 "target. Record the position first."
             )
-        recommend = not any_named and _is_default_verb(decision, thread)
+        if decision in _NARROW_ABORTS and site in NARROW_ABORTS_END_THE_THREAD_AT:
+            explain = _NARROW_ABORT_ENDS_THE_PLATE
+        recommend = not any_named and _is_default_verb(decision, site)
         out.append(
             _one_step(
                 _recover_step(decision, execution_id, thread.id),
                 explain,
                 recommended=recommend,
-                confirm=decision is not RecoveryDecision.RETRY,
+                confirm=decision not in _RETRIES or site is PauseSite.DEVICE_OP,
             ),
         )
     return tuple(out)
 
 
-def _is_default_verb(decision: RecoveryDecision, thread: ThreadSnapshot) -> bool:
+def _is_default_verb(decision: RecoveryDecision, site: PauseSite) -> bool:
     """The retry that fits, when no named remedy claimed the failure.
 
-    ``paused_device_command`` is the condition the runtime judges RETRY_OP on,
-    so a non-null value means the op-level retry is the one that will be
-    accepted and the one that does not re-run work the body already did.
+    RETRY everywhere but an action body, where no step failed and the action
+    itself is the only thing to repeat.
     """
-    if thread.paused_device_command is not None:
-        return decision is RecoveryDecision.RETRY_OP
+    if site is PauseSite.ACTION_BODY:
+        return decision is RecoveryDecision.RETRY_ACTION
     return decision is RecoveryDecision.RETRY
 
 
@@ -264,9 +307,8 @@ def _device_fault_blocker(device: DeviceSnapshot) -> Blocker:
     clear = RemedyStep(
         verb="device.clear_fault",
         label="Clear the fault",
-        args={"device_name": device.name},
-        mcp_tool="operations_clear_device_fault",
-        rest="POST /api/operations/clear-device-fault",
+        args={"device_id": device.name},
+        action=RemedyAction.CLEAR_DEVICE_FAULT,
         cli=f"orca device clear-fault {device.name}",
     )
     remedies: list[Remedy] = []
@@ -287,18 +329,16 @@ def _device_fault_blocker(device: DeviceSnapshot) -> Blocker:
                     RemedyStep(
                         verb="device.compare_deck",
                         label="See where the plate actually is",
-                        args={"device_name": device.name},
-                        mcp_tool="operations_compare_deck",
-                        rest="POST /api/operations/compare-deck",
+                        args={"device_id": device.name},
+                        action=RemedyAction.COMPARE_DECK,
                         cli=f"orca device compare-deck {device.name}",
                     ),
                     RemedyStep(
                         verb="labware.edit_location",
                         label="Record where the plate is",
                         args={},
-                        mcp_tool="operations_edit_labware_location",
-                        rest="POST /api/operations/edit-labware-location",
-                        cli="orca labware edit-location <labware_id> <location>",
+                        action=RemedyAction.EDIT_LABWARE_LOCATION,
+                        cli="orca labware edit-location <labware_id> <location> --reason <reason>",
                         needs=("labware_id", "location", "reason"),
                     ),
                     clear,
@@ -346,9 +386,8 @@ def _external_control_blocker(device: DeviceSnapshot) -> Blocker:
                 RemedyStep(
                     verb="device.release_external_control",
                     label="Give it back to the workflow",
-                    args={"device_name": device.name},
-                    mcp_tool="operations_release_device_control",
-                    rest="POST /api/operations/release-device-control",
+                    args={"device_id": device.name},
+                    action=RemedyAction.RELEASE_DEVICE_CONTROL,
                     cli=f"orca device release-control {device.name}",
                 ),
                 "The workflow can drive it again from the next dispatch.",
@@ -398,9 +437,9 @@ def _thread_error_blocker(
         RemedyContext(
             execution_id=detail.id,
             thread_id=thread.id,
+            honoured_decisions=frozenset(thread.honoured_decisions),
             labware_id=thread.labware_id,
             labware_name=thread.labware_name,
-            paused_device_command=thread.paused_device_command,
         ),
         at_move=at_move,
     )
@@ -422,9 +461,41 @@ def _thread_error_blocker(
     )
 
 
+def _move_by_hand_blocker(thread: ThreadSnapshot, detail: ExecutionDetail) -> Blocker:
+    """The thread's labware already exists, where no arm reaches its start. Registering at the start
+    is refused (the thread holds it); the person moves this one and records where it went."""
+    name = thread.labware_name or thread.name
+    return Blocker(
+        id=f"manual_place:{detail.id}:{thread.id}",
+        kind=BlockerKind.MANUAL_PLACE,
+        severity=BlockerSeverity.WARNING,
+        since=None,
+        headline=f"Move {name} from {thread.current_location} to {thread.waiting_for}.",
+        execution_id=detail.id,
+        thread_id=thread.id,
+        labware_id=thread.labware_id,
+        remedies=(
+            _one_step(
+                RemedyStep(
+                    verb="labware.edit_location",
+                    label="I moved it there",
+                    args={"labware_id": thread.labware_id, "location": thread.waiting_for},
+                    action=RemedyAction.EDIT_LABWARE_LOCATION,
+                    cli=f"orca labware edit-location {thread.labware_id} {thread.waiting_for} --reason <reason>",
+                    needs=("reason",),
+                ),
+                "Records the plate at its start, and the thread carries on.",
+                recommended=True,
+            ),
+        ),
+    )
+
+
 def _manual_park_blocker(
     thread: ThreadSnapshot, detail: ExecutionDetail,
 ) -> Blocker | None:
+    if thread.status == LabwareThreadStatus.AWAITING_MANUAL_PLACE.value and thread.current_location != thread.waiting_for:
+        return _move_by_hand_blocker(thread, detail)
     if thread.status == LabwareThreadStatus.AWAITING_MANUAL_PLACE.value:
         return Blocker(
             id=f"manual_place:{detail.id}:{thread.id}",
@@ -447,8 +518,7 @@ def _manual_park_blocker(
                             "template_name": thread.labware_template_name,
                             "location": thread.waiting_for,
                         },
-                        mcp_tool="operations_register_labware",
-                        rest="POST /api/operations/register-labware",
+                        action=RemedyAction.REGISTER_LABWARE,
                         cli=(
                             f"orca labware register "
                             f"{thread.labware_template_name} "
@@ -479,8 +549,7 @@ def _manual_park_blocker(
                         verb="labware.discharge",
                         label="I took it off",
                         args={"labware_id": thread.labware_id},
-                        mcp_tool="operations_discharge_labware",
-                        rest="POST /api/operations/discharge-labware",
+                        action=RemedyAction.DISCHARGE_LABWARE,
                         cli=f"orca labware discharge {thread.labware_id}",
                     ),
                     "Closes the plate out and releases the park. Its record "
@@ -496,14 +565,15 @@ def _execution_paused_blocker(
     detail: ExecutionDetail, incidents: list[SystemIncident],
 ) -> Blocker:
     incident = _incident_for_execution(incidents, detail.id)
-    who = "The system" if detail.pause_reason == "system" else "An operator"
+    by_operator = detail.pause_reason != "system" and incident is None
+    who = "An operator" if by_operator else "The system"
     headline = f"{who} paused {detail.workflow_name}."
     if incident is not None:
         headline = f"{detail.workflow_name} paused: {incident.message}"
     return Blocker(
         id=f"execution_paused:{detail.id}",
         kind=BlockerKind.EXECUTION_PAUSED,
-        severity=BlockerSeverity.ERROR,
+        severity=BlockerSeverity.WARNING if by_operator else BlockerSeverity.ERROR,
         since=incident.timestamp if incident is not None else None,
         headline=headline,
         detail=(
@@ -518,9 +588,8 @@ def _execution_paused_blocker(
                 RemedyStep(
                     verb="execution.resume",
                     label="Resume the run",
-                    args={"execution_id": detail.id},
-                    mcp_tool="operations_resume",
-                    rest="POST /api/operations/resume",
+                    args={"scope": {"kind": "execution", "execution_id": detail.id}},
+                    action=RemedyAction.RESUME,
                     cli=f"orca execution resume {detail.id}",
                 ),
                 "Every thread picks up where it stopped.",
@@ -547,79 +616,13 @@ def _manual_step_blocker(record: PendingManualStepRecord) -> Blocker:
                         "execution_id": record.execution_id,
                         "step_id": record.step_id,
                     },
-                    mcp_tool="operations_confirm_manual_step",
-                    rest="POST /api/operations/confirm-manual-step",
+                    action=RemedyAction.CONFIRM_MANUAL_STEP,
                     cli=(
-                        f"orca manual-step confirm {record.execution_id} "
-                        f"{record.step_id}"
+                        f"orca manual-step confirm {record.step_id} "
+                        f"--execution {record.execution_id}"
                     ),
                 ),
                 "The thread carries on from the step.",
-                recommended=True,
-            ),
-        ),
-    )
-
-
-def runtime_not_built_blocker(
-    error_type: str, message: str, hint: str, since: float | None = None,
-) -> Blocker:
-    """The one blocker that exists when there is no runtime to ask."""
-    return Blocker(
-        id="runtime_not_built",
-        kind=BlockerKind.RUNTIME_NOT_BUILT,
-        severity=BlockerSeverity.ERROR,
-        since=since,
-        headline=f"The runtime is not built: {error_type}: {message}",
-        detail=hint,
-        remedies=(
-            _one_step(
-                RemedyStep(
-                    verb="runtime.reload",
-                    label="Rebuild after fixing the file",
-                    args={},
-                    mcp_tool="runtime_reload",
-                    rest="POST /api/runtime/reload",
-                    cli="",
-                ),
-                "Re-imports the deployment package. Fix the file the message "
-                "names first.",
-                recommended=True,
-            ),
-        ),
-    )
-
-
-def runtime_torn_down_blocker(since: float | None = None) -> Blocker:
-    """No runtime, and nothing recorded a build failure.
-
-    A teardown rather than a broken file: a topology delete does this on
-    purpose. Reporting an empty list here would say the way is clear on a
-    deployment that cannot run anything at all.
-    """
-    return Blocker(
-        id="runtime_not_built",
-        kind=BlockerKind.RUNTIME_NOT_BUILT,
-        severity=BlockerSeverity.ERROR,
-        since=since,
-        headline="There is no runtime. Nothing can run until one is built.",
-        detail=(
-            "The runtime was torn down or never started, and no build error "
-            "was recorded. Submit a topology, or reload to build from what is "
-            "already on disk."
-        ),
-        remedies=(
-            _one_step(
-                RemedyStep(
-                    verb="runtime.reload",
-                    label="Build from what is on disk",
-                    args={},
-                    mcp_tool="runtime_reload",
-                    rest="POST /api/runtime/reload",
-                    cli="",
-                ),
-                "Imports the deployment package as it stands. Needs a "
-                "topology.py already in the worktree.",
                 recommended=True,
             ),
         ),
@@ -686,7 +689,11 @@ def _starved_waiter_blocker(
     return Blocker(
         id=f"starved:{waiter_detail.id}:{waiter.id}",
         kind=BlockerKind.WAITING_ON_A_PARKED_HOLDER,
-        severity=BlockerSeverity.ERROR,
+        severity=(
+            BlockerSeverity.WARNING
+            if holder.status == LabwareThreadStatus.PAUSED.value and holder.pause_reason == "manual"
+            else BlockerSeverity.ERROR
+        ),
         since=None,
         headline=(
             f"{waiter.name} is waiting on {reservation.position_id}, which "
@@ -710,22 +717,87 @@ def _starved_waiter_blocker(
                         "execution_id": holder_detail.id,
                         "reservation_id": reservation.reservation_id,
                     },
-                    mcp_tool="reservation_cancel",
-                    rest=(
-                        f"DELETE /api/executions/{holder_detail.id}"
-                        f"/reservations/{reservation.reservation_id}"
-                    ),
+                    action=RemedyAction.CANCEL_RESERVATION,
                     cli=(
-                        f"orca reservation cancel {holder_detail.id} "
-                        f"{reservation.reservation_id}"
+                        f"orca reservation cancel {reservation.reservation_id} "
+                        f"--execution {holder_detail.id} --reason <reason>"
                     ),
                     needs=("reason",),
-                    query=("reason",),
                 ),
                 f"Takes {reservation.position_id} back from {holder.name} so "
                 f"this thread can proceed. Do this when the holder has no "
                 f"further need of it.",
                 confirm=True,
+            ),
+        ),
+    )
+
+
+def _unowned_labware_blockers(
+    details: list[ExecutionDetail], occupants: dict[str, LabwareOccupant],
+) -> list[Blocker]:
+    """Waiters whose every candidate position holds labware no live thread carries.
+
+    No thread will ever move that labware, so the wait ends only when a person does something.
+    """
+    carried = {
+        t.labware_id for d in details for t in d.threads
+        if t.labware_id is not None and not LabwareThreadStatus(t.status).is_terminal()
+    }
+    out: list[Blocker] = []
+    for detail in details:
+        for thread in detail.threads:
+            if thread.status not in _RESERVATION_WAIT_STATUSES or thread.waiting_for is None:
+                continue
+            wanted = [name.strip() for name in thread.waiting_for.split(",")]
+            stray = [occupants[name] for name in wanted if name in occupants]
+            if len(stray) != len(wanted) or any(o.labware_id in carried for o in stray):
+                continue
+            out.append(_unowned_labware_blocker(thread, detail, wanted[0], stray[0]))
+    return out
+
+
+def _unowned_labware_blocker(
+    waiter: ThreadSnapshot, detail: ExecutionDetail, position: str, occupant: LabwareOccupant,
+) -> Blocker:
+    return Blocker(
+        id=f"unowned:{detail.id}:{waiter.id}",
+        kind=BlockerKind.WAITING_ON_UNOWNED_LABWARE,
+        severity=BlockerSeverity.WARNING,
+        since=None,
+        headline=(
+            f"{waiter.name} is waiting for {position}, where {occupant.labware_name} "
+            f"sits and no run will move it."
+        ),
+        detail=(
+            f"{occupant.labware_name} belongs to no running thread. Take it off and say so, "
+            f"or record where it really is if the record is wrong."
+        ),
+        execution_id=detail.id,
+        thread_id=waiter.id,
+        labware_id=waiter.labware_id,
+        remedies=(
+            _one_step(
+                RemedyStep(
+                    verb="labware.discharge",
+                    label="I took it off",
+                    args={"labware_id": occupant.labware_id},
+                    action=RemedyAction.DISCHARGE_LABWARE,
+                    cli=f"orca labware discharge {occupant.labware_id}",
+                ),
+                f"Closes {occupant.labware_name} out and frees {position}.",
+                recommended=True,
+            ),
+            _one_step(
+                RemedyStep(
+                    verb="labware.edit_location",
+                    label="It is somewhere else",
+                    args={"labware_id": occupant.labware_id},
+                    action=RemedyAction.EDIT_LABWARE_LOCATION,
+                    cli=f"orca labware edit-location {occupant.labware_id} <location> --reason <reason>",
+                    needs=("location", "reason"),
+                ),
+                f"Records where {occupant.labware_name} really is.",
             ),
         ),
     )
@@ -784,6 +856,7 @@ async def derive_blockers(sources: BlockerSources) -> list[Blocker]:
         details, sources.blocker_reservations(),
     )
     blockers.extend(starved)
+    blockers.extend(_unowned_labware_blockers(details, sources.blocker_occupants()))
 
     for record in sources.blocker_pending_manual_steps():
         blockers.append(_manual_step_blocker(record))

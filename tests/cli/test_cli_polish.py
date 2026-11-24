@@ -5,15 +5,12 @@
 - `orca run --wait` timeout message includes a follow-up hint
 - `orca status` verb shape (json) and its no-daemon exit
 - `_hide_cloud_verbs_in_help` honours backend signals
-- `LiveSubmissionWithSimOverridesUnacknowledgedError` truncates the
-  inline name list past 5 devices
 - `describe device` surfaces `under_external_control`
 """
 
 import io
 import sys
 from contextlib import redirect_stderr, redirect_stdout
-from collections.abc import Iterator
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -22,11 +19,7 @@ import typer
 from typer.testing import CliRunner
 
 from orca.daemon.lifecycle import DaemonInfo
-from orca.daemon.schemas import HealthResponse
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.runtime_interface import (
-    LiveSubmissionWithSimOverridesUnacknowledgedError,
-)
+from orca.operations.wire_models import HealthResponse
 
 
 
@@ -53,7 +46,7 @@ def test_daemon_reachable_silent_when_health_fails() -> None:
     with redirect_stderr(captured), patch.object(
         backend_mod, "detect_live_daemon", return_value=info,
     ), patch("httpx.Client") as mock_client_cls:
-        mock_client_cls.return_value.__enter__.return_value.get.side_effect = (
+        mock_client_cls.return_value.__enter__.return_value.request.side_effect = (
             httpx.ConnectError("refused")
         )
         result = backend_mod._daemon_reachable()
@@ -177,48 +170,6 @@ def test_show_cloud_verbs_when_cloud_creds_set(monkeypatch) -> None:
 
 
 
-def test_live_overrides_error_truncates_long_device_list() -> None:
-    """33 devices -> first 5 names inline + remainder summary."""
-    devices = [
-        (f"dev_{i}", WorkflowRunMode.PURE_SIM, WorkflowRunMode.PURE_SIM)
-        for i in range(33)
-    ]
-    exc = LiveSubmissionWithSimOverridesUnacknowledgedError(devices=devices)
-    msg = str(exc)
-    # First 5 inline
-    for i in range(5):
-        assert f"dev_{i}" in msg
-    # 6th onward NOT inline
-    assert "dev_5" not in msg
-    assert "and 28 more" in msg
-    assert "orca device list" in msg
-
-
-def test_live_overrides_error_keeps_short_list_inline() -> None:
-    """<=5 devices -> all names inline, no truncation."""
-    devices = [
-        (f"d{i}", WorkflowRunMode.PURE_SIM, WorkflowRunMode.PURE_SIM)
-        for i in range(3)
-    ]
-    exc = LiveSubmissionWithSimOverridesUnacknowledgedError(devices=devices)
-    msg = str(exc)
-    for i in range(3):
-        assert f"d{i}" in msg
-    assert "and " not in msg or "device list" not in msg
-
-
-def test_live_overrides_error_exposes_full_typed_list() -> None:
-    """Truncation only affects the message string; typed `devices` list is full."""
-    devices = [
-        (f"d_{i}", WorkflowRunMode.PURE_SIM, WorkflowRunMode.PURE_SIM)
-        for i in range(20)
-    ]
-    exc = LiveSubmissionWithSimOverridesUnacknowledgedError(devices=devices)
-    assert len(exc.devices) == 20
-
-
-
-
 def test_status_emits_payload_when_daemon_running() -> None:
     """`orca status` returns JSON with daemon + health fields."""
     from orca.cli import status as status_mod
@@ -226,11 +177,10 @@ def test_status_emits_payload_when_daemon_running() -> None:
 
     info = DaemonInfo(pid=42, port=8000, started_at=1000.0)
     health = HealthResponse(
-        daemon="ok",
+        status="ok",
         system_loaded=True,
         runtime_state=None,
-        spec="examples.smc_assay.smc_assay_example:build_smc",
-        sim=True,
+        package_dir="/labs/smc_assay",
     )
     captured = io.StringIO()
     output_mod.set_mode(output_mod.OutputMode.JSON)
@@ -244,7 +194,8 @@ def test_status_emits_payload_when_daemon_running() -> None:
     assert '"pid": 42' in captured.getvalue()
     assert '"port": 8000' in captured.getvalue()
     assert '"system_loaded": true' in captured.getvalue()
-    assert '"sim": true' in captured.getvalue()
+    assert '"sim"' not in captured.getvalue()
+    assert '"package_dir": "/labs/smc_assay"' in captured.getvalue()
 
 
 def test_status_exits_when_no_daemon() -> None:
@@ -260,7 +211,7 @@ def test_status_exits_when_no_daemon() -> None:
 def test_status_marks_health_unreachable_distinctly_from_unloaded() -> None:
     """A /health probe failure must not be confused with
     `system_loaded=False`. We emit `health_reachable=False` and null out
-    the loaded / spec / sim fields rather than fabricating defaults."""
+    the loaded / package_dir fields rather than fabricating defaults."""
     from orca.cli import status as status_mod
     from orca.cli import output as output_mod
 
@@ -277,7 +228,7 @@ def test_status_marks_health_unreachable_distinctly_from_unloaded() -> None:
     out = captured.getvalue()
     assert '"health_reachable": false' in out
     assert '"system_loaded": null' in out
-    assert '"sim": null' in out
+    assert '"package_dir": null' in out
 
 
 
@@ -286,24 +237,16 @@ def test_describe_device_surfaces_under_external_control() -> None:
     """describe device's kv output includes under_external_control flag."""
     from orca.cli import describe as describe_mod
     from orca.cli import output as output_mod
-    from orca.daemon.schemas import DeviceDTO
+    from tests.cli.registry_entries import registry_entry
 
-    snap = DeviceDTO(
-        name="shaker_1",
-        type_name="Shaker",
-        is_initialized=True,
-        is_busy=False,
-        effective_mode=WorkflowRunMode.PURE_SIM,
-        position_ids=("pad1",),
-        loaded_labware_ids=(),
-        under_external_control=True,
-    )
     mock_client = MagicMock()
-    mock_client.device_info.return_value = snap
+    mock_client.device_registry_show.return_value = registry_entry(
+        "shaker_1", position_ids=("pad1",), under_external_control=True,
+    )
     captured = io.StringIO()
     output_mod.set_mode(output_mod.OutputMode.TABLE)
     with redirect_stdout(captured), patch.object(
-        describe_mod, "local_client", return_value=mock_client,
+        describe_mod, "get_client", return_value=mock_client,
     ):
         describe_mod.describe_device("shaker_1")
     assert "under_external_control" in captured.getvalue()
@@ -372,3 +315,25 @@ def test_hide_cloud_skips_daemon_probe_on_non_help_invocation(monkeypatch) -> No
     ):
         # No raise = no probe touched
         assert app_mod._hide_cloud_verbs_in_help() is False
+
+
+def test_a_refused_unload_prints_the_message_not_the_json() -> None:
+    from orca.cli import lifecycle
+
+    refused = httpx.Response(
+        409,
+        json={"detail": {"code": "conflict", "message": "nothing to unload; no system is loaded", "extras": None}},
+    )
+    real_client = httpx.Client
+
+    def refusing_client(**settings: float | str | dict[str, str]) -> httpx.Client:
+        return real_client(transport=httpx.MockTransport(lambda request: refused), **settings)
+
+    with (
+        patch.object(lifecycle, "_require_running_daemon", return_value=DaemonInfo(pid=42, port=8000, started_at=1.0)),
+        patch.object(httpx, "Client", refusing_client),
+        patch.object(lifecycle.output, "fail", side_effect=typer.Exit(code=1)) as fail,
+        pytest.raises(typer.Exit),
+    ):
+        lifecycle.unload()
+    assert fail.call_args.args[0] == "/api/runtime/unload failed (409): nothing to unload; no system is loaded"

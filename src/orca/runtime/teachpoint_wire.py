@@ -39,31 +39,10 @@ _JOINT_ALLOWED: frozenset[str] = frozenset(
 
 
 class InvalidTeachpointCoordsError(ValueError):
-    """Coord validation failure. A ValueError so daemon routes map it to 400."""
+    """Coord validation failure. A ValueError so callers map it to a 400."""
 
 
-class InvalidTeachpointNameError(ValueError):
-    """A teachpoint name the REST routes could not address."""
-
-
-OVERRIDE_ROUTE_SEGMENT = "labware"
-
-
-def reject_name_the_override_routes_capture(position_id: str) -> None:
-    """Refuse a name ending in `<something>/labware/<segment>`.
-
-    A DELETE on such a name reaches the per-labware override clear route,
-    not the teachpoint delete route.
-    """
-    parts = position_id.split("/")
-    if len(parts) >= 3 and parts[-2] == OVERRIDE_ROUTE_SEGMENT and parts[-1]:
-        raise InvalidTeachpointNameError(
-            f"Teachpoint name {position_id!r} ends in "
-            f"'/labware/{parts[-1]}'. A DELETE on that name would go to the "
-            f"route that clears the {parts[-1]!r} labware override, so this "
-            "teachpoint could never be deleted over REST. Pick a name whose "
-            "second-to-last '/' segment is not 'labware'."
-        )
+POSITION_ID_DESCRIPTION = "Position identifier (unique per device). May contain `/`."
 
 
 def reject_top_level_dupes_in_coords(coords: Mapping[str, CoordValue]) -> None:
@@ -235,9 +214,8 @@ def build_teachpoint(
     ``taught_with`` records the labware this position was jogged to, and
     ``by_labware`` carries per-labware overrides for this one position. Both
     are optional: a position that names neither behaves exactly as it did
-    before either existed. A name the override routes capture is refused.
+    before either existed.
     """
-    reject_name_the_override_routes_capture(position_id)
     coordinates = coords_to_typed(coord_type, coords)
     return Teachpoint(
         position_id=position_id,

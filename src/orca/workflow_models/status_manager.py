@@ -13,8 +13,11 @@ class StatusManager:
             raise KeyError(f"No status found for entity {entity_id}")
         return self._status_registry[entity_id]
 
+    def has_status(self, entity_id: str, status: str) -> bool:
+        return self._status_registry.get(entity_id) == status
+
     def set_status(self, entity_type: str, entity_id: str, status: str, context: ExecutionContext) -> None:
-        if entity_id in self._status_registry.keys() and self.get_status(entity_id) == status:
+        if self.has_status(entity_id, status):
             return
         self._status_registry[entity_id] = status
         self._event_bus.emit(f"{entity_type}.{entity_id}.{status}", context)

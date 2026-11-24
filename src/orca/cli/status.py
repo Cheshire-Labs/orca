@@ -2,8 +2,8 @@
 
 Local backend: surfaces what the operator otherwise assembles by
 `cat`-ing ``~/.orca/daemon.json`` + hand-pinging ``/health``: pid/port,
-uptime, whether a system is loaded, the loaded spec name, the runtime
-state, and the sim flag.
+uptime, whether a system is loaded, the loaded spec name, and the runtime
+state.
 
 Cloud backend: renders the cloud runtime-lifecycle snapshot (same shape
 as ``orca runtime status``) so a cloud operator gets a real answer
@@ -12,18 +12,15 @@ instead of the local "no daemon running" advice.
 
 import time
 
-import httpx
 from pydantic import BaseModel
 
 from orca.cli import output
-from orca.cli.backend import cloud_client, resolve_backend
-from orca.cli.control_plane import (
-    BackendNotResolvedError,
-    ControlPlaneError,
-    RuntimeStatusResponseDTO,
-)
+from orca.cli.backend import get_client, resolve_backend
+from orca.cli.client import OrcaClient
+from orca.cli.control_plane import BackendNotResolvedError, ControlPlaneError
 from orca.daemon.lifecycle import DaemonInfo, detect_live_daemon
-from orca.daemon.schemas import HealthResponse
+from orca.operations.blocker_models import RemedyDTO
+from orca.operations.wire_models import HealthResponse, RuntimeStatusResponse
 
 
 _HEALTH_TIMEOUT_S = 2.0
@@ -34,7 +31,7 @@ class _StatusPayload(BaseModel):
 
     ``health_reachable`` distinguishes "the daemon answered /health" from
     "/health failed or timed out". When the probe fails, the loaded /
-    spec / runtime_state / sim fields are left null because we genuinely
+    package_dir / runtime_state fields are left null because we genuinely
     don't know -- the daemon process is recorded but unresponsive.
     """
     pid: int
@@ -43,31 +40,23 @@ class _StatusPayload(BaseModel):
     uptime_seconds: float
     health_reachable: bool
     system_loaded: bool | None
-    spec: str | None
+    package_dir: str | None
     runtime_state: str | None
-    sim: bool | None
-    mounting: str | None = None
+    mounting: bool | None = None
 
 
 def _fetch_health(info: DaemonInfo) -> HealthResponse | None:
     """GET /health on the recorded daemon port. None on HTTP error."""
-    try:
-        with httpx.Client(
-            base_url=f"http://127.0.0.1:{info.port}",
-            timeout=_HEALTH_TIMEOUT_S,
-        ) as client:
-            resp = client.get("/health")
-    except httpx.HTTPError:
-        return None
-    if not 200 <= resp.status_code < 300:
-        return None
-    try:
-        return HealthResponse.model_validate(resp.json())
-    except Exception:
-        return None
+    return OrcaClient(f"http://127.0.0.1:{info.port}", timeout=_HEALTH_TIMEOUT_S).health_report()
 
 
-def _render_blockers(payload: RuntimeStatusResponseDTO) -> None:
+def _remedy_line(remedy: RemedyDTO) -> str:
+    """The commands to run, in order, as an operator would type them."""
+    commands = [step.cli for step in remedy.steps if step.cli]
+    return " && ".join(commands) if commands else remedy.label
+
+
+def _render_blockers(payload: RuntimeStatusResponse) -> None:
     """What is stopping the run, worst first, with what to do about each.
 
     Printed whether or not the runtime built: a build failure is itself the
@@ -93,7 +82,7 @@ def _render_blockers(payload: RuntimeStatusResponseDTO) -> None:
             blocker.kind,
             "!" if blocker.may_still_be_moving else blocker.severity,
             blocker.headline,
-            "" if best is None else best.cli_line(),
+            "" if best is None else _remedy_line(best),
         ))
     output.emit_table(
         "what is stopping the run",
@@ -104,7 +93,7 @@ def _render_blockers(payload: RuntimeStatusResponseDTO) -> None:
 
 def _cloud_status() -> None:
     """Render the runtime-lifecycle snapshot for a cloud backend."""
-    payload = cloud_client().runtime_status()
+    payload = get_client().runtime_status()
     if output.get_mode().value == "json":
         output.emit_json(payload.model_dump(mode="json"))
         return
@@ -151,11 +140,10 @@ def status() -> None:
             uptime_seconds=uptime,
             health_reachable=True,
             system_loaded=health.system_loaded,
-            spec=health.spec,
+            package_dir=health.package_dir,
             runtime_state=(
                 health.runtime_state.name if health.runtime_state is not None else None
             ),
-            sim=health.sim,
             mounting=health.mounting,
         )
     else:
@@ -166,9 +154,8 @@ def status() -> None:
             uptime_seconds=uptime,
             health_reachable=False,
             system_loaded=None,
-            spec=None,
+            package_dir=None,
             runtime_state=None,
-            sim=None,
         )
     output.emit_json(payload.model_dump(mode="json"))
     if payload.health_reachable:
@@ -177,10 +164,9 @@ def status() -> None:
             ("port", str(payload.port)),
             ("uptime", f"{payload.uptime_seconds:.0f}s"),
             ("system_loaded", str(payload.system_loaded)),
-            ("spec", payload.spec or "(none)"),
+            ("package_dir", payload.package_dir or "(none)"),
             ("runtime_state", payload.runtime_state or "(unknown)"),
-            ("sim", str(payload.sim)),
-            ("mounting", payload.mounting or "(none)"),
+            ("mounting", str(payload.mounting)),
         ])
     else:
         output.emit_kv("daemon", [

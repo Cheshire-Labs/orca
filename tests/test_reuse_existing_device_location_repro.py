@@ -6,13 +6,14 @@ Models the NEBNext reagent_reservoir: start=("mlstar_1", REUSE_EXISTING),
 auto-spawned (wf.thread) when the owner's action declares it as a co-input.
 """
 
+from orca.config import OrcaConfig
 import asyncio
 from collections.abc import AsyncGenerator
 
 import orca.orca as orca
 from orca.events.event_bus import EventBus
 from orca.resource_models.resource_pool import ResourcePool
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from orca.runtime.system_runtime import SystemRuntime
 from orca.sdk.system import ResourceRegistry, SystemMap
 from orca.spawn import LEAVE_IN_PLACE, REUSE_EXISTING
@@ -30,6 +31,10 @@ from tests.test_helpers import (
     create_test_transporter,
     wire_system_map,
 )
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 
 async def _statuses(runtime: SystemRuntime, eid: str) -> dict[str, str]:
@@ -92,14 +97,17 @@ async def test_reuse_existing_on_device_location_does_not_self_collide(caplog) -
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=event_bus,
+        event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
-    runtime = SystemRuntime(builder.get_system(), event_bus=event_bus)
+    runtime = await memory_runtime(builder.get_system(), event_bus=event_bus)
     await runtime.start()
     with caplog.at_level("WARNING", logger="orca"):
         record = await runtime.submit_workflow(
-            "reuse_device_loc_wf", mode=WorkflowRunMode.PURE_SIM)
+            "reuse_device_loc_wf", mode=WorkflowRunMode.CHECK_RUN)
         eid = record.id
         # Drive the auto-spawn + initialize_labware path. Give the buggy
         # version time to spin: on main the spawned receiver re-stages the

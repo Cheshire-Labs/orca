@@ -1,3 +1,5 @@
+from orca.operations.binding import RestBinding, Route
+from orca.operations.route_tags import RouteTag
 """Wire models for the manual_step operations.
 
 Apart from `manual_step.py` because the Operation classes there take
@@ -54,3 +56,22 @@ class ListPendingManualStepsRequest(BaseModel):
 class ListPendingManualStepsResponse(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     pending: tuple[PendingManualStepDTO, ...]
+
+
+CONFIRM_MANUAL_STEP_ROUTE = Route(
+    ConfirmManualStepRequest,
+    ConfirmManualStepResponse,
+    RestBinding(
+        method="POST", path="/executions/{execution_id}/manual-steps/{step_id}/confirm", tag=RouteTag.MANUAL_STEPS,
+        carries_blockers=True,
+    ),
+)
+
+
+LIST_PENDING_MANUAL_STEPS_ROUTE = Route(
+    ListPendingManualStepsRequest,
+    ListPendingManualStepsResponse,
+    RestBinding(
+        method="GET", path="/manual-steps", tag=RouteTag.MANUAL_STEPS,
+    ),
+)

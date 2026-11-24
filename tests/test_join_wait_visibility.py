@@ -18,7 +18,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from orca.resource_models.labware_state import IRegisteredThread, LabwareSlot
+from orca.workflow_models.labware_state import IRegisteredThread, LabwareSlot
 from orca.workflow_models.labware_threads.executing_labware_thread import (
     _BoundSlotView,
 )

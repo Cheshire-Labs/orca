@@ -5,19 +5,23 @@ SystemRuntime.start() must re-place those plates on the System graph so the
 runtime resumes from the same physical state.
 """
 
+from orca.config import OrcaConfig
 from collections.abc import AsyncGenerator
 
 import pytest
 
 from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.resource_pool import ResourcePool
+from orca.runtime.labware_service import LabwareService
 from orca.runtime.labware_store import InMemoryLabwareStore
-from orca.runtime.system_runtime import SystemRuntime
 from orca.sdk.events import EventBus
+from orca.sdk.labware import PlateTemplate
 from orca.sdk.system import ResourceRegistry, SystemMap
 from orca.sdk.workflow import MethodTemplate, ThreadTemplate, WorkflowTemplate
 from orca.system.SdkToSystemBuilder import SdkToSystemBuilder
 from orca.system.system_interface import ISystem
+from orca.workflow_models.method_context import MethodContext
+from orca.workflow_models.thread_context import ThreadContext
 import orca.orca as orca
 from tests.test_helpers import (
     create_test_device,
@@ -25,9 +29,14 @@ from tests.test_helpers import (
     create_test_transporter,
     wire_system_map,
 )
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from orca.resource_models.labware_service_interface import ILabwareService
+from tests.memory_activity import memory_labware_service
 
 
-async def _build_simple_system() -> ISystem:
+async def _build_simple_system(*, labware_service: ILabwareService | None = None) -> ISystem:
     """Minimal system: one device, one transporter, one location pad1."""
     device = create_test_device("shaker1")
     transporter = create_test_transporter("robot1", ["shaker1", "pad1"])
@@ -67,7 +76,10 @@ async def _build_simple_system() -> ISystem:
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=EventBus(),
+        event_bus=EventBus(), config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=labware_service or memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     return builder.get_system()
@@ -88,37 +100,60 @@ class TestStoreListActiveLocations:
         pairs = await store.list_active_locations()
         assert pairs == [(instance.id, "pad1")]
 
-    async def test_in_memory_ignores_update_for_unregistered_id(self) -> None:
-        """update_location is a no-op for unknown labware_id (matches existing impl)."""
-        store = InMemoryLabwareStore()
-        await store.update_location("ghost_id", "pad1")
-        assert await store.list_active_locations() == []
-
 
 class TestRehydrateOnStart:
     """SystemRuntime.start() re-places persisted labware on the System graph."""
 
     async def test_persisted_labware_appears_on_location_after_start(self) -> None:
-        system = await _build_simple_system()
-
         store = InMemoryLabwareStore()
+        system = await _build_simple_system(labware_service=LabwareService(store))
+
         plate = LabwareInstance("plate_to_restore", "96_well")
         await store.register(plate)
         await store.update_location(plate.id, "pad1")
 
-        runtime = SystemRuntime(system, labware_store=store)
+        runtime = await memory_runtime(system)
         await runtime.start()
 
         location = system.system_map.get_location("pad1")
-        # rehydrate calls _labware_store.get_by_id which returns the registered instance
+        # rehydrate calls _labware_service.get_by_id which returns the registered instance
         assert location.labware is not None
         assert location.labware.id == plate.id
 
         await runtime.shutdown()
 
+    async def test_labware_restored_before_its_workflow_loads_becomes_its_real_kind(self) -> None:
+        store = InMemoryLabwareStore()
+        system = await _build_simple_system(labware_service=LabwareService(store))
+        persisted = LabwareInstance("late_plate", "96_well")
+        await store.register(persisted)
+        await store.update_location(persisted.id, "pad1")
+        runtime = await memory_runtime(system)
+        await runtime.start()
+        assert not system.system_map.get_location("pad1").labware.has_plr_backing
+
+        late_plate = PlateTemplate("late_plate", labware_type="Cor_Falcon_96_wellplate_340ul_Fb_Black")
+        pad = system.system_map.get_location("pad1")
+
+        @orca.method
+        async def nothing(ctx: MethodContext) -> AsyncGenerator[None, None]:
+            return
+            yield
+
+        @orca.thread(labware=late_plate, start=pad, end=pad)
+        async def late_thread(ctx: ThreadContext) -> AsyncGenerator[MethodTemplate, None]:
+            yield nothing
+
+        workflow = WorkflowTemplate("late_workflow")
+        workflow.add_thread(late_thread, is_start=True)
+        await runtime.registry.add_workflow_template(workflow, confirm=True)
+
+        assert system.system_map.get_location("pad1").labware.has_plr_backing
+        await runtime.shutdown()
+
     async def test_no_persisted_labware_leaves_locations_empty(self) -> None:
         system = await _build_simple_system()
-        runtime = SystemRuntime(system, labware_store=InMemoryLabwareStore())
+        runtime = await memory_runtime(system)
         await runtime.start()
 
         location = system.system_map.get_location("pad1")
@@ -129,14 +164,14 @@ class TestRehydrateOnStart:
     async def test_unknown_location_logged_and_skipped(self, caplog: pytest.LogCaptureFixture) -> None:
         """If a persisted labware references a location no longer in the System graph,
         log a warning and continue rather than crashing the runtime."""
-        system = await _build_simple_system()
-
         store = InMemoryLabwareStore()
+        system = await _build_simple_system(labware_service=LabwareService(store))
+
         orphan = LabwareInstance("orphan_plate", "96_well")
         await store.register(orphan)
         await store.update_location(orphan.id, "decommissioned_pad")
 
-        runtime = SystemRuntime(system, labware_store=store)
+        runtime = await memory_runtime(system)
         with caplog.at_level("WARNING"):
             await runtime.start()
 
@@ -150,8 +185,8 @@ class TestRehydrateOnStart:
             async def list_active_locations(self) -> list[tuple[str, str]]:
                 return [("nonexistent_id", "pad1")]
 
-        system = await _build_simple_system()
-        runtime = SystemRuntime(system, labware_store=_BrokenStore())
+        system = await _build_simple_system(labware_service=LabwareService(_BrokenStore()))
+        runtime = await memory_runtime(system)
         with caplog.at_level("WARNING"):
             await runtime.start()
 
@@ -175,13 +210,13 @@ class TestClearAfterRehydrate:
     """
 
     async def test_clear_all_cascades_to_rehydrated_leaf(self) -> None:
-        system = await _build_simple_system()
         store = InMemoryLabwareStore()
+        system = await _build_simple_system(labware_service=LabwareService(store))
         plate = LabwareInstance("plate_to_restore", "96_well")
         await store.register(plate)
         await store.update_location(plate.id, "pad1")
 
-        runtime = SystemRuntime(system, labware_store=store)
+        runtime = await memory_runtime(system)
         await runtime.start()
 
         pad1 = system.system_map.get_location("pad1")

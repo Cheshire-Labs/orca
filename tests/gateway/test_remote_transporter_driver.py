@@ -11,7 +11,11 @@ Mirrors the pattern in `test_remote_device_factory.py::TestRemoteDriverSendInclu
 for shaker / centrifuge.
 """
 
+import asyncio
+import contextlib
 from dataclasses import dataclass, field
+from datetime import datetime
+from unittest.mock import AsyncMock, MagicMock
 from typing import Any, Dict, List, Optional, cast
 
 import pytest
@@ -47,10 +51,16 @@ from cheshire_drivers.transporter_models import (
 )
 
 from orca.gateway.controller.command_kind import CommandKind
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 
 from orca.gateway.controller.controller import DeviceController
+from orca.gateway.registry.snapshot import DeviceSnapshot
+from cheshire_drivers.command_timings import CommandTiming
+from cheshire_drivers.driver_introspection import MethodInfo
+from tests.gateway_parts import new_controller
+from tests.test_helpers import wait_until
 from orca.gateway.remote_transporter_driver import RemoteTransporterDriver
+from tests.gateway.mode_doubles import fixed_mode
 
 
 @dataclass
@@ -75,7 +85,6 @@ class _FakeController:
         params: Optional[Dict[str, Any]] = None,
         timeout_seconds: Optional[float] = None,
         effective_mode: WorkflowRunMode = WorkflowRunMode.LIVE,
-        resend_on_reconnect: bool = True,
         kind: CommandKind = CommandKind.ACTUATION,
         execution_id: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -101,8 +110,7 @@ def _make_driver(
     driver = RemoteTransporterDriver(
         name="arm_1",
         controller=cast(DeviceController, controller),
-        mode_resolver=lambda _name: mode,
-        timeout=30.0,
+        mode_resolver=fixed_mode(mode),
     )
     return driver, controller
 
@@ -172,7 +180,7 @@ class TestLifecycle:
         assert call.command == "move_to_safe"
         assert call.device_id == "arm_1"
         assert call.params == {}
-        assert call.timeout_seconds == 30.0
+        assert call.timeout_seconds is None
         assert call.effective_mode is WorkflowRunMode.LIVE
 
     @pytest.mark.asyncio
@@ -356,12 +364,12 @@ class TestEffectiveModePropagation:
         assert controller.calls[-1].effective_mode is WorkflowRunMode.LIVE
 
     @pytest.mark.asyncio
-    async def test_dispatch_carries_device_sim_mode(self) -> None:
-        driver, controller = _make_driver(mode=WorkflowRunMode.DEVICE_SIM)
+    async def test_dispatch_carries_sim_mode(self) -> None:
+        driver, controller = _make_driver(mode=WorkflowRunMode.SIM)
         await driver.pick_at_coords(
             PickAtCoordsRequest(teachpoint=_tp("pad_1"), labware_type="Plate_96", handling=SEED_MOVE_PARAMETERS),
         )
-        assert controller.calls[-1].effective_mode is WorkflowRunMode.DEVICE_SIM
+        assert controller.calls[-1].effective_mode is WorkflowRunMode.SIM
 
 
 class TestInterfacesContract:
@@ -378,39 +386,54 @@ class TestInterfacesContract:
 
 
 class TestTimeoutPlumbing:
-    """`timeout` constructor arg flows through to every wire dispatch.
+    """A forwarding driver leaves the time limit to the controller, which uses the command's declared limit.
 
-    Regression guard: if `_send` ever stops passing `timeout_seconds=self._timeout`
-    to the controller, this fires. The factory builds drivers with
-    `timeout=factory._default_timeout`, so a broken plumbing would
-    silently default-zero on the wire instead of honoring the
-    deployment's configured per-command timeout.
+    A fixed limit here cut a bring-up or a pick off mid-motion and cancelled it.
     """
 
     @pytest.mark.asyncio
-    async def test_timeout_passed_to_controller_on_pick_at_coords(self) -> None:
+    @pytest.mark.parametrize("command", ["pick_at_coords", "home"])
+    async def test_the_driver_names_no_limit_of_its_own(self, command: str) -> None:
         controller = _FakeController()
         driver = RemoteTransporterDriver(
             name="arm_1",
             controller=cast(DeviceController, controller),
-            mode_resolver=lambda _name: WorkflowRunMode.LIVE,
-            timeout=42.5,
+            mode_resolver=fixed_mode(WorkflowRunMode.LIVE),
         )
-        await driver.pick_at_coords(
-            PickAtCoordsRequest(teachpoint=_tp("pad_1"), labware_type="Plate_96", handling=SEED_MOVE_PARAMETERS),
-        )
-        assert controller.calls[-1].timeout_seconds == 42.5
+        if command == "home":
+            await driver.home(HomeRequest())
+        else:
+            await driver.pick_at_coords(
+                PickAtCoordsRequest(teachpoint=_tp("pad_1"), labware_type="Plate_96", handling=SEED_MOVE_PARAMETERS),
+            )
+        assert controller.calls[-1].timeout_seconds is None
 
     @pytest.mark.asyncio
-    async def test_default_timeout_is_30_seconds(self) -> None:
-        controller = _FakeController()
+    async def test_a_forwarding_initialize_gets_its_declared_limit(self) -> None:
+        """The controller holds the command for the 120 s the driver declares for initialize, not 30."""
+        tracker, connections = MagicMock(), MagicMock()
+        tracker.get_device = AsyncMock(return_value=DeviceSnapshot(
+            type="transporter", name="arm_1", interfaces=["ITransporter"], capabilities=[], provides_state=False,
+            methods={"initialize": MethodInfo(
+                kind="method", params={}, duration=CommandTiming(typical_seconds=10.0, max_seconds=120.0),
+            )},
+            site="test", lab="test", workcell=None, status="ready", last_seen=datetime.now(),
+        ))
+        tracker.is_device_online = AsyncMock(return_value=True)
+        tracker.get_client_for_device = AsyncMock(return_value="client_1")
+        connections.send_to_client = AsyncMock(return_value=True)
+        controller = new_controller(tracker, connections)
         driver = RemoteTransporterDriver(
-            name="arm_1",
-            controller=cast(DeviceController, controller),
-            mode_resolver=lambda _name: WorkflowRunMode.LIVE,
+            name="arm_1", controller=controller, mode_resolver=fixed_mode(WorkflowRunMode.LIVE),
         )
-        await driver.home(HomeRequest())
-        assert controller.calls[-1].timeout_seconds == 30.0
+
+        sent = asyncio.create_task(driver.initialize(InitializeRequest()))
+        await wait_until(lambda: connections.send_to_client.called)
+
+        assert controller._pending["arm_1"].timeout_seconds == 120.0
+        sent.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await sent
 
 
 class TestTheDriverSaysWhichCommandsTouchNothing:

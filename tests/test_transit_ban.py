@@ -9,6 +9,7 @@ itself: {owner of path[0], owner of path[-1]} minus None -- which admits the
 inbound chained handoff, the departure relay out of a multi-site deck, and the
 parking exit hop, while rejecting every foreign corridor.
 """
+from orca.events.event_bus import EventBus
 from unittest.mock import Mock
 
 import pytest
@@ -18,10 +19,13 @@ from orca.devices.devices import LiquidHandler, Storage
 from orca.resource_models.deck_site_location import DeckSiteLocation
 from orca.resource_models.plate_pad import PlatePad
 from orca.resource_models.transporter import Transporter
-from orca.runtime.store_factory import InMemoryRuntimeStoreFactory
-from orca.sdk.build import SystemBuild, Topology, build_system
-from orca.system.reservation_manager.move_handler import MoveHandler
+from orca.sdk.build import SystemBuild, Topology
+from orca.sdk.package import build_system
+from orca.workflow_models.actions.move_handler import MoveHandler
 from orca.system.system_map import SystemMap
+from tests.setup_package import package_stores, write_deck_layouts, write_teachpoints
+from tests.setup_package import with_teachpoints, with_deck_layouts
+from tests.memory_activity import memory_ops_store
 
 FLEX_DECK = DeckLayoutConfig(deck_type="FlexDeck", resources=[])
 _HANDOFF = "D3-slot"
@@ -31,22 +35,20 @@ _C = CartesianCoordinates
 
 async def _build_flex_bench() -> SystemBuild:
     """One arm serving a flex deck, a stacker, a waste, and a parking pad."""
-    stores = InMemoryRuntimeStoreFactory()
-    flex = LiquidHandler(
+    stores = package_stores()
+    flex = with_deck_layouts(LiquidHandler(
         "flex",
-        deck_layout_store=stores.deck_layouts("flex", seed={"default": FLEX_DECK}),
         deck_layout="default",
         sim=True,
-    )
-    arm = Transporter(
+    ), write_deck_layouts(stores, "flex", {"default": FLEX_DECK}))
+    arm = with_teachpoints(Transporter(
         "arm",
-        teachpoint_store=stores.teachpoints("arm", seed=[
+    ), write_teachpoints(stores, "arm", [
             Teachpoint("stacker", _C(0, 200, 300, 0, 90, 180), orientation="right"),
             Teachpoint("pad", _C(200, 200, 300, 0, 90, 180), orientation="right"),
             Teachpoint(f"flex/{_HANDOFF}", _C(400, 200, 300, 0, 90, 180), orientation="right"),
             Teachpoint("waste", _C(600, 200, 300, 0, 90, 180), orientation="right"),
-        ]),
-    )
+        ]))
     topology = Topology(
         locations={
             "flex": flex,
@@ -56,7 +58,7 @@ async def _build_flex_bench() -> SystemBuild:
         },
         transporters=[arm],
     )
-    return await build_system("transit-ban-bench", topology, stores)
+    return await build_system("transit-ban-bench", topology, stores, event_bus=EventBus(), ops_history_store=memory_ops_store())
 
 
 async def _build_two_arm_corridor() -> SystemBuild:
@@ -66,28 +68,25 @@ async def _build_two_arm_corridor() -> SystemBuild:
     or stacker->pad route must corridor THROUGH the flex deck, which the ban
     forbids -- the flex is not a transfer station.
     """
-    stores = InMemoryRuntimeStoreFactory()
-    flex = LiquidHandler(
+    stores = package_stores()
+    flex = with_deck_layouts(LiquidHandler(
         "flex",
-        deck_layout_store=stores.deck_layouts("flex", seed={"default": FLEX_DECK}),
         deck_layout="default",
         sim=True,
-    )
-    arm_a = Transporter(
+    ), write_deck_layouts(stores, "flex", {"default": FLEX_DECK}))
+    arm_a = with_teachpoints(Transporter(
         "arm_a",
-        teachpoint_store=stores.teachpoints("arm_a", seed=[
+    ), write_teachpoints(stores, "arm_a", [
             Teachpoint("stacker", _C(0, 200, 300, 0, 90, 180), orientation="right"),
             Teachpoint(f"flex/{_HANDOFF}", _C(400, 200, 300, 0, 90, 180), orientation="right"),
-        ]),
-    )
-    arm_b = Transporter(
+        ]))
+    arm_b = with_teachpoints(Transporter(
         "arm_b",
-        teachpoint_store=stores.teachpoints("arm_b", seed=[
+    ), write_teachpoints(stores, "arm_b", [
             Teachpoint(f"flex/{_HANDOFF}", _C(400, 210, 300, 0, 90, 180), orientation="right"),
             Teachpoint("waste", _C(600, 200, 300, 0, 90, 180), orientation="right"),
             Teachpoint("pad", _C(800, 200, 300, 0, 90, 180), orientation="right"),
-        ]),
-    )
+        ]))
     topology = Topology(
         locations={
             "flex": flex,
@@ -97,7 +96,7 @@ async def _build_two_arm_corridor() -> SystemBuild:
         },
         transporters=[arm_a, arm_b],
     )
-    return await build_system("transit-ban-corridor", topology, stores)
+    return await build_system("transit-ban-corridor", topology, stores, event_bus=EventBus(), ops_history_store=memory_ops_store())
 
 
 async def test_corridor_cut_through_a_foreign_deck_is_inadmissible() -> None:
@@ -188,7 +187,7 @@ async def test_park_targets_exclude_platepad_resourced_device_sites() -> None:
     system_map = SystemMap(registry)
     source = PlatePad("src")
     await system_map.add_location(
-        DeckSiteLocation("dev/x", owner=Storage("dev"), resource=PlatePad("x"))
+        DeckSiteLocation("dev/x", owner=Storage("dev"), resource=PlatePad("x"), site_name="x")
     )
     from orca.resource_models.location import Location
 
@@ -213,3 +212,14 @@ async def test_available_graph_preserves_edge_weights() -> None:
     assert available.get_edge_data(source, target)["weight"] == 7.5, (
         "the availability rebuild must carry real edge weights, not flatten to 1.0"
     )
+
+
+async def test_a_route_only_through_a_foreign_deck_is_no_route_for_the_start_decision() -> None:
+    """``has_route`` answers what the planner would: a corridor-only pair has no route, so a thread
+    asks a person to place its labware instead of starting a move the planner then refuses."""
+    build = await _build_two_arm_corridor()
+    system_map = build.system.system_map
+    handler = MoveHandler(Mock(), system_map, Mock())
+
+    assert system_map.has_any_route("stacker/slot", "waste/slot")
+    assert not handler.has_route(system_map.get_location("stacker/slot"), system_map.get_location("waste/slot"))

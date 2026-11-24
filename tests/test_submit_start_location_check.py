@@ -19,27 +19,28 @@ Skip rules:
 import pytest
 
 from orca.resource_models.labware import LabwareInstance
-from orca.runtime.labware_group import (
+from orca.workflow_models.labware_group import (
     BarcodeAcquisition,
     LabwareGroup,
     LabwareGroupMember,
     LocationAcquisition,
 )
+from orca.runtime.labware_service import LabwareService
 from orca.runtime.labware_store import InMemoryLabwareStore
-from orca.runtime.runtime_interface import StartLocationsOccupiedError
-from orca.runtime.system_runtime import SystemRuntime
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.runtime.errors import StartLocationsOccupiedError
+from orca.modes.run_modes import WorkflowRunMode
 from tests.test_system_runtime import _build_simple_system
+from tests.memory_activity import memory_runtime
 
 
 class TestStartLocationCheck:
 
     async def test_submit_when_start_location_empty_succeeds(self) -> None:
         system, workflow = await _build_simple_system()
-        runtime = SystemRuntime(system)
+        runtime = await memory_runtime(system)
         await runtime.start()
         try:
-            submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+            submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
             assert submission.id is not None
         finally:
             await runtime.shutdown()
@@ -48,23 +49,38 @@ class TestStartLocationCheck:
         self,
     ) -> None:
         system, workflow = await _build_simple_system()
-        # Pre-occupy pad1 (the entry thread's start_location) with stale labware
-        # from a prior execution that never picked it off.
-        leftover = LabwareInstance("plate_96", "96_well")
+        # An unused plate of the thread's own template is adopted, so only one it cannot run on is refused.
+        leftover = LabwareInstance("other_plate", "96_well")
         pad1 = system.system_map.get_location("pad1")
         pad1.initialize_labware(leftover)
 
-        runtime = SystemRuntime(system)
+        runtime = await memory_runtime(system)
         await runtime.start()
         try:
             with pytest.raises(StartLocationsOccupiedError) as exc_info:
-                await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+                await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
             err = exc_info.value
             assert len(err.occupied) == 1
             slot = err.occupied[0]
             assert slot.position_id == "pad1"
             assert slot.existing_labware_name == leftover.name
-            assert slot.existing_template_name == "plate_96"
+            assert slot.existing_template_name == "other_plate"
+        finally:
+            await runtime.shutdown()
+
+    async def test_the_refusal_names_the_occupant_by_the_id_a_discharge_takes(
+        self,
+    ) -> None:
+        system, workflow = await _build_simple_system()
+        leftover = LabwareInstance("other_plate", "96_well")
+        system.system_map.get_location("pad1").initialize_labware(leftover)
+
+        runtime = await memory_runtime(system)
+        await runtime.start()
+        try:
+            with pytest.raises(StartLocationsOccupiedError) as exc_info:
+                await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
+            assert exc_info.value.occupied[0].existing_labware_id == leftover.id
         finally:
             await runtime.shutdown()
 
@@ -74,35 +90,33 @@ class TestStartLocationCheck:
         """Groupless submit (groups=()) must still run the start_location check
         against template defaults — that's the canonical reproducer."""
         system, workflow = await _build_simple_system()
-        leftover = LabwareInstance("plate_96", "96_well")
+        leftover = LabwareInstance("other_plate", "96_well")
         system.system_map.get_location("pad1").initialize_labware(leftover)
 
-        runtime = SystemRuntime(system)
+        runtime = await memory_runtime(system)
         await runtime.start()
         try:
             with pytest.raises(StartLocationsOccupiedError):
-                await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)  # groups omitted entirely
+                await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)  # groups omitted entirely
         finally:
             await runtime.shutdown()
 
-    async def test_submit_skips_check_when_barcode_acquisition_resolved(
+    async def test_submit_refuses_a_barcode_plate_whose_start_is_occupied(
         self,
     ) -> None:
-        """BarcodeAcquisition supplies its own LabwareInstance; the entry thread
-        doesn't need to claim a fresh slot at start_location, so the check is
-        a no-op for that thread even if the default location happens to be
-        occupied by something else."""
-        system, workflow = await _build_simple_system()
+        """The barcode plate still has to reach the start, so other labware on it is refused at
+        submit. Accepting it left the thread retrying the occupied start forever."""
         store = InMemoryLabwareStore()
-        existing = LabwareInstance("plate_96", "96_well")
+        system, workflow = await _build_simple_system(labware_service=LabwareService(store))
+        existing = LabwareInstance("plate_96", "_sim_plate")
         existing.barcode = "BC-42"
+        system.add_labware(existing)
         await store.register(existing)
-        # pad1 is occupied (would normally trip the check), but Barcode bypasses.
         pad1 = system.system_map.get_location("pad1")
         unrelated = LabwareInstance("plate_96", "96_well")
         pad1.initialize_labware(unrelated)
 
-        runtime = SystemRuntime(system, labware_store=store)
+        runtime = await memory_runtime(system)
         await runtime.start()
         try:
             group = LabwareGroup(
@@ -114,8 +128,8 @@ class TestStartLocationCheck:
                     ),
                 ),
             )
-            submission = await runtime.submit(workflow, groups=[group], mode=WorkflowRunMode.PURE_SIM)
-            assert submission.id is not None
+            with pytest.raises(StartLocationsOccupiedError):
+                await runtime.submit(workflow, groups=[group], mode=WorkflowRunMode.CHECK_RUN)
         finally:
             await runtime.shutdown()
 
@@ -128,7 +142,7 @@ class TestStartLocationCheck:
         pad1 = system.system_map.get_location("pad1")
         pad1.initialize_labware(LabwareInstance("plate_96", "96_well"))
         # The override location (shaker1) is empty — submission should pass.
-        runtime = SystemRuntime(system)
+        runtime = await memory_runtime(system)
         await runtime.start()
         try:
             group = LabwareGroup(
@@ -140,7 +154,7 @@ class TestStartLocationCheck:
                     ),
                 ),
             )
-            submission = await runtime.submit(workflow, groups=[group], mode=WorkflowRunMode.PURE_SIM)
+            submission = await runtime.submit(workflow, groups=[group], mode=WorkflowRunMode.CHECK_RUN)
             assert submission.id is not None
         finally:
             await runtime.shutdown()
@@ -185,7 +199,7 @@ class TestStartLocationCheck:
         leftover = LabwareInstance("plate_96_b", "96_well")
         system.system_map.get_location("pad2").initialize_labware(leftover)
 
-        runtime = SystemRuntime(system)
+        runtime = await memory_runtime(system)
         await runtime.start()
         try:
             # Submit with NO groups so the only entry walk is on `wf_reuse`'s
@@ -193,7 +207,7 @@ class TestStartLocationCheck:
             # be entries). Use the original simple_workflow whose default
             # pad1 is empty; passing through with no occupied error proves
             # the skip rule applies.
-            sub = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+            sub = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
             assert sub.id is not None
         finally:
             await runtime.shutdown()
@@ -209,7 +223,7 @@ class TestStartLocationCheck:
         shaker = system.system_map.get_location("shaker1")
         shaker.initialize_labware(LabwareInstance("plate_96", "96_well"))
 
-        runtime = SystemRuntime(system)
+        runtime = await memory_runtime(system)
         await runtime.start()
         try:
             group = LabwareGroup(
@@ -222,7 +236,7 @@ class TestStartLocationCheck:
                 ),
             )
             with pytest.raises(StartLocationsOccupiedError) as exc_info:
-                await runtime.submit(workflow, groups=[group], mode=WorkflowRunMode.PURE_SIM)
+                await runtime.submit(workflow, groups=[group], mode=WorkflowRunMode.CHECK_RUN)
             slot = exc_info.value.occupied[0]
             assert slot.position_id == "shaker1"
         finally:

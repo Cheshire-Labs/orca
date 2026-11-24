@@ -41,15 +41,11 @@ class UnsettledSubject:
 
     provenance: Provenance
     """Why it is unsettled: UNKNOWN (nobody has ever said) or STALE (it was
-    known, then a stretch passed with nobody watching). There used to be a
-    second enum here spelling those two out again under different names, which
-    meant two vocabularies for one distinction."""
+    known, then a stretch passed with nobody watching)."""
 
     detail: str
-    settle_with: str | None
-    """The verb that answers it, named as an operator would type it. None when
-    nothing does: an unfinished action is holding operations, and the record
-    catches up only when that action ends."""
+    settle_with: str
+    """The verb that answers it, named as an operator would type it."""
 
 
 def is_unsettled(provenance: Provenance) -> bool:
@@ -59,11 +55,10 @@ def is_unsettled(provenance: Provenance) -> bool:
 
 def settle_verb(
     noun: SettleNoun, provenance: Provenance, *,
-    unrecorded: bool,
     gaps: frozenset[ObservationGapCause],
     can_be_agreed_with: bool,
-) -> str | None:
-    """The verb that settles this subject, or None when no verb does.
+) -> str:
+    """The verb that settles this subject.
 
     Confirm agrees with what the record holds, so it is the answer wherever the
     record is still the best value there is. Naming `set-tip-state` for a rack
@@ -71,19 +66,12 @@ def settle_verb(
     the record already has right.
 
     Three cases take the `set` verb instead. Nobody has ever said, where there
-    is nothing to agree with. An abort that lost work, where the record is
+    is nothing to agree with. A command a stop cut off, where the record is
     short by an amount nothing can state and agreeing marks it checked. And a
     record with nothing the confirm verb can back, where confirm is refused
     outright even though the provenance looks agreeable -- an undeclared trough
     reads as having a baseline while its volumes fold to nothing.
-
-    An unfinished action holding operations is the case neither verb answers.
-    Confirming freezes a number that is behind. Stating one is worse, because
-    the action's own operations are folded on top of it when it ends. Only
-    ending the action helps, so this names no verb and the detail says why.
     """
-    if unrecorded:
-        return None
     if (
         provenance is Provenance.UNKNOWN
         or not can_be_agreed_with

@@ -4,19 +4,26 @@ A profile is read on every move that carries a labware and written rarely, both
 on the event loop, so this is one ``asyncio.Lock`` over the store and nothing
 else. The Service itself satisfies ``IGripProfileStore``, so a facade and the
 transporter consume it as a drop-in store.
-
-``seed_if_missing`` is what lets a topology declare a starting point for the
-labware types it ships without overwriting what an operator has since measured:
-the stored row always wins over a re-declared seed, the same contract the access
-configs and the move defaults have.
 """
 
 import asyncio
 from collections.abc import Iterable
+from typing import Protocol
 
 from cheshire_drivers.move_parameters import MoveParameterField, MoveParameterPatch
 
-from orca.runtime.interfaces import IGripProfileStore
+from orca.resource_models.store_interfaces import IGripProfileStore
+
+
+class IGripProfileService(IGripProfileStore, Protocol):
+    """How the arm grips each labware type. It is used wherever a store is."""
+
+    async def apply(
+        self,
+        labware_type: str,
+        patch: MoveParameterPatch,
+        clear: Iterable[MoveParameterField] = (),
+    ) -> MoveParameterPatch: ...
 
 
 class GripProfileService:
@@ -66,14 +73,6 @@ class GripProfileService:
             else:
                 await self._store.delete(labware_type)
             return merged
-
-    async def seed_if_missing(
-        self, labware_type: str, patch: MoveParameterPatch,
-    ) -> None:
-        """Write the profile only if the type has none; never overwrite."""
-        async with self._lock:
-            if await self._store.get(labware_type) is None:
-                await self._store.set(labware_type, patch)
 
     async def create_schema(self) -> None:
         """Create the store's schema if absent (satisfies IGripProfileStore)."""

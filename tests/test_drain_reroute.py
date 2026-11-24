@@ -21,8 +21,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from orca.resource_models.labware_state import LabwareSlot
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.workflow_models.labware_state import LabwareSlot
+from orca.modes.run_modes import WorkflowRunMode
 from orca.workflow_models.method import ExecutingMethod
 from orca.workflow_models.workflow_templates import WorkflowTemplate
 
@@ -73,7 +73,7 @@ class TestDrainCallbackReceivesBareTemplateName:
         slot.queue.put_nowait(method)
 
         calls, callback = _record_callback()
-        routed = await slot.drain_for_handoff(callback, WorkflowRunMode.PURE_SIM)
+        routed = await slot.drain_for_handoff(callback, WorkflowRunMode.CHECK_RUN)
 
         assert routed == 1
         assert len(calls) == 1
@@ -95,7 +95,7 @@ class TestDrainCallbackReceivesBareTemplateName:
         slot.pending.append(_make_method("shake"))
 
         calls, callback = _record_callback()
-        await slot.drain_for_handoff(callback, WorkflowRunMode.PURE_SIM)
+        await slot.drain_for_handoff(callback, WorkflowRunMode.CHECK_RUN)
 
         assert [c[0] for c in calls] == ["reagent_trough", "reagent_trough"]
 

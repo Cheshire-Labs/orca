@@ -10,10 +10,8 @@ The rule these pin: a labware stale because nobody was watching can be
 confirmed, and confirming agrees with exactly what the read surface displayed,
 never with a number the operator was not shown.
 
-The two kinds of stale that mean the record is known not to describe the
-labware -- an unfinished action holding operations, an aborted one that lost
-them -- are refused instead, because agreeing there writes a number that is
-already wrong down as checked.
+A command a stop cut off at the device is refused instead, because agreeing
+there writes a number that may be wrong down as checked.
 """
 
 import pytest
@@ -21,7 +19,7 @@ import pytest
 from orca.state.confirm_refusals import WorkLostError
 from orca.state.provenance import Provenance
 from orca.state.records import ObservationGapCause
-from orca.runtime.sim_labware import SimPlateTemplate
+from orca.resource_models.sim_labware import SimPlateTemplate
 
 from tests.test_labware_contents_are_ledger_owned import _PLATE_WELLS, _started
 

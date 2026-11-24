@@ -10,7 +10,7 @@ builds a new bound-method object, so an identity check would fail to recognise
 a runtime's own listener and clear a slot it no longer owns.
 """
 
-from orca.gateway.controller.controller import DeviceController
+from tests.gateway_parts import gateway_parts
 from orca.gateway.device_fault import DeviceFault
 
 
@@ -30,7 +30,7 @@ def test_a_bound_method_is_recognised_as_its_own_listener():
     assert runtime.on_fault_changed is not runtime.on_fault_changed
     assert runtime.on_fault_changed == runtime.on_fault_changed
 
-    controller = DeviceController()
+    controller = gateway_parts().controller
     controller.set_fault_listener(runtime.on_fault_changed)
     controller.clear_fault_listener(runtime.on_fault_changed)
 
@@ -43,7 +43,7 @@ def test_the_old_runtimes_shutdown_leaves_the_new_ones_listener_alone():
     old = FakeRuntime("old", seen)
     new = FakeRuntime("new", seen)
 
-    controller = DeviceController()
+    controller = gateway_parts().controller
     controller.set_fault_listener(old.on_fault_changed)
     controller.set_fault_listener(new.on_fault_changed)
     controller.clear_fault_listener(old.on_fault_changed)

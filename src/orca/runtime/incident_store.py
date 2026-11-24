@@ -19,9 +19,12 @@ from datetime import datetime
 from enum import Enum
 from typing import Protocol
 
+from orca.resource_models.unheld_command import UnheldCommand
 from orca.system.reservation_manager.errors import (
     ActionContinuedContext,
     ActionFailedContext,
+    AutoSpawnFailedDetail,
+    CoLabwareTimeoutDetail,
     MoveContinuedContext,
     MoveFailedContext,
     OrphanedBacklogContext,
@@ -62,6 +65,7 @@ class IncidentCategory(str, Enum):
     THREAD_DIED = "THREAD_DIED"
     DECK_RECONCILE_CONFLICT = "DECK_RECONCILE_CONFLICT"
     LEDGER_CONTRADICTED = "LEDGER_CONTRADICTED"
+    RECORD_NOT_SAVED = "RECORD_NOT_SAVED"
     OTHER = "OTHER"
 
 
@@ -78,14 +82,14 @@ class RecoveryAction(str, Enum):
     Not enforced; the operator chooses. NONE means the incident is
     informational or structurally not recoverable in-process (restart only).
     """
-    THREAD_RECOVER_RETRY = "THREAD_RECOVER_RETRY"   # fix variable, recover with retry
-    # Re-run only the failed device call, hardware reconciled first. Advised
-    # instead of THREAD_RECOVER_RETRY when the thread is paused inside a call.
-    THREAD_RECOVER_RETRY_OP = "THREAD_RECOVER_RETRY_OP"
+    # Repeat the step that failed; inside an action, the failed device call
+    # with hardware reconciled first.
+    THREAD_RECOVER_RETRY = "THREAD_RECOVER_RETRY"
+    # Re-run the whole action. Advised when the action's own code failed.
+    THREAD_RECOVER_RETRY_ACTION = "THREAD_RECOVER_RETRY_ACTION"
     THREAD_RECOVER_ABORT = "THREAD_RECOVER_ABORT"   # skip the action that triggered it
-    PLUGIN_DISABLE = "PLUGIN_DISABLE"               # quarantine a misbehaving plugin
-    MANUAL_SPAWN = "MANUAL_SPAWN"                   # for AUTO_SPAWN_FAILED
     RESTART_EXECUTION = "RESTART_EXECUTION"         # stop + remove + resubmit
+    RESUBMIT = "RESUBMIT"                           # nothing ran: fix the device, then submit again
     RESUME_EXECUTION = "RESUME_EXECUTION"           # resume accepts the partial fill
     NONE = "NONE"                                   # informational; no action possible
 
@@ -106,19 +110,6 @@ class VariableValidationDetail:
     offered_value: str                  # repr; avoids carrying arbitrary values through Any
     expected_type: str
     reason: str
-
-
-@dataclass(frozen=True)
-class CoLabwareTimeoutDetail:
-    missing_labware_names: tuple[str, ...]
-    waited_seconds: float
-    position_id: str
-
-
-@dataclass(frozen=True)
-class AutoSpawnFailedDetail:
-    requested_labware_name: str
-    requesting_thread_id: str
 
 
 @dataclass(frozen=True)
@@ -167,8 +158,8 @@ class DeckReconcileConflictDetail:
     take, or None when the driver has it nowhere.
     """
     device_name: str
-    labware_id: str
-    labware_name: str
+    labware_id: str | None
+    labware_name: str | None
     position_id: str
     reason: str
     driver_site: str | None = None
@@ -193,6 +184,18 @@ class LedgerContradictionDetail:
     labware_name: str
     positions: list[str]
     believed: str
+
+
+@dataclass(frozen=True)
+class RecordNotSavedDetail:
+    """A record a background writer gave up on: run status, an incident, an audit row or an event.
+
+    ``record`` is the record as text, so it can be re-entered by hand. ``error_type`` is the class of the store's error.
+    """
+    record_kind: str
+    record: str
+    error_type: str
+    error_message: str
 
 
 @dataclass(frozen=True)
@@ -228,7 +231,7 @@ class RecoverableTimeoutContext:
 
     The engine's device-command dispatcher declares this when an in-flight
     device command exceeds its ``max_seconds`` without a response. The
-    execution pauses; the operator decides via REST / MCP / CLI whether to
+    execution pauses; the operator decides via REST / CLI whether to
     extend the wait, abort the command, or mark it manually complete. The
     engine's recoverable-timeout coordinator holds the call until that
     decision arrives, then resumes the paused execution.
@@ -238,6 +241,8 @@ class RecoverableTimeoutContext:
     command_id: str
     elapsed_seconds: float
     max_seconds: float
+    # None while a run's command is held for a decision; set when nothing holds it and the decision settles the record.
+    unheld: UnheldCommand | None
 
 
 @dataclass(frozen=True)
@@ -265,6 +270,7 @@ IncidentDetail = (
     | DeviceBusyExhaustedDetail
     | DeckReconcileConflictDetail
     | LedgerContradictionDetail
+    | RecordNotSavedDetail
     | PluginHandlerExceptionDetail
     | EventHandlerExceptionDetail
     | UnresolvedAnchorInsertDetail
@@ -313,15 +319,15 @@ def build_incident(
 class IIncidentStore(Protocol):
     """Dumb per-DB persistence for incidents.
 
-    The only DB-aware code in the incident vertical: raw async reads/writes, no
-    locking, no events (those live in ``IncidentService``). orca ships
-    ``SqliteIncidentStore``; a hosted deployment injects its own DB-backed store;
+    Raw async reads/writes, no locking, no events (those live in
+    ``IncidentService``). orca ships ``SqliteIncidentStore``; a hosted
+    deployment injects its own DB-backed store;
     both satisfy this interface and the Service is injected with whichever.
     """
 
     async def create_schema(self) -> None:
         """Create the incidents table if absent (in-memory/sim setup; file and
-        Postgres deployments use migrations, where this is an idempotent no-op)."""
+        hosted deployments use migrations, where this is an idempotent no-op)."""
         ...
 
     async def insert(self, incident: SystemIncident) -> None: ...

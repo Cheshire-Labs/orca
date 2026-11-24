@@ -19,6 +19,8 @@ strategy can read `run_mode` and (for ManualPlaceSpawn LIVE) rebind
 `thread._labware`. The `acquire(labware)` signature is gone.
 """
 
+from tests.test_helpers import make_labware_placer
+from orca.workflow_models.spawn_actions import SpawnAction
 from collections.abc import AsyncGenerator
 
 import pytest
@@ -28,13 +30,14 @@ from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.labware_staging_bridge import LabwareStagingBridge
 from orca.resource_models.location import Location
 from orca.resource_models.plate_pad import PlatePad
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from orca.spawn import DISPENSE, MANUAL_PLACE
 from orca.workflow_models.labware_threads.labware_thread import (
     LabwareThreadInstance,
 )
 from orca.workflow_models.method_template import IMethodTemplate
 from orca.workflow_models.thread_context import ThreadContext
+from tests.placements_for_tests import this_tests_placements
 from orca.resource_models.labware_location_service import (
     InMemoryLabwareLocationService,
 )
@@ -76,7 +79,7 @@ def _make_thread_with_template(
     labware: LabwareInstance,
     start_location: Location,
     *,
-    run_mode: WorkflowRunMode = WorkflowRunMode.PURE_SIM,
+    run_mode: WorkflowRunMode = WorkflowRunMode.CHECK_RUN,
 ) -> LabwareThreadInstance:
     thread = LabwareThreadInstance(
         labware=labware,
@@ -102,7 +105,7 @@ class TestSelectSpawnActionByFlag:
         )
         thread = _make_thread_with_template(template, _fresh_labware(), location)
 
-        spawn = select_spawn_action(thread, InMemoryLabwareLocationService())
+        spawn = _select(thread)
         assert isinstance(spawn, ManualPlaceSpawn)
 
     def test_explicit_manual_place_dispatches_to_manual_place(self) -> None:
@@ -116,7 +119,7 @@ class TestSelectSpawnActionByFlag:
         )
         thread = _make_thread_with_template(template, _fresh_labware(), location)
 
-        spawn = select_spawn_action(thread, InMemoryLabwareLocationService())
+        spawn = _select(thread)
         assert isinstance(spawn, ManualPlaceSpawn)
 
     def test_explicit_dispense_dispatches_to_dispense_spawn(self) -> None:
@@ -130,7 +133,7 @@ class TestSelectSpawnActionByFlag:
         )
         thread = _make_thread_with_template(template, _fresh_labware(), location)
 
-        spawn = select_spawn_action(thread, InMemoryLabwareLocationService())
+        spawn = _select(thread)
         assert isinstance(spawn, DispenseSpawn)
 
     def test_iplate_source_location_without_dispense_flag_dispatches_to_manual_place(
@@ -148,7 +151,7 @@ class TestSelectSpawnActionByFlag:
         )
         thread = _make_thread_with_template(template, _fresh_labware(), location)
 
-        spawn = select_spawn_action(thread, InMemoryLabwareLocationService())
+        spawn = _select(thread)
         assert isinstance(spawn, ManualPlaceSpawn)
 
 
@@ -224,3 +227,8 @@ class TestSelectEndSpawnActionTemplateLess:
         )
         thread = _make_thread_with_template(template, _fresh_labware(), location)
         assert isinstance(select_end_spawn_action(thread, location), ManualRemoveSpawn)
+
+
+def _select(thread: LabwareThreadInstance) -> SpawnAction:
+    service = InMemoryLabwareLocationService(this_tests_placements())
+    return select_spawn_action(thread, service, make_labware_placer(service))

@@ -5,13 +5,10 @@ event_bus wiring, sinks, system-scoped plugin delivery,
 concurrent-workflow isolation, and entity resolution.
 """
 
-import asyncio
+from orca.config import OrcaConfig
 import json
 import logging
-import time
 from collections.abc import AsyncGenerator
-
-import pytest
 
 import orca.orca as orca
 from orca.events.event_bus import EventBus
@@ -20,13 +17,9 @@ from orca.events.execution_context import (
     WorkflowExecutionContext,
 )
 from orca.plugins.base import OrcaPlugin
-from orca.plugins.method_tracker import MethodTracker
-from orca.plugins.labware_journey_tracker import LabwareJourneyTracker
 from orca.resource_models.resource_pool import ResourcePool
 from orca.events.runtime_event import RuntimeEvent
-from orca.runtime.entity_resolver import resolve_entity
 from orca.runtime.sinks import CollectorSink, LogSink
-from orca.runtime.system_runtime import SystemRuntime
 from orca.system.SdkToSystemBuilder import SdkToSystemBuilder
 from orca.sdk.system import ResourceRegistry, SystemMap
 from orca.sdk.workflow import WorkflowTemplate
@@ -36,7 +29,8 @@ from orca.workflow_models.action_template import ActionTemplate
 from orca.workflow_models.method_context import MethodContext
 from orca.workflow_models.method_template import IMethodTemplate
 from orca.workflow_models.thread_context import ThreadContext
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
+from tests.thread_recorder import ThreadRecorder
 from tests.test_helpers import (
     execution_outcome,
     create_test_device,
@@ -44,6 +38,10 @@ from tests.test_helpers import (
     create_test_transporter,
     wire_system_map,
 )
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 
 async def _build_simple_system_with_event_bus() -> tuple[ISystem, WorkflowTemplate, EventBus]:
@@ -89,7 +87,10 @@ async def _build_simple_system_with_event_bus() -> tuple[ISystem, WorkflowTempla
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=event_bus,
+        event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     system = builder.get_system()
@@ -157,7 +158,10 @@ async def _build_concurrent_system_with_event_bus() -> tuple[ISystem, WorkflowTe
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow1, workflow2],
-        event_bus=event_bus,
+        event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     system = builder.get_system()
@@ -171,38 +175,41 @@ class TestSystemRuntimeEventWiring:
         """register_sink() wires a sink to the SystemEventBus.
         Events from workflow execution flow through to the sink."""
         system, workflow, event_bus = await _build_simple_system_with_event_bus()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
         collector = CollectorSink()
         runtime.register_sink(collector)
 
         await runtime.start()
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
         await execution_outcome(runtime, submission, timeout=30.0)
         await runtime.shutdown()
 
         assert len(collector.events) > 0
         assert all(isinstance(e, RuntimeEvent) for e in collector.events)
-        assert all(e.execution_id == submission.execution_id for e in collector.events)
+        # Bringing the devices up happens before the run exists, so it is recorded as the system's.
+        run_events = [e for e in collector.events if e.execution_id != "_system"]
+        assert run_events
+        assert all(e.execution_id == submission.execution_id for e in run_events)
 
     async def test_unregister_sink_stops_delivery(self) -> None:
         """unregister_sink() detaches a sink so later events skip it, while a
         still-registered sink keeps receiving them."""
         system, workflow, event_bus = await _build_simple_system_with_event_bus()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
         detached = CollectorSink()
         kept = CollectorSink()
         runtime.register_sink(detached)
         runtime.register_sink(kept)
 
         await runtime.start()
-        first = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        first = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
         await execution_outcome(runtime, first, timeout=30.0)
 
         assert len(detached.events) > 0
         runtime.unregister_sink(detached)
         count_at_detach = len(detached.events)
 
-        second = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        second = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
         await execution_outcome(runtime, second, timeout=30.0)
         await runtime.shutdown()
 
@@ -215,12 +222,12 @@ class TestSystemRuntimeEventWiring:
         event, not just the during-run THREAD/METHOD events. Regression for the
         forwarder unregistering the execution before _on_task_done emits."""
         system, workflow, event_bus = await _build_simple_system_with_event_bus()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
         collector = CollectorSink()
         runtime.register_sink(collector)
 
         await runtime.start()
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
         await execution_outcome(runtime, submission, timeout=30.0)
         await runtime.shutdown()
 
@@ -230,58 +237,45 @@ class TestSystemRuntimeEventWiring:
         )
         assert f"SUBMISSION.{submission.id}.COMPLETED" in names
 
-    async def test_get_events_for_execution(self) -> None:
-        """SystemRuntime.get_events_for_execution() returns events
-        filtered by execution_id from the internal SystemEventBus."""
+    async def test_a_runs_events_carry_its_execution_id(self) -> None:
+        """Every event a run sends to a sink names the run's execution id."""
         system, workflow, event_bus = await _build_simple_system_with_event_bus()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
+        collector = CollectorSink()
+        runtime.register_sink(collector)
 
         await runtime.start()
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
         await execution_outcome(runtime, submission, timeout=30.0)
         await runtime.shutdown()
 
-        events = runtime.get_events_for_execution(submission.execution_id)
-        assert len(events) > 0
-        assert all(e.execution_id == submission.execution_id for e in events)
-
-    async def test_get_events_since(self) -> None:
-        """SystemRuntime.get_events_since() filters by timestamp."""
-        system, workflow, event_bus = await _build_simple_system_with_event_bus()
-        runtime = SystemRuntime(system, event_bus=event_bus)
-
-        await runtime.start()
-        before = time.time()
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
-        await execution_outcome(runtime, submission, timeout=30.0)
-        await runtime.shutdown()
-
-        events = runtime.get_events_since(before)
-        assert len(events) > 0
+        thread_events = [e for e in collector.events if e.entity_type == "THREAD"]
+        assert len(thread_events) > 0
+        assert all(e.execution_id == submission.execution_id for e in thread_events)
 
     async def test_system_scoped_plugin_receives_events(self) -> None:
-        """A MethodTracker registered on the runtime sees thread events
+        """A plugin registered on the runtime sees thread events
         without being manually registered on the workflow."""
         system, workflow, event_bus = await _build_simple_system_with_event_bus()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
 
-        tracker = MethodTracker()
-        runtime.register_plugin(tracker)
+        recorder = ThreadRecorder()
+        runtime.register_plugin(recorder)
 
         await runtime.start()
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
         await execution_outcome(runtime, submission, timeout=30.0)
         await runtime.shutdown()
 
-        assert len(tracker._thread_names) > 0
+        assert len(recorder.thread_names) > 0
 
     async def test_runtime_without_event_bus_still_works(self) -> None:
         """Backward compat: SystemRuntime works without event_bus param."""
         system, workflow, _ = await _build_simple_system_with_event_bus()
-        runtime = SystemRuntime(system)
+        runtime = await memory_runtime(system)
 
         await runtime.start()
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
         status = await execution_outcome(runtime, submission, timeout=30.0)
         await runtime.shutdown()
 
@@ -290,12 +284,12 @@ class TestSystemRuntimeEventWiring:
     async def test_events_contain_structured_fields(self) -> None:
         """Captured events have parsed entity_type, entity_id, status."""
         system, workflow, event_bus = await _build_simple_system_with_event_bus()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
         collector = CollectorSink()
         runtime.register_sink(collector)
 
         await runtime.start()
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
         await execution_outcome(runtime, submission, timeout=30.0)
         await runtime.shutdown()
 
@@ -314,7 +308,7 @@ class TestSystemRuntimeEventWiring:
         """LogSink logs each event as a valid JSON line. default=str handles any
         non-serializable context fields without raising."""
         system, workflow, event_bus = await _build_simple_system_with_event_bus()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
         sink = LogSink()
         runtime.register_sink(sink)
 
@@ -331,7 +325,7 @@ class TestSystemRuntimeEventWiring:
         log.addHandler(handler)
         try:
             await runtime.start()
-            submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+            submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
             await execution_outcome(runtime, submission, timeout=30.0)
             await runtime.shutdown()
         finally:
@@ -349,16 +343,16 @@ class TestSystemRuntimeEventWiring:
         """Two concurrent workflows produce separate events and plugin state.
         Events for exec1 must not contain thread_ids from exec2 and vice versa."""
         system, workflow1, workflow2, event_bus = await _build_concurrent_system_with_event_bus()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
         collector = CollectorSink()
         runtime.register_sink(collector)
 
-        tracker = MethodTracker()
-        runtime.register_plugin(tracker)
+        recorder = ThreadRecorder()
+        runtime.register_plugin(recorder)
 
         await runtime.start()
-        submission1 = await runtime.submit(workflow1, mode=WorkflowRunMode.PURE_SIM)
-        submission2 = await runtime.submit(workflow2, mode=WorkflowRunMode.PURE_SIM)
+        submission1 = await runtime.submit(workflow1, mode=WorkflowRunMode.CHECK_RUN)
+        submission2 = await runtime.submit(workflow2, mode=WorkflowRunMode.CHECK_RUN)
         await execution_outcome(runtime, submission1, timeout=30.0)
         await execution_outcome(runtime, submission2, timeout=30.0)
         await runtime.shutdown()
@@ -369,7 +363,7 @@ class TestSystemRuntimeEventWiring:
         assert len(exec2_events) > 0
 
         # Each execution tracked its own threads (keyed by thread_id, no collision)
-        assert len(tracker._thread_names) >= 2
+        assert len(recorder.thread_names) >= 2
 
         # Thread ids seen in exec1 must not appear in exec2's events and vice versa
         exec1_thread_ids = {
@@ -390,16 +384,16 @@ class TestSystemRuntimeEventWiring:
         """Thread names in events carry an id-prefix suffix (the labware
         instance name shape from ``instance_name_for``)."""
         system, workflow, event_bus = await _build_simple_system_with_event_bus()
-        runtime = SystemRuntime(system, event_bus=event_bus)
-        tracker = MethodTracker()
-        runtime.register_plugin(tracker)
+        runtime = await memory_runtime(system, event_bus=event_bus)
+        recorder = ThreadRecorder()
+        runtime.register_plugin(recorder)
 
         await runtime.start()
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
         await execution_outcome(runtime, submission, timeout=30.0)
         await runtime.shutdown()
 
-        for thread_id, thread_name in tracker._thread_names.items():
+        for thread_id, thread_name in recorder.thread_names.items():
             assert "-" in thread_name, f"Thread name '{thread_name}' missing hash suffix"
             suffix = thread_name.rsplit("-", 1)[-1]
             assert thread_id.startswith(suffix), (
@@ -431,7 +425,7 @@ class TestPluginUnregister:
 
     async def test_unregister_stops_event_delivery(self) -> None:
         system, _workflow, event_bus = await _build_simple_system_with_event_bus()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
         plugin = _CountingPlugin()
         runtime.register_plugin(plugin)
 
@@ -445,7 +439,7 @@ class TestPluginUnregister:
 
     async def test_unregister_drops_every_instance_of_the_type(self) -> None:
         system, _workflow, event_bus = await _build_simple_system_with_event_bus()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
         first = _CountingPlugin()
         second = _CountingPlugin()
         runtime.register_plugin(first)
@@ -458,35 +452,3 @@ class TestPluginUnregister:
 
         runtime._system_event_bus.emit(_synthetic_event())
         assert first.count == 1 and second.count == 1
-
-
-class TestEntityResolver:
-    """Tests for resolve_entity() lookup utility."""
-
-    def test_exact_id_match(self) -> None:
-        registry = {"abc123": "my-thread", "def456": "other-thread"}
-        assert resolve_entity("abc123", registry) == "abc123"
-
-    def test_exact_name_match(self) -> None:
-        registry = {"abc123": "my-thread", "def456": "other-thread"}
-        assert resolve_entity("my-thread", registry) == "abc123"
-
-    def test_id_prefix_match(self) -> None:
-        registry = {"abc123": "my-thread", "def456": "other-thread"}
-        assert resolve_entity("abc", registry) == "abc123"
-
-    def test_name_prefix_match(self) -> None:
-        registry = {"abc123": "my-thread-a3f2", "def456": "other-thread-b4c1"}
-        assert resolve_entity("my-thread", registry) == "abc123"
-
-    def test_name_prefix_ambiguous_raises(self) -> None:
-        registry = {"abc123": "my-thread-a3f2", "def456": "my-thread-b4c1"}
-        with pytest.raises(ValueError, match="Ambiguous"):
-            resolve_entity("my-thread", registry)
-
-    def test_no_match_returns_none(self) -> None:
-        registry = {"abc123": "my-thread"}
-        assert resolve_entity("xyz", registry) is None
-
-    def test_empty_registry(self) -> None:
-        assert resolve_entity("anything", {}) is None

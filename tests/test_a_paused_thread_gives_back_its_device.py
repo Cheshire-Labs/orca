@@ -10,13 +10,14 @@ branch. Anything that parks the thread before it resolves its next action parks
 it holding a device it is not using. An action-resolution failure does exactly
 that.
 """
+from orca.config import OrcaConfig
 from typing import AsyncGenerator
 
 import pytest
 
 import orca.orca as orca
 from orca.resource_models.resource_pool import ResourcePool
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from orca.runtime.system_runtime import SystemRuntime
 from orca.sdk.events import EventBus
 from orca.sdk.system import ResourceRegistry, SystemMap
@@ -34,6 +35,10 @@ from tests.test_helpers import (
     create_test_transporter,
     wire_system_map,
 )
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 
 async def _paused_after_a_method_finished_on_a_device() -> tuple[SystemRuntime, str]:
@@ -78,12 +83,15 @@ async def _paused_after_a_method_finished_on_a_device() -> tuple[SystemRuntime, 
     builder = SdkToSystemBuilder(
         name="test_system", description="", labwares=[plate],
         resources_registry=registry, system_map=system_map,
-        workflows=[workflow], event_bus=event_bus,
+        workflows=[workflow], event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
-    runtime = SystemRuntime(builder.get_system(), event_bus=event_bus)
+    runtime = await memory_runtime(builder.get_system(), event_bus=event_bus)
     await runtime.start()
-    submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+    submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
     await wait_for_paused(runtime, submission.execution_id)
     return runtime, submission.execution_id
 

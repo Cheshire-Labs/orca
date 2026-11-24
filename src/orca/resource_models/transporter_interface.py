@@ -6,6 +6,7 @@ from orca.resource_models.tracked_lock import TrackedLock
 
 
 from abc import ABC, abstractmethod
+from contextlib import AbstractAsyncContextManager
 from typing import List
 
 
@@ -27,6 +28,11 @@ class ITransporter(IResource, IInitializable, IPlateMover, ABC):
     @abstractmethod
     def in_use(self) -> bool:
         """Whether the transporter is currently holding its lock."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def reach_into(self, site: Location, purpose: str) -> AbstractAsyncContextManager[None]:
+        """Hold the device behind ``site`` while this arm is inside it (the reach-in lease)."""
         raise NotImplementedError
 
     @abstractmethod

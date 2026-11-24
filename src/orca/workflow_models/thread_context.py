@@ -14,6 +14,7 @@ from typing import Callable
 
 from pydantic import JsonValue
 
+from orca.events.event_name import checked_event_name
 from orca.events.custom_emit import EventEmitter, emit_custom_event
 from orca.events.event_channel import EventChannelRegistry
 from orca.resource_models.labware import LabwareInstance
@@ -107,7 +108,7 @@ class ThreadContext:
         Uses consumed semantics: each call advances past the last-seen
         publish counter, so calling wait_for() in a loop sees each new publish.
         """
-        channel = self._event_channel_registry.get_or_create(event_name)
+        channel = self._event_channel_registry.get_or_create(checked_event_name(event_name))
         seen = self._seen_counters.get(event_name, 0)
         counter, value, data = await channel.wait(seen_counter=seen, timeout=timeout)
         self._seen_counters[event_name] = counter
@@ -118,7 +119,7 @@ class ThreadContext:
     ) -> None:
         """Publish an event visible to all threads in this workflow, and to
         the runtime event surface as CUSTOM.<name>.EMITTED."""
-        channel = self._event_channel_registry.get_or_create(event_name)
+        channel = self._event_channel_registry.get_or_create(checked_event_name(event_name))
         await channel.publish(value=value, data=data)
         emit_custom_event(
             self._event_emitter,
@@ -141,12 +142,16 @@ class ThreadContext:
         )
 
     def set_partner_constraint(self, template_name: str, constraints: dict[str, str]) -> None:
-        """Set constraints for partner selection during auto-spawn.
+        """Name the labware of ``template_name`` that must serve this thread's methods.
 
-        When this thread's action triggers auto-spawn for a labware matching
-        template_name, the constraints are passed to the labware finder to
-        select the correct partner (e.g., by barcode).
+        ``constraints`` is ``{"barcode": "<barcode>"}``. It applies to every method this
+        thread takes from now on, until it is set again. A step never runs with another labware.
         """
+        if set(constraints) != {"barcode"} or not constraints["barcode"].strip():
+            raise ValueError(
+                f"A partner constraint for {template_name!r} must be {{'barcode': '<barcode>'}} "
+                f"with a non-empty barcode; got {constraints!r}."
+            )
         if self._partner_constraint_setter is None:
             raise RuntimeError(
                 "Partner constraints not available in this context"

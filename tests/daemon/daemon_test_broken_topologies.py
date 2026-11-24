@@ -4,22 +4,24 @@ One fails in `build_system` and the other in `SystemRuntime.start()`. The
 daemon handles the two in different places, so each needs its own case.
 """
 
-from orca.resource_models.devices import Device
 from orca.resource_models.plate_pad import PlatePad
 from orca.resource_models.resource_pool import ResourcePool
-from orca.runtime.store_factory import IRuntimeStoreFactory
+from orca.resource_models.transporter import Transporter
+from orca.resource_models.store_interfaces import IMoveDefaultsStore
 from orca.sdk.build import Topology
-from tests.mock import UniversalSimDriver
-from tests.test_helpers import create_test_device, create_test_transporter
+from tests.setup_package import package_stores, with_teachpoints, write_teachpoints
+from tests.test_helpers import create_test_device, create_test_teachpoints, create_test_transporter
 
 
-class DeviceWithNoKind(Device):
-    """Every device class must declare KIND, and the runtime reads it at start."""
+class ArmThatRefusesItsMoveDefaults(Transporter):
+    """The runtime binds move defaults to every arm at start."""
+
+    def bind_move_defaults(self, store: IMoveDefaultsStore) -> None:
+        raise RuntimeError(f"{self.name} refuses its move defaults")
 
 
-def build_topology_with_an_unknown_teachpoint(stores: IRuntimeStoreFactory) -> Topology:
+def build_topology_with_an_unknown_teachpoint() -> Topology:
     """The arm is taught a location that nothing registers. The builder refuses it."""
-    del stores
     shaker = create_test_device("shaker1")
     arm = create_test_transporter("robot1", ["shaker1", "pad1", "nowhere"])
     return Topology(
@@ -29,14 +31,16 @@ def build_topology_with_an_unknown_teachpoint(stores: IRuntimeStoreFactory) -> T
     )
 
 
-def build_topology_with_a_device_that_has_no_kind(stores: IRuntimeStoreFactory) -> Topology:
+def build_topology_with_an_arm_that_fails_at_start() -> Topology:
     """Builds, then fails in start."""
-    del stores
-    driver = UniversalSimDriver("thing")
-    thing = DeviceWithNoKind("thing", driver, driver)
-    arm = create_test_transporter("robot1", ["thing", "pad1"])
-    return Topology(
-        locations={"thing": thing, "pad1": PlatePad("pad1")},
-        transporters=[arm],
-        pools=[ResourcePool("thing", [thing])],
+    shaker = create_test_device("shaker1")
+    arm = with_teachpoints(
+        ArmThatRefusesItsMoveDefaults("robot1"),
+        write_teachpoints(package_stores(), "robot1", create_test_teachpoints(["shaker1", "pad1"])),
     )
+    return Topology(
+        locations={"shaker1": shaker, "pad1": PlatePad("pad1")},
+        transporters=[arm],
+        pools=[ResourcePool("shaker1", [shaker])],
+    )
+

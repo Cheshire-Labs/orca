@@ -3,17 +3,13 @@
 Pins the start-location and sim-hierarchy typed exception classes that
 SubmitExecutionOperation surfaces as ``OperationError.typed(...)``:
 
-- ``LiveSubmissionWithSimOverridesUnacknowledgedError`` ->
-  ``LIVE_SUBMISSION_WITH_SIM_OVERRIDES_UNACKNOWLEDGED`` (422)
 - ``StartLocationsOccupiedError`` -> ``START_LOCATION_OCCUPIED`` (409)
 - ``SpawnIncompatibleError`` -> ``SPAWN_INCOMPATIBLE`` (409)
 - ``ReuseThreadCannotBeEntryError`` -> ``REUSE_THREAD_CANNOT_BE_ENTRY`` (409)
 - ``RunModeMismatchError`` -> ``RUN_MODE_MISMATCH`` (409)
 
 These exercise the legacy ``submit_workflow`` dispatch path (no groups,
-STANDALONE, no operator_id / deployment_profile / acknowledge_warnings).
-The multi-group path's typed catches are pinned by
-``test_routes_submit_envelope.py::test_post_submissions_live_sim_overrides_route_returns_typed_422``.
+STANDALONE, no operator_id).
 """
 
 from typing import Any
@@ -21,26 +17,24 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from orca.operations._protocol import OperationError, OperationErrorCode
+from orca.operations.protocol import OperationError
 from orca.operations.submission import SubmitExecutionOperation
 from orca.operations.submission_models import SubmitExecutionRequest
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.runtime_interface import (
-    ConcurrentLiveSimRefusedError,
-    LiveSubmissionWithSimOverridesUnacknowledgedError,
+from orca.modes.run_modes import WorkflowRunMode
+from orca.system.errors import DeviceInitializationError, DevicesNotReadyError
+from orca.runtime.errors import (
+    OtherRunModeActiveError,
     OccupiedSlot,
-    ReuseThreadCannotBeEntryError,
     RunModeMismatchError,
-    SpawnIncompatibleError,
     StartLocationsOccupiedError,
     SubmissionToPausedExecutionError,
 )
+from orca.workflow_models.errors import ReuseThreadCannotBeEntryError, SpawnIncompatibleError
 
 
 def _make_runtime(submit_workflow_side_effect: Exception) -> Any:
     runtime = MagicMock()
     runtime.submissions = MagicMock()
-    runtime.submissions.submit_workflow = AsyncMock(side_effect=submit_workflow_side_effect)
     runtime.submissions.submit_group = AsyncMock(
         side_effect=submit_workflow_side_effect,
     )
@@ -50,45 +44,8 @@ def _make_runtime(submit_workflow_side_effect: Exception) -> Any:
 def _legacy_request() -> SubmitExecutionRequest:
     return SubmitExecutionRequest(
         workflow_name="simple_workflow",
-        run_mode="PURE_SIM",
+        run_mode="CHECK_RUN",
     )
-
-
-@pytest.mark.asyncio
-async def test_live_sim_overrides_surfaces_typed_422_envelope() -> None:
-    """LIVE submission with unacknowledged sim_override device produces
-    the typed 422 envelope on the Operation surface (binder translates
-    to HTTPException; the Operation pins the wire_code + status_code +
-    extras shape)."""
-    exc = LiveSubmissionWithSimOverridesUnacknowledgedError(
-        devices=[
-            ("shaker1", WorkflowRunMode.PURE_SIM, WorkflowRunMode.PURE_SIM),
-            ("centrifuge2", WorkflowRunMode.DEVICE_SIM, WorkflowRunMode.DEVICE_SIM),
-        ],
-    )
-    op = SubmitExecutionOperation(runtime=_make_runtime(exc))
-
-    with pytest.raises(OperationError) as exc_info:
-        await op.run(_legacy_request())
-
-    raised = exc_info.value
-    assert raised.code is OperationErrorCode.INVALID_INPUT
-    assert raised.wire_code == "LIVE_SUBMISSION_WITH_SIM_OVERRIDES_UNACKNOWLEDGED"
-    assert raised.status_code == 422
-    assert raised.extras == {
-        "devices": [
-            {
-                "name": "shaker1",
-                "sim_override": "PURE_SIM",
-                "resolved_mode": "PURE_SIM",
-            },
-            {
-                "name": "centrifuge2",
-                "sim_override": "DEVICE_SIM",
-                "resolved_mode": "DEVICE_SIM",
-            },
-        ],
-    }
 
 
 @pytest.mark.asyncio
@@ -99,6 +56,7 @@ async def test_start_locations_occupied_surfaces_typed_409_envelope() -> None:
     ``extras.occupied``."""
     slot = OccupiedSlot(
         position_id="bench_A1",
+        existing_labware_id="lw-1",
         existing_labware_name="plate_X",
         existing_template_name="plate_96",
         source="unknown",
@@ -110,13 +68,14 @@ async def test_start_locations_occupied_surfaces_typed_409_envelope() -> None:
         await op.run(_legacy_request())
 
     raised = exc_info.value
-    assert raised.code is OperationErrorCode.CONFLICT
-    assert raised.wire_code == "start_location_occupied"
-    assert raised.status_code == 409
+    assert raised.http_status == 409
+    assert raised.surface_code() == "start_location_occupied"
+    assert raised.http_status == 409
     assert raised.extras == {
         "occupied": [
             {
                 "position_id": "bench_A1",
+                "existing_labware_id": "lw-1",
                 "existing_labware_name": "plate_X",
                 "existing_template_name": "plate_96",
                 "source": "unknown",
@@ -141,9 +100,9 @@ async def test_spawn_incompatible_surfaces_typed_409_envelope() -> None:
         await op.run(_legacy_request())
 
     raised = exc_info.value
-    assert raised.code is OperationErrorCode.CONFLICT
-    assert raised.wire_code == "spawn_incompatible"
-    assert raised.status_code == 409
+    assert raised.http_status == 409
+    assert raised.surface_code() == "spawn_incompatible"
+    assert raised.http_status == 409
     assert raised.extras == {
         "location": "reagent_pad",
         "expected_template": "trough_25mL",
@@ -163,9 +122,9 @@ async def test_reuse_thread_cannot_be_entry_surfaces_typed_409_envelope() -> Non
         await op.run(_legacy_request())
 
     raised = exc_info.value
-    assert raised.code is OperationErrorCode.CONFLICT
-    assert raised.wire_code == "reuse_thread_cannot_be_entry"
-    assert raised.status_code == 409
+    assert raised.http_status == 409
+    assert raised.surface_code() == "reuse_thread_cannot_be_entry"
+    assert raised.http_status == 409
     assert raised.extras == {"thread_name": "reagent_journey"}
 
 
@@ -176,7 +135,7 @@ async def test_run_mode_mismatch_surfaces_typed_409_envelope() -> None:
     exc = RunModeMismatchError(
         blocking_execution_id="exec-abc",
         blocking_workflow_name="smc_assay",
-        existing_run_mode=WorkflowRunMode.PURE_SIM,
+        existing_run_mode=WorkflowRunMode.CHECK_RUN,
         submitted_run_mode=WorkflowRunMode.LIVE,
     )
     op = SubmitExecutionOperation(runtime=_make_runtime(exc))
@@ -185,13 +144,13 @@ async def test_run_mode_mismatch_surfaces_typed_409_envelope() -> None:
         await op.run(_legacy_request())
 
     raised = exc_info.value
-    assert raised.code is OperationErrorCode.CONFLICT
-    assert raised.wire_code == "RUN_MODE_MISMATCH"
-    assert raised.status_code == 409
+    assert raised.http_status == 409
+    assert raised.surface_code() == "run_mode_mismatch"
+    assert raised.http_status == 409
     assert raised.extras == {
         "blocking_execution_id": "exec-abc",
         "blocking_workflow_name": "smc_assay",
-        "existing_run_mode": "PURE_SIM",
+        "existing_run_mode": "CHECK_RUN",
         "submitted_run_mode": "LIVE",
     }
 
@@ -212,9 +171,9 @@ async def test_submission_to_paused_execution_surfaces_typed_409_envelope() -> N
         await op.run(_legacy_request())
 
     raised = exc_info.value
-    assert raised.code is OperationErrorCode.CONFLICT
-    assert raised.wire_code == "submission_to_paused_execution"
-    assert raised.status_code == 409
+    assert raised.http_status == 409
+    assert raised.surface_code() == "submission_to_paused_execution"
+    assert raised.http_status == 409
     assert raised.extras == {
         "blocking_execution_id": "exec-paused",
         "blocking_workflow_name": "smc_assay",
@@ -222,15 +181,14 @@ async def test_submission_to_paused_execution_surfaces_typed_409_envelope() -> N
 
 
 @pytest.mark.asyncio
-async def test_concurrent_live_sim_refused_surfaces_typed_409_envelope() -> None:
-    """A DEVICE_SIM submission while a LIVE execution is alive (or vice
-    versa) yields 409 ``CONCURRENT_LIVE_SIM_REFUSED`` with the blocking
-    execution + both run modes."""
-    exc = ConcurrentLiveSimRefusedError(
+async def test_other_run_mode_active_surfaces_typed_409_envelope() -> None:
+    """A submission in another run mode than a running execution yields 409
+    ``OTHER_RUN_MODE_ACTIVE`` with the blocking execution + both run modes."""
+    exc = OtherRunModeActiveError(
         blocking_execution_id="exec-live",
         blocking_workflow_name="smc_assay",
         existing_run_mode=WorkflowRunMode.LIVE,
-        submitted_run_mode=WorkflowRunMode.DEVICE_SIM,
+        submitted_run_mode=WorkflowRunMode.SIM,
     )
     op = SubmitExecutionOperation(runtime=_make_runtime(exc))
 
@@ -238,12 +196,28 @@ async def test_concurrent_live_sim_refused_surfaces_typed_409_envelope() -> None
         await op.run(_legacy_request())
 
     raised = exc_info.value
-    assert raised.code is OperationErrorCode.CONFLICT
-    assert raised.wire_code == "CONCURRENT_LIVE_SIM_REFUSED"
-    assert raised.status_code == 409
+    assert raised.http_status == 409
+    assert raised.surface_code() == "other_run_mode_active"
+    assert raised.http_status == 409
     assert raised.extras == {
         "blocking_execution_id": "exec-live",
         "blocking_workflow_name": "smc_assay",
         "existing_run_mode": "LIVE",
-        "submitted_run_mode": "DEVICE_SIM",
+        "submitted_run_mode": "SIM",
     }
+
+
+@pytest.mark.asyncio
+async def test_a_run_refused_for_devices_that_are_not_ready_names_each_device() -> None:
+    """A live device that did not come up refuses the run with 409 ``DEVICES_NOT_READY``."""
+    exc = DevicesNotReadyError([DeviceInitializationError("pf400_1", ConnectionError("no answer"))])
+    op = SubmitExecutionOperation(runtime=_make_runtime(exc))
+
+    with pytest.raises(OperationError) as exc_info:
+        await op.run(_legacy_request())
+
+    raised = exc_info.value
+    assert raised.http_status == 409
+    assert raised.surface_code() == "devices_not_ready"
+    assert raised.http_status == 409
+    assert raised.extras == {"devices": {"pf400_1": "no answer"}}

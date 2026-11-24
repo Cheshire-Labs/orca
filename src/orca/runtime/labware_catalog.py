@@ -11,12 +11,12 @@ from typing import Iterable
 
 from pydantic import TypeAdapter
 
-from orca.runtime.labware_catalog_protocol import (
+from orca.resource_models.labware_catalog_protocol import (
     ILabwareCatalog,
     LabwareDefinition,
     LabwareNotFound,
 )
-from orca.runtime.labware_catalog_service import LabwareCatalogService
+from orca.runtime.labware_catalog_service import ILabwareCatalogService
 
 
 class InMemoryLabwareCatalog(ILabwareCatalog):
@@ -56,7 +56,7 @@ class StoreBackedLabwareCatalog(ILabwareCatalog):
     operator CRUD surface see the same rows under the same lock.
     """
 
-    def __init__(self, service: LabwareCatalogService) -> None:
+    def __init__(self, service: ILabwareCatalogService) -> None:
         self._service = service
         self._adapter: TypeAdapter[LabwareDefinition] = TypeAdapter(LabwareDefinition)
 

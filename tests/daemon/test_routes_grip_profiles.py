@@ -28,14 +28,14 @@ class TestReading:
     async def test_a_type_nobody_measured_reads_as_an_empty_profile(
         self, client: AsyncClient,
     ) -> None:
-        resp = await client.get("/grip-profiles/costar_96")
+        resp = await client.get("/api/grip-profiles/costar_96")
 
         assert resp.status_code == 200
         assert resp.json() == {"labware_type": "costar_96", "patch": {}}
 
     @pytest.mark.asyncio
     async def test_the_list_starts_empty(self, client: AsyncClient) -> None:
-        resp = await client.get("/grip-profiles")
+        resp = await client.get("/api/grip-profiles")
 
         assert resp.status_code == 200
         assert resp.json() == []
@@ -46,9 +46,9 @@ class TestReading:
     ) -> None:
         """A GET that seeded a row would make every type anyone ever looked at
         indistinguishable from one somebody measured."""
-        await client.get("/grip-profiles/costar_96")
+        await client.get("/api/grip-profiles/costar_96")
 
-        assert (await client.get("/grip-profiles")).json() == []
+        assert (await client.get("/api/grip-profiles")).json() == []
 
 
 class TestEditing:
@@ -57,7 +57,7 @@ class TestEditing:
         self, client: AsyncClient,
     ) -> None:
         resp = await client.patch(
-            "/grip-profiles/costar_96", json={"set": {"resource_width": 76.0}},
+            "/api/grip-profiles/costar_96", json={"set": {"resource_width": 76.0}},
         )
 
         assert resp.status_code == 200
@@ -70,11 +70,11 @@ class TestEditing:
         self, client: AsyncClient,
     ) -> None:
         await client.patch(
-            "/grip-profiles/costar_96", json={"set": {"resource_width": 76.0}},
+            "/api/grip-profiles/costar_96", json={"set": {"resource_width": 76.0}},
         )
 
         resp = await client.patch(
-            "/grip-profiles/costar_96", json={"set": {"z_offset": 2.5}},
+            "/api/grip-profiles/costar_96", json={"set": {"z_offset": 2.5}},
         )
 
         assert resp.json()["patch"] == {"resource_width": 76.0, "z_offset": 2.5}
@@ -84,12 +84,12 @@ class TestEditing:
         self, client: AsyncClient,
     ) -> None:
         await client.patch(
-            "/grip-profiles/costar_96",
+            "/api/grip-profiles/costar_96",
             json={"set": {"resource_width": 76.0, "z_offset": 2.5}},
         )
 
         resp = await client.patch(
-            "/grip-profiles/costar_96",
+            "/api/grip-profiles/costar_96",
             json={"set": {"resource_width": 80.0}, "clear": ["z_offset"]},
         )
 
@@ -102,7 +102,7 @@ class TestEditing:
         """Nothing downstream re-checks a cleared field name, so a typo that got
         past the edge would clear nothing and report success."""
         resp = await client.patch(
-            "/grip-profiles/costar_96", json={"clear": ["resource_wdith"]},
+            "/api/grip-profiles/costar_96", json={"clear": ["resource_wdith"]},
         )
 
         assert resp.status_code == 422
@@ -112,10 +112,10 @@ class TestEditing:
         self, client: AsyncClient,
     ) -> None:
         await client.patch(
-            "/grip-profiles/costar_96", json={"set": {"resource_width": 76.0}},
+            "/api/grip-profiles/costar_96", json={"set": {"resource_width": 76.0}},
         )
 
-        listed = (await client.get("/grip-profiles")).json()
+        listed = (await client.get("/api/grip-profiles")).json()
 
         assert [row["labware_type"] for row in listed] == ["costar_96"]
 
@@ -124,18 +124,18 @@ class TestResetting:
     @pytest.mark.asyncio
     async def test_reset_discards_the_profile(self, client: AsyncClient) -> None:
         await client.patch(
-            "/grip-profiles/costar_96", json={"set": {"resource_width": 76.0}},
+            "/api/grip-profiles/costar_96", json={"set": {"resource_width": 76.0}},
         )
 
-        resp = await client.delete("/grip-profiles/costar_96")
+        resp = await client.delete("/api/grip-profiles/costar_96")
 
         assert resp.status_code == 204
-        assert (await client.get("/grip-profiles")).json() == []
+        assert (await client.get("/api/grip-profiles")).json() == []
 
     @pytest.mark.asyncio
     async def test_resetting_a_type_with_no_profile_is_a_404(
         self, client: AsyncClient,
     ) -> None:
-        resp = await client.delete("/grip-profiles/never_measured")
+        resp = await client.delete("/api/grip-profiles/never_measured")
 
         assert resp.status_code == 404

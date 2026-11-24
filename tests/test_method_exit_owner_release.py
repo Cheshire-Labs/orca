@@ -42,7 +42,6 @@ def _build_thread_under_test(reservation_thread_id: str) -> tuple[
 
     thread._stop_event = asyncio.Event()
     thread._pause_request_event = asyncio.Event()
-    thread._site_residency = None
 
     # Flat model: the thread sits on the device's site node whose
     # owner_mutex_id matches the action's mutex location position_id.
@@ -79,6 +78,7 @@ def _build_thread_under_test(reservation_thread_id: str) -> tuple[
     thread._coordination_config = coordination_config
 
     thread._fire = MagicMock()
+    thread._move_handler = MagicMock()
 
     return thread, mock_action, release_calls
 

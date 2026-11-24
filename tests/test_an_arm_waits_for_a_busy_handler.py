@@ -1,54 +1,63 @@
 """An arm reaching into a handler's deck waits for the handler to move off it.
 
-The step-aside after a handoff is an early park, not a guarantee: a gantry can be
-over a shared site for reasons that have nothing to do with a handoff, and it is
-somewhere unknown before the first handoff of a run. So the arm asks again on the
-way in, and that is the ask that can wait.
-
-Waiting is possible only on the way in. The device lock is taken per driver call
-rather than per action, and a device reservation sanctions labware arriving and
-leaving mid-action, so a handler really can be part-way through a method when an
-arm arrives. It refuses while it holds tips; the transfer wins and the arm waits.
+The reach-in lease parks the gantry before the arm goes in. A device reservation
+sanctions labware arriving and leaving mid-action, so a handler can be part-way
+through a method when an arm arrives. It refuses while it holds tips; the
+transfer wins and the arm waits, with the lease released between asks.
 """
 
 import asyncio
 import logging
-from datetime import datetime, timezone
-from typing import Any
-from unittest.mock import AsyncMock
 
 import pytest
+
+from orca.modes.device_modes import DeviceMode
+from tests.device_modes import set_to
 from cheshire_drivers.gantry_models import (
     GantryBusyError,
     GantryParkPosition,
     ParkGantryRequest,
 )
 
-from cheshire_drivers.driver_errors import DriverRefusedError, InstrumentOutcome
+from cheshire_drivers.device_setup import DeviceSetup, RealDriverSetup, TcpConnection
+from cheshire_drivers.driver_errors import DriverRefusedError, DriverRejectedError
+from cheshire_drivers.liquid_handler_models import GetDeckStateRequest
+from cheshire_drivers.driver_lookup import Driver
+from cheshire_drivers.plr import ChatterboxLiquidHandlerWithProtocolDriver
+from cheshire_drivers.teachpoints import Teachpoint
 
 from orca.devices import devices as devices_module
-from orca.gateway.controller.controller import DeviceController
 from orca.gateway.controller.exceptions import CommandExecutionError
-from orca.gateway.registry.snapshot import DeviceSnapshot
-from orca.devices.devices import CannotStepAsideError, LiquidHandler
-from orca.resource_models.deck_access import clear_the_deck_for
+from orca.devices.devices import GantryWillNotParkError, LiquidHandler
 from orca.resource_models.device_deck_site import DeviceDeckSite
 from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.labware_placeable_interface import IPlateMover
 from orca.resource_models.location import Location
 from orca.resource_models.plate_pad import PlatePad
-from orca.runtime.device_factory_context import use_device_factory
-from orca.runtime.run_modes import WorkflowRunMode, mode_scope
+from orca.resource_models.transporter_base import TransporterBase
+from orca.modes.run_modes import WorkflowRunMode, mode_scope
 
-from tests.test_helpers import _SingleDriverFactory
+from orca.driver_management.device_factory_context import use_device_factory
+from orca.gateway.remote_device_factory import RemoteDeviceFactory
+from tests.gateway.mode_doubles import fixed_mode
+from tests.mock import outside_any_system
+from tests.real_device_path import connected, the_real_device_path
 
 pytestmark = pytest.mark.asyncio
 
 
-class _HandlerBusyForNCalls:
+class _Handler(ChatterboxLiquidHandlerWithProtocolDriver):
+    """The simulator a check run gives this handler, with its park replaced."""
+
+    def __init__(self) -> None:
+        super().__init__(num_channels=8)
+
+
+class _HandlerBusyForNCalls(_Handler):
     """Refuses the first ``busy_for`` asks, exactly as a handler holding tips does."""
 
     def __init__(self, busy_for: int) -> None:
+        super().__init__()
         self._busy_for = busy_for
         self.asks = 0
         self.parked = 0
@@ -60,50 +69,33 @@ class _HandlerBusyForNCalls:
         self.parked += 1
 
 
-class _RemoteHandlerBusyForever:
-    """A driver class does not survive the gateway, so the remote form of the
-    refusal is a CommandExecutionError carrying what the driver said."""
-
-    def __init__(self) -> None:
-        self.asks = 0
-
-    async def park_gantry(self, request: ParkGantryRequest) -> None:
-        self.asks += 1
-        raise CommandExecutionError(
-            "still holds tips", error_type="GantryBusyError",
-            instrument_outcome=InstrumentOutcome.REFUSED,
-        )
-
-
-class _RecordingHandler:
+class _RecordingHandler(_Handler):
     """Records where it was asked to park, which is all one test needs."""
 
     def __init__(self) -> None:
+        super().__init__()
         self.asked_for: list[GantryParkPosition | None] = []
 
     async def park_gantry(self, request: ParkGantryRequest) -> None:
         self.asked_for.append(request.at)
 
 
-class _HandlerThatBreaks:
+class _HandlerThatBreaks(_Handler):
     async def park_gantry(self, request: ParkGantryRequest) -> None:
         raise RuntimeError("the gantry motor faulted")
 
 
-class _HandlerThatCannotDoThis:
+class _HandlerThatCannotDoThis(_Handler):
     """The device bridge could not act on the command at all: it does not hold
     this device, does not have this command, or could not read the payload."""
 
     def __init__(self) -> None:
+        super().__init__()
         self.asks = 0
 
     async def park_gantry(self, request: ParkGantryRequest) -> None:
         self.asks += 1
-        raise CommandExecutionError(
-            "no handler named flex is connected",
-            error_type="DeviceNotFoundError",
-            instrument_outcome=InstrumentOutcome.REJECTED,
-        )
+        raise DriverRejectedError("no handler named flex is connected")
 
 
 class _Arm(IPlateMover):
@@ -125,22 +117,47 @@ class _Arm(IPlateMover):
         return f"{self._name}/gripper"
 
 
-def _handler(driver: Any, park_at: GantryParkPosition | None = None) -> LiquidHandler:
-    with use_device_factory(_SingleDriverFactory(driver)):
-        return LiquidHandler("flex", park_gripper_at=park_at)
+class _ArmThatReaches(TransporterBase):
+    """A transporter with nothing to actuate, for the site-to-device walk."""
+
+    async def _do_pick(self, location: Location) -> None:
+        return
+
+    async def _do_place(self, location: Location) -> None:
+        return
+
+    async def initialize(self) -> None:
+        return
+
+    @property
+    def is_initialized(self) -> bool:
+        return True
+
+    async def get_teachpoints(self) -> list[Teachpoint]:
+        return []
+
+
+async def _reach_in(handler: LiquidHandler, arm: IPlateMover) -> None:
+    async with handler.reach_in_lease(arm, "place"):
+        return
+
+
+async def _handler(driver: Driver, park_at: GantryParkPosition | None = None) -> LiquidHandler:
+    the_real_device_path().simulate_with("flex", driver)
+    return await connected(outside_any_system(LiquidHandler("flex", park_gripper_at=park_at)))
 
 
 @pytest.fixture(autouse=True)
 def _dont_actually_wait(monkeypatch: pytest.MonkeyPatch) -> None:
     """Retry cadence is wall-clock; these pin the waiting, not the clock."""
-    monkeypatch.setattr(devices_module, "_STEP_ASIDE_RETRY_SECONDS", 0.0)
+    monkeypatch.setattr(devices_module, "_REACH_IN_RETRY_SECONDS", 0.0)
 
 
 async def test_an_arm_waits_until_the_handler_is_done_and_then_goes_in() -> None:
     driver = _HandlerBusyForNCalls(busy_for=3)
-    handler = _handler(driver)
+    handler = await _handler(driver)
 
-    await handler.step_aside_for(_Arm())
+    await _reach_in(handler, _Arm())
 
     assert driver.asks == 4, "asked again each time it was refused"
     assert driver.parked == 1
@@ -158,10 +175,10 @@ async def test_a_command_the_agent_cannot_act_on_is_not_waited_on() -> None:
     check reads true here and would wait; only "worth asking again" does not.
     """
     driver = _HandlerThatCannotDoThis()
-    handler = _handler(driver)
+    handler = await _handler(driver)
 
     with pytest.raises(CommandExecutionError):
-        await handler.step_aside_for(_Arm())
+        await _reach_in(handler, _Arm())
 
     assert driver.asks == 1, "asked once and gave up, rather than waiting it out"
 
@@ -170,8 +187,9 @@ async def test_a_refusal_from_a_driver_that_is_not_the_gantry_is_still_waited_on
     """The wait is on what the driver declared, not on one class name. A second
     driver that means "not now" needs no second case in orca."""
 
-    class _SomeOtherBusyDriver:
+    class _SomeOtherBusyDriver(_Handler):
         def __init__(self) -> None:
+            super().__init__()
             self.asks = 0
             self.parked = 0
 
@@ -182,9 +200,9 @@ async def test_a_refusal_from_a_driver_that_is_not_the_gantry_is_still_waited_on
             self.parked += 1
 
     driver = _SomeOtherBusyDriver()
-    handler = _handler(driver)
+    handler = await _handler(driver)
 
-    await handler.step_aside_for(_Arm())
+    await _reach_in(handler, _Arm())
 
     assert driver.asks == 3, "asked again each time it was refused"
     assert driver.parked == 1
@@ -196,12 +214,12 @@ async def test_a_handler_that_never_frees_up_stops_the_move_instead_of_hanging(
     """A method that picks up tips and ends without dropping them leaves the
     handler permanently unwilling. An arm waiting forever is worse than an error
     naming what an operator has to do."""
-    monkeypatch.setattr(devices_module, "STEP_ASIDE_PATIENCE_SECONDS", 0.0)
+    monkeypatch.setattr(devices_module, "REACH_IN_PATIENCE_SECONDS", 0.0)
     driver = _HandlerBusyForNCalls(busy_for=99)
-    handler = _handler(driver)
+    handler = await _handler(driver)
 
-    with pytest.raises(CannotStepAsideError, match="mid-transfer"):
-        await handler.step_aside_for(_Arm())
+    with pytest.raises(GantryWillNotParkError, match="mid-transfer"):
+        await _reach_in(handler, _Arm())
 
 
 async def test_the_refusal_is_recognised_coming_back_over_the_gateway(
@@ -209,31 +227,31 @@ async def test_the_refusal_is_recognised_coming_back_over_the_gateway(
 ) -> None:
     """On the bench the driver is remote. If the refusal is not recognised there
     it surfaces as a failed move rather than a wait, which is the whole point."""
-    monkeypatch.setattr(devices_module, "STEP_ASIDE_PATIENCE_SECONDS", 0.0)
-    driver = _RemoteHandlerBusyForever()
-    handler = _handler(driver)
+    monkeypatch.setattr(devices_module, "REACH_IN_PATIENCE_SECONDS", 0.0)
+    driver = _HandlerBusyForNCalls(busy_for=99)
+    handler = await _handler(driver)
 
-    with pytest.raises(CannotStepAsideError):
-        await handler.step_aside_for(_Arm())
+    with pytest.raises(GantryWillNotParkError):
+        await _reach_in(handler, _Arm())
 
 
 async def test_a_real_fault_is_not_mistaken_for_being_busy() -> None:
     """Waiting out a broken gantry would turn a fault into a silent stall."""
-    handler = _handler(_HandlerThatBreaks())
+    handler = await _handler(_HandlerThatBreaks())
 
-    with pytest.raises(RuntimeError, match="motor faulted"):
-        await handler.step_aside_for(_Arm())
+    with pytest.raises(CommandExecutionError, match="motor faulted"):
+        await _reach_in(handler, _Arm())
 
 
 async def test_the_handlers_own_gripper_is_not_asked_to_get_out_of_its_own_way() -> None:
     """An internal hop never leaves the deck, so parking between hops would add a
     gantry move to every relay and clear space for nobody."""
     driver = _HandlerBusyForNCalls(busy_for=0)
-    handler = _handler(driver)
+    handler = await _handler(driver)
     own_gripper = _Arm("flex/gripper")
     handler.set_gripper(own_gripper)
 
-    await handler.step_aside_for(own_gripper)
+    await _reach_in(handler, own_gripper)
 
     assert driver.asks == 0
 
@@ -241,43 +259,38 @@ async def test_the_handlers_own_gripper_is_not_asked_to_get_out_of_its_own_way()
 async def test_a_declared_spot_is_carried_on_the_way_in_too() -> None:
     driver = _RecordingHandler()
     park = GantryParkPosition(x=20.0, y=20.0, z=200.0)
-    handler = _handler(driver, park)
+    handler = await _handler(driver, park)
 
-    await handler.step_aside_for(_Arm())
+    await _reach_in(handler, _Arm())
 
     assert driver.asked_for == [park]
 
 
 async def test_a_plain_pad_needs_no_clearing() -> None:
     """Most locations have nothing of their own moving over them."""
-    await clear_the_deck_for(Location("pad_1", PlatePad("pad_1")), _Arm())
+    await _ArmThatReaches("pf400").make_room_at(Location("pad_1", PlatePad("pad_1")))
 
 
 async def test_a_deck_site_clears_the_handler_that_owns_it() -> None:
     """The arm reaches a SITE; the thing that has to move belongs to the device
     behind it, which is what the location walk resolves."""
     driver = _HandlerBusyForNCalls(busy_for=1)
-    handler = _handler(driver)
+    handler = await _handler(driver)
     site = Location("flex/B4-slot", DeviceDeckSite("flex/B4-slot", handler))
 
-    await clear_the_deck_for(site, _Arm())
+    await _ArmThatReaches("pf400").make_room_at(site)
 
     assert driver.parked == 1
 
 
-async def test_an_early_park_refused_for_being_busy_is_not_an_error(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """The early park after a handoff cannot wait -- it runs under the device
-    lock the busy transfer needs. Refusing there just defers to the arm's gate."""
-    driver = _HandlerBusyForNCalls(busy_for=99)
-    handler = _handler(driver)
+async def test_the_gantry_stays_parked_while_the_arm_is_inside() -> None:
+    """The lease holds the handler from the park until the arm is out, so no
+    device call can move the gantry back over the site in between."""
+    handler = await _handler(_HandlerBusyForNCalls(busy_for=0))
 
-    with caplog.at_level(logging.DEBUG, logger="orca"):
-        await handler._step_aside()
-
-    assert driver.asks == 1, "no waiting here"
-    assert "stayed put" in caplog.text
+    async with handler.reach_in_lease(_Arm(), "place"):
+        assert handler.lock.locked()
+    assert not handler.lock.locked()
 
 
 async def test_the_transfer_the_arm_is_waiting_for_can_still_run() -> None:
@@ -286,12 +299,12 @@ async def test_the_transfer_the_arm_is_waiting_for_can_still_run() -> None:
     the arm against the very thing that would release it."""
     transfer_finished = asyncio.Event()
 
-    class _BusyUntilTheTransferEnds:
+    class _BusyUntilTheTransferEnds(_Handler):
         async def park_gantry(self, request: ParkGantryRequest) -> None:
             if not transfer_finished.is_set():
                 raise GantryBusyError("FlexHead8 still holds tips")
 
-    handler = _handler(_BusyUntilTheTransferEnds())
+    handler = await _handler(_BusyUntilTheTransferEnds())
 
     async def _the_next_command_of_the_transfer() -> None:
         async with handler.lock.held_for("aspirate"):
@@ -300,23 +313,29 @@ async def test_the_transfer_the_arm_is_waiting_for_can_still_run() -> None:
 
     await asyncio.wait_for(
         asyncio.gather(
-            handler.step_aside_for(_Arm()), _the_next_command_of_the_transfer(),
+            _reach_in(handler, _Arm()), _the_next_command_of_the_transfer(),
         ),
         timeout=2,
     )
 
 
-class _RemoteHandlerWithNoGantryToPark:
-    """A remote driver carries the whole wire surface whatever it is bound to, so
-    it always has the method. Only the advertised set says what the device does."""
-
-    declared_interfaces = frozenset({"ILiquidHandler"})
+class _HandlerWithNoGantryToPark(_Handler):
+    """The simulator still has the method; only the setup's declared set says what the device does."""
 
     def __init__(self) -> None:
+        super().__init__()
         self.asks = 0
 
     async def park_gantry(self, request: ParkGantryRequest) -> None:
         self.asks += 1
+
+
+def _set_up_flex_as_an_ot2() -> None:
+    """An OT-2 on a lab PC: its driver declares no gantry parking."""
+    the_real_device_path().set_up("flex", DeviceSetup(
+        client="lab_pc",
+        real=RealDriverSetup(type="plr", backend="OpentronsOT2Backend", connection=TcpConnection(type="tcp", host="ot2")),
+    ))
 
 
 async def test_a_remote_handler_that_advertises_no_parking_is_not_asked(
@@ -325,16 +344,16 @@ async def test_a_remote_handler_that_advertises_no_parking_is_not_asked(
     """Structurally it looks able, so asking anyway would fail every handoff into
     that deck on a deployment that simply has nothing to park.
 
-    Seeded LIVE because a remote handler is a wire deployment. Unseeded resolves
-    PURE_SIM, where the driver named is orca's own simulator and the message
-    carries no instruction.
+    A live run on a handler set to live: only a live device gets the warning and its advice.
     """
-    driver = _RemoteHandlerWithNoGantryToPark()
-    handler = _handler(driver)
+    _set_up_flex_as_an_ot2()
+    driver = _HandlerWithNoGantryToPark()
+    handler = await _handler(driver)
+    set_to(handler, handler.name, DeviceMode.LIVE)
 
     with caplog.at_level(logging.WARNING, logger="orca"):
         with mode_scope(WorkflowRunMode.LIVE):
-            await handler.step_aside_for(_Arm())
+            await _reach_in(handler, _Arm())
 
     assert driver.asks == 0
     assert "cannot be moved off its own deck" in caplog.text
@@ -342,15 +361,18 @@ async def test_a_remote_handler_that_advertises_no_parking_is_not_asked(
 
 async def test_a_handler_that_has_not_reported_in_yet_is_still_asked() -> None:
     """None is cold start, not a denial; refusing to ask would skip the park on
-    the first move after a restart, which is exactly when it matters."""
+    the first move after a restart, which is exactly when it matters.
 
-    class _NotReportedIn(_HandlerBusyForNCalls):
-        declared_interfaces = None
+    A forwarding factory given no setup to read builds the driver with no declared interfaces.
+    """
+    path = the_real_device_path()
+    driver = _HandlerBusyForNCalls(busy_for=0)
+    path.simulate_with("flex", driver)
+    no_setup = RemoteDeviceFactory(controller=path.gateway.controller, mode_resolver=fixed_mode(WorkflowRunMode.CHECK_RUN))
+    with use_device_factory(no_setup):
+        handler = await connected(outside_any_system(LiquidHandler("flex")))
 
-    driver = _NotReportedIn(busy_for=0)
-    handler = _handler(driver)
-
-    await handler.step_aside_for(_Arm())
+    await _reach_in(handler, _Arm())
 
     assert driver.parked == 1
 
@@ -365,12 +387,12 @@ async def test_the_refusal_does_not_name_a_cause_it_cannot_know(
     sends them looking in the wrong place, while the driver's own text, which
     does say which, sat in parentheses behind it.
     """
-    monkeypatch.setattr(devices_module, "STEP_ASIDE_PATIENCE_SECONDS", 0.0)
+    monkeypatch.setattr(devices_module, "REACH_IN_PATIENCE_SECONDS", 0.0)
     driver = _HandlerBusyForNCalls(busy_for=99)
-    handler = _handler(driver)
+    handler = await _handler(driver)
 
-    with pytest.raises(CannotStepAsideError) as refused:
-        await handler.step_aside_for(_Arm())
+    with pytest.raises(GantryWillNotParkError) as refused:
+        await _reach_in(handler, _Arm())
 
     message = str(refused.value)
     assert "discard them" not in message
@@ -378,80 +400,19 @@ async def test_the_refusal_does_not_name_a_cause_it_cannot_know(
     assert "Its own refusal below says which" in message
 
 
-class _HandlerBehindTheGateway:
-    """A handler whose park goes over the wire through a real DeviceController.
-
-    Every device on a bench is reached this way, and the controller is where a
-    failed command latches its device fault.
-    """
-
-    def __init__(self, controller: DeviceController) -> None:
-        self._controller = controller
-        self.asks = 0
-
-    async def park_gantry(self, request: ParkGantryRequest) -> None:
-        self.asks += 1
-        await self._controller.execute_command(
-            device_id="flex", command="park_gantry", params={},
-            timeout_seconds=5.0, effective_mode=WorkflowRunMode.LIVE,
-            execution_id="exec-1",
-        )
-
-
-def _controller_refusing_parks(busy_for: int) -> DeviceController:
-    """A controller whose dispatch answers in place: the first ``busy_for``
-    parks are refused the way a handler holding tips refuses, everything else
-    succeeds."""
-    controller = DeviceController()
-    snapshot = DeviceSnapshot(
-        type="liquid_handler", name="flex", interfaces=["ILiquidHandlerDriver"],
-        capabilities=[], provides_state=False, methods={}, site="test", lab="test",
-        workcell=None, status="ready", last_seen=datetime.now(timezone.utc),
-    )
-    parks = 0
-
-    async def fake_dispatch(
-        device_id: str, command_id: str, command: str, *args: Any, **kwargs: Any,
-    ) -> None:
-        nonlocal parks
-        future = controller._command_futures[command_id]
-        if command == "park_gantry":
-            parks += 1
-            if parks <= busy_for:
-                future.set_exception(CommandExecutionError(
-                    "park_gantry: FlexHead8 still holds tips, so a transfer is "
-                    "under way. Ask again once the tips are off.",
-                    "GantryBusyError",
-                    InstrumentOutcome.REFUSED,
-                ))
-                return
-        future.set_result(None)
-
-    setattr(controller, "_validate_command", AsyncMock(return_value=snapshot))
-    setattr(controller, "_dispatch_command", fake_dispatch)
-    return controller
-
-
 async def test_a_waited_out_refusal_leaves_the_handler_drivable() -> None:
     """The bench cascade, end to end.
 
-    The arm's step-aside was refused while the handler was mid-transfer. The
+    The arm's park was refused while the handler was mid-transfer. The
     refusal latched a device fault, and the transfer's own next dispense -- on
     a different thread, on a handler that was working fine -- was then refused
     by that fault. Four threads paused holding aspirated sample.
     """
-    controller = _controller_refusing_parks(busy_for=2)
-    driver = _HandlerBehindTheGateway(controller)
-    handler = _handler(driver)
+    driver = _HandlerBusyForNCalls(busy_for=2)
+    handler = await _handler(driver)
 
-    await handler.step_aside_for(_Arm())
+    await _reach_in(handler, _Arm())
 
     assert driver.asks == 3, "asked again each time it was refused"
-    assert controller.fault("flex") is None
-
-    dispense = await controller.execute_command(
-        device_id="flex", command="dispense", params={},
-        timeout_seconds=5.0, effective_mode=WorkflowRunMode.LIVE,
-        execution_id="exec-2",
-    )
-    assert dispense is None
+    assert the_real_device_path().gateway.controller.fault("flex") is None
+    await handler.driver.get_deck_state(GetDeckStateRequest())

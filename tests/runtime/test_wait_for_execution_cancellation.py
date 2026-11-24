@@ -13,7 +13,7 @@ import pytest
 
 from orca.runtime.execution import Execution, ExecutionPhase
 from orca.runtime.status_models import ExecutionStatus
-from orca.runtime.submission import Submission
+from orca.workflow_models.submission import Submission
 
 from tests.test_helpers import wait_until
 from tests.test_thread_mutation import Fixture, _build_system

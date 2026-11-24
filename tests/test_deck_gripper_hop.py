@@ -15,8 +15,8 @@ arguments, so they cannot be attributed to a plate. The multi-labware fixture in
 ``test_liquid_handler_deck.py`` filters on ``args["plate"]`` for exactly that
 reason, and that defence is unavailable here.
 """
-import asyncio
 
+from orca.events.event_bus import EventBus
 import pytest
 
 import orca.orca as orca
@@ -24,7 +24,7 @@ from orca.spawn import DISPENSE
 from cheshire_drivers import (
     CartesianCoordinates, DeckLayoutConfig, DeckResourceConfig, Teachpoint,
 )
-from cheshire_drivers.plr import ChatterboxLiquidHandlerDriver
+from cheshire_drivers.plr import ChatterboxLiquidHandlerWithProtocolDriver
 from cheshire_drivers import RecordingLiquidHandlerDriver
 from cheshire_drivers.sims import RecordedCall
 from cheshire_drivers.liquid_handler_models import (
@@ -34,14 +34,11 @@ from orca.devices.device_interfaces import ILiquidHandler
 from orca.devices.devices import DeckLabwareIdentityError, LiquidHandler, Storage
 from orca.resource_models.external_control import device_under_external_control
 from orca.resource_models.labware import LabwareInstance, PlateInstance
-from orca.runtime.sim_labware import SimPlate
+from orca.resource_models.sim_labware import SimPlate
 from orca.resource_models.plate_pad import PlatePad
 from orca.resource_models.transporter import Transporter
 from orca.resource_models.transporter_base import TransporterBase
-from orca.runtime.device_factory_protocol import DriverPairElement
-from orca.runtime.device_factory_context import use_device_factory
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.store_factory import InMemoryRuntimeStoreFactory
+from orca.modes.run_modes import WorkflowRunMode
 from orca.runtime.system_runtime import SystemRuntime
 from orca.sdk.build import SystemBuild, Topology
 from orca.system.system_interface import DeckReconcileConflict
@@ -49,6 +46,15 @@ from orca.sdk.labware import PlateTemplate
 from orca.workflow_models.status_enums import FailurePolicy
 from tests.mock import EXTERNAL_MOVER
 from tests.test_helpers import run_to_quiescence
+from tests.setup_package import package_stores, write_deck_layouts, write_teachpoints
+from tests.setup_package import with_teachpoints, with_deck_layouts
+from tests.memory_activity import memory_ops_store, memory_runtime
+from orca.gateway.controller.exceptions import CommandExecutionError
+from tests.real_device_path import the_real_device_path
+from tests.recording_handler import RecordingHandler
+
+# The system build must reach every position these runs touch.
+pytestmark = pytest.mark.positions_bound_by_the_build
 
 DECK_CONFIG = DeckLayoutConfig(
     deck_type="STARlet",
@@ -63,7 +69,7 @@ WORKING_SLOT = "carrier-7-0"
 DOOR_AND_WORLD_CALLS = ("open", "close", "add_deck_labware", "remove_deck_labware")
 
 
-class EmptyDeckStateDriver(RecordingLiquidHandlerDriver):
+class EmptyDeckStateDriver(RecordingHandler):
     """Reports an empty deck regardless of what was materialized, so
     ``_deck_holds`` is always False. Isolates the mover gate from the
     template-name idempotency fallback that otherwise masks it."""
@@ -78,43 +84,28 @@ async def build_single_plate_system(
 ) -> SystemBuild:
     """One plate, one deck carrier, one arm. No concurrent tip rack, so every
     recorded ``open``/``close`` is attributable to this plate's journey."""
-    stores = InMemoryRuntimeStoreFactory()
+    stores = package_stores()
     sample_plate = PlateTemplate(
         "sample_plate", labware_type="Cor_Falcon_96_wellplate_340ul_Fb_Black",
     )
 
-    class _LhDeckFactory:
-        def __init__(self, lh: RecordingLiquidHandlerDriver) -> None:
-            self._lh = lh
-            from orca.runtime.device_factory import SimDeviceFactory
-            self._fallback = SimDeviceFactory()
-
-        def build_drivers(
-            self, device_type: str, name: str, *, deck_modeling: bool = False,
-        ) -> tuple[DriverPairElement, DriverPairElement]:
-            if device_type == "liquid_handler":
-                return self._lh, self._lh
-            return self._fallback.build_drivers(device_type, name, deck_modeling=deck_modeling)
-
-    with use_device_factory(_LhDeckFactory(recorder)):
-        lh = LiquidHandler(
-            "lh",
-            deck_layout_store=stores.deck_layouts("lh", seed={"default": DECK_CONFIG}),
-            deck_layout="default",
-        )
-        stacker = Storage("stacker")
-        waste = Storage("waste")
-        pad = PlatePad("pad")
-        c = CartesianCoordinates
-        arm = Transporter(
-            "arm",
-            teachpoint_store=stores.teachpoints("arm", seed=[
-                Teachpoint("stacker", c(0, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("pad", c(200, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint(f"lh/{ARM_TAUGHT_SITE}", c(400, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("waste", c(600, 200, 300, 0, 90, 180), orientation="right"),
-            ]),
-        )
+    the_real_device_path().simulate_with("lh", recorder)
+    lh = with_deck_layouts(LiquidHandler(
+        "lh",
+        deck_layout="default",
+    ), write_deck_layouts(stores, "lh", {"default": DECK_CONFIG}))
+    stacker = Storage("stacker")
+    waste = Storage("waste")
+    pad = PlatePad("pad")
+    c = CartesianCoordinates
+    arm = with_teachpoints(Transporter(
+        "arm",
+    ), write_teachpoints(stores, "arm", [
+            Teachpoint("stacker", c(0, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("pad", c(200, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint(f"lh/{ARM_TAUGHT_SITE}", c(400, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("waste", c(600, 200, 300, 0, 90, 180), orientation="right"),
+        ]))
 
     # No pipetting: a tip rack to make aspirate legal would reintroduce the
     # concurrent second labware this fixture exists to avoid.
@@ -143,9 +134,11 @@ async def build_single_plate_system(
         locations={"stacker": stacker, "pad": pad, "lh": lh, "waste": waste},
         transporters=[arm],
     )
-    return await orca.build_system(
-        name="Gripper Hop Test", workflow=hop_wf, topology=topology, stores=stores,
+    built = await orca.build_system(
+        name="Gripper Hop Test", workflow=hop_wf, topology=topology, stores=stores, event_bus=EventBus(), ops_history_store=memory_ops_store(),
     )
+    await the_real_device_path().connect_system(built.system)
+    return built
 
 
 
@@ -160,9 +153,9 @@ async def run_single_plate(
     recorder: RecordingLiquidHandlerDriver,
 ) -> tuple[SystemRuntime, LiquidHandler, dict[str, str]]:
     build = await build_single_plate_system(recorder)
-    runtime = SystemRuntime(build.system, event_bus=build.event_bus)
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
     await runtime.start()
-    record = await runtime.submit_workflow("hop_test", mode=WorkflowRunMode.PURE_SIM)
+    record = await runtime.submit_workflow("hop_test", mode=WorkflowRunMode.CHECK_RUN)
     statuses = await run_to_quiescence(runtime, record.id)
     lh = next(d for d in build.system.devices if isinstance(d, LiquidHandler))
     return runtime, lh, statuses
@@ -184,7 +177,7 @@ class TestInternalHopEmitsNoDeviceTraffic:
         added none. Stated as a run-wide total derived from the fixture's
         actual hop count -- a hardcoded per-hop delta would not survive a
         fixture change."""
-        recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+        recorder = RecordingHandler()
         _, _, statuses = await run_single_plate(recorder)
         assert all(s == "COMPLETED" for s in statuses.values()), statuses
 
@@ -212,7 +205,7 @@ class TestInternalHopEmitsNoDeviceTraffic:
         fallback and leaves the gate as the only thing that can prevent a
         duplicate ``add_deck_labware``.
         """
-        recorder = EmptyDeckStateDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+        recorder = EmptyDeckStateDriver(ChatterboxLiquidHandlerWithProtocolDriver(num_channels=8))
         _, _, statuses = await run_single_plate(recorder)
         assert all(s == "COMPLETED" for s in statuses.values()), statuses
 
@@ -233,7 +226,7 @@ class TestExternalArmStillGetsTheFullSequence:
     @pytest.mark.slow
     @pytest.mark.asyncio
     async def test_arm_arrival_and_departure_still_drive_the_device(self) -> None:
-        recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+        recorder = RecordingHandler()
         _, _, statuses = await run_single_plate(recorder)
         assert all(s == "COMPLETED" for s in statuses.values()), statuses
 
@@ -252,7 +245,7 @@ class TestDeckHoldsIdempotencyPreserved:
 
     @pytest.mark.asyncio
     async def test_placement_of_already_present_template_does_not_duplicate(self) -> None:
-        recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+        recorder = RecordingHandler()
         # Built, not hand-constructed: the builder binds the labware catalog,
         # without which create_instance refuses.
         build = await build_single_plate_system(recorder)
@@ -278,7 +271,7 @@ class TestDeckHoldsIdempotencyPreserved:
         """Idempotency is per-INSTANCE, not per-template. The driver world keys
         deck labware by instance name, so two DISTINCT plates of one template
         materialize as two distinct driver resources at their own sites."""
-        recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+        recorder = RecordingHandler()
         build = await build_single_plate_system(recorder)
         lh = next(d for d in build.system.devices if isinstance(d, LiquidHandler))
         await lh.deck_world_layout()
@@ -305,7 +298,7 @@ class TestDeckHoldsIdempotencyPreserved:
         """One deck name belongs to one instance id: a second id arriving under
         the same name is a minted-name collision or a desynced driver world,
         and operating through it would touch the wrong plate."""
-        recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+        recorder = RecordingHandler()
         build = await build_single_plate_system(recorder)
         lh = next(d for d in build.system.devices if isinstance(d, LiquidHandler))
         await lh.deck_world_layout()
@@ -337,7 +330,7 @@ class TestHooksGateOnTheActingMover:
     async def _fixture(
         self,
     ) -> tuple[LiquidHandler, EmptyDeckStateDriver, LabwareInstance]:
-        recorder = EmptyDeckStateDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+        recorder = EmptyDeckStateDriver(ChatterboxLiquidHandlerWithProtocolDriver(num_channels=8))
         build = await build_single_plate_system(recorder)
         lh = next(d for d in build.system.devices if isinstance(d, LiquidHandler))
         await lh.deck_world_layout()
@@ -387,7 +380,7 @@ class TestHooksGateOnTheActingMover:
             f"an external arrival must materialize the plate; got {emitted}")
 
 
-class FailOncePlateMover(RecordingLiquidHandlerDriver):
+class FailOncePlateMover(RecordingHandler):
     """Fails the first move_plate, then behaves. Models a transient driver
     fault, which is the case the operator RETRY path exists for."""
 
@@ -408,7 +401,7 @@ class TestFailedPlaceKeepsWhatTheRetryNeeds:
 
     @pytest.mark.asyncio
     async def test_retry_reissues_the_move_from_the_same_source(self) -> None:
-        recorder = FailOncePlateMover(ChatterboxLiquidHandlerDriver(num_channels=8))
+        recorder = FailOncePlateMover(ChatterboxLiquidHandlerWithProtocolDriver(num_channels=8))
         build = await build_single_plate_system(recorder)
         lh = next(d for d in build.system.devices if isinstance(d, LiquidHandler))
         gripper = lh.gripper
@@ -421,12 +414,13 @@ class TestFailedPlaceKeepsWhatTheRetryNeeds:
         source.initialize_labware(labware)
         await pick_and_record(build, gripper, source, labware)
 
-        with pytest.raises(RuntimeError, match="transient gripper fault"):
+        with pytest.raises(CommandExecutionError, match="transient gripper fault"):
             await gripper.place(target)
 
         assert gripper.labware is labware, (
             "a failed place leaves the plate in the jaws; the engine must keep modelling it")
 
+        await the_real_device_path().gateway.controller.clear_fault("lh")
         await gripper.place(target)
 
         moves = [c for c in recorder.calls if c.method == "move_plate"]
@@ -440,7 +434,7 @@ class TestFailedPlaceKeepsWhatTheRetryNeeds:
         """Reachable state routed to operator recovery, so it must raise rather
         than assert -- under -O a bare assert vanishes and from_position=None
         reaches the driver."""
-        recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+        recorder = RecordingHandler()
         build = await build_single_plate_system(recorder)
         lh = next(d for d in build.system.devices if isinstance(d, LiquidHandler))
         gripper = lh.gripper
@@ -468,9 +462,9 @@ class TestPanicButtonReachesADeviceOwnedGripper:
 
     @pytest.mark.asyncio
     async def test_clear_all_frees_a_gripper_left_holding_a_plate(self) -> None:
-        recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+        recorder = RecordingHandler()
         build = await build_single_plate_system(recorder)
-        runtime = SystemRuntime(build.system, event_bus=build.event_bus)
+        runtime = await memory_runtime(build.system, event_bus=build.event_bus)
         await runtime.start()
         try:
             lh = next(d for d in build.system.devices if isinstance(d, LiquidHandler))
@@ -526,7 +520,7 @@ class TestReconcileWhenThereIsNoSiteToDeclareAHeldPlateAt:
     ) -> None:
         """A hold that outlived the process that made it: the jaws still have
         the plate and nothing left says where it came from."""
-        recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+        recorder = RecordingHandler()
         build, gripper, _ = await self._held_plate(recorder)
         gripper._picked_from = None
 
@@ -543,7 +537,7 @@ class TestReconcileWhenThereIsNoSiteToDeclareAHeldPlateAt:
         """A log line is not an operator surface. Once a hold survives a restart
         the mismatch is permanent, so it has to reach the operator the way a
         vanished site does."""
-        recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+        recorder = RecordingHandler()
         build, gripper, labware = await self._held_plate(recorder)
         gripper._picked_from = None
 
@@ -560,7 +554,7 @@ class TestReconcileWhenThereIsNoSiteToDeclareAHeldPlateAt:
     async def test_the_site_the_hop_began_at_is_not_declared_twice(self) -> None:
         """Another plate landed on the site this one left. One name per site, so
         the held plate is the one that cannot be declared."""
-        recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+        recorder = RecordingHandler()
         build, _, labware = await self._held_plate(recorder)
         newcomer = await build.system.get_labware_template("sample_plate").create_instance()
         await newcomer.enter_record(build.system.labware_contents)
@@ -588,7 +582,7 @@ class TestExternalControlCoversLiquidHandlerDeckSites:
 
     @pytest.mark.asyncio
     async def test_a_held_liquid_handler_blocks_its_deck_sites(self) -> None:
-        recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+        recorder = RecordingHandler()
         build = await build_single_plate_system(recorder)
         lh = next(d for d in build.system.devices if isinstance(d, LiquidHandler))
         site = build.system.system_map.get_location(f"lh/{ARM_TAUGHT_SITE}")
@@ -609,7 +603,7 @@ class TestExternalControlCoversLiquidHandlerDeckSites:
     async def test_a_held_device_also_holds_its_own_gripper(self) -> None:
         """The gripper is the device's arm: taking the device must take it too,
         and in_use must agree with under_external_control on the same object."""
-        recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+        recorder = RecordingHandler()
         build = await build_single_plate_system(recorder)
         lh = next(d for d in build.system.devices if isinstance(d, LiquidHandler))
         gripper = lh.gripper
@@ -643,12 +637,12 @@ class TestGripperSerializesAgainstTheDeviceDriver:
     async def test_move_plate_runs_under_the_device_lock(self) -> None:
         observed: list[bool] = []
 
-        class LockObservingDriver(RecordingLiquidHandlerDriver):
+        class LockObservingDriver(RecordingHandler):
             async def move_plate(self, request: MovePlateRequest) -> None:
                 observed.append(lh.lock.locked())
                 self.calls.append(RecordedCall(method="move_plate", args=request.model_dump()))
 
-        recorder = LockObservingDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+        recorder = LockObservingDriver(ChatterboxLiquidHandlerWithProtocolDriver(num_channels=8))
         build = await build_single_plate_system(recorder)
         lh = next(d for d in build.system.devices if isinstance(d, LiquidHandler))
         gripper = lh.gripper

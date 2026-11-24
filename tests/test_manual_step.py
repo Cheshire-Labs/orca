@@ -90,7 +90,7 @@ class TestManualStep:
         registry = EventChannelRegistry()
         ctx = _make_ctx(registry)
 
-        with pytest.raises(asyncio.TimeoutError):
+        with pytest.raises(TimeoutError):
             await ctx.manual_step(
                 "This will timeout",
                 timeout_hours=0.0001,  # 0.36 seconds
@@ -251,7 +251,7 @@ class TestManualStepPauseCheckpoint:
         checkpoint = _HoldingCheckpoint()
         ctx = self._ctx_with(registry, checkpoint)
 
-        with pytest.raises(asyncio.TimeoutError):
+        with pytest.raises(TimeoutError):
             await ctx.manual_step("nobody answers", timeout_hours=0.0001)
 
         assert not checkpoint.entered.is_set()

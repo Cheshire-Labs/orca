@@ -27,20 +27,22 @@ from cheshire_drivers import (
     SimTransporterDriver,
     Teachpoint,
 )
-from orca.runtime.teachpoint_service import seeded_teachpoint_service
 from cheshire_drivers.transporter_models import (
     PickAtCoordsRequest,
     PlaceAtCoordsRequest,
 )
 
-from orca.resource_models.labware import LabwareInstance, PlateTemplate
+from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.location import Location
 from orca.resource_models.plate_pad import PlatePad
 from orca.resource_models.transporter import Transporter
-from orca.runtime.sim_labware import SimPlateTemplate
+from orca.resource_models.sim_labware import SimPlateTemplate
 from tests.test_helpers import (
     make_transporter_with_driver,
 )
+from tests.setup_package import teachpoint_file, with_teachpoints
+from orca.gateway.controller.exceptions import CommandExecutionError
+from tests.real_device_path import connected
 
 
 _DEFAULT_VERTICAL = AccessConfig(name="default_vertical", access_type="vertical")
@@ -134,10 +136,10 @@ class TestPickResolutionWithoutGateway:
 
     @pytest.mark.asyncio
     async def test_pick_dispatches_pick_at_coords(self) -> None:
-        store = seeded_teachpoint_service()
+        store = teachpoint_file(access_configs=[_DEFAULT_VERTICAL])
         await store.add(_tp("pad_1"))
         driver = _RecordingDriver("arm")
-        transporter = make_transporter_with_driver("arm", driver=driver, teachpoint_store=store)
+        transporter = await connected(with_teachpoints(make_transporter_with_driver("arm", driver=driver), store))
         location = await _location_with_labware("pad_1")
 
         await transporter.pick(location)
@@ -163,10 +165,10 @@ class TestPickResolutionWithoutGateway:
     async def test_pick_does_not_write_its_own_jaws(self) -> None:
         """The placement chokepoint records the plate in the jaws. A mover that
         wrote them too would be a second copy of the same fact."""
-        store = seeded_teachpoint_service()
+        store = teachpoint_file(access_configs=[_DEFAULT_VERTICAL])
         await store.add(_tp("pad_1"))
         driver = _RecordingDriver("arm")
-        transporter = make_transporter_with_driver("arm", driver=driver, teachpoint_store=store)
+        transporter = await connected(with_teachpoints(make_transporter_with_driver("arm", driver=driver), store))
         location = await _location_with_labware("pad_1")
 
         await transporter.pick(location)
@@ -180,13 +182,13 @@ class TestPickResolutionWithoutGateway:
         `Transporter._labware` MUST remain None so `ExecutableMoveAction`'s
         retry path re-picks rather than skipping pick on the next attempt.
         """
-        store = seeded_teachpoint_service()
+        store = teachpoint_file(access_configs=[_DEFAULT_VERTICAL])
         await store.add(_tp("pad_1"))
         driver = _RaisingDriver("arm")
-        transporter = make_transporter_with_driver("arm", driver=driver, teachpoint_store=store)
+        transporter = await connected(with_teachpoints(make_transporter_with_driver("arm", driver=driver), store))
         location = await _location_with_labware("pad_1")
 
-        with pytest.raises(RuntimeError, match="boom"):
+        with pytest.raises(CommandExecutionError, match="boom"):
             await transporter.pick(location)
 
         assert transporter.labware is None
@@ -199,11 +201,11 @@ class TestPlaceResolutionWithoutGateway:
 
     @pytest.mark.asyncio
     async def test_place_dispatches_place_at_coords(self) -> None:
-        store = seeded_teachpoint_service()
+        store = teachpoint_file(access_configs=[_DEFAULT_VERTICAL])
         await store.add(_tp("pad_1"))
         await store.add(_tp("pad_2"))
         driver = _RecordingDriver("arm")
-        transporter = make_transporter_with_driver("arm", driver=driver, teachpoint_store=store)
+        transporter = await connected(with_teachpoints(make_transporter_with_driver("arm", driver=driver), store))
         source = await _location_with_labware("pad_1")
         await transporter.pick(source)
         held_labware_type = (await _load_gripper(transporter, source)).labware_type
@@ -232,11 +234,11 @@ class TestPlaceResolutionWithoutGateway:
         the gripper's held labware so the retry path can re-attempt place
         without losing the labware reference.
         """
-        store = seeded_teachpoint_service()
+        store = teachpoint_file(access_configs=[_DEFAULT_VERTICAL])
         await store.add(_tp("pad_1"))
         await store.add(_tp("pad_2"))
         driver = _RecordingThenRaisingDriver("arm")
-        transporter = make_transporter_with_driver("arm", driver=driver, teachpoint_store=store)
+        transporter = await connected(with_teachpoints(make_transporter_with_driver("arm", driver=driver), store))
         # Pick succeeds (driver pick_at_coords records, doesn't raise).
         source = await _location_with_labware("pad_1")
         await transporter.pick(source)
@@ -244,7 +246,7 @@ class TestPlaceResolutionWithoutGateway:
 
         # Place raises.
         target = _empty_location("pad_2")
-        with pytest.raises(RuntimeError, match="boom"):
+        with pytest.raises(CommandExecutionError, match="boom"):
             await transporter.place(target)
 
         # Labware reference must survive the raise — retry depends on this.
@@ -256,11 +258,11 @@ class TestGatewayChainResolution:
 
     @pytest.mark.asyncio
     async def test_single_gateway_returns_one_waypoint(self) -> None:
-        store = seeded_teachpoint_service()
+        store = teachpoint_file(access_configs=[_DEFAULT_VERTICAL])
         await store.add(_tp("hotel_entry"))
         await store.add(_tp("nest_1", gateway="hotel_entry"))
         driver = _RecordingDriver("arm")
-        transporter = make_transporter_with_driver("arm", driver=driver, teachpoint_store=store)
+        transporter = await connected(with_teachpoints(make_transporter_with_driver("arm", driver=driver), store))
         location = await _location_with_labware("nest_1")
 
         await transporter.pick(location)
@@ -272,12 +274,12 @@ class TestGatewayChainResolution:
     async def test_chained_gateways_returned_outermost_first(self) -> None:
         # nest_1.gateway = hotel_outer; hotel_outer.gateway = rail_entry.
         # Outermost-first means [rail_entry, hotel_outer].
-        store = seeded_teachpoint_service()
+        store = teachpoint_file(access_configs=[_DEFAULT_VERTICAL])
         await store.add(_tp("rail_entry"))
         await store.add(_tp("hotel_outer", gateway="rail_entry"))
         await store.add(_tp("nest_1", gateway="hotel_outer"))
         driver = _RecordingDriver("arm")
-        transporter = make_transporter_with_driver("arm", driver=driver, teachpoint_store=store)
+        transporter = await connected(with_teachpoints(make_transporter_with_driver("arm", driver=driver), store))
         location = await _location_with_labware("nest_1")
 
         await transporter.pick(location)
@@ -291,20 +293,20 @@ class TestResolutionFailures:
 
     @pytest.mark.asyncio
     async def test_missing_destination_teachpoint_raises(self) -> None:
-        store = seeded_teachpoint_service()
+        store = teachpoint_file(access_configs=[_DEFAULT_VERTICAL])
         driver = _RecordingDriver("arm")
-        transporter = make_transporter_with_driver("arm", driver=driver, teachpoint_store=store)
+        transporter = await connected(with_teachpoints(make_transporter_with_driver("arm", driver=driver), store))
         location = await _location_with_labware("ghost_pad")
 
-        with pytest.raises(ValueError, match="no teachpoint registered for position_id 'ghost_pad'"):
+        with pytest.raises(ValueError, match="No teachpoint registered for position_id 'ghost_pad'"):
             await transporter.pick(location)
 
     @pytest.mark.asyncio
     async def test_missing_gateway_teachpoint_raises(self) -> None:
-        store = seeded_teachpoint_service()
+        store = teachpoint_file(access_configs=[_DEFAULT_VERTICAL])
         await store.add(_tp("nest_1", gateway="missing_gateway"))
         driver = _RecordingDriver("arm")
-        transporter = make_transporter_with_driver("arm", driver=driver, teachpoint_store=store)
+        transporter = await connected(with_teachpoints(make_transporter_with_driver("arm", driver=driver), store))
         location = await _location_with_labware("nest_1")
 
         with pytest.raises(
@@ -315,11 +317,11 @@ class TestResolutionFailures:
 
     @pytest.mark.asyncio
     async def test_circular_gateway_raises(self) -> None:
-        store = seeded_teachpoint_service()
+        store = teachpoint_file(access_configs=[_DEFAULT_VERTICAL])
         await store.add(_tp("a", gateway="b"))
         await store.add(_tp("b", gateway="a"))
         driver = _RecordingDriver("arm")
-        transporter = make_transporter_with_driver("arm", driver=driver, teachpoint_store=store)
+        transporter = await connected(with_teachpoints(make_transporter_with_driver("arm", driver=driver), store))
         location = await _location_with_labware("a")
 
         with pytest.raises(ValueError, match="circular gateway reference"):
@@ -332,7 +334,7 @@ class TestAnUnreachableTaughtPositionExplainsItself:
     were told was unreachable, and nothing connected the two."""
 
     async def test_the_refusal_names_the_stale_route_graph(self) -> None:
-        from orca.system.resource_registry import ResourceRegistry
+        from orca.resource_models.resource_registry import ResourceRegistry
         from orca.system.system_map import (
             RouteGraphMissingTeachpointError, SystemMap,
         )
@@ -349,7 +351,7 @@ class TestAnUnreachableTaughtPositionExplainsItself:
         """A typo is not a stale graph; saying so would send the operator to
         reload the runtime over a name that was never a position."""
         import networkx as nx
-        from orca.system.resource_registry import ResourceRegistry
+        from orca.resource_models.resource_registry import ResourceRegistry
         from orca.system.system_map import (
             RouteGraphMissingTeachpointError, SystemMap,
         )
@@ -370,16 +372,16 @@ class TestAPositionTaughtAfterStartupIsRoutable:
 
     async def test_a_new_teachpoint_becomes_a_route(self) -> None:
         from orca.runtime.facades.teachpoints import TeachpointFacade
-        from orca.system.resource_registry import ResourceRegistry
+        from orca.resource_models.resource_registry import ResourceRegistry
         from orca.system.system_map import SystemMap
         from orca.resource_models.plate_pad import PlatePad
 
-        store = seeded_teachpoint_service()
+        store = teachpoint_file(access_configs=[_DEFAULT_VERTICAL])
         await store.add(_tp("pad_a"))
         await store.add(_tp("pad_b"))
-        arm = make_transporter_with_driver(
-            "arm", driver=_RecordingDriver("arm"), teachpoint_store=store,
-        )
+        arm = await connected(with_teachpoints(make_transporter_with_driver(
+            "arm", driver=_RecordingDriver("arm"), 
+        ), store))
         registry = ResourceRegistry()
         registry.add_resource(arm)
         system_map = SystemMap(registry)

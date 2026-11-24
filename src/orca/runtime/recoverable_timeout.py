@@ -32,6 +32,8 @@ from typing import Any, Awaitable, Callable, Optional, Protocol, TypeVar
 
 from orca.resource_models.device_error import CommandTimeoutAbortedError
 from orca.runtime.incident_store import RecoverableTimeoutContext, SystemIncident
+from orca.modes.run_modes import current_execution_id
+from orca.modes.sim_pacing import current_sim_pacer
 from orca.system.reservation_manager.errors import IRecoverableTimeoutCoordinator
 
 
@@ -223,6 +225,7 @@ class RecoverableTimeoutCoordinator:
             command_id=command_id,
             elapsed_seconds=elapsed_seconds,
             max_seconds=max_seconds,
+            unheld=None,
         )
         incident = self._host.declare_recoverable_timeout(execution_id, context)
         held = _HeldDispatch(incident_id=incident.id, event=asyncio.Event())
@@ -279,3 +282,53 @@ class RecoverableTimeoutCoordinator:
 recoverable_timeout_coordinator: ContextVar[
     Optional[IRecoverableTimeoutCoordinator]
 ] = ContextVar("recoverable_timeout_coordinator", default=None)
+
+
+def time_limit(max_seconds: float | None, typical_seconds: float | None, requested_seconds: float | None) -> float | None:
+    """How long one command may take: its declared maximum, or longer when the request asks for more.
+
+    A command with no declared maximum gets `DEFAULT_COMMAND_TIMEOUT_SECONDS`. A non-positive maximum is driver
+    metadata gone wrong and means no limit, rather than a limit that fires at once. A request that names its own
+    duration, such as a 3 hour shake, is given that duration and the command's typical time on top.
+    """
+    if max_seconds is None:
+        limit = DEFAULT_COMMAND_TIMEOUT_SECONDS
+    elif max_seconds <= 0:
+        return None
+    else:
+        limit = max_seconds
+    if requested_seconds is not None:
+        limit = max(limit, requested_seconds + (typical_seconds or 0.0))
+    return limit
+
+
+_inside_a_bounded_call: ContextVar[bool] = ContextVar("inside_a_bounded_call", default=False)
+
+
+async def within_the_time_limit(
+    device_name: str, command: str, limit: float | None, call: Callable[[], Awaitable[_T]],
+) -> _T:
+    """A run thread's device call, under the run's recoverable timeout.
+
+    Outside a run thread, or inside a call already bounded, the call runs as it is: one timer per command.
+    """
+    coordinator = recoverable_timeout_coordinator.get()
+    execution_id = current_execution_id.get()
+    if coordinator is None or execution_id is None or limit is None or _inside_a_bounded_call.get():
+        return await call()
+    # A sim paces inside the call, so a run slowed below real time spends more wall time than the command's limit.
+    pacer = current_sim_pacer.get()
+    if pacer is not None and pacer.speedup is not None and pacer.speedup < 1.0:
+        limit /= pacer.speedup
+
+    async def bounded() -> _T:
+        token = _inside_a_bounded_call.set(True)
+        try:
+            return await call()
+        finally:
+            _inside_a_bounded_call.reset(token)
+
+    result: _T = await coordinator.run_with_timeout(
+        execution_id=execution_id, device_id=device_name, command=command, max_seconds=limit, coro_factory=bounded,
+    )
+    return result

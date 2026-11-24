@@ -1,8 +1,7 @@
 """Tests for labware Operation routes on the daemon.
 
-The per-route legacy ``/labware/...`` daemon URLs are gone;
-the unified Operations surface (``POST /operations/<op>``) is the
-canonical home for labware read + write.
+Labware instances live under ``/labware-instances``; the labware
+catalog (types) is a separate surface.
 
 What these catch:
 - The Operations binder surfaces "no system loaded" as 503
@@ -21,18 +20,20 @@ from httpx import ASGITransport, AsyncClient
 
 from orca.daemon.app import create_app
 from orca.runtime.labware_store import InMemoryLabwareStore
-from orca.runtime.system_runtime import SystemRuntime
 
 from tests.test_system_runtime import _build_simple_system
+from orca.resource_models.labware import PlateTemplate
+from tests.memory_activity import memory_daemon_system
 
 
 @pytest_asyncio.fixture
 async def labware_client() -> AsyncIterator[AsyncClient]:
     """Client with an InMemoryLabwareStore wired in explicitly."""
     system, _ = await _build_simple_system()
-    rt = SystemRuntime(system, labware_store=InMemoryLabwareStore())
+    injected = await memory_daemon_system(system)
+    rt = injected.runtime
     await rt.start()
-    app = create_app(initial_system_runtime=rt)
+    app = create_app(injected=injected)
     try:
         async with AsyncClient(
             transport=ASGITransport(app=app),
@@ -45,51 +46,36 @@ async def labware_client() -> AsyncIterator[AsyncClient]:
 
 
 async def test_labware_list_gated(empty_client: AsyncClient) -> None:
-    resp = await empty_client.get("/operations/list-labware")
+    resp = await empty_client.get("/api/labware-instances")
     assert resp.status_code == 503
 
 
 async def test_labware_get_by_id_gated(empty_client: AsyncClient) -> None:
-    resp = await empty_client.post(
-        "/operations/get-labware-by-id",
-        json={"labware_id": "something"},
-    )
+    resp = await empty_client.get("/api/labware-instances/something")
     assert resp.status_code == 503
 
 
 async def test_labware_get_by_barcode_gated(empty_client: AsyncClient) -> None:
-    resp = await empty_client.post(
-        "/operations/get-labware-by-barcode",
-        json={"barcode": "123"},
-    )
+    resp = await empty_client.get("/api/labware-barcodes/123")
     assert resp.status_code == 503
 
 
-async def test_labware_history_gated(empty_client: AsyncClient) -> None:
-    resp = await empty_client.post(
-        "/operations/get-labware-history",
-        json={"labware_id": "something"},
-    )
+async def test_labware_journey_gated(empty_client: AsyncClient) -> None:
+    resp = await empty_client.get("/api/labware-instances/something/journey")
     assert resp.status_code == 503
 
 
 async def test_labware_get_by_id_unknown_returns_404(
     client: AsyncClient,
 ) -> None:
-    resp = await client.post(
-        "/operations/get-labware-by-id",
-        json={"labware_id": "does-not-exist"},
-    )
+    resp = await client.get("/api/labware-instances/does-not-exist")
     assert resp.status_code == 404
 
 
 async def test_labware_get_by_barcode_unknown_returns_404(
     client: AsyncClient,
 ) -> None:
-    resp = await client.post(
-        "/operations/get-labware-by-barcode",
-        json={"barcode": "does-not-exist"},
-    )
+    resp = await client.get("/api/labware-barcodes/does-not-exist")
     assert resp.status_code == 404
 
 
@@ -98,7 +84,7 @@ async def test_labware_list_succeeds_on_fresh_system(
 ) -> None:
     """Fresh system has no ExecutingLabware registered yet; list must
     still succeed with a (possibly empty) array, not 500."""
-    resp = await client.get("/operations/list-labware")
+    resp = await client.get("/api/labware-instances")
     assert resp.status_code == 200
     assert isinstance(resp.json()["labware"], list)
 
@@ -116,7 +102,7 @@ async def test_labware_register_creates_new_instance(
     register-wrong-template, visible at first move).
     """
     resp = await labware_client.post(
-        "/operations/register-labware",
+        "/api/labware-instances",
         json={
             "template_name": "plate_96",
             "barcode": "BC-1",
@@ -139,13 +125,13 @@ async def test_labware_list_row_carries_the_labware_type(
 
     What is pinned is that the row carries the type at all."""
     resp = await labware_client.post(
-        "/operations/register-labware",
+        "/api/labware-instances",
         json={"template_name": "plate_96", "location": "pad1"},
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["labware"]["labware_type"] == "_sim_plate"
 
-    rows = (await labware_client.get("/operations/list-labware")).json()["labware"]
+    rows = (await labware_client.get("/api/labware-instances")).json()["labware"]
     assert [r["labware_type"] for r in rows if r["template_name"] == "plate_96"] == ["_sim_plate"]
 
 
@@ -153,7 +139,7 @@ async def test_labware_register_unknown_template_returns_404(
     labware_client: AsyncClient,
 ) -> None:
     resp = await labware_client.post(
-        "/operations/register-labware",
+        "/api/labware-instances",
         json={"template_name": "no_such_template"},
     )
     assert resp.status_code == 404
@@ -169,15 +155,14 @@ async def test_labware_edit_location_requires_reason(
     facade call.
     """
     reg = await labware_client.post(
-        "/operations/register-labware",
+        "/api/labware-instances",
         json={"template_name": "plate_96", "location": "pad1"},
     )
     assert reg.status_code == 200
     labware_id = reg.json()["labware"]["id"]
 
     resp = await labware_client.post(
-        "/operations/edit-labware-location",
-        json={"labware_id": labware_id, "location": "pad1", "reason": ""},
+        f"/api/labware-instances/{labware_id}/edit-location", json={"location": "pad1", "reason": ""},
     )
     assert resp.status_code == 422
 
@@ -187,7 +172,7 @@ async def test_labware_edit_barcode_rewrites_barcode_index(
 ) -> None:
     """Edit-barcode is OPERATOR-level; no reason required."""
     reg = await labware_client.post(
-        "/operations/register-labware",
+        "/api/labware-instances",
         json={
             "template_name": "plate_96",
             "barcode": "BC-orig",
@@ -197,16 +182,13 @@ async def test_labware_edit_barcode_rewrites_barcode_index(
     assert reg.status_code == 200
     labware_id = reg.json()["labware"]["id"]
 
-    resp = await labware_client.post(
-        "/operations/edit-labware-barcode",
-        json={"labware_id": labware_id, "new_barcode": "BC-NEW"},
+    resp = await labware_client.put(
+        f"/api/labware-instances/{labware_id}/barcode", json={"new_barcode": "BC-NEW"},
     )
     assert resp.status_code == 200
     assert resp.json()["status"] == "ok"
 
-    lookup = await labware_client.post(
-        "/operations/get-labware-by-id", json={"labware_id": labware_id},
-    )
+    lookup = await labware_client.get(f"/api/labware-instances/{labware_id}")
     assert lookup.status_code == 200
     assert lookup.json()["labware"]["barcode"] == "BC-NEW"
 
@@ -215,25 +197,18 @@ async def test_labware_edit_location_moves_instance(
     labware_client: AsyncClient,
 ) -> None:
     reg = await labware_client.post(
-        "/operations/register-labware",
+        "/api/labware-instances",
         json={"template_name": "plate_96", "location": "pad1"},
     )
     labware_id = reg.json()["labware"]["id"]
 
     resp = await labware_client.post(
-        "/operations/edit-labware-location",
-        json={
-            "labware_id": labware_id,
-            "location": "shaker1",
-            "reason": "operator-audit",
-        },
+        f"/api/labware-instances/{labware_id}/edit-location", json={"location": "shaker1", "reason": "operator-audit"},
     )
     assert resp.status_code == 200
     assert resp.json()["status"] == "ok"
 
-    lookup = await labware_client.post(
-        "/operations/get-labware-by-id", json={"labware_id": labware_id},
-    )
+    lookup = await labware_client.get(f"/api/labware-instances/{labware_id}")
     assert lookup.status_code == 200
     # A bare device name resolves to its single site: the plate lands at the
     # real slot, not the off-graph mutex. Pre-fix this asserted "shaker1", which
@@ -253,13 +228,13 @@ async def test_labware_register_at_bridge_surfaces_in_loaded_labware_ids(
     site is the flat node ``shaker1/slot``.
     """
     reg = await labware_client.post(
-        "/operations/register-labware",
+        "/api/labware-instances",
         json={"template_name": "plate_96", "location": "shaker1/slot"},
     )
     assert reg.status_code == 200, reg.text
     labware_id = reg.json()["labware"]["id"]
 
-    locs = await labware_client.get("/operations/list-locations")
+    locs = await labware_client.get("/api/topology")
     assert locs.status_code == 200
     by_name = {loc["name"]: loc for loc in locs.json()["locations"]}
     assert labware_id in by_name["shaker1/slot"]["loaded_labware_ids"], (
@@ -280,23 +255,18 @@ async def test_labware_edit_location_syncs_resource_inventory(
     proves the round-trip clears both sides.
     """
     reg = await labware_client.post(
-        "/operations/register-labware",
+        "/api/labware-instances",
         json={"template_name": "plate_96", "location": "pad1"},
     )
     assert reg.status_code == 200, reg.text
     labware_id = reg.json()["labware"]["id"]
 
     resp = await labware_client.post(
-        "/operations/edit-labware-location",
-        json={
-            "labware_id": labware_id,
-            "location": "shaker1/slot",
-            "reason": "operator-audit",
-        },
+        f"/api/labware-instances/{labware_id}/edit-location", json={"location": "shaker1/slot", "reason": "operator-audit"},
     )
     assert resp.status_code == 200, resp.text
 
-    locs = await labware_client.get("/operations/list-locations")
+    locs = await labware_client.get("/api/topology")
     assert locs.status_code == 200
     by_name = {loc["name"]: loc for loc in locs.json()["locations"]}
     assert labware_id in by_name["shaker1/slot"]["loaded_labware_ids"], (
@@ -308,15 +278,10 @@ async def test_labware_edit_location_syncs_resource_inventory(
 
     # Round-trip: move back, both sides should flip again.
     resp = await labware_client.post(
-        "/operations/edit-labware-location",
-        json={
-            "labware_id": labware_id,
-            "location": "pad1",
-            "reason": "reset",
-        },
+        f"/api/labware-instances/{labware_id}/edit-location", json={"location": "pad1", "reason": "reset"},
     )
     assert resp.status_code == 200, resp.text
-    locs = await labware_client.get("/operations/list-locations")
+    locs = await labware_client.get("/api/topology")
     by_name = {loc["name"]: loc for loc in locs.json()["locations"]}
     assert labware_id in by_name["pad1"]["loaded_labware_ids"]
     assert labware_id not in by_name["shaker1/slot"]["loaded_labware_ids"]
@@ -327,14 +292,13 @@ async def test_labware_reset_location_requires_reason(
 ) -> None:
     """Empty reason -> 422 (Pydantic body-parse rejection, same as edit-location)."""
     reg = await labware_client.post(
-        "/operations/register-labware",
+        "/api/labware-instances",
         json={"template_name": "plate_96", "location": "pad1"},
     )
     labware_id = reg.json()["labware"]["id"]
 
     resp = await labware_client.post(
-        "/operations/reset-labware-location",
-        json={"labware_id": labware_id, "location": "pad1", "reason": ""},
+        f"/api/labware-instances/{labware_id}/reset-location", json={"location": "pad1", "reason": ""},
     )
     assert resp.status_code == 422
 
@@ -343,25 +307,18 @@ async def test_labware_reset_location_clears_history(
     labware_client: AsyncClient,
 ) -> None:
     reg = await labware_client.post(
-        "/operations/register-labware",
+        "/api/labware-instances",
         json={"template_name": "plate_96", "location": "pad1"},
     )
     labware_id = reg.json()["labware"]["id"]
 
     resp = await labware_client.post(
-        "/operations/reset-labware-location",
-        json={
-            "labware_id": labware_id,
-            "location": "shaker1",
-            "reason": "pre-run reseat",
-        },
+        f"/api/labware-instances/{labware_id}/reset-location", json={"location": "shaker1", "reason": "pre-run reseat"},
     )
     assert resp.status_code == 200
     assert resp.json()["status"] == "ok"
 
-    lookup = await labware_client.post(
-        "/operations/get-labware-by-id", json={"labware_id": labware_id},
-    )
+    lookup = await labware_client.get(f"/api/labware-instances/{labware_id}")
     assert lookup.status_code == 200
     # A bare device name resolves to its single site: the plate lands at the
     # real slot, not the off-graph mutex. Pre-fix this asserted "shaker1", which
@@ -373,10 +330,7 @@ async def test_labware_edit_location_unknown_id_returns_404(
     labware_client: AsyncClient,
 ) -> None:
     resp = await labware_client.post(
-        "/operations/edit-labware-location",
-        json={
-            "labware_id": "nonexistent", "location": "pad1", "reason": "test",
-        },
+        "/api/labware-instances/nonexistent/edit-location", json={"location": "pad1", "reason": "test"},
     )
     assert resp.status_code == 404
 
@@ -384,9 +338,8 @@ async def test_labware_edit_location_unknown_id_returns_404(
 async def test_labware_edit_barcode_unknown_id_returns_404(
     labware_client: AsyncClient,
 ) -> None:
-    resp = await labware_client.post(
-        "/operations/edit-labware-barcode",
-        json={"labware_id": "nonexistent", "new_barcode": "BC-1"},
+    resp = await labware_client.put(
+        "/api/labware-instances/nonexistent/barcode", json={"new_barcode": "BC-1"},
     )
     assert resp.status_code == 404
 
@@ -395,10 +348,7 @@ async def test_labware_reset_location_unknown_id_returns_404(
     labware_client: AsyncClient,
 ) -> None:
     resp = await labware_client.post(
-        "/operations/reset-labware-location",
-        json={
-            "labware_id": "nonexistent", "location": "pad1", "reason": "test",
-        },
+        "/api/labware-instances/nonexistent/reset-location", json={"location": "pad1", "reason": "test"},
     )
     assert resp.status_code == 404
 
@@ -408,7 +358,7 @@ async def test_labware_reset_location_unknown_id_returns_404(
 
 async def _register_plate(labware_client: AsyncClient) -> str:
     reg = await labware_client.post(
-        "/operations/register-labware", json={"template_name": "plate_96"},
+        "/api/labware-instances", json={"template_name": "plate_96"},
     )
     assert reg.status_code == 200, reg.text
     return reg.json()["labware"]["id"]
@@ -418,31 +368,23 @@ async def test_set_then_get_well_volumes_round_trip(
     labware_client: AsyncClient,
 ) -> None:
     labware_id = await _register_plate(labware_client)
-    set_resp = await labware_client.post(
-        "/operations/set-well-volumes",
-        json={
-            "labware_id": labware_id,
-            "well_volumes": {"A1": 100.0, "A2": 50.0},
-            "reason": "operator prefill",
-        },
+    set_resp = await labware_client.put(
+        f"/api/labware-instances/{labware_id}/well-volumes", json={"well_volumes": {"A1": 100.0, "A2": 50.0}, "reason": "operator prefill"},
     )
     assert set_resp.status_code == 200, set_resp.text
     assert set_resp.json()["status"] == "ok"
 
-    get_resp = await labware_client.post(
-        "/operations/get-well-volumes", json={"labware_id": labware_id},
-    )
+    get_resp = await labware_client.get(f"/api/labware-instances/{labware_id}/contents")
     assert get_resp.status_code == 200
-    assert get_resp.json()["well_volumes"] == {"A1": 100.0, "A2": 50.0}
+    assert get_resp.json()["volumes"] == {"A1": 100.0, "A2": 50.0}
 
 
 async def test_set_well_volumes_blank_reason_returns_422(
     labware_client: AsyncClient,
 ) -> None:
     labware_id = await _register_plate(labware_client)
-    resp = await labware_client.post(
-        "/operations/set-well-volumes",
-        json={"labware_id": labware_id, "well_volumes": {"A1": 10.0}, "reason": ""},
+    resp = await labware_client.put(
+        f"/api/labware-instances/{labware_id}/well-volumes", json={"well_volumes": {"A1": 10.0}, "reason": ""},
     )
     assert resp.status_code == 422
 
@@ -452,20 +394,17 @@ async def test_set_well_volumes_overfill_rejected(
 ) -> None:
     labware_id = await _register_plate(labware_client)
     # SimWell capacity is 385 uL.
-    resp = await labware_client.post(
-        "/operations/set-well-volumes",
-        json={"labware_id": labware_id, "well_volumes": {"A1": 1000.0}, "reason": "r"},
+    resp = await labware_client.put(
+        f"/api/labware-instances/{labware_id}/well-volumes", json={"well_volumes": {"A1": 1000.0}, "reason": "r"},
     )
-    assert resp.status_code == 400
+    assert resp.status_code == 422
     assert "capacity" in resp.text
 
 
 async def test_get_well_volumes_unknown_id_returns_404(
     labware_client: AsyncClient,
 ) -> None:
-    resp = await labware_client.post(
-        "/operations/get-well-volumes", json={"labware_id": "nonexistent"},
-    )
+    resp = await labware_client.get("/api/labware-instances/nonexistent/contents")
     assert resp.status_code == 404
 
 
@@ -475,9 +414,10 @@ async def rack_client() -> AsyncIterator[AsyncClient]:
     from tests.test_tip_state_reseed import _build_system_with_rack
 
     system = await _build_system_with_rack()
-    rt = SystemRuntime(system, labware_store=InMemoryLabwareStore())
+    injected = await memory_daemon_system(system)
+    rt = injected.runtime
     await rt.start()
-    app = create_app(initial_system_runtime=rt)
+    app = create_app(injected=injected)
     try:
         async with AsyncClient(
             transport=ASGITransport(app=app),
@@ -491,7 +431,7 @@ async def rack_client() -> AsyncIterator[AsyncClient]:
 
 async def _register_rack(rack_client: AsyncClient) -> str:
     reg = await rack_client.post(
-        "/operations/register-labware", json={"template_name": "tips_96"},
+        "/api/labware-instances", json={"template_name": "tips_96"},
     )
     assert reg.status_code == 200, reg.text
     return reg.json()["labware"]["id"]
@@ -501,20 +441,13 @@ async def test_set_then_get_tip_state_round_trip(
     rack_client: AsyncClient,
 ) -> None:
     labware_id = await _register_rack(rack_client)
-    set_resp = await rack_client.post(
-        "/operations/set-tip-state",
-        json={
-            "labware_id": labware_id,
-            "tip_positions_present": ["A1", "B1"],
-            "reason": "fresh rack, first column only",
-        },
+    set_resp = await rack_client.put(
+        f"/api/labware-instances/{labware_id}/tips", json={"tip_positions_present": ["A1", "B1"], "reason": "fresh rack, first column only"},
     )
     assert set_resp.status_code == 200, set_resp.text
     assert set_resp.json()["status"] == "ok"
 
-    get_resp = await rack_client.post(
-        "/operations/get-tip-state", json={"labware_id": labware_id},
-    )
+    get_resp = await rack_client.get(f"/api/labware-instances/{labware_id}/contents")
     assert get_resp.status_code == 200
     body = get_resp.json()
     assert body["tip_positions_present"] == ["A1", "B1"]
@@ -525,9 +458,8 @@ async def test_set_tip_state_blank_reason_returns_422(
     rack_client: AsyncClient,
 ) -> None:
     labware_id = await _register_rack(rack_client)
-    resp = await rack_client.post(
-        "/operations/set-tip-state",
-        json={"labware_id": labware_id, "tip_positions_present": ["A1"], "reason": ""},
+    resp = await rack_client.put(
+        f"/api/labware-instances/{labware_id}/tips", json={"tip_positions_present": ["A1"], "reason": ""},
     )
     assert resp.status_code == 422
 
@@ -536,15 +468,14 @@ async def test_set_tip_state_on_a_plate_rejected(
     rack_client: AsyncClient,
 ) -> None:
     reg = await rack_client.post(
-        "/operations/register-labware", json={"template_name": "plate_96"},
+        "/api/labware-instances", json={"template_name": "plate_96"},
     )
     assert reg.status_code == 200, reg.text
     plate_id = reg.json()["labware"]["id"]
-    resp = await rack_client.post(
-        "/operations/set-tip-state",
-        json={"labware_id": plate_id, "tip_positions_present": ["A1"], "reason": "r"},
+    resp = await rack_client.put(
+        f"/api/labware-instances/{plate_id}/tips", json={"tip_positions_present": ["A1"], "reason": "r"},
     )
-    assert resp.status_code == 400
+    assert resp.status_code == 422
     assert "tip rack" in resp.text
 
 
@@ -556,9 +487,7 @@ async def test_confirm_tip_state_on_a_registered_rack_returns_ok(
     about is still refused; that state is not reachable over REST, so the
     refusal is pinned at the facade instead.)"""
     labware_id = await _register_rack(rack_client)
-    resp = await rack_client.post(
-        "/operations/confirm-tip-state", json={"labware_id": labware_id},
-    )
+    resp = await rack_client.post(f"/api/labware-instances/{labware_id}/tips/confirm", json={})
     assert resp.status_code == 200, resp.text
 
 
@@ -566,13 +495,10 @@ async def test_confirm_tip_state_after_set_returns_ok(
     rack_client: AsyncClient,
 ) -> None:
     labware_id = await _register_rack(rack_client)
-    await rack_client.post(
-        "/operations/set-tip-state",
-        json={"labware_id": labware_id, "tip_positions_present": ["A1"], "reason": "r"},
+    await rack_client.put(
+        f"/api/labware-instances/{labware_id}/tips", json={"tip_positions_present": ["A1"], "reason": "r"},
     )
-    resp = await rack_client.post(
-        "/operations/confirm-tip-state", json={"labware_id": labware_id},
-    )
+    resp = await rack_client.post(f"/api/labware-instances/{labware_id}/tips/confirm", json={})
     assert resp.status_code == 200
     assert resp.json()["status"] == "ok"
 
@@ -580,7 +506,37 @@ async def test_confirm_tip_state_after_set_returns_ok(
 async def test_get_tip_state_unknown_id_returns_404(
     rack_client: AsyncClient,
 ) -> None:
-    resp = await rack_client.post(
-        "/operations/get-tip-state", json={"labware_id": "nonexistent"},
-    )
+    resp = await rack_client.get("/api/labware-instances/nonexistent/contents")
     assert resp.status_code == 404
+
+
+async def test_registering_at_a_location_that_does_not_exist_names_the_location(labware_client: AsyncClient) -> None:
+    resp = await labware_client.post(
+        "/api/labware-instances", json={"template_name": "plate_96", "location": "nope_loc"},
+    )
+
+    assert resp.status_code == 404, resp.text
+    assert "nope_loc" in resp.json()["detail"]["message"]
+    assert "template" not in resp.json()["detail"]["message"]
+
+async def test_a_volume_for_a_well_the_plate_does_not_have_is_refused() -> None:
+    system, _ = await _build_simple_system()
+    template = PlateTemplate("real_plate", "Cor_96_wellplate_360ul_Fb")
+    await template.bind_catalog(system.labware_catalog)
+    system.add_labware_template(template)
+    injected = await memory_daemon_system(system)
+    await injected.runtime.start()
+    try:
+        async with AsyncClient(transport=ASGITransport(app=create_app(injected=injected)), base_url="http://daemon.test") as client:
+            reg = await client.post("/api/labware-instances", json={"template_name": "real_plate"})
+            assert reg.status_code == 200, reg.text
+            labware_id = reg.json()["labware"]["id"]
+            resp = await client.put(
+                f"/api/labware-instances/{labware_id}/well-volumes",
+                json={"well_volumes": {"Z99": 10.0}, "reason": "r"},
+            )
+    finally:
+        await injected.runtime.shutdown(confirm=True)
+
+    assert resp.status_code == 422, resp.text
+    assert "no well 'Z99'" in resp.json()["detail"]["message"]

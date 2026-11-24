@@ -1,6 +1,6 @@
 """GripProfileFacade: the external surface over how each labware type is held.
 
-REST/MCP/CLI route through `deployment_registries.grip_profiles.<method>`. The
+REST/CLI route through `deployment_registries.grip_profiles.<method>`. The
 store instance the runtime resolves moves against IS the one this facade edits,
 so a width someone corrects on the bench reaches the next pick rather than a
 second copy of the numbers.
@@ -15,16 +15,16 @@ from collections.abc import Iterable
 from cheshire_drivers.move_parameters import MoveParameterField, MoveParameterPatch
 
 from orca.runtime.danger import DangerLevel, dangerous
-from orca.runtime.grip_profile_service import GripProfileService
-from orca.runtime.move_parameters import reject_contradiction, reject_site_owned
+from orca.runtime.grip_profile_service import IGripProfileService
+from orca.resource_models.move_parameters import reject_contradiction, reject_site_owned
 from orca.runtime.move_parameter_models import LabwareGripProfile
-from orca.runtime.runtime_interface import IGripProfileFacade
+from orca.runtime.facade_interfaces import IGripProfileFacade
 
 
 class GripProfileFacade(IGripProfileFacade):
     """Concrete IGripProfileFacade implementation."""
 
-    def __init__(self, service: GripProfileService) -> None:
+    def __init__(self, service: IGripProfileService) -> None:
         self._service = service
 
     async def get(self, labware_type: str) -> LabwareGripProfile:

@@ -7,11 +7,12 @@ labware was left wherever the cancel landed, with nothing recorded to say
 where. That is what a bench run hit, and the operator was left hunting for a
 plate the system had stopped talking about.
 
-A crash stops that one thread. The rest of the run finishes, and the operator
-gets an incident naming the labware and the position it stopped at, which is
-what clearing the deck by hand needs.
+A crash pauses that one thread, offering ABORT_THREAD only. The rest of the run
+goes on, and the operator gets an incident naming the labware and the position it
+stopped at, which is what clearing the deck by hand needs.
 """
 
+from orca.events.event_bus import EventBus
 import pytest
 
 import orca.orca as orca
@@ -20,9 +21,7 @@ from cheshire_drivers import CartesianCoordinates as C
 from orca.devices.devices import LiquidHandler, Storage
 from orca.resource_models.transporter import Transporter
 from orca.runtime.incident_store import IncidentCategory
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.store_factory import InMemoryRuntimeStoreFactory
-from orca.runtime.system_runtime import SystemRuntime
+from orca.modes.run_modes import WorkflowRunMode
 from orca.sdk.build import Topology
 from orca.sdk.labware import PlateTemplate
 from orca.spawn import DISPENSE, LEAVE_IN_PLACE, REUSE_EXISTING
@@ -34,6 +33,9 @@ from orca.workflow_models.labware_threads.executing_labware_thread import (
 from orca.workflow_models.method_context import MethodContext
 from orca.workflow_models.thread_context import ThreadContext
 from tests.test_helpers import wait_for_runtime_condition
+from tests.setup_package import package_stores, write_deck_layouts, write_teachpoints
+from tests.setup_package import with_teachpoints, with_deck_layouts
+from tests.memory_activity import memory_ops_store, memory_runtime
 
 
 _DECK_CONFIG = DeckLayoutConfig(
@@ -47,26 +49,24 @@ _RESERVOIR_SITE = "lh/carrier-25-0"
 
 
 async def _build_system():
-    stores = InMemoryRuntimeStoreFactory()
+    stores = package_stores()
     sample = PlateTemplate("sample", labware_type="Cor_Falcon_96_wellplate_340ul_Fb_Black")
     spare = PlateTemplate("spare", labware_type="Cor_Falcon_96_wellplate_340ul_Fb_Black")
     reservoir = PlateTemplate("reservoir", labware_type="AGenBio_1_troughplate_190000uL_Fl")
 
-    lh = LiquidHandler(
+    lh = with_deck_layouts(LiquidHandler(
         "lh",
-        deck_layout_store=stores.deck_layouts("lh", seed={"default": _DECK_CONFIG}),
         deck_layout="default",
-    )
+    ), write_deck_layouts(stores, "lh", {"default": _DECK_CONFIG}))
     stacker = Storage("stacker")
     waste = Storage("waste")
-    arm = Transporter(
+    arm = with_teachpoints(Transporter(
         "arm",
-        teachpoint_store=stores.teachpoints("arm", seed=[
+    ), write_teachpoints(stores, "arm", [
             Teachpoint("stacker", C(0, 200, 300, 0, 90, 180), orientation="right"),
             Teachpoint("lh/carrier-7-2", C(400, 200, 300, 0, 90, 180), orientation="right"),
             Teachpoint("waste", C(600, 200, 300, 0, 90, 180), orientation="right"),
-        ]),
-    )
+        ]))
 
     @orca.action(device=lh, inputs=[sample, reservoir], deck_positions={sample: "carrier-7-0"})
     async def add_reagent(ctx: ActionContext) -> None:
@@ -112,7 +112,7 @@ async def _build_system():
     topology = Topology(
         locations={"stacker": stacker, "lh": lh, "waste": waste}, transporters=[arm])
     return await orca.build_system(
-        name="Dead Thread", workflow=workflow, topology=topology, stores=stores)
+        name="Dead Thread", workflow=workflow, topology=topology, stores=stores, event_bus=EventBus(), ops_history_store=memory_ops_store())
 
 
 @pytest.mark.timeout(90)
@@ -122,7 +122,7 @@ async def test_a_crashed_thread_records_its_labware_and_leaves_the_run_running(
     build = await _build_system()
 
     # An engine fault, injected where one actually escaped on the bench: outside
-    # the thread's own error handling, so nothing pauses and nothing recovers.
+    # the thread's own error handling.
     original = ExecutingLabwareThread.initialize_labware
 
     async def crash_the_reagent_thread(self: ExecutingLabwareThread) -> None:
@@ -133,19 +133,19 @@ async def test_a_crashed_thread_records_its_labware_and_leaves_the_run_running(
     monkeypatch.setattr(
         ExecutingLabwareThread, "initialize_labware", crash_the_reagent_thread)
 
-    runtime = SystemRuntime(build.system, event_bus=build.event_bus)
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
     template = build.system.get_workflow_template("crash_wf")
     await runtime.start()
     try:
-        submission = await runtime.submit(template, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(template, mode=WorkflowRunMode.CHECK_RUN)
         await wait_for_runtime_condition(
             runtime,
             lambda: any(
-                t.name.startswith("reservoir-") and t.status == "FAILED"
+                t.name.startswith("reservoir-") and t.status == "PAUSED"
                 for t in runtime.list_threads(submission.execution_id)
             ),
             timeout=30.0,
-            message="the crashed reagent thread never reached FAILED",
+            message="the crashed reagent thread never paused",
         )
         # Wait until the plate has settled, so a teardown would have reached it.
         settled = {"PAUSED", "COMPLETED", "ABORTED", "STOPPED", "FAILED"}
@@ -201,11 +201,11 @@ async def test_a_crash_on_an_unrelated_thread_leaves_the_others_alone(
     monkeypatch.setattr(
         ExecutingLabwareThread, "initialize_labware", crash_the_spare_thread)
 
-    runtime = SystemRuntime(build.system, event_bus=build.event_bus)
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
     template = build.system.get_workflow_template("crash_wf")
     await runtime.start()
     try:
-        submission = await runtime.submit(template, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(template, mode=WorkflowRunMode.CHECK_RUN)
         await wait_for_runtime_condition(
             runtime,
             lambda: any(
@@ -220,8 +220,8 @@ async def test_a_crash_on_an_unrelated_thread_leaves_the_others_alone(
             t.name: t.status for t in runtime.list_threads(submission.execution_id)
         }
         spare = {n: st for n, st in statuses.items() if n.startswith("spare-")}
-        assert spare and all(st == "FAILED" for st in spare.values()), (
-            f"the crashed thread itself must land FAILED; got {statuses}"
+        assert spare and all(st == "PAUSED" for st in spare.values()), (
+            f"the crashed thread itself must pause for the operator; got {statuses}"
         )
 
         incidents = await runtime.incidents.list(category=IncidentCategory.THREAD_DIED)

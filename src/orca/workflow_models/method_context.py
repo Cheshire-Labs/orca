@@ -9,6 +9,7 @@ from typing import TypeVar, cast, overload
 
 from pydantic import JsonValue
 
+from orca.events.event_name import checked_event_name
 from orca.events.custom_emit import EventEmitter, emit_custom_event
 from orca.events.event_channel import EventChannelRegistry
 from orca.resource_models.labware import LabwareInstance
@@ -93,7 +94,7 @@ class MethodContext:
                 "Event channels not available. ctx.emit() requires an "
                 "EventChannelRegistry wired through the execution pipeline."
             )
-        channel = self._event_channel_registry.get_or_create(event_name)
+        channel = self._event_channel_registry.get_or_create(checked_event_name(event_name))
         await channel.publish(value=value, data=data)
         emit_custom_event(
             self._event_emitter,

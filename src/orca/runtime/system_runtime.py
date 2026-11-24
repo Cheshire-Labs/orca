@@ -8,58 +8,63 @@ import asyncio
 import logging
 import time
 import uuid
-from collections.abc import AsyncIterator, Iterator, Sequence
+from collections.abc import Iterator, Sequence
 from contextlib import AbstractAsyncContextManager, nullcontext
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from datetime import datetime, timezone
-from typing import Awaitable, Callable, List, Mapping, TypeVar
+from typing import Awaitable, Callable, Mapping, TypeVar
 
 from cheshire_drivers.gateway_protocol import DeviceConnectInfo, DeviceStatusInfo
 
+from orca.runtime.labware_catalog_service import ILabwareCatalogService
 from orca.devices.devices import LiquidHandler
 from orca.events.event_bus_interface import IEventBus
-from orca.gateway.controller import device_controller
-from orca.gateway.controller.exceptions import DeviceError
+from orca.gateway.controller.command_pipeline import NoAnswer
+from orca.resource_models.sharing import GroupSharing, SubmissionBatching
+from orca.resource_models.command_effects import CommandStatement, stated_after_a_failure, stored_command
+from orca.resource_models.labware_placement import Arrival
+from orca.operations.error_mapping import error_label
+from orca.gateway.controller.exceptions import DeviceError, DeviceLockedError
 from orca.gateway.device_fault import DeviceFault
-from orca.gateway.websocket.connection_events import connection_events
+from orca.modes.device_modes import DeviceMode
+from orca.runtime.facades.device_modes import (
+    IDeviceModeFacade,
+    ModeSwitch,
+    ModeSwitchDuringRunError,
+    RunInProgress,
+    bring_up_error,
+    mode_switch_warning,
+)
+from orca.gateway.device_gateway import DeviceGateway
+from orca.gateway.operator_commands import resolve_effective_interfaces
 from orca.events.event_handler_interface import IEventHandler
 from orca.events.execution_context import (
     DeviceFaultContext,
     ExecutionContext,
     ExecutionLifecycleContext,
-    ExecutionTimeScaleContext,
-    GroupLifecycleContext,
+    ExecutionSimSpeedupContext,
     IncidentContext,
     SubmissionExecutionContext,
     ThreadExecutionContext,
+    WorkflowExecutionContext,
 )
 from orca.events.runtime_event import RuntimeEvent
-from orca.plugins.base import OrcaPlugin, PluginCommand
-from orca.runtime.danger import (
-    ActionDescriptor,
-    describe_action as _describe_action_global,
-    list_actions as _list_actions_global,
-)
+from orca.plugins.base import OrcaPlugin
 from orca.runtime.event_forwarder import _SystemEventForwarder
 from orca.runtime.execution import Execution, ExecutionPhase, StopOutcome
-from orca.runtime.sim_pacing import SimPacer, validate_time_scale
+from orca.modes.sim_pacing import SimPacer, validate_optional_sim_speedup, validate_sim_speedup
 from orca.runtime.execution_record import ExecutionRecord, ExecutionState
-from orca.runtime.facades.deck_layouts import DeckLayoutFacade
 from orca.runtime.facades.devices import DeviceFacade
 from orca.runtime.facades.incidents import IncidentFacade
 from orca.runtime.facades.labware import LabwareFacade
-from orca.runtime.facades.ops_history import OpsHistoryFacade
 from orca.runtime.facades.registry import RegistryFacade
 from orca.runtime.facades.submissions import SubmissionFacade
-from orca.runtime.facades.teachpoints import TeachpointFacade
 from orca.runtime.facades.threads import ThreadFacade
-from orca.runtime.facades.variables import VariableFacade
-from orca.runtime.db import create_memory_engine
-from orca.runtime.execution_record_service import ExecutionRecordService
-from orca.runtime.execution_tracking_sink import ExecutionTrackingSink
-from orca.runtime.incident_service import IncidentService
+from orca.runtime.execution_record_service import IExecutionRecordService
+from orca.runtime.event_saves import END_EVENTS_SAVE_TIMEOUT_S, IEventSaves
+from orca.runtime.unsaved_record import IUnsavedRecordReporter, UnsavedRecord
+from orca.runtime.incident_service import IIncidentService
 from orca.runtime.incident_store import (
-    LedgerContradictionDetail,
     DeckReconcileConflictDetail,
     IncidentCategory,
     IncidentSeverity,
@@ -67,58 +72,34 @@ from orca.runtime.incident_store import (
     RecoveryAction,
     SystemIncident,
 )
-from orca.runtime.sqlite_execution_record_store import SqliteExecutionRecordStore
-from orca.runtime.sqlite_incident_store import SqliteIncidentStore
-from orca.runtime.loop_safe import deliver_on_loop
+from orca.runtime.incident_declarer import IncidentDeclarer
 from orca.runtime.recoverable_timeout import RecoverableTimeoutCoordinator
 from orca.system.reservation_manager.location_reservation import ReservationPriority
-from orca.system.reservation_manager.errors import (
-    ActionContinuedContext,
-    ActionFailedContext,
-    MoveContinuedContext,
-    MoveFailedContext,
-    OrphanedBacklogContext,
-    ThreadDiedContext,
-    UnresolvableDeadlockContext,
-)
-from orca.runtime.access_config_service import AccessConfigService
-from orca.runtime.sqlite_access_config_store import SqliteAccessConfigStore
-from orca.runtime.sqlite_move_defaults_store import SqliteMoveDefaultsStore
-from orca.runtime.move_defaults_service import MoveDefaultsService
-from orca.runtime.sqlite_grip_profile_store import SqliteGripProfileStore
-from orca.runtime.grip_profile_service import GripProfileService
-from orca.runtime.registries import (
-    DeviceRegistryImpl,
-    NullDeviceConnectionSource,
-    NullGatewayRegistry,
-    SystemTopologyRegistry,
-)
-from orca.runtime.interfaces import (
+from orca.runtime.access_config_service import IAccessConfigService
+from orca.runtime.move_defaults_service import IMoveDefaultsService
+from orca.runtime.grip_profile_service import IGripProfileService
+from orca.resource_models.store_interfaces import (
     IAccessConfigStore,
     IDeploymentProfileStore,
-    IEventSink,
-    ILabwareStore,
 )
-from orca.runtime.profile_store import NullDeploymentProfileStore
-from orca.resource_models.adhoc_labware import is_adhoc_template_name
+from orca.events.emitter import IEventSink
+from orca.resource_models.labware_service_interface import ILabwareService
 from orca.resource_models.labware import LabwareInstance, TipRackInstance
 from orca.resource_models.location import Location
-from orca.runtime.labware_group import (
+from orca.workflow_models.labware_group import (
     AcquisitionValidationError,
     BarcodeAcquisition,
     LabwareGroup,
+    LabwareGroupMember,
     LocationAcquisition,
 )
-from orca.runtime.labware_store import InMemoryLabwareStore
-from orca.runtime.labware_catalog_service import (
-    LabwareCatalogService,
-    seeded_labware_catalog_service,
-)
 from orca.state.projections import (
+    contents_provenance,
     has_tip_baseline,
     has_volume_history,
     unsettled_gaps,
 )
+from orca.state.mounted import head_a_failed_command_leaves_unknown
 from orca.state.provenance import Provenance
 from orca.state.unsettled import (
     SettleNoun,
@@ -127,23 +108,40 @@ from orca.state.unsettled import (
     set_verb,
     settle_verb,
 )
-from orca.state.records import ObservationGapCause, OperationRecord
-from orca.state.ops_store import SYSTEM_ID, IOpsHistoryStore, ops_for_labware
-from orca.runtime.run_modes import (
+from orca.state.records import ObservationGapCause, OperationRecord, TrackingRecord
+from orca.state.ops_store import SYSTEM_ID
+from orca.modes.run_modes import (
+    OUT_OF_RUN_BASE,
     WorkflowRunMode,
     current_run_mode,
-    resolve_effective_mode_for_device,
+    mode_scope,
 )
-from orca.runtime.sim_diagnostics import (
+from orca.modes.sim_diagnostics import (
     maybe_enable_sim_coroutine_diagnostics_from_env,
 )
-from orca.runtime.runtime_interface import (
+from orca.runtime.errors import (
+    EventHooksNotInTheWorkflowError,
+    NoLabwareCanOwnTheMethodError,
     DeckLayoutRequiredError,
+    OtherRunModeActiveError,
+    RunModeMismatchError,
+    OccupiedSlot,
+    RunModeRequiredError,
+    StartLocationsOccupiedError,
+    SubmissionBlockedByOrphanedBacklogError,
+    SimSpeedupNotApplicableError,
+    SubmissionToPausedExecutionError,
+    DeploymentProfileNotFoundError,
+    ExecutionNotFoundError,
+    LabwareTemplateNotFoundError,
+    LabwareNotFoundError,
+    MethodNotFoundError,
+    ThreadTemplateNotFoundError,
+    UnknownLocationError,
+)
+from orca.runtime.facade_interfaces import (
     IDeckLayoutFacade,
-    IDeviceConnectionSource,
     IDeviceFacade,
-    IDeviceRegistry,
-    IGatewayRegistry,
     IIncidentFacade,
     ILabwareFacade,
     IOpsHistoryFacade,
@@ -151,21 +149,19 @@ from orca.runtime.runtime_interface import (
     ISubmissionFacade,
     ITeachpointFacade,
     IThreadFacade,
-    ITopologyRegistry,
     IVariableFacade,
-    ConcurrentLiveSimRefusedError,
-    RunModeMismatchError,
-    LiveSubmissionWithSimOverridesUnacknowledgedError,
-    OccupiedSlot,
-    RunModeRequiredError,
-    StartLocationsOccupiedError,
-    SubmissionBlockedByOrphanedBacklogError,
-    SimTimeScaleNotApplicableError,
-    SubmissionToPausedExecutionError,
+)
+from orca.runtime.registry_protocols import (
+    IDeviceConnectionSource,
+    IDeviceFaultSource,
+    IDeviceRegistry,
+    IGatewayRegistry,
+    ITopologyRegistry,
 )
 from orca.runtime.runtime_state import RuntimeState
 from orca.runtime.stall_detector import StallDetector, StallReport, SystemStallError, ThreadStallSnapshot, snapshot_in_flight
-from orca.runtime.blockers import Blocker, derive_blockers
+from orca.runtime.blockers import Blocker, LabwareOccupant, derive_blockers
+from orca.runtime.stored_labware import adopt_stored_labware
 from orca.runtime.status_models import (
     DeviceSnapshot,
     ExecutionDetail,
@@ -176,25 +172,30 @@ from orca.runtime.status_models import (
     ThreadSnapshot,
 )
 from orca.runtime.status_builders import _build_thread_snapshot, derive_waiting_for
-from orca.runtime.submission import BatchMode, ResolvedAcquisition, Submission, SubmissionStatus
+from orca.workflow_models.submission import BatchMode, ResolvedAcquisition, Submission, SubmissionStatus
 from orca.runtime.system_event_bus import SystemEventBus
-from orca.system.errors import DeviceInitializationError
+from orca.system.errors import DeviceInitializationError, DevicesNotReadyError
 from orca.system.system_interface import (
-    LedgerContradiction,
     DeckConflictReason,
     DeckReconcileConflict,
+    NOTHING_ON_RECORD_WAS_MOVED,
     ISystem,
 )
-from orca.variables.errors import OptionValue
+from orca.variables.deployment_profile import DeploymentProfile
+from orca.variables.errors import OptionValue, SubmissionInputsRefusedError
+from orca.variables.submission_inputs import SubmittedInputs, refusals_for
 from orca.workflow_models.labware_threads.executing_labware_thread import ExecutingLabwareThread
 from orca.workflow_models.method_template import MethodTemplate
 from orca.workflow_models.standalone_method_workflow import (
     StandaloneThreadSpec,
     build_standalone_method_workflow,
+    starts_from_reuse,
+    with_the_workflows_kinds,
 )
 from orca.workflow_models.status_enums import LabwareThreadStatus, RecoveryDecision, WorkflowStatus
-from orca.workflow_models.thread_template import ThreadTemplate
-from orca.workflow_models.workflow_templates import WorkflowTemplate
+from orca.workflow_models.thread_template import ThreadTemplate, thread_named, threads_a_group_names
+from orca.workflow_models.acquisition import MemberFacts, no_stated_tips, refusal_for
+from orca.workflow_models.workflow_templates import EventHookInfo, WorkflowTemplate
 from orca.workflow_models.workflows.executing_workflow import ExecutingWorkflow
 
 logger = logging.getLogger(__name__)
@@ -226,19 +227,6 @@ _SETTLE_IT = (
     "Put it where it really is with edit-labware-location, or discharge it "
     "after physically removing it."
 )
-
-
-def _contradiction_message(contradiction: LedgerContradiction) -> str:
-    """Say what the operator did, what the record thought, and what settles it."""
-    spots = ", ".join(contradiction.positions)
-    return (
-        f"'{contradiction.command}' on '{contradiction.device_name}' took tips "
-        f"from '{contradiction.labware_name}' at {spots}, where the record had "
-        f"none: {contradiction.believed}. The command was believed and folded, "
-        f"but it says nothing about the rest of the rack, so the count is now "
-        f"wrong by an unknown amount. Look at the rack, then set its tip state "
-        f"({contradiction.labware_id}) to what is really on it."
-    )
 
 
 def _deck_conflict_message(conflict: DeckReconcileConflict) -> str:
@@ -279,10 +267,10 @@ def _deck_conflict_message(conflict: DeckReconcileConflict) -> str:
         )
     if conflict.reason is DeckConflictReason.LEDGER_TARGET_OCCUPIED:
         return (
-            f"An operator command on '{device}' put '{labware}' at '{where}', "
+            f"A command on '{device}' put '{labware}' at '{where}', "
             f"where the ledger already has '{conflict.blocking_labware_name}'. "
-            f"The command ran; only the record of it did not, so '{labware}' "
-            f"is now at a position nothing tracks. {_SETTLE_IT}"
+            f"The command ran, but the record was left unchanged: {conflict.detail} "
+            f"Settle where '{conflict.blocking_labware_name}' is first. {_SETTLE_IT}"
         )
     if conflict.reason is DeckConflictReason.CONTENTS_DIFFER:
         return (
@@ -292,6 +280,11 @@ def _deck_conflict_message(conflict: DeckReconcileConflict) -> str:
             f"unless someone looked. Confirm or correct it with "
             f"set-tip-state or set-well-volumes."
         ).replace("  ", " ")
+    if labware is None:
+        return (
+            f"A gripper move on '{device}' from '{where}' to '{driver_site}' did "
+            f"not finish. {NOTHING_ON_RECORD_WAS_MOVED}"
+        )
     return (
         f"A gripper move of '{labware}' on '{device}' did not finish. The "
         f"driver still names '{where}', which is where the move BEGAN, and it "
@@ -300,47 +293,76 @@ def _deck_conflict_message(conflict: DeckReconcileConflict) -> str:
     )
 
 
-# Terminal thread states. A thread in any of these has finished its
-# lifecycle and will not transition further; callers (mutation, pause,
-# resume, recovery) treat them uniformly. Bug TTT regression: pre-fix
-# only COMPLETED + STOPPED were classified terminal even though the
-# enum carries ABORTED, so an operator-aborted thread sat in a half-
-# state that the runtime treated as still-mutable.
-_TERMINAL_THREAD_STATES = frozenset({
-    LabwareThreadStatus.COMPLETED,
-    LabwareThreadStatus.ABORTED,
-    LabwareThreadStatus.STOPPED,
-    LabwareThreadStatus.FAILED,
-})
-
-
 # `ExecutionStatus` lives in `status_models.py` so the runtime
 # protocol (`runtime_interface.py`) can refer to it without importing
 # from `system_runtime` (which would induce a cycle).
 
 
 _TERMINAL_PHASES = frozenset({
-    ExecutionPhase.COMPLETED, ExecutionPhase.FAILED, ExecutionPhase.ABORTED,
+    ExecutionPhase.COMPLETED, ExecutionPhase.PARTIAL_COMPLETED, ExecutionPhase.FAILED, ExecutionPhase.ABORTED,
 })
 
 
-def _check_time_scale_applies(mode: WorkflowRunMode, sim_time_scale: float | None) -> None:
-    """A scale is a number >= 0, and only a simulated run can carry one."""
-    if sim_time_scale is None:
+_UNPACED_REASON: dict[WorkflowRunMode, str] = {
+    WorkflowRunMode.LIVE: "a LIVE run is paced by its hardware",
+    WorkflowRunMode.CHECK_RUN: "a check run is never paced",
+}
+
+
+def _check_sim_speedup_applies(mode: WorkflowRunMode, sim_speedup: float | None) -> None:
+    """A speed-up is a number in SIM_SPEEDUP_RANGE, and only a sim run can carry one."""
+    if sim_speedup is None:
         return
-    validate_time_scale(sim_time_scale)
-    if mode is WorkflowRunMode.LIVE:
-        raise SimTimeScaleNotApplicableError("a LIVE run is paced by its hardware")
+    validate_sim_speedup(sim_speedup)
+    if mode is not WorkflowRunMode.SIM:
+        raise SimSpeedupNotApplicableError(_UNPACED_REASON[mode])
+
+
+def _refuse_a_second_profile(existing: Execution, deployment_profile: str | None) -> None:
+    """An execution loads one profile, when it starts."""
+    started_with = existing.submissions[0].deployment_profile if existing.submissions else None
+    if deployment_profile is not None and deployment_profile != started_with:
+        raise ValueError(
+            f"execution {existing.id} started with deployment profile {started_with!r}, so a "
+            f"JOIN_EXISTING submission cannot load {deployment_profile!r}. Submit STANDALONE "
+            "to start a new execution.",
+        )
+
+
+_END_STATUS: dict[ExecutionPhase, str] = {
+    ExecutionPhase.COMPLETED: "COMPLETED",
+    ExecutionPhase.PARTIAL_COMPLETED: "PARTIAL_COMPLETED",
+    ExecutionPhase.FAILED: "FAILED",
+    ExecutionPhase.ABORTED: "ABORTED",
+}
+_END_SUBMISSION_STATUS: dict[ExecutionPhase, SubmissionStatus] = {
+    ExecutionPhase.COMPLETED: SubmissionStatus.COMPLETED,
+    ExecutionPhase.PARTIAL_COMPLETED: SubmissionStatus.PARTIAL_COMPLETED,
+    ExecutionPhase.FAILED: SubmissionStatus.FAILED,
+    ExecutionPhase.ABORTED: SubmissionStatus.ABORTED,
+}
+
+
+def run_phase_of(statuses: Sequence[LabwareThreadStatus]) -> ExecutionPhase:
+    """The phase a run ends in, from its threads' final statuses, in the order the rules apply."""
+    if LabwareThreadStatus.FAILED in statuses:
+        return ExecutionPhase.FAILED
+    if LabwareThreadStatus.STOPPED in statuses:
+        return ExecutionPhase.ABORTED
+    if LabwareThreadStatus.ABORTED in statuses:
+        if LabwareThreadStatus.COMPLETED in statuses:
+            return ExecutionPhase.PARTIAL_COMPLETED
+        return ExecutionPhase.ABORTED
+    return ExecutionPhase.COMPLETED
 
 
 def _phase_to_state(phase: ExecutionPhase) -> ExecutionState:
-    """Map T6 ExecutionPhase to our flat ExecutionState for the daemon API.
+    """Map ExecutionPhase to the flat ExecutionState for the daemon API.
 
     ACCEPTING + DRAINING + STOPPING all surface as RUNNING -- the flat
     shim represents the coarse "is this active?" distinction; STOPPING
     is a finer phase visible on the richer ExecutionStatus / DTO surface.
-    Terminal states (COMPLETED/FAILED/ABORTED) share string values across
-    enums, so the value-construction path works directly.
+    Terminal states share string values across enums, so the value-construction path works directly.
     """
     if phase in (
         ExecutionPhase.ACCEPTING, ExecutionPhase.DRAINING, ExecutionPhase.STOPPING,
@@ -382,47 +404,24 @@ def _fault_named_by_pause(thread: ExecutingLabwareThread) -> DeviceFault | None:
 
 def _contents_detail(
     provenance: Provenance, name: str, *, settle_with: str,
-    unrecorded: bool = False,
     gaps: frozenset[ObservationGapCause] = frozenset(),
 ) -> str:
     if provenance is Provenance.UNKNOWN:
         return f"nothing has ever said what {name!r} holds, which is not the same as empty"
-    if unrecorded:
-        return _unrecorded_detail(f"what {name!r} holds")
     if ObservationGapCause.OPERATIONS_DROPPED in gaps:
         return _dropped_detail(f"what {name!r} holds", settle_with)
     return f"{name!r} was known, then a stretch passed with nobody watching it"
 
 
-def _unrecorded_detail(subject: str) -> str:
-    """An action is holding operations nobody has written down yet.
-
-    Its own sentence because the answer is different, and because the usual one
-    is actively wrong here. Confirming writes what the read shows as an
-    operator's word, and what it shows is behind; stating the contents by hand
-    is worse still, because the action's own operations are then folded on top
-    of a number that already accounted for them. Settling the action is the
-    only thing that helps, and then the numbers catch up on their own.
-    """
-    return (
-        f"an action that has not finished did things to {subject}, and the "
-        f"record only hears about them when the action ends; settle the action "
-        f"(retry, continue, or abort) rather than confirming or restating this"
-    )
-
-
 def _dropped_detail(subject: str, settle_with: str) -> str:
-    """An aborted action threw away work it had really done.
+    """A stop, a timeout or a failure cut a command off at the device, so nobody knows what it did.
 
-    Its own sentence because the usual one sends the operator to look for
-    something a person did, and nobody did anything: the machine lost its own
-    record. Looking and finding things as expected is the trap, because the
-    record is short by the work the abort discarded. Only stating what is
-    really there settles it, which is why the confirm verbs refuse here.
+    Only stating what is really there settles it, which is why the confirm
+    verbs refuse here.
     """
     return (
-        f"an action was aborted holding work nobody wrote down, so {subject} "
-        f"is wrong by an amount nothing can state; look and state what is "
+        f"a stop, a timeout or a failure cut a command off at the device, so {subject} "
+        f"may be wrong by an amount nothing can state; look and state what is "
         f"there with {settle_with} rather than confirming what the record shows"
     )
 
@@ -450,18 +449,80 @@ def _confirm_has_something_to_back_it(
 
 
 def _head_detail(
-    provenance: Provenance, name: str, *, unrecorded: bool = False,
+    provenance: Provenance, name: str, *,
     gaps: frozenset[ObservationGapCause] = frozenset(),
 ) -> str:
     if provenance is Provenance.UNKNOWN:
         return f"nothing has ever said what {name!r} is carrying"
-    if unrecorded:
-        return _unrecorded_detail(f"what {name!r} is carrying")
     if ObservationGapCause.OPERATIONS_DROPPED in gaps:
         return _dropped_detail(
             f"what {name!r} is carrying", set_verb("mounted-tips"),
         )
     return f"what {name!r} is carrying was known, then nobody was watching"
+
+
+def _what_to_state(command: str) -> str:
+    if head_a_failed_command_leaves_unknown(command) is None:
+        return "the labware it used"
+    return "the labware it used and its head"
+
+
+def _outcome_unknown_message(device_name: str, command: str, seconds: float, why: NoAnswer) -> str:
+    if why is NoAnswer.FAILED:
+        return (
+            f"'{command}' on '{device_name}' failed after the device took it, so what it did is unknown. Look at "
+            f"the device and state what {_what_to_state(command)} now hold. Then mark the command complete "
+            f"if it did finish, or abort it, to settle the record."
+        )
+    cause = (
+        f"got no answer within its time limit ({seconds:.1f}s)" if why is NoAnswer.TIMED_OUT
+        else "was stopped while the device was running it"
+    )
+    return (
+        f"'{command}' on '{device_name}' {cause}, so what it did is unknown. Look at the device and confirm "
+        f"where the plate is, then mark the command complete or abort it to settle the record."
+    )
+
+
+def _moves_off(
+    workflow: WorkflowTemplate,
+    claims: Sequence[tuple[tuple[str, str], ResolvedAcquisition]],
+    labware_id: str,
+    start: Location,
+    past_their_starts: frozenset[str],
+) -> bool:
+    """Whether named labware standing on `start` will be carried off it.
+
+    A thread that has not reached its start yet first carries its plate there, so that start must clear in turn.
+    A chain that comes back to a start it already passed never clears: each plate waits for the next. A plate in
+    `past_their_starts` belongs to a thread already working, which carries it on to its next step.
+    """
+    destinations: dict[str, tuple[ThreadTemplate, Location]] = {}
+    for (_, thread_name), claim in claims:
+        template = _entry_thread_named(workflow, thread_name)
+        if claim.labware_instance is not None and template is not None:
+            destinations[claim.labware_instance.id] = (template, claim.start_location or template.start_location)
+    passed: set[str] = set()
+    here = start
+    while True:
+        entry = destinations.get(labware_id)
+        if entry is None:
+            return False
+        template, own_start = entry
+        if template.end_leave_in_place and any(end.position_id == here.position_id for end in template.end_locations):
+            return False
+        if labware_id in past_their_starts or own_start.position_id == here.position_id or own_start.is_plate_source:
+            return True
+        passed.add(here.position_id)
+        if own_start.position_id in passed:
+            return False
+        occupant = own_start.labware
+        if occupant is None:
+            return True
+        labware_id, here = occupant.id, own_start
+
+
+_ADOPTED_GROUP_ID = "operator-placed"
 
 
 def _occupied_slot(loc: Location) -> OccupiedSlot | None:
@@ -478,9 +539,25 @@ def _occupied_slot(loc: Location) -> OccupiedSlot | None:
         return None
     return OccupiedSlot(
         position_id=loc.position_id,
+        existing_labware_id=labware.id,
         existing_labware_name=labware.name,
         existing_template_name=labware.template_name,
     )
+
+
+def _entry_thread_named(workflow: WorkflowTemplate, name: str) -> ThreadTemplate | None:
+    return thread_named(workflow.entry_thread_templates, name)
+
+
+def _the_hooks_to_carry(workflow: WorkflowTemplate, chosen: Sequence[str] | None) -> list[EventHookInfo]:
+    """The workflow's ``wf.on`` handlers a standalone run of one of its methods fires."""
+    if chosen is None:
+        return list(workflow.event_hooks)
+    declared = sorted({hook.event_name for hook in workflow.event_hooks})
+    unknown = sorted(set(chosen) - set(declared))
+    if unknown:
+        raise EventHooksNotInTheWorkflowError(workflow.name, unknown, declared)
+    return [hook for hook in workflow.event_hooks if hook.event_name in chosen]
 
 
 class SystemRuntime:
@@ -493,113 +570,77 @@ class SystemRuntime:
     def __init__(
         self,
         system: ISystem,
-        labware_store: ILabwareStore | None = None,
-        event_bus: IEventBus | None = None,
-        incident_service: IncidentService | None = None,
-        execution_record_service: ExecutionRecordService | None = None,
-        access_config_service: AccessConfigService | None = None,
-        move_defaults_service: MoveDefaultsService | None = None,
-        grip_profile_service: GripProfileService | None = None,
-        profile_store: IDeploymentProfileStore | None = None,
-        gateway_registry: IGatewayRegistry | None = None,
-        connection_source: IDeviceConnectionSource | None = None,
-        ops_history_store: IOpsHistoryStore | None = None,
-        labware_catalog_store: LabwareCatalogService | None = None,
-        stall_check_interval: float | None = 10.0,
-        stall_required_stable_ticks: int = 2,
-        default_sim_time_scale: float = 0.0,
+        *,
+        incident_service: IIncidentService,
+        execution_record_service: IExecutionRecordService,
+        unsaved_records: IUnsavedRecordReporter,
+        event_saves: IEventSaves,
+        access_config_service: IAccessConfigService,
+        move_defaults_service: IMoveDefaultsService,
+        grip_profile_service: IGripProfileService,
+        profile_store: IDeploymentProfileStore,
+        labware_catalog_store: ILabwareCatalogService,
+        gateway_registry: IGatewayRegistry,
+        connection_source: IDeviceConnectionSource,
+        device_gateway: DeviceGateway,
+        event_bus: IEventBus,
+        system_event_bus: SystemEventBus,
+        topology_registry: ITopologyRegistry,
+        device_registry: IDeviceRegistry,
+        variables: IVariableFacade,
+        teachpoints: ITeachpointFacade,
+        deck_layouts: IDeckLayoutFacade,
+        ops_history: IOpsHistoryFacade,
+        device_modes: IDeviceModeFacade,
+        stall_check_interval: float | None,
+        stall_required_stable_ticks: int,
+        default_sim_speedup: float | None,
     ) -> None:
         self._system = system
-        # What a simulated submission runs at when it names no scale of its own.
-        self._default_sim_time_scale = validate_time_scale(default_sim_time_scale)
-        self._labware_store: ILabwareStore = labware_store or InMemoryLabwareStore()
-        # Built lazily on first access; disposed at shutdown only when we own it
-        # (an injected catalog is the injector's to close, e.g. a Postgres one).
-        self._labware_catalog_store = labware_catalog_store
-        self._owns_labware_catalog_service = labware_catalog_store is None
-        # Plumb the runtime's labware_store + the system ref into the
-        # ExecutingWorkflowFactory so reuse-bind threads can dual-register
-        # fresh labware (system.labwares + labware_store) when their
-        # auto-spawn fires.
-        self._system.set_executing_workflow_factory_refs(self._labware_store)
-        # Source-available default: in-memory SQLite (StaticPool); schema created in start().
-        # An injected service is the injector's to own; we dispose only the default.
-        self._owns_incident_service = incident_service is None
-        self._incident_service: IncidentService = (
-            incident_service
-            or IncidentService(SqliteIncidentStore(create_memory_engine()))
-        )
-        # Source-available default: in-memory SQLite (StaticPool); schema created in start().
-        # An injected service is the injector's to own; we dispose only the default.
-        self._owns_execution_record_service = execution_record_service is None
-        self._execution_record_service: ExecutionRecordService = (
-            execution_record_service
-            or ExecutionRecordService(
-                SqliteExecutionRecordStore(create_memory_engine())
-            )
-        )
+        # What a simulated submission runs at when it names no speed-up of its own; None does not wait.
+        self._default_sim_speedup = validate_optional_sim_speedup(default_sim_speedup)
+        self._labware_service: ILabwareService = system.labware_service
+        # Activity services are opened and closed by whoever built them.
+        self._incident_service = incident_service
+        self._execution_record_service = execution_record_service
+        self._unsaved_records = unsaved_records
+        self._event_saves = event_saves
+        unsaved_records.add_run_pauser(self._pause_for_an_unsaved_record)
         # Owns the recoverable-timeout race + held-dispatch registry. Seeded
         # onto the per-thread ContextVar at thread start so device dispatch can
         # park a timed-out call here for an operator decision.
         self._recoverable_timeouts = RecoverableTimeoutCoordinator(self)
-        # Late-bind self as the IThreadIncidentDeclarer on the executing-
-        # thread factory. Every ExecutingLabwareThread spawned after this
-        # returns receives the back-ref so it can record an
-        # UNRESOLVABLE_DEADLOCK incident (typed catch) and an ACTION_FAILED
-        # incident (default-PAUSE action error). Must run AFTER
-        # _incident_service is bound (both declarers dereference it).
-        self._system.set_thread_incident_declarer(self)
-        # Source-available default: in-memory SQLite (StaticPool); schema created in start().
-        # An injected service is the injector's to own; we dispose only the default.
-        self._owns_access_config_service = access_config_service is None
-        self._access_config_service: AccessConfigService = (
-            access_config_service
-            or AccessConfigService(SqliteAccessConfigStore(create_memory_engine()))
+        # Late-bind the IncidentDeclarer on the executing-thread factory. Every
+        # ExecutingLabwareThread spawned after this returns receives the back-ref
+        # so it can record incidents. Must run AFTER _incident_service and
+        # _recoverable_timeouts are bound.
+        self._incident_declarer = IncidentDeclarer(
+            self._incident_service, self.pause_execution, self._recoverable_timeouts, self.sim_pacer_for,
         )
-        self._owns_move_defaults_service = move_defaults_service is None
-        self._move_defaults_service: MoveDefaultsService = (
-            move_defaults_service
-            or MoveDefaultsService(SqliteMoveDefaultsStore(create_memory_engine()))
-        )
-        self._owns_grip_profile_service = grip_profile_service is None
-        self._grip_profile_service: GripProfileService = (
-            grip_profile_service
-            or GripProfileService(SqliteGripProfileStore(create_memory_engine()))
-        )
-        self._profile_store: IDeploymentProfileStore = (
-            profile_store or NullDeploymentProfileStore()
-        )
-        self._topology_registry: ITopologyRegistry = SystemTopologyRegistry(system)
-        self._gateway_registry: IGatewayRegistry = (
-            gateway_registry if gateway_registry is not None else NullGatewayRegistry()
-        )
-        self._connection_source: IDeviceConnectionSource = (
-            connection_source
-            if connection_source is not None
-            else NullDeviceConnectionSource()
-        )
+        self._system.set_thread_incident_declarer(self._incident_declarer)
+        self._system.set_thread_status_recorder(self)
+        self._labware_catalog_store = labware_catalog_store
+        self._access_config_service = access_config_service
+        self._move_defaults_service = move_defaults_service
+        self._grip_profile_service = grip_profile_service
+        self._profile_store = profile_store
+        self._topology_registry = topology_registry
+        self._gateway_registry = gateway_registry
+        self._connection_source = connection_source
+        self._device_controller = device_gateway.controller
+        self._connection_events = device_gateway.events
         # Unified two-card view (topology + connection sources). The
         # runtime.topology / runtime.gateway views coexist with it because
         # their consumers read different entry types; unifying them onto this
         # surface is a separate refactor.
-        self._device_registry: IDeviceRegistry = DeviceRegistryImpl(
-            self._topology_registry, self._connection_source, system,
-        )
-        # Default to the system-bound store so standalone users get a single shared
-        # archive without extra wiring. A hosted deployment injects a Db-backed impl that
-        # the SdkToSystemBuilder also wires onto System.ops_history; passing
-        # the same instance both places keeps writes and reads coherent.
-        self._ops_history_store: IOpsHistoryStore = (
-            ops_history_store or system.ops_history.store
-        )
-        # (labware, position_id) mirrors a placement; (labware, None) a removal.
-        self._location_persist_queue: asyncio.Queue[tuple[LabwareInstance, str | None]] = asyncio.Queue()
-        self._location_persist_task: asyncio.Task[None] | None = None
+        self._device_registry = device_registry
         self._location_listener_registered = False
         self._deck_reseed_tasks: set[asyncio.Task[None]] = set()
         self._connection_listener_registered = False
         self._state = RuntimeState.CREATED
         self._executions: dict[str, Execution] = {}
+        # Every plate a run has bound, kept after its run is removed; a restart forgets them.
+        self._plates_used_by_runs: set[str] = set()
         # Index of live, group-bearing executions keyed by workflow.name.
         # Populated on first grouped submit; cleared in _on_task_done.
         # Enables mid-run submission injection: a second submit() with groups
@@ -614,14 +655,13 @@ class SystemRuntime:
         self._stall_task: asyncio.Task[None] | None = None
         self._plugins: list[OrcaPlugin] = []
         self._plugin_listeners: dict[int, Callable[[RuntimeEvent], None]] = {}
-        self._disabled_plugin_types: set[type] = set()
         self._executing_workflows: list[ExecutingWorkflow] = []
 
-        self._system_event_bus = SystemEventBus()
+        self._system_event_bus = system_event_bus
+        self._system.ops_history.announce_saves_to(self._announce_saved)
         self._forwarder = _SystemEventForwarder(self._system_event_bus)
         self._event_bus = event_bus
-        if event_bus is not None:
-            event_bus.subscribe_all(self._forwarder)
+        event_bus.subscribe_all(self._forwarder)
         # Broadcast every recorded incident as an INCIDENT RuntimeEvent so
         # operator notifiers see faults without polling incidents_list.
         self._incident_service.on_record = self._emit_incident_event
@@ -629,12 +669,9 @@ class SystemRuntime:
         # Sub-facades. Instantiated once; property accessors return the same
         # instance across calls so a hosted deployment (later) can layer per-facade
         # org-scoping. Some facades close over self; be careful with ordering.
-        self._variables = VariableFacade(system.variable_store)
-        self._labware = LabwareFacade(system, self._labware_store, self)
-        self._devices = DeviceFacade(
-            system, self._topology_registry, self._gateway_registry,
-            self._connection_source, self, device_controller,
-        )
+        self._variables = variables
+        self._labware = LabwareFacade(system, self._labware_service, self)
+        self._devices = DeviceFacade(system, self._connection_source, self, device_gateway)
         self._threads = ThreadFacade(self, system)
         # Evict per-thread mutation locks once the thread reaches a
         # terminal state. No archive list -- locks have no useful
@@ -645,14 +682,19 @@ class SystemRuntime:
             list_reservations_fn=self.list_reservations,
             cancel_reservation_fn=self.cancel_reservation,
             connections=self._connection_source,
+            faults=self._device_controller,
+            base_mode=self.operator_base_mode,
+            on_workflow_added=self._restore_labware_its_workflow_declares,
         )
         self._incidents = IncidentFacade(
-            self._incident_service, self._recoverable_timeouts,
+            self._incident_service, self._recoverable_timeouts, system.command_pipeline, self.clear_device_fault,
         )
-        self._teachpoints = TeachpointFacade(system)
-        self._deck_layouts = DeckLayoutFacade(system)
+        self._teachpoints = teachpoints
+        self._deck_layouts = deck_layouts
         self._submissions = SubmissionFacade(self)
-        self._ops_history = OpsHistoryFacade(self._ops_history_store)
+        self._ops_history = ops_history
+        self._device_modes = device_modes
+        self._device_mode_lock = asyncio.Lock()
 
     # -- Sub-facade properties (ISystemRuntime namespace) -------------------
 
@@ -665,6 +707,10 @@ class SystemRuntime:
         return self._labware
 
     @property
+    def device_modes(self) -> IDeviceModeFacade:
+        return self._device_modes
+
+    @property
     def devices(self) -> IDeviceFacade:
         return self._devices
 
@@ -675,15 +721,12 @@ class SystemRuntime:
         they are what an operator walking up to a paused system has to settle.
         """
         unsettled: list[UnsettledSubject] = []
-        unrecorded = self._system.ops_history.unrecorded
         for labware in self._system.labwares:
             # One read: `of` already folds the ops that say whether anything
             # has ever happened to this labware, and searching every execution
             # bucket twice for them is the expensive half of this call.
             ops = await self._system.labware_contents.ops_of(labware.ref)
-            provenance = self._system.labware_contents.provenance_of(
-                ops, labware.name,
-            )
+            provenance = contents_provenance(ops, labware.name)
             if not is_unsettled(provenance):
                 continue
             if provenance is Provenance.UNKNOWN and not ops:
@@ -692,7 +735,6 @@ class SystemRuntime:
                 # every one of those is what makes the worklist unreadable.
                 continue
             gaps = unsettled_gaps(ops, labware.name)
-            held = unrecorded.touches_labware(labware.name)
             noun = _contents_noun(labware)
             unsettled.append(UnsettledSubject(
                 subject=labware.name,
@@ -702,32 +744,30 @@ class SystemRuntime:
                 detail=_contents_detail(
                     provenance, labware.name,
                     settle_with=set_verb(noun),
-                    unrecorded=held,
                     gaps=gaps,
                 ),
                 settle_with=settle_verb(
-                    noun, provenance, unrecorded=held, gaps=gaps,
+                    noun, provenance, gaps=gaps,
                     can_be_agreed_with=_confirm_has_something_to_back_it(
                         labware, ops,
                     ),
                 ),
             ))
-        for device in self._liquid_handlers():
-            mounted = await self._system.mounted_tips.of(device.name)
+        for handler in self._system.handlers_with_a_head():
+            mounted = await self._system.mounted_tips.of(handler)
             if not is_unsettled(mounted.provenance):
                 continue
-            held = unrecorded.touches_device(device.name)
             unsettled.append(UnsettledSubject(
-                subject=device.name,
+                subject=handler,
                 subject_id=None,
                 subject_kind="device_head",
                 provenance=mounted.provenance,
                 detail=_head_detail(
-                    mounted.provenance, device.name,
-                    unrecorded=held, gaps=mounted.gaps,
+                    mounted.provenance, handler,
+                    gaps=mounted.gaps,
                 ),
                 settle_with=settle_verb(
-                    "mounted-tips", mounted.provenance, unrecorded=held,
+                    "mounted-tips", mounted.provenance,
                     gaps=mounted.gaps,
                     # A head's read is the channels it carries; there is no
                     # separate baseline that can be present but empty.
@@ -749,7 +789,7 @@ class SystemRuntime:
         return self._incidents
 
     @property
-    def execution_records(self) -> ExecutionRecordService:
+    def execution_records(self) -> IExecutionRecordService:
         """The execution-record Service this runtime persists/reads executions through.
 
         Exposed so the daemon's get/list/detail execution operations fall back to
@@ -758,15 +798,11 @@ class SystemRuntime:
         return self._execution_record_service
 
     @property
-    def labware_catalog_store(self) -> LabwareCatalogService:
+    def labware_catalog_store(self) -> ILabwareCatalogService:
         """The catalog Service (lock + policy) this runtime reads/writes through.
 
-        Lazily built (SQLite-backed, seeded) when none was injected. Exposed so
-        the daemon/deployment layer can share the SAME Service instance (single
-        source of truth across the runtime + the operator surface).
+        Exposed so the deployment layer shares the same Service instance.
         """
-        if self._labware_catalog_store is None:
-            self._labware_catalog_store = seeded_labware_catalog_service()
         return self._labware_catalog_store
 
     @property
@@ -781,7 +817,7 @@ class SystemRuntime:
         return self._access_config_service
 
     @property
-    def move_defaults_service(self) -> MoveDefaultsService:
+    def move_defaults_service(self) -> IMoveDefaultsService:
         """The per-transporter move-parameter defaults this runtime resolves against.
 
         Exposed (not a facade) for the same single-source reason as
@@ -791,7 +827,7 @@ class SystemRuntime:
         return self._move_defaults_service
 
     @property
-    def grip_profile_service(self) -> GripProfileService:
+    def grip_profile_service(self) -> IGripProfileService:
         """How each labware type is held, layered over a transporter's defaults.
 
         Exposed for the same single-source reason as ``move_defaults_service``:
@@ -831,6 +867,10 @@ class SystemRuntime:
 
 
     @property
+    def device_faults(self) -> IDeviceFaultSource:
+        return self._device_controller
+
+    @property
     def device_registry(self) -> IDeviceRegistry:
         """Unified two-card device registry.
 
@@ -857,10 +897,15 @@ class SystemRuntime:
     def system(self) -> ISystem:
         return self._system
 
-    def register_plugin(self, plugin: OrcaPlugin) -> None:
-        """Register a plugin. Subscribes it to the SystemEventBus and injects the system."""
+    def register_plugin(self, plugin: OrcaPlugin, *, subscribe: bool = True) -> None:
+        """Register a plugin and inject the system. It hears this runtime's events unless `subscribe` is False.
+
+        A server's configured plugins pass False: they hear every event on the server's event hub instead.
+        """
         self._plugins.append(plugin)
         plugin.set_system(self._system)
+        if not subscribe:
+            return
         listener = plugin.handle_runtime_event
         self._plugin_listeners[id(plugin)] = listener
         self._system_event_bus.subscribe(listener)
@@ -877,14 +922,6 @@ class SystemRuntime:
         listener on the bus for the runtime's lifetime.
         """
         self._system_event_bus.unsubscribe(sink.on_event)
-
-    def get_events_since(self, timestamp: float | None) -> list[RuntimeEvent]:
-        """Get all events since the given timestamp. ``None`` means no filter."""
-        return self._system_event_bus.get_events_since(timestamp)
-
-    def get_events_for_execution(self, execution_id: str) -> list[RuntimeEvent]:
-        """Get all events for a specific execution."""
-        return self._system_event_bus.get_events_for_execution(execution_id)
 
     def _emit_incident_event(self, incident: SystemIncident) -> None:
         """Broadcast an INCIDENT RuntimeEvent for a recorded incident.
@@ -949,6 +986,36 @@ class SystemRuntime:
             context=context,
         ))
 
+    def _announce_saved(self, record: TrackingRecord) -> None:
+        """Tell displays the record now holds this, once per device it names."""
+        devices = sorted({op.device_name for op in record.operations if op.device_name})
+        for entity_id in devices or [SYSTEM_ID]:
+            self._system_event_bus.emit(RuntimeEvent(
+                event_name=f"CONTENTS.{entity_id}.SAVED",
+                execution_id=record.execution_id,
+                timestamp=time.time(),
+                entity_type="CONTENTS",
+                entity_id=entity_id,
+                status="SAVED",
+                context=WorkflowExecutionContext(
+                    execution_id=record.execution_id, workflow_name=SYSTEM_ID,
+                ),
+            ))
+
+    def record_thread_status(
+        self, execution_id: str, *, thread_id: str, name: str,
+        template_name: str, status: str,
+        last_error: str | None, pause_reason: str | None, group_id: str | None,
+    ) -> None:
+        """Save a thread's status change in the run's record, for runs this runtime accepted."""
+        if execution_id not in self._executions:
+            return
+        self._execution_record_service.record_thread(
+            execution_id, thread_id=thread_id, name=name,
+            template_name=template_name, status=status,
+            last_error=last_error, pause_reason=pause_reason, group_id=group_id,
+        )
+
     @property
     def plugins(self) -> list[OrcaPlugin]:
         return list(self._plugins)
@@ -960,12 +1027,14 @@ class SystemRuntime:
                 return p
         raise KeyError(f"No plugin of type {plugin_type.__name__} registered")
 
-    async def start(self) -> None:
+    async def start(self, *, after_reload: bool = False) -> None:
         """Mark the runtime RUNNING; defer device dispatch to first-thread-touch.
 
-        Boot does not walk LiquidHandler decks or initialize devices. Each
-        execution entrypoint (`_run_workflow`, `WorkflowExecutor.start`,
-        `StandaloneMethodExecutor.start`) calls
+        ``after_reload``: the previous runtime in this process shut down just now, so the
+        record was watched throughout and boot writes no restart gap. A process start leaves it False.
+
+        Boot does not walk LiquidHandler decks or initialize devices. The
+        execution entrypoint, `_run_workflow`, calls
         `System.ensure_runtime_initialized` at its top, handing it the
         workflow so the walk covers what that workflow declares rather
         than every device in the topology. The first call for a given
@@ -979,65 +1048,37 @@ class SystemRuntime:
         graph-state restore (not a device dispatch) and must happen
         before any thread observes the system.
         """
-        await self._rehydrate_labware_locations()
-        device_controller.set_fault_listener(self._on_device_fault_changed)
-        # Registered AFTER rehydrate so boot re-placement (positions the store
-        # already holds) does not echo back into it as writes.
+        await self._rehydrate_labware_locations(note_restart_gap=not after_reload)
+        self._device_controller.set_fault_listener(self._on_device_fault_changed)
+        self._system.read_faults_from(self._device_controller.fault)
+        self._device_controller.check_interfaces_with(
+            lambda device_id: resolve_effective_interfaces(self._device_registry, device_id),
+        )
+        self._system.command_pipeline.report_to(self._device_controller.command_events, self, error_label)
         if not self._location_listener_registered:
-            self._system.labware_location_service.add_update_listener(
-                self._on_labware_relocated
-            )
-            self._system.labware_location_service.add_retire_listener(
-                self._on_labware_retired
-            )
             self._system.labware_location_service.add_expectation_dropped_listener(
                 self._on_expectation_dropped
             )
             self._system.add_deck_reconcile_conflict_listener(
                 self._on_deck_reconcile_conflict
             )
-            self._system.add_ledger_contradiction_listener(
-                self._on_ledger_contradiction
-            )
             self._location_listener_registered = True
-        # Process-scoped bus, runtime-scoped listener: shutdown() unsubscribes,
+        # Server-scoped bus, runtime-scoped listener: shutdown() unsubscribes,
         # else a rebuilt runtime's dead predecessor keeps pushing deck state.
         # Guarded separately from the unremovable location listeners so a
         # start after shutdown resubscribes.
         if not self._connection_listener_registered:
-            connection_events.subscribe_connected(
+            self._connection_events.subscribe_connected(
                 self._on_gateway_device_connected
             )
-            connection_events.subscribe_disconnected(
+            self._connection_events.subscribe_disconnected(
                 self._on_gateway_device_disconnected
             )
-            connection_events.subscribe_reported(
+            self._connection_events.subscribe_reported(
                 self._on_gateway_device_reported
             )
             self._connection_listener_registered = True
-        if self._location_persist_task is None:
-            self._location_persist_task = asyncio.create_task(
-                self._drain_labware_location_writes()
-            )
         await self._validate_topology_gateway_collisions()
-        # Manage schema + drain ONLY for the default we own; an injected service
-        # (an injected one, process-scoped across rebuilds) is its injector's to manage.
-        if self._owns_incident_service:
-            await self._incident_service.ensure_schema()
-            self._incident_service.start_drain_task()
-        # The sink is always registered; the runtime owns event delivery even
-        # when the service is injected (its drain managed by the injector).
-        self.register_sink(ExecutionTrackingSink(self._execution_record_service))
-        if self._owns_execution_record_service:
-            await self._execution_record_service.ensure_schema()
-            self._execution_record_service.start_drain_task()
-        # On-loop only: ensure schema for the default we own; no drain task.
-        if self._owns_access_config_service:
-            await self._access_config_service.ensure_schema()
-        if self._owns_move_defaults_service:
-            await self._move_defaults_service.ensure_schema()
-        if self._owns_grip_profile_service:
-            await self._grip_profile_service.ensure_schema()
         for transporter in self._system.transporters:
             transporter.bind_move_defaults(self._move_defaults_service)
         # Every mover, not just the arms: a handler's own deck gripper needs
@@ -1052,7 +1093,7 @@ class SystemRuntime:
         """Log kind drift between topology declarations and connected gateway entries.
 
         Kind drift is advisory: the safety contract is the interface superset
-        rule enforced by ``DeviceRegistryImpl._verify_kind_match``. Different
+        rule enforced by the device registry (``_interface_mismatch``). Different
         kind labels can satisfy the same interface contract (a "shaker" and
         a "thermal_shaker" can both implement IShaker), so kind drift must
         not block startup if interfaces line up. Logging surfaces config
@@ -1079,7 +1120,7 @@ class SystemRuntime:
                     gw.name, expected, gw.driver_class_observed,
                 )
 
-    async def _rehydrate_labware_locations(self) -> None:
+    async def _rehydrate_labware_locations(self, *, note_restart_gap: bool) -> None:
         """Re-place persisted labware on the System graph at boot.
 
         After a crash, the labware store knows where each plate was, but the
@@ -1093,13 +1134,14 @@ class SystemRuntime:
         cannot answer them is the difference between resuming and 503ing.
         """
         # The heads were unwatched for exactly as long as the labware was.
-        for handler in self._liquid_handlers():
-            await self._system.mounted_tips.note_observation_gap(
-                handler.name, ObservationGapCause.RUNTIME_RESTART,
-            )
-        pairs = await self._labware_store.list_active_locations()
+        if note_restart_gap:
+            for handler in self._system.handlers_with_a_head():
+                await self._system.mounted_tips.note_observation_gap(
+                    handler, ObservationGapCause.RUNTIME_RESTART,
+                )
+        pairs = await self._labware_service.list_active_locations()
         for labware_id, position_id in pairs:
-            instance = await self._labware_store.get_by_id(labware_id)
+            instance = await self._labware_service.get_by_id(labware_id)
             if instance is None:
                 logger.warning(
                     "Labware store referenced unknown labware_id=%r at location=%r; skipping rehydrate",
@@ -1107,7 +1149,6 @@ class SystemRuntime:
                     position_id,
                 )
                 continue
-            await self._ensure_derived_template(instance)
             location = self._system.system_map.find_gripper_location(position_id)
             if location is None:
                 try:
@@ -1119,41 +1160,35 @@ class SystemRuntime:
                         position_id,
                     )
                     continue
-            instance = await self._restore_persisted_instance(instance)
-            # Register before placing so clear_all (iterates system.labwares)
-            # can reach its slot and list_all includes it.
-            self._system.add_labware(instance)
-            # A labware that predates contents tracking has no opening entry;
-            # give it one now rather than leaving it permanently unreadable.
-            # Already-seeded labware is untouched, so a restart cannot refill a
-            # consumed rack.
-            await instance.enter_record(self._system.labware_contents)
+            instance = await adopt_stored_labware(self._system, instance)
             # The runtime was off. A hand could have swapped, emptied or refilled
             # this while nothing was recording, so the number stands but stops
             # counting as confirmed until someone looks.
-            await self._system.labware_contents.note_observation_gap(
-                instance.ref, ObservationGapCause.RUNTIME_RESTART,
+            if note_restart_gap:
+                await self._system.labware_contents.note_observation_gap(
+                    instance.ref, ObservationGapCause.RUNTIME_RESTART,
+                )
+            await self._system.labware_placer.arrived(instance, location, Arrival.RESTORED)
+
+    async def _restore_labware_its_workflow_declares(self) -> None:
+        """A daemon restores plates at mount, before a workflow declares their templates."""
+        positions = dict(await self._labware_service.list_active_locations())
+        for instance in self._system.labwares:
+            position_id = positions.get(instance.id)
+            if instance.has_plr_backing or position_id is None:
+                continue
+            try:
+                self._system.get_labware_template(instance.template_name)
+            except KeyError:
+                continue
+            restored = await adopt_stored_labware(self._system, instance)
+            if restored is instance:
+                continue
+            location = (
+                self._system.system_map.find_gripper_location(position_id)
+                or self._system.system_map.get_location(position_id)
             )
-            # Chokepoint writes every holder so a rehydrated deck resident is
-            # pickable and routable, not just slotted.
-            await self._system.labware_placer.place(instance, location)
-
-    def _on_labware_relocated(self, labware: LabwareInstance, location: Location) -> None:
-        """Mirror a placement into the labware store, so a restart rehydrates
-        current positions rather than registration-time ones.
-
-        A mover's jaws are persisted like anywhere else. Recording the slot the
-        plate was lifted OFF looks safer and is not: after a restart the arm is
-        still holding it, and a model that says otherwise sends the arm back
-        into a slot that is now empty.
-        """
-        self._location_persist_queue.put_nowait((labware, location.position_id))
-
-    def _on_labware_retired(self, labware: LabwareInstance) -> None:
-        """A retired labware's ACTIVE position must clear, or the next boot
-        resurrects it at its end slot and blocks that slot for the next run.
-        The row and its history stay: a lifecycle end is not a retraction."""
-        self._location_persist_queue.put_nowait((labware, None))
+            await self._system.labware_placer.arrived(restored, location, Arrival.PLACED)
 
     def _on_expectation_dropped(self, labware: LabwareInstance) -> None:
         """A labware that was expected and never arrived leaves nothing behind.
@@ -1167,22 +1202,12 @@ class SystemRuntime:
     async def _on_gateway_device_connected(
         self, device: DeviceConnectInfo, client_id: str,
     ) -> None:
-        """A reconnected device bridge may hold a rebuilt driver session:
-        forget what orca cached about its bring-up, and re-push world state.
-        State only, no motion; bring-up and homing stay behind their explicit
-        verbs, and the first one that runs after this now actually reaches the
-        device.
-
-        The forgetting is inline because a command can route to the returning
-        device bridge from the moment its devices attach. The reseed is a
-        background task, never awaited here: this listener runs inside the
-        websocket handshake, BEFORE that socket's receive loop starts, and the
-        reseed's gateway commands are answered only by that receive loop.
-        Awaiting inline would deadlock the handshake until the command timeout
-        and the reseed itself could never succeed.
-        """
+        """The device came back and may hold a new driver: its cached bring-up is forgotten and its worlds are marked.
+        A background task marks labware on it stale and rebuilds a handler's world in force, unless a task holds it."""
         del client_id
+        # Inline: a command can reach the returning client from the moment its devices attach.
         self._forget_agent_session(device.name)
+        # Never awaited: this runs inside the websocket handshake, before that socket's receive loop starts.
         task = asyncio.create_task(self._reseed_reconnected_device(device.name))
         self._deck_reseed_tasks.add(task)
         task.add_done_callback(self._deck_reseed_tasks.discard)
@@ -1211,10 +1236,12 @@ class SystemRuntime:
         Both layers, or the device only half recovers: the driver's own flag is
         what `Transporter.ensure_initialized` reads before a pick, and the
         system's world record is what gates the bring-up walk for everything
-        that has no such per-use check.
+        that has no such per-use check. Every world it holds is marked, so the
+        next command to it rebuilds its world from the record.
         """
         self._devices.forget_driver_session(device_name)
         self._system.forget_bringup(device_name)
+        self._system.device_worlds.mark_every_world(device_name)
 
     async def _reseed_reconnected_device(self, device_name: str) -> None:
         try:
@@ -1227,18 +1254,46 @@ class SystemRuntime:
                 "Deck reseed after reconnect failed for device %r", device_name,
             )
 
+    async def switch_device_mode(self, device_name: str, mode: DeviceMode, *, confirm: bool) -> ModeSwitch:
+        if not await self._device_modes.would_change(device_name, mode):
+            return ModeSwitch(switched=False)
+        async with self._device_mode_lock:
+            runs = [
+                RunInProgress(execution_id=e.id, workflow_name=e.workflow_name)
+                for e in self._executions.values() if not e.task.done()
+            ]
+            if runs:
+                raise ModeSwitchDuringRunError(device_name, runs)
+            busy = self._system.device_in_use_by(device_name)
+            if busy is not None:
+                raise DeviceLockedError(f"{device_name}: {busy}. Switch it once that finishes.")
+            warning = mode_switch_warning(device_name, mode)
+            if not confirm:
+                return ModeSwitch(switched=False, warning=warning)
+            # STALE before the switch: a flag with no switch only asks for a second look; a switch with no flag trusts unwatched state.
+            await self._note_gap_for_labware_on(device_name, ObservationGapCause.MODE_SWITCHED)
+            await self._device_modes.set(device_name, mode)
+            self._forget_agent_session(device_name)
+            try:
+                await self._system.bring_up_device(device_name)
+            except Exception as exc:
+                cause = exc.cause if isinstance(exc, DeviceInitializationError) else exc
+                failure = bring_up_error(device_name, mode, cause)
+                logger.warning("%s", failure, exc_info=True)
+                self._device_controller.mark_not_brought_up(device_name, failure)
+                return ModeSwitch(switched=True, warning=warning, bring_up_error=failure)
+            return ModeSwitch(switched=True, warning=warning)
+
     async def _note_gap_for_labware_on(
         self, device_name: str, cause: ObservationGapCause,
     ) -> None:
         """Mark everything standing on this device as worth a second look.
 
-        The device bridge rebuilt its drivers, so whatever happened while it
-        was away went unrecorded. The numbers stand -- they are still the best
-        there is -- but they stop counting as confirmed.
+        Orca did not watch the device through ``cause``. The numbers stand, since they are
+        still the best there is, but they stop counting as confirmed.
         """
-        # A reconnect rebuilds the driver's own beliefs, so the head it carries
-        # is exactly as unwatched as the labware standing on it.
-        if any(h.name == device_name for h in self._liquid_handlers()):
+        # The head a handler carries is as unwatched as the labware standing on it.
+        if device_name in self._system.handlers_with_a_head():
             await self._system.mounted_tips.note_observation_gap(device_name, cause)
         for instance in self._system.labwares:
             location = self._labware_location_of(instance)
@@ -1253,7 +1308,10 @@ class SystemRuntime:
             return None
 
     async def flush_deck_reseeds(self) -> None:
-        """Wait for every in-flight reconnect reseed to finish. Test barrier."""
+        """Wait for every in-flight reconnect reseed to finish.
+
+        A run's bring-up waits here so its initialize does not meet a reseed's command on the wire. A reseed skips a
+        device another task holds, so this wait is one deck rebuild at most, never a run's long command."""
         while self._deck_reseed_tasks:
             await asyncio.gather(
                 *list(self._deck_reseed_tasks), return_exceptions=True,
@@ -1279,108 +1337,6 @@ class SystemRuntime:
             recovery_action=RecoveryAction.NONE,
         )
 
-    def _on_ledger_contradiction(self, contradiction: LedgerContradiction) -> None:
-        """An operator command only made sense if the record was wrong.
-
-        WARNING, not ERROR: nothing failed and nothing is blocked. The command
-        ran, it was believed, and the labware is already marked for a person to
-        state. This is the half that reaches them without their having to ask.
-        """
-        self._incident_service.record(
-            category=IncidentCategory.LEDGER_CONTRADICTED,
-            severity=IncidentSeverity.WARNING,
-            message=_contradiction_message(contradiction),
-            detail=LedgerContradictionDetail(
-                device_name=contradiction.device_name,
-                command=contradiction.command,
-                labware_id=contradiction.labware_id,
-                labware_name=contradiction.labware_name,
-                positions=list(contradiction.positions),
-                believed=contradiction.believed,
-            ),
-            recovery_action=RecoveryAction.NONE,
-        )
-
-    async def _drain_labware_location_writes(self) -> None:
-        while True:
-            labware, position_id = await self._location_persist_queue.get()
-            try:
-                if position_id is None:
-                    await self._labware_store.clear_location(labware.id)
-                    continue
-                if await self._labware_store.get_by_id(labware.id) is None:
-                    await self._labware_store.register(labware)
-                await self._labware_store.update_location(labware.id, position_id)
-            except Exception:
-                # A failed mirror write must never take down a run; the ledger
-                # self-corrects on the labware's next completed placement.
-                logger.exception(
-                    "Failed to persist location %r for labware %r",
-                    position_id, labware.id,
-                )
-            finally:
-                self._location_persist_queue.task_done()
-
-    async def flush_labware_location_writes(self) -> None:
-        """Wait until every queued position write has been attempted.
-
-        An ordering barrier, not a success barrier: a drained write that failed
-        was logged and dropped, and still counts as flushed.
-        """
-        await self._location_persist_queue.join()
-
-    async def _ensure_derived_template(self, persisted: LabwareInstance) -> None:
-        """Put a labware's derived template back on the system before the labware is.
-
-        An ad-hoc template is derived from the catalog rather than declared in
-        code, so a rebuilt system starts without one. Everything that reads a
-        labware's template at boot needs it there first: the PLR rebuild, and
-        the deck projection's ``catalog_ref``. Without this a hand-placed trough
-        comes back in the ledger and not on the driver deck, which is the same
-        disagreement it was placed to avoid.
-        """
-        if not is_adhoc_template_name(persisted.template_name):
-            return
-        try:
-            await self._system.ensure_adhoc_labware_template(persisted.labware_type)
-        except Exception:
-            logger.warning(
-                "Labware %s names derived template %r, which could not be rebuilt "
-                "from labware type %r; the deck cannot model it",
-                persisted.name, persisted.template_name, persisted.labware_type,
-                exc_info=True,
-            )
-
-    async def _restore_persisted_instance(
-        self, persisted: LabwareInstance,
-    ) -> LabwareInstance:
-        """Rebuild what the store handed back into the instance the engine expects.
-
-        Falling back to the identity-only labware keeps a deployment that boots:
-        its deck is modelled from the driver's own defaults rather than the
-        declaration, which is wrong but recoverable, where a raised error here
-        takes every route on the deployment to 503.
-        """
-        if persisted.has_plr_backing:
-            return persisted
-        try:
-            template = self._system.get_labware_template(persisted.template_name)
-        except KeyError:
-            logger.warning(
-                "Labware %s names template %r, which this system does not declare; "
-                "leaving it identity-only",
-                persisted.name, persisted.template_name,
-            )
-            return persisted
-        try:
-            return await template.restore_instance(persisted)
-        except Exception:
-            logger.exception(
-                "Could not rebuild labware %s from template %r; leaving it identity-only",
-                persisted.name, persisted.template_name,
-            )
-            return persisted
-
     async def shutdown(self, *, confirm: bool = False) -> None:
         """Abort all active executions, stop tick loops, and shut down.
 
@@ -1388,12 +1344,12 @@ class SystemRuntime:
         operator guard lives at the CLI/REST boundary.
         """
         del confirm
-        device_controller.clear_fault_listener(self._on_device_fault_changed)
-        connection_events.unsubscribe_connected(self._on_gateway_device_connected)
-        connection_events.unsubscribe_disconnected(
+        self._device_controller.clear_fault_listener(self._on_device_fault_changed)
+        self._connection_events.unsubscribe_connected(self._on_gateway_device_connected)
+        self._connection_events.unsubscribe_disconnected(
             self._on_gateway_device_disconnected
         )
-        connection_events.unsubscribe_reported(self._on_gateway_device_reported)
+        self._connection_events.unsubscribe_reported(self._on_gateway_device_reported)
         self._connection_listener_registered = False
         for reseed_task in list(self._deck_reseed_tasks):
             reseed_task.cancel()
@@ -1410,13 +1366,14 @@ class SystemRuntime:
                 pass
             self._stall_task = None
         await self._drain_live_executions()
+        await self._wait_for_stop_records()
         for wf in self._executing_workflows:
             wf.stop_tick_loop()
         for wf in self._executing_workflows:
             await wf.await_tick_loop_stopped()
         self._executing_workflows.clear()
         # The orphan-slot drain and the failed-execution teardown, both of
-        # which write to the stores closed below.
+        # which write to stores their owner closes once shutdown returns.
         if self._background_tasks:
             for background in list(self._background_tasks):
                 background.cancel()
@@ -1429,46 +1386,41 @@ class SystemRuntime:
         # Last of the drains: a teardown cancelled just above can schedule one
         # more cancel on its way out.
         await _bounded(
-            device_controller.await_cancels_sent(),
+            self._device_controller.await_cancels_sent(),
             _CANCEL_DRAIN_TIMEOUT_S,
             "cancels still on their way to the device bridges",
         )
-        if self._location_persist_task is not None:
-            await _bounded(
-                self._location_persist_queue.join(),
-                _SHUTDOWN_DRAIN_TIMEOUT_S,
-                f"the location-persist queue ({self._location_persist_queue.qsize()} "
-                f"positions still to write, which the next boot will not know)",
-            )
-            self._location_persist_task.cancel()
-            try:
-                await self._location_persist_task
-            except asyncio.CancelledError:
-                pass
-            self._location_persist_task = None
-        if self._owns_incident_service:
-            await self._incident_service.aclose()
-        if self._owns_execution_record_service:
-            await self._execution_record_service.aclose()
-        if self._owns_access_config_service:
-            await self._access_config_service.aclose()
-        if self._owns_move_defaults_service:
-            await self._move_defaults_service.aclose()
-        if self._owns_grip_profile_service:
-            await self._grip_profile_service.aclose()
-        # Read the private, not the property, so we never lazily mint a catalog
-        # just to close it. Injected catalogs are the injector's to dispose.
-        if self._owns_labware_catalog_service and self._labware_catalog_store is not None:
-            await self._labware_catalog_store.aclose()
-        await self._dispose_device_stores()
+        # Before the services close, and before anything rebuilds from the database: a position still being saved lands.
+        await self._system.labware_placer.finish_saves(_SHUTDOWN_DRAIN_TIMEOUT_S)
+        # The services outlive the runtime and keep their drains. What this shutdown queued is saved before it returns.
+        await _bounded(
+            self._save_what_shutdown_queued(),
+            _SHUTDOWN_DRAIN_TIMEOUT_S,
+            "the incidents and execution records this shutdown queued to be saved",
+        )
+        self._unsaved_records.remove_run_pauser(self._pause_for_an_unsaved_record)
         self._state = RuntimeState.STOPPED
+
+    async def _save_what_shutdown_queued(self) -> None:
+        await self._incident_service.flush_pending()
+        await self._execution_record_service.flush_pending()
+
+    async def _wait_for_stop_records(self) -> None:
+        """A stop's records are written beside it, and the stores close after shutdown: wait for them, up to the limit."""
+        not_saved = await self._system.command_pipeline.stop_reports_written(_SHUTDOWN_DRAIN_TIMEOUT_S)
+        if not_saved:
+            logger.error(
+                "Shutdown could not save, within %.0fs, the records of stopped commands; continuing. Not saved: the "
+                "not-observed flags and the stop incident for %s.",
+                _SHUTDOWN_DRAIN_TIMEOUT_S, ", ".join(not_saved),
+            )
 
     async def _drain_live_executions(self) -> None:
         """Stop every live execution and wait for it, before anything closes.
 
         Cancelling only ``execution.task`` leaves the workflow's start task and
         its thread tasks running, because they are detached, and they keep
-        working against stores this shutdown is about to close.
+        working against stores their owner closes once shutdown returns.
         """
         await _bounded(
             self._abort_and_await_executions(),
@@ -1495,15 +1447,6 @@ class SystemRuntime:
 
     def _liquid_handlers(self) -> list[LiquidHandler]:
         return [d for d in self._system.devices if isinstance(d, LiquidHandler)]
-
-    async def _dispose_device_stores(self) -> None:
-        """Dispose the per-build device store engines the runtime brought up so
-        their aiosqlite worker threads do not outlive the loop. Per-build (fresh
-        each mount) in the daemon; a no-op for Null/injected hosted stores."""
-        for transporter in self._system.transporters:
-            await transporter.teachpoint_store.aclose()
-        for lh in self._liquid_handlers():
-            await lh.deck_layout_store.aclose()
 
     async def _stall_watch_loop(self) -> None:
         """Backstop for co-labware waits the reservation-cycle detector cannot see.
@@ -1617,8 +1560,8 @@ class SystemRuntime:
         operator_id: str | None = None,
         deployment_profile: str | None = None,
         mode: WorkflowRunMode | None = None,
-        acknowledge_warnings: bool = False,
-        sim_time_scale: float | None = None,
+        sim_speedup: float | None = None,
+        every_variable_is_read: bool = True,
     ) -> Submission:
         """Accept a submission of labware groups for a workflow execution.
 
@@ -1633,8 +1576,7 @@ class SystemRuntime:
           STANDALONE to start fresh). With no live execution, falls
           through to a fresh build.
         - **Grouped + STANDALONE**: ALWAYS boots a fresh execution per
-          the wire contract documented on a hosted deployment's REST surface and
-          the MCP ``submissions_submit`` tool. Even when an ACCEPTING
+          the wire contract documented on a hosted deployment's REST surface. Even when an ACCEPTING
           execution for the same workflow exists, STANDALONE does NOT
           join it; it always starts a new execution. ``batch_mode`` is
           inspected on both the ACCEPTING and DRAINING branches so
@@ -1661,51 +1603,42 @@ class SystemRuntime:
         # run_mode is required; there is no deployment fallback.
         if mode is None:
             raise RunModeRequiredError()
-        _check_time_scale_applies(mode, sim_time_scale)
-        if batch_mode is BatchMode.JOIN_EXISTING and sim_time_scale is not None:
-            raise SimTimeScaleNotApplicableError(
-                "the scale belongs to the execution a JOIN_EXISTING submission "
-                "joins; change it with set-execution-time-scale",
+        _check_sim_speedup_applies(mode, sim_speedup)
+        if batch_mode is BatchMode.JOIN_EXISTING and sim_speedup is not None:
+            raise SimSpeedupNotApplicableError(
+                "the speed-up belongs to the execution a JOIN_EXISTING submission "
+                "joins; change that execution's own speed-up instead",
             )
 
-        # 1b. LIVE/DEVICE_SIM wire guard across executions.
-        # See ConcurrentLiveSimRefusedError for why they can't overlap.
-        live_sim_blocker = self._find_live_sim_conflict(mode)
-        if live_sim_blocker is not None:
-            raise ConcurrentLiveSimRefusedError(
-                blocking_execution_id=live_sim_blocker.id,
-                blocking_workflow_name=live_sim_blocker.workflow_name,
-                existing_run_mode=live_sim_blocker.submissions[0].run_mode,
+        # 1b. A system runs in one run mode at a time.
+        blocker = self._find_other_run_mode(mode)
+        if blocker is not None:
+            raise OtherRunModeActiveError(
+                blocking_execution_id=blocker.id,
+                blocking_workflow_name=blocker.workflow_name,
+                existing_run_mode=blocker.submissions[0].run_mode,
                 submitted_run_mode=mode,
             )
 
-        # 2. Per-device resolve via the v3.4 12-row table; collect warnings.
-        warning_devices: list[
-            tuple[str, WorkflowRunMode, WorkflowRunMode]
-        ] = []
-        for entry in self._topology_registry.list_devices():
-            override = entry.sim_override
-            if override is None:
-                continue
-            resolved = resolve_effective_mode_for_device(
-                mode, override, device_name=entry.name,
-            )
-            if resolved.warning is not None:
-                warning_devices.append((entry.name, override, resolved.resolved))
-
-        # 4. LIVE-with-sim-override gate. Only fires for LIVE submissions
-        # because the 12-row table only emits warnings on the LIVE row.
-        if warning_devices and not acknowledge_warnings:
-            raise LiveSubmissionWithSimOverridesUnacknowledgedError(
-                warning_devices,
-            )
-
+        profile = await self._profile_named(deployment_profile)
         self._validate_group_coverage(workflow, groups)
+        self._refuse_bad_inputs(
+            workflow, variables, profile, self._join_target(workflow, groups, batch_mode),
+            every_variable_is_read=every_variable_is_read,
+        )
         # Hold the join target's slot closes across the whole injection window
         # (resolve + build/register); see ExecutingWorkflow.injecting().
         async with self._injection_guard(self._join_target(workflow, groups, batch_mode)):
-            resolved_acquisitions = await self._resolve_acquisitions(groups)
-            self._validate_start_locations(workflow, groups, resolved_acquisitions)
+            resolved_acquisitions = await self._resolve_acquisitions(workflow, groups)
+            self._refuse_naming_a_partner_every_group_shares(workflow, groups)
+            await self._refuse_resident_racks_with_no_stated_tips(
+                workflow, self._join_target(workflow, groups, batch_mode),
+            )
+            # A groupless submission stays groupless for joining and indexing; only the run carries the made-up group.
+            run_groups, adopted = self._adopt_unused_plates_on_start_locations(workflow, groups, resolved_acquisitions)
+            self._validate_start_locations(
+                workflow, run_groups, resolved_acquisitions, self._join_target(workflow, groups, batch_mode),
+            )
 
             existing = self._active_executions.get(workflow.name)
             # `task.done()` settles after the run has stopped taking work, so it
@@ -1753,6 +1686,8 @@ class SystemRuntime:
                                 existing_run_mode=existing_run_mode,
                                 submitted_run_mode=mode,
                             )
+                    _refuse_a_second_profile(existing, deployment_profile)
+                    await self._refuse_a_join_unless_its_devices_are_reachable(mode)
                     execution = existing
                     inject = True
                 elif existing.phase in (
@@ -1765,19 +1700,15 @@ class SystemRuntime:
                         f"start a new execution, or wait for this one to terminate."
                     )
                 else:
-                    execution, inject = self._build_fresh_execution(
-                    workflow, groups, mode=mode, sim_time_scale=sim_time_scale,
-                )
+                    execution, inject = await self._start_a_fresh_run(workflow, groups, mode, sim_speedup)
             else:
-                execution, inject = self._build_fresh_execution(
-                    workflow, groups, mode=mode, sim_time_scale=sim_time_scale,
-                )
+                execution, inject = await self._start_a_fresh_run(workflow, groups, mode, sim_speedup)
 
             submission = Submission(
                 id=str(uuid.uuid4()),
                 execution_id=execution.id,
                 workflow_name=workflow.name,
-                groups=tuple(groups),
+                groups=tuple(run_groups),
                 variables=dict(variables) if variables else {},
                 batch_mode=batch_mode,
                 submitted_at=datetime.now(timezone.utc),
@@ -1788,21 +1719,71 @@ class SystemRuntime:
                 resolved_acquisitions=resolved_acquisitions,
             )
             execution.submissions.append(submission)
+            self._plates_used_by_runs |= adopted
 
             if inject:
                 await self._inject_submission(execution, workflow, submission, batch_mode)
+            else:
+                # No await since the run task was created, so no thread has read a variable, and a read
+                # right after the submit finds the run.
+                self._system.variable_store.create_execution(execution.id, workflow.name)
+                if profile is not None:
+                    self._system.variable_store.load_profile(execution.id, profile)
 
         return submission
 
-    def _pacer_for_new_execution(
-        self, mode: WorkflowRunMode, sim_time_scale: float | None,
-    ) -> SimPacer | None:
-        """A simulated run gets a pacer at the asked-for scale or the deployment
-        default. A LIVE run gets none, so no step of it is ever paced."""
-        if mode is WorkflowRunMode.LIVE:
+    async def _profile_named(self, name: str | None) -> DeploymentProfile | None:
+        if name is None:
             return None
-        scale = self._default_sim_time_scale if sim_time_scale is None else sim_time_scale
-        return SimPacer(scale)
+        profile = await self._profile_store.get(name)
+        if profile is None:
+            raise DeploymentProfileNotFoundError(name)
+        return profile
+
+    def _refuse_bad_inputs(
+        self,
+        workflow: WorkflowTemplate,
+        variables: Mapping[str, OptionValue] | None,
+        profile: DeploymentProfile | None,
+        join_target: Execution | None,
+        *,
+        every_variable_is_read: bool,
+    ) -> None:
+        store = self._system.variable_store
+        refusals = refusals_for(SubmittedInputs(
+            workflow_name=workflow.name,
+            inline=variables or {},
+            profile=profile.variables if profile is not None else {},
+            workflow_definitions=store.workflow_definitions(workflow.name),
+            global_definitions=store.global_definitions(),
+            computed=store.computed_names() | frozenset(profile.computed if profile is not None else ()),
+            every_variable_is_read=every_variable_is_read,
+            global_values=store.global_value_names(),
+            set_on_joined_execution=(
+                store.execution_value_names(join_target.id)
+                if join_target is not None else frozenset()
+            ),
+        ))
+        if refusals:
+            raise SubmissionInputsRefusedError(refusals)
+
+    def _pacer_for_new_execution(
+        self, mode: WorkflowRunMode, sim_speedup: float | None,
+    ) -> SimPacer | None:
+        """A sim run gets a pacer at the asked-for speed-up or the deployment default.
+        LIVE and check runs get none, so no step of them is ever paced."""
+        if mode is not WorkflowRunMode.SIM:
+            return None
+        return SimPacer(self._default_sim_speedup if sim_speedup is None else sim_speedup)
+
+    async def _start_a_fresh_run(
+        self, workflow: WorkflowTemplate, groups: Sequence[LabwareGroup],
+        mode: WorkflowRunMode, sim_speedup: float | None,
+    ) -> tuple[Execution, bool]:
+        # One lock with switch_device_mode, so a device never changes mode between bring-up and the run existing.
+        async with self._device_mode_lock:
+            await self._refuse_unless_its_devices_are_ready(mode)
+            return self._build_fresh_execution(workflow, groups, mode=mode, sim_speedup=sim_speedup)
 
     def _build_fresh_execution(
         self,
@@ -1810,7 +1791,7 @@ class SystemRuntime:
         groups: Sequence[LabwareGroup],
         *,
         mode: WorkflowRunMode,
-        sim_time_scale: float | None,
+        sim_speedup: float | None,
     ) -> tuple[Execution, bool]:
         """Create a new Execution + task for ``workflow``; register it.
 
@@ -1840,7 +1821,7 @@ class SystemRuntime:
             workflow=workflow,
             system=self._system,
             task=task,
-            sim_pacer=self._pacer_for_new_execution(mode, sim_time_scale),
+            sim_pacer=self._pacer_for_new_execution(mode, sim_speedup),
         )
         self._executions[execution_id] = execution
         # Known to the forwarder from here: an operator's change between submit
@@ -1848,37 +1829,54 @@ class SystemRuntime:
         self._forwarder.register_execution(execution_id)
         if groups:
             self._active_executions[workflow.name] = execution
+        # The forwarder lets go of the run once its end is recorded and its end event has fired.
         task.add_done_callback(lambda _t: self._on_task_done(execution_id))
-        # Unregister only AFTER _on_task_done emits the terminal events (callbacks
-        # fire in registration order) so those events still reach the system bus.
-        task.add_done_callback(lambda _t: self._forwarder.unregister_execution(execution_id))
         return execution, False
 
-    def _find_live_sim_conflict(
+    def _find_other_run_mode(
         self, mode: WorkflowRunMode,
-    ) -> "Execution | None":
-        """Return an alive execution that conflicts with `mode` on the wire.
-
-        Only LIVE and DEVICE_SIM conflict: both dispatch over the wire to
-        the same orca-client device connections, so a DEVICE_SIM run would
-        switch a device to its sim backend while a LIVE run drives it for
-        real (or vice versa), knocking it offline. PURE_SIM never reaches
-        the wire, so it never conflicts. Same-mode concurrency (LIVE+LIVE,
-        DEVICE_SIM+DEVICE_SIM) is fine. Walks `_executions` (the broad
-        index) so groupless legacy executions are covered too.
-        """
-        wire_modes = {WorkflowRunMode.LIVE, WorkflowRunMode.DEVICE_SIM}
-        if mode not in wire_modes:
-            return None
+    ) -> Execution | None:
+        """A running execution under a run mode other than `mode`, or None."""
         for execution in self._executions.values():
-            if execution.task.done():
+            if execution.task.done() or not execution.submissions:
                 continue
-            if not execution.submissions:
-                continue
-            existing_mode = execution.submissions[0].run_mode
-            if existing_mode in wire_modes and existing_mode is not mode:
+            if execution.submissions[0].run_mode is not mode:
                 return execution
         return None
+
+    def system_run_mode(self) -> WorkflowRunMode | None:
+        """The run mode the system is in: the running execution's, else the last one's; None before any run."""
+        started = [e for e in self._executions.values() if e.submissions]
+        running = [e for e in started if not e.task.done()]
+        chosen = running or started
+        return chosen[-1].submissions[0].run_mode if chosen else None
+
+    def _active_execution(self) -> Execution | None:
+        """The unfinished run, running or paused; None when no run is active."""
+        for execution in self._executions.values():
+            if not execution.task.done() and execution.submissions:
+                return execution
+        return None
+
+    def active_run_mode(self) -> WorkflowRunMode | None:
+        """The mode of the unfinished run, running or paused; None when no run is active."""
+        execution = self._active_execution()
+        return None if execution is None else execution.submissions[0].run_mode
+
+    def operator_base_mode(self) -> WorkflowRunMode:
+        """While a run is active, running or paused, a command to a device goes in the run's mode, not the device's own setting.
+
+        A system runs in one mode at a time, and a thread does not declare the
+        devices it uses, so this covers every device in the system.
+        """
+        return self.active_run_mode() or OUT_OF_RUN_BASE
+
+    def operator_sim_pacer(self) -> SimPacer:
+        """What an operator's simulated command waits at: the active run's speed-up, else this server's default."""
+        execution = self._active_execution()
+        if execution is not None and execution.sim_pacer is not None:
+            return execution.sim_pacer
+        return SimPacer(self._default_sim_speedup)
 
     def _join_target(
         self, workflow: WorkflowTemplate, groups: Sequence[LabwareGroup],
@@ -1954,7 +1952,7 @@ class SystemRuntime:
         execution.executing_workflow.add_entry_threads(new_entry_threads)
 
         # SUBMISSION.ACCEPTED for the injected submission.
-        self._emit_submission_accepted(
+        self._accept_submission(
             execution.executing_workflow.id, workflow.name, submission,
         )
         # Threads just registered; submission is active from this point.
@@ -1989,7 +1987,7 @@ class SystemRuntime:
         workflow: WorkflowTemplate,
         groups: Sequence[LabwareGroup],
     ) -> None:
-        """Enforce the coverage rules from the T6 plan's Submission Validation.
+        """Enforce the group coverage rules at submit.
 
         Rules (at submit time, before accepting):
         - Group missing a member for a PER_GROUP + required=True entry thread
@@ -1998,10 +1996,7 @@ class SystemRuntime:
           entry thread template => reject.
         - Member references a thread_template_name not registered in the
           workflow (neither as entry thread nor as an auto-spawn template)
-          => reject. A member matches a template via EITHER the template's
-          ``func_name`` (the ``@orca.thread``-decorated function name) OR
-          its labware template name, since both appear naturally in author
-          code.
+          => reject.
         - Auto-spawn-only templates with no member => accept (spawned reactively).
         - ``required=False`` entry threads may be omitted.
 
@@ -2010,17 +2005,10 @@ class SystemRuntime:
         """
         if not groups:
             return
-        from orca.resource_models.sharing import GroupSharing
 
-        # Collect both aliases (func_name and labware name) for each
-        # registered thread so member names can use either.
         valid_names: set[str] = set()
-        for t in workflow.entry_thread_templates:
-            valid_names.add(t.name)
-            valid_names.add(t.func_name)
-        for name, t in workflow.auto_spawn_registry.items():
-            valid_names.add(name)
-            valid_names.add(t.func_name)
+        for t in [*workflow.entry_thread_templates, *workflow.auto_spawn_registry.values()]:
+            valid_names.update(t.names)
 
         for group in groups:
             for member in group.members:
@@ -2031,25 +2019,20 @@ class SystemRuntime:
                         f"Known: {sorted(valid_names)}"
                     )
 
-        def _member_present(group: LabwareGroup, template: ThreadTemplate) -> bool:
-            return (
-                group.member_for_thread(template.name) is not None
-                or group.member_for_thread(template.func_name) is not None
-            )
-
+        named_by = {group.id: threads_a_group_names(group, workflow.thread_templates) for group in groups}
         for template in workflow.entry_thread_templates:
             if not template.required:
                 continue
             sharing = template.labware_template.group_sharing
             if sharing is GroupSharing.PER_GROUP:
                 for group in groups:
-                    if not _member_present(group, template):
+                    if template.name not in named_by[group.id]:
                         raise AcquisitionValidationError(
                             f"Group '{group.id}' is missing a member for required "
                             f"PER_GROUP thread template '{template.name}'."
                         )
             else:
-                any_member = any(_member_present(g, template) for g in groups)
+                any_member = any(template.name in named for named in named_by.values())
                 if not any_member:
                     raise AcquisitionValidationError(
                         f"Submission is missing a member for required "
@@ -2057,20 +2040,17 @@ class SystemRuntime:
                     )
 
     def _safe_emit(self, event_name: str, context: ExecutionContext) -> None:
-        """Emit on the workflow event bus if one is configured.
-
-        No-op when the runtime has no event bus (tests that only use the
-        system event bus still see nothing here, which matches the existing
-        pattern).
-        """
-        if self._event_bus is None:
-            return
         self._event_bus.emit(event_name, context)
 
-    def _emit_submission_accepted(
+    def _accept_submission(
         self, workflow_instance_id: str, workflow_name: str, submission: Submission,
     ) -> None:
-        """Fire SUBMISSION.{id}.ACCEPTED on the workflow event bus."""
+        """Record the run as RUNNING, then fire SUBMISSION.{id}.ACCEPTED on the workflow event bus."""
+        self._execution_record_service.record_running(
+            execution_id=workflow_instance_id,
+            workflow_name=workflow_name,
+            submitted_at=datetime.now(timezone.utc),
+        )
         self._safe_emit(
             f"SUBMISSION.{submission.id}.ACCEPTED",
             SubmissionExecutionContext(
@@ -2089,7 +2069,7 @@ class SystemRuntime:
         status: str,
         reason: str | None = None,
     ) -> None:
-        """Fire SUBMISSION.{id}.{COMPLETED|FAILED|ABORTED} as the execution
+        """Fire SUBMISSION.{id}.{COMPLETED|PARTIAL_COMPLETED|FAILED|ABORTED} as the execution
         terminates. One emission per submission per execution."""
         self._safe_emit(
             f"SUBMISSION.{submission.id}.{status}",
@@ -2109,7 +2089,7 @@ class SystemRuntime:
         execution: Execution,
         status: str,
     ) -> None:
-        """Fire EXECUTION.{id}.{COMPLETED|FAILED|ABORTED}."""
+        """Fire EXECUTION.{id}.{COMPLETED|PARTIAL_COMPLETED|FAILED|ABORTED}."""
         self._safe_emit(
             f"EXECUTION.{execution.id}.{status}",
             ExecutionLifecycleContext(
@@ -2119,13 +2099,40 @@ class SystemRuntime:
             ),
         )
 
+    @staticmethod
+    def _refuse_naming_a_partner_every_group_shares(
+        workflow: WorkflowTemplate, groups: Sequence[LabwareGroup],
+    ) -> None:
+        """One group cannot choose the labware of a partner thread that other groups or submissions also use."""
+        entry_templates = workflow.entry_thread_templates
+        partners = [t for t in workflow.thread_templates if not any(t is entry for entry in entry_templates)]
+        for group in groups:
+            for member in group.members:
+                if not isinstance(member.acquisition, BarcodeAcquisition):
+                    continue
+                partner = thread_named(partners, member.thread_template_name)
+                if partner is None:
+                    continue
+                labware_template = partner.labware_template
+                if (
+                    partner.start_reuse_existing
+                    or labware_template.group_sharing is GroupSharing.SHARED_ACROSS_GROUPS
+                    or labware_template.submission_batching is SubmissionBatching.BATCHABLE
+                ):
+                    raise AcquisitionValidationError(
+                        f"Group '{group.id}' named barcode '{member.acquisition.barcode}' for "
+                        f"'{member.thread_template_name}', and that thread's labware is shared by every "
+                        f"group or submission, so one group cannot choose its labware. Leave it off the "
+                        f"group, or name the partner from the workflow with set_partner_constraint."
+                    )
+
     async def _resolve_acquisitions(
-        self, groups: Sequence[LabwareGroup],
+        self, workflow: WorkflowTemplate, groups: Sequence[LabwareGroup],
     ) -> dict[tuple[str, str], ResolvedAcquisition]:
         """Validate and resolve each group member's Acquisition at submit time.
 
-        - BarcodeAcquisition: fetch the LabwareInstance from ILabwareStore;
-          raise if missing.
+        - BarcodeAcquisition: find the barcode in the labware service, then bind
+          the system's live instance with that id; raise if either is missing.
         - LocationAcquisition: resolve the source_location string to a Location
           object via the system topology; raise if missing.
         - PoolAcquisition: no resolution needed (the pool is consulted at
@@ -2137,19 +2144,40 @@ class SystemRuntime:
         treats missing keys as "pool-sourced".
         """
         resolved: dict[tuple[str, str], ResolvedAcquisition] = {}
+        named_by: dict[str, str] = {}
+        held_by = self._labware_in_use()
         for group in groups:
             for member in group.members:
                 acquisition = member.acquisition
                 key = (group.id, member.thread_template_name)
                 if isinstance(acquisition, BarcodeAcquisition):
-                    found = await self._labware_store.get_by_barcode(acquisition.barcode)
+                    found = await self._labware_service.get_by_barcode(acquisition.barcode)
                     if found is None:
                         raise AcquisitionValidationError(
                             f"Group '{group.id}' member '{member.thread_template_name}' "
                             f"requested BarcodeAcquisition(barcode='{acquisition.barcode}') "
                             f"but no labware with that barcode is registered in the store."
                         )
-                    resolved[key] = ResolvedAcquisition(labware_instance=found)
+                    # The store keeps identity only; the thread needs the instance the system holds.
+                    live = next((lw for lw in self._system.labwares if lw.id == found.id), None)
+                    if live is None:
+                        raise AcquisitionValidationError(
+                            f"Group '{group.id}' member '{member.thread_template_name}' "
+                            f"requested BarcodeAcquisition(barcode='{acquisition.barcode}') "
+                            f"but labware {found.id} holding it is not in the running system: "
+                            f"it was discharged or cleared, and a barcode is never reused."
+                        )
+                    label = f"group '{group.id}' member '{member.thread_template_name}'"
+                    template = _entry_thread_named(workflow, member.thread_template_name)
+                    if template is not None:
+                        facts = await self._member_facts(live, template, named_by.get(live.id), held_by.get(live.id))
+                        refusal = refusal_for(facts)
+                        if refusal is not None:
+                            raise AcquisitionValidationError(
+                                f"{label.capitalize()} names barcode '{acquisition.barcode}': {refusal}"
+                            )
+                    named_by[live.id] = label
+                    resolved[key] = ResolvedAcquisition(labware_instance=live)
                 elif isinstance(acquisition, LocationAcquisition):
                     try:
                         loc = self._system.get_location(acquisition.source_location)
@@ -2164,36 +2192,144 @@ class SystemRuntime:
                 # PoolAcquisition: no entry in resolved dict
         return resolved
 
+    def _labware_in_use(self, only: Execution | None = None) -> dict[str, str]:
+        """Labware a running execution holds, by id, with who holds it. A submission's claim counts
+        from acceptance: its threads are built later, in the execution's own task."""
+        in_use: dict[str, str] = {}
+        for detail in self.blocker_execution_details():
+            if only is not None and detail.id != only.id:
+                continue
+            finished = {
+                t.labware_id for t in detail.threads
+                if LabwareThreadStatus(t.status).is_terminal()
+            }
+            for thread in detail.threads:
+                if thread.labware_id is not None and thread.labware_id not in finished:
+                    in_use[thread.labware_id] = f"thread {thread.name}"
+            for submission in self._executions[detail.id].submissions:
+                for resolved in submission.resolved_acquisitions.values():
+                    claimed = resolved.labware_instance
+                    if claimed is not None and claimed.id not in finished:
+                        in_use.setdefault(claimed.id, f"execution {detail.id}")
+        return in_use
+
+    async def _tip_layout_is_unknown(self, labware: LabwareInstance) -> bool:
+        return (
+            isinstance(labware, TipRackInstance)
+            and not (await self._system.labware_contents.of(labware.ref)).is_known
+        )
+
+    async def _refuse_resident_racks_with_no_stated_tips(
+        self, workflow: WorkflowTemplate, join_target: Execution | None,
+    ) -> None:
+        # Exempt: racks the joined run's unfinished threads or accepted submissions hold. A rack it is still binding
+        # has no thread yet and is not exempt; the bind writes its tips before the rack shows on its site.
+        in_use = self._labware_in_use(only=join_target) if join_target is not None else {}
+        for template in workflow.auto_spawn_registry.values():
+            if not template.start_reuse_existing:
+                continue
+            start = template.start_location
+            resident = start.labware or await self._labware_service.get_by_position(start.position_id)
+            if resident is not None and resident.id not in in_use and await self._tip_layout_is_unknown(resident):
+                raise AcquisitionValidationError(no_stated_tips(resident.name))
+
+    async def _member_facts(
+        self, labware: LabwareInstance, template: ThreadTemplate, also_named_by: str | None, held_by: str | None,
+    ) -> MemberFacts:
+        here = self._system.labware_location_service.present_location(labware)
+        jaws = self._system.system_map.find_gripper_location(here.position_id) if here is not None else None
+        tip_layout_unknown = await self._tip_layout_is_unknown(labware)
+        return MemberFacts(
+            labware_name=labware.name,
+            labware_type=labware.labware_type,
+            wanted_type=template.labware_template.labware_type,
+            thread_template=template.name,
+            also_named_by=also_named_by,
+            held_by=held_by,
+            in_jaws_of=jaws.name if jaws is not None else None,
+            tip_layout_unknown=tip_layout_unknown,
+            start_dispenses=template.start_dispense,
+            start=template.start_location.name,
+        )
+    def _adopt_unused_plates_on_start_locations(
+        self,
+        workflow: WorkflowTemplate,
+        groups: Sequence[LabwareGroup],
+        resolved: dict[tuple[str, str], ResolvedAcquisition],
+    ) -> tuple[Sequence[LabwareGroup], set[str]]:
+        """Bind an entry thread to the plate an operator put on its start location, in place of making a new one.
+
+        Only a plate of the thread's own template that no run has used, and that neither this submission nor a running
+        execution names; anything else stays occupied and refused.
+        Returns the groups to run with (a submission with none gets one, because a binding is carried by a group
+        member) and the plates bound, which the caller marks used once the submission is accepted.
+        """
+        names = sorted(t.name for t in workflow.entry_thread_templates)
+        members = [(g.id, m.thread_template_name) for g in groups for m in g.members] or [
+            (_ADOPTED_GROUP_ID, name) for name in names
+        ]
+        used = self._plates_used_by_runs | {
+            thread.labware.id
+            for execution in self._executions.values() if execution.executing_workflow is not None
+            for thread in execution.executing_workflow.threads
+        }
+        named = {r.labware_instance.id for r in resolved.values() if r.labware_instance is not None}
+        taken = named | set(self._labware_in_use())
+        claimed: set[str] = set()
+        for group_id, name in members:
+            template = _entry_thread_named(workflow, name)
+            if template is None or template.start_reuse_existing or (group_id, name) in resolved:
+                continue
+            location = template.start_location
+            plate = location.labware
+            if (
+                plate is None or location.is_plate_source or plate.id in used or plate.id in taken
+                or plate.id in claimed
+                or plate.template_name != template.labware_template.name
+            ):
+                continue
+            resolved[(group_id, name)] = ResolvedAcquisition(labware_instance=plate)
+            claimed.add(plate.id)
+        if groups or not claimed:
+            return groups, claimed
+        return [LabwareGroup(id=_ADOPTED_GROUP_ID, members=tuple(LabwareGroupMember(name) for name in names))], claimed
+
     def _validate_start_locations(
         self,
         workflow: WorkflowTemplate,
         groups: Sequence[LabwareGroup],
         resolved: dict[tuple[str, str], ResolvedAcquisition],
+        join_target: Execution | None = None,
     ) -> None:
-        """Refuse the submission if any entry thread's start_location is occupied.
+        """Refuse the submission if any entry thread's start holds other labware.
 
-        Without this, `ExecutingLabwareThread.initialize_labware` retries
-        `DeviceBusyError` forever on the occupied location, producing the
-        silent stall. The check runs after `_resolve_acquisitions` so
-        BarcodeAcquisition / LocationAcquisition overrides are visible:
-
-        - BarcodeAcquisition resolves to an existing LabwareInstance; the
-          thread does not claim a fresh slot, so the check is a no-op for
-          that thread.
-        - LocationAcquisition overrides the effective start_location; the
-          OVERRIDE is what gets checked, not the template default.
-
-        A later change will extend this to also skip threads whose start_spawn
-        action handles its own occupancy (e.g. `reuse_existing`).
+        Otherwise the thread would wait at AWAITING_START_LOCATION for a slot
+        nothing is going to clear. Runs after `_resolve_acquisitions`. A location
+        override is checked in place of the template's start, and a `reuse_existing`
+        thread is skipped because it binds what is there. Labware named by this submission,
+        or by the run it joins, is not counted if its own thread uses it there, or carries it off to a start
+        that will itself be free.
+        A finished thread carries nothing off, so its labware is counted.
         """
-        threads_by_name: dict[str, ThreadTemplate] = {
-            t.name: t for t in workflow.entry_thread_templates
-        }
-        threads_by_name.update(
-            {t.func_name: t for t in workflow.entry_thread_templates}
-        )
-
         occupied: list[OccupiedSlot] = []
+        claims = list(resolved.items())
+        past_their_starts: frozenset[str] = frozenset()
+        if join_target is not None and join_target.executing_workflow is not None:
+            past_their_starts = frozenset(
+                t.labware.id for t in join_target.executing_workflow.threads
+                if t.has_reached_its_start and not LabwareThreadStatus(t.status).is_terminal()
+            )
+        if join_target is not None:
+            finished = {
+                t.labware_id for t in self.list_threads(join_target.id)
+                if LabwareThreadStatus(t.status).is_terminal()
+            }
+            claims += [
+                (key, claim)
+                for submission in join_target.submissions
+                for key, claim in submission.resolved_acquisitions.items()
+                if claim.labware_instance is None or claim.labware_instance.id not in finished
+            ]
 
         def _record_if_occupied(loc: Location) -> None:
             slot = _occupied_slot(loc)
@@ -2208,19 +2344,22 @@ class SystemRuntime:
         else:
             for group in groups:
                 for member in group.members:
-                    template = threads_by_name.get(member.thread_template_name)
-                    if template is None:
+                    member_template = _entry_thread_named(workflow, member.thread_template_name)
+                    if member_template is None or member_template.start_reuse_existing:
                         continue
-                    if template.start_reuse_existing:
+                    res = resolved.get((group.id, member.thread_template_name))
+                    start = (
+                        res.start_location
+                        if res is not None and res.start_location is not None
+                        else member_template.start_location
+                    )
+                    claimed = res.labware_instance if res is not None else None
+                    if start.labware is not None and (
+                        start.labware is claimed
+                        or _moves_off(workflow, claims, start.labware.id, start, past_their_starts)
+                    ):
                         continue
-                    key = (group.id, member.thread_template_name)
-                    res = resolved.get(key)
-                    if res is not None and res.labware_instance is not None:
-                        continue
-                    if res is not None and res.start_location is not None:
-                        _record_if_occupied(res.start_location)
-                    else:
-                        _record_if_occupied(template.start_location)
+                    _record_if_occupied(start)
 
         if occupied:
             raise StartLocationsOccupiedError(occupied)
@@ -2295,13 +2434,14 @@ class SystemRuntime:
             paused=execution.is_paused,
             pause_reason=execution.pause_reason,
             abort_armed=execution.abort_armed,
-            sim_time_scale=execution.sim_time_scale,
+            simulated=execution.simulated,
+            sim_speedup=execution.sim_speedup,
         )
 
     def _get_execution(self, execution_id: str) -> Execution:
         execution = self._executions.get(execution_id)
         if execution is None:
-            raise KeyError(f"Execution '{execution_id}' not found")
+            raise ExecutionNotFoundError(f"Execution '{execution_id}' not found")
         return execution
 
     def iter_executions(self) -> Iterator[Execution]:
@@ -2323,11 +2463,16 @@ class SystemRuntime:
     def list_executions(self) -> list[ExecutionRecord]:
         """List all tracked executions.
 
-        Returns `ExecutionRecord` (our flat daemon shape) rather than
+        Returns `ExecutionRecord` (the flat daemon shape) rather than
         `ExecutionStatus`. Daemon routes and DTOs consume ExecutionRecord;
-        the richer T6 `ExecutionStatus` is available via `get_execution_status`.
+        the richer `ExecutionStatus` is available via `get_execution_status`.
         """
         return [self.get_execution(e.id) for e in self._executions.values()]
+
+    async def wait_for_runs_to_end(self) -> None:
+        # Each end is bounded by END_EVENTS_SAVE_TIMEOUT_S, so this wait is too.
+        ending = [e for e in self._executions.values() if e.phase in _TERMINAL_PHASES and not e.ended.is_set()]
+        await asyncio.gather(*(e.ended.wait() for e in ending))
 
     def list_reservations(self, execution_id: str) -> list[ReservationSnapshot]:
         """List all active reservations for an execution."""
@@ -2451,9 +2596,9 @@ class SystemRuntime:
         (JOIN_EXISTING is refused at the submit acceptance path).
 
         Threads spawned after this call are born paused too (see
-        ``pause_all_threads``). Operator spawn-recovery
-        (``spawn_thread_in_execution``) is exempt and still works while
-        paused, by design.
+        ``pause_all_threads``). A thread the operator spawns by hand
+        (``spawn_thread_in_execution``) is exempt and still starts running
+        while paused, by design.
 
         The latch is set immediately even though a thread inside a long device
         action only reaches PAUSED at its next safe point. Idempotent:
@@ -2470,6 +2615,14 @@ class SystemRuntime:
         if execution.paused_at is None:
             execution.paused_at = datetime.now(timezone.utc)
         return self.pause_all_threads(execution_id, reason=reason, message=message)
+
+    def _pause_for_an_unsaved_record(self, execution_id: str, message: str) -> bool:
+        """Pause a run whose record could not be saved, as the operator's Pause does. False when it is not running here."""
+        execution = self._executions.get(execution_id)
+        if execution is None or _phase_to_state(execution.phase).is_terminal() or execution.task.done():
+            return False
+        self.pause_execution(execution_id, reason="system", message=message)
+        return True
 
     def resume_execution(self, execution_id: str) -> dict[str, int]:
         """Resume a paused execution: clear the latch, disarm any armed abort,
@@ -2493,34 +2646,35 @@ class SystemRuntime:
             drain.add_done_callback(self._on_drain_done)
         return self.resume_all_threads(execution_id)
 
-    def set_execution_time_scale(self, execution_id: str, sim_time_scale: float) -> float:
-        """Change a simulated execution's time scale. Applies at once: every
-        paced step in progress re-plans the rest of its wait at the new scale.
+    def set_execution_sim_speedup(self, execution_id: str, sim_speedup: float) -> float:
+        """Change a simulated execution's speed-up. Applies at once: every
+        paced step in progress re-plans the rest of its wait at the new speed-up.
 
-        A LIVE execution has no pacer and refuses; so does a finished one.
-        Emits ``EXECUTION.<id>.TIME_SCALE_CHANGED`` so every viewer's control
+        A LIVE or check-run execution has no pacer and refuses; so does a finished one.
+        Emits ``EXECUTION.<id>.SIM_SPEEDUP_CHANGED`` so every viewer's control
         follows.
         """
         execution = self._get_execution(execution_id)
         if _phase_to_state(execution.phase).is_terminal():
             raise RuntimeError(
                 f"Execution '{execution_id}' is {execution.phase.value}; "
-                f"its time scale cannot change"
+                f"its sim speed-up cannot change"
             )
         if execution.sim_pacer is None:
-            raise SimTimeScaleNotApplicableError(
-                "a LIVE run is paced by its hardware", execution_id=execution_id,
+            raise SimSpeedupNotApplicableError(
+                _UNPACED_REASON[execution.submissions[0].run_mode], execution_id=execution_id,
             )
-        execution.sim_pacer.set_time_scale(sim_time_scale)
+        speedup = validate_sim_speedup(sim_speedup)
+        execution.sim_pacer.set_speedup(speedup)
         self._safe_emit(
-            f"EXECUTION.{execution.id}.TIME_SCALE_CHANGED",
-            ExecutionTimeScaleContext(
+            f"EXECUTION.{execution.id}.SIM_SPEEDUP_CHANGED",
+            ExecutionSimSpeedupContext(
                 execution_id=execution.id,
                 workflow_name=execution.workflow_name,
-                sim_time_scale=execution.sim_pacer.time_scale,
+                sim_speedup=speedup,
             ),
         )
-        return execution.sim_pacer.time_scale
+        return speedup
 
     def _on_drain_done(self, task: asyncio.Task[None]) -> None:
         self._background_tasks.discard(task)
@@ -2619,10 +2773,11 @@ class SystemRuntime:
             raise RuntimeError(
                 f"Execution '{execution_id}' is {state.value}; "
                 f"can only remove terminal executions "
-                f"(completed, failed, aborted)"
+                f"(completed, partial_completed, failed, aborted)"
             )
+        if execution.executing_workflow is not None:
+            self._plates_used_by_runs |= {t.labware.id for t in execution.executing_workflow.threads}
         del self._executions[execution_id]
-        self._system_event_bus.clear_events_for_execution(execution_id)
 
     def get_execution_detail(self, execution_id: str) -> ExecutionDetail:
         """Get detailed status including all thread snapshots."""
@@ -2632,7 +2787,7 @@ class SystemRuntime:
         completed = sum(1 for t in threads if t.status == "COMPLETED")
         # ABORTED counts as terminal (not active) so a single-thread
         # execution where the operator ABORT_THREAD'd doesn't report a
-        # phantom in-flight thread (Bug TTT). STOPPING is in-progress
+        # phantom in-flight thread. STOPPING is in-progress
         # rather than terminal -- it's the transient state between
         # request and the actual STOPPED transition.
         active = sum(
@@ -2651,21 +2806,15 @@ class SystemRuntime:
             paused=execution.is_paused,
             pause_reason=execution.pause_reason,
             abort_armed=execution.abort_armed,
-            sim_time_scale=execution.sim_time_scale,
+            simulated=execution.simulated,
+            sim_speedup=execution.sim_speedup,
         )
 
     # -- Blocker sources (see orca.runtime.blockers) ------------------------
 
     async def blocker_device_snapshots(self) -> list[DeviceSnapshot]:
         """Every device and transporter, with its fault and hold state."""
-        out: list[DeviceSnapshot] = []
-        for entry in await self.devices.list_devices():
-            try:
-                out.append(self.devices.get_device_status(entry.name))
-            except KeyError:
-                # Connected but not declared in topology: no snapshot to read.
-                continue
-        return out
+        return await declared_device_snapshots(self._device_registry, self.devices)
 
     def blocker_execution_details(self) -> list[ExecutionDetail]:
         """Detail for every execution that has not finished."""
@@ -2686,6 +2835,13 @@ class SystemRuntime:
                 for row in self.list_reservations(execution.id)
             )
         return out
+
+    def blocker_occupants(self) -> dict[str, LabwareOccupant]:
+        return {
+            location.name: LabwareOccupant(labware_id=location.labware.id, labware_name=location.labware.name)
+            for location in self._system.locations
+            if location.labware is not None
+        }
 
     def blocker_pending_manual_steps(self) -> list[PendingManualStepRecord]:
         return self.list_pending_manual_steps()
@@ -2731,8 +2887,8 @@ class SystemRuntime:
         dealt with. Clearing by device name alone would drop a fault nobody has
         looked at yet.
         """
-        if device_controller.fault(fault.device_id) is fault:
-            await device_controller.clear_fault(fault.device_id)
+        if self._device_controller.fault(fault.device_id) is fault:
+            await self._device_controller.clear_fault(fault.device_id)
 
     def pause_thread(self, execution_id: str, thread_id: str) -> None:
         """Request a thread to pause at its next safe point (between actions)."""
@@ -2759,6 +2915,9 @@ class SystemRuntime:
             thread.resume_from_manual_pause()
         else:
             thread.cancel_pending_pause()
+        workflow = self._get_execution(execution_id).executing_workflow
+        if workflow is not None:
+            workflow.retry_the_unserved()
 
     def pause_all_threads(
         self, execution_id: str, reason: str = "manual", message: str | None = None,
@@ -2778,13 +2937,12 @@ class SystemRuntime:
         ``_get_execution_threads`` rather than the system-global
         ``executing_threads`` registry; otherwise the counters inflate
         with peer-execution threads when more than one workflow is in
-        flight (Bug CCC).
+        flight.
 
-        New threads are held before the fan-out, so a thread started after this
-        call is born paused too. A parent blocked on a reservation when the
-        pause lands still spawns its contributors on the way to its own safe
-        point, and those threads are not in the list below; unheld they move
-        labware on a run the operator stopped. The hold is recorded on the
+        New threads are held before the fan-out, so a thread spawned after this
+        call starts paused and moves no labware on a run the operator stopped.
+        A parent blocked on a reservation when the pause lands pauses where it
+        waits and spawns nothing. The hold is recorded on the
         execution even when the workflow has not attached yet, because a stop
         can land between submit and boot; the attach applies it to the entry
         threads. The counters cover the fan-out only, since a held thread that
@@ -2804,7 +2962,7 @@ class SystemRuntime:
         already_paused = 0
         terminal_skipped = 0
         for thread in threads:
-            if thread.status in _TERMINAL_THREAD_STATES:
+            if thread.status.is_terminal():
                 terminal_skipped += 1
                 continue
             if thread.status == LabwareThreadStatus.PAUSED:
@@ -2818,388 +2976,37 @@ class SystemRuntime:
             "terminal_skipped": terminal_skipped,
         }
 
-    def declare_unresolvable_deadlock(
-        self,
-        execution_id: str,
-        context: UnresolvableDeadlockContext,
-    ) -> SystemIncident:
-        """Record an UNRESOLVABLE_DEADLOCK incident and pause every thread in the execution.
+    async def no_answer(
+        self, device_name: str, command: str, command_id: str, execution_id: str | None,
+        seconds: float, why: NoAnswer, statement: CommandStatement | None, named: Sequence[str],
+    ) -> str | None:
+        """A command got no answer, was stopped mid-way, or failed after the device took it: what it did
+        is unknown.
 
-        **Round 1.5: auto-invoked.** `SystemRuntime.__init__` calls
-        `self._system.set_deadlock_declarer(self)` so every
-        `ExecutingLabwareThread` minted by the factory holds a
-        back-reference and invokes this method from its typed
-        `except UnresolvableDeadlockError:` catch (see
-        `executing_labware_thread.py` near the action-resolution call).
-
-        On invocation:
-          1. Records one incident under
-             `IncidentCategory.UNRESOLVABLE_DEADLOCK` with the rich
-             diagnostic context (requester / blocker thread + labware
-             ids, location, reason, hint). Surfaces on every operator
-             surface that consumes the IncidentService:
-             `orca incidents list` (CLI), `GET /api/incidents` (REST),
-             `incidents_list` / `incidents_get` (MCP).
-          2. Pauses the whole execution via `pause_execution`: every
-             thread parks at its next safe point AND the execution-level
-             latch refuses JOIN_EXISTING submissions until resume, same
-             as a detected stall. The raising thread itself still goes
-             through `_pause_for_error` for the error-state transition.
-
-        Direct invocation (CLI / REST / MCP) is also supported for the
-        rare case where an operator needs to declare an unresolvable
-        deadlock that the engine could not detect.
+        The labware it names goes unobserved, or everything standing at the device when it names none, and so
+        does the head when it is a tip command. One incident asks someone to look. The incident keeps what the
+        command states, so abort or mark complete settles the record even after a restart. A run's timeout already filed its incident and
+        held the run; aborting it files no second.
         """
-        from orca.runtime.incident_store import (
-            IncidentCategory,
-            IncidentSeverity,
-            RecoveryAction,
-        )
-        # `UnresolvableDeadlockContext` is the IncidentDetail union member
-        # directly -- no separate persistence dataclass. The engine error
-        # and the persisted record share one shape so adding fields to one
-        # propagates automatically to the other.
+        moved = [] if statement is None or statement.motion is None else [statement.motion.labware.name]
+        await self._system.note_no_answer(device_name, execution_id, [*named, *moved], command)
+        if why is NoAnswer.TIMEOUT_ABORTED:
+            return None
+        if why is NoAnswer.FAILED:
+            statement = stated_after_a_failure(statement)
         incident = self._incident_service.record(
-            category=IncidentCategory.UNRESOLVABLE_DEADLOCK,
-            severity=IncidentSeverity.ERROR,
-            message=(
-                f"Unresolvable deadlock: thread "
-                f"'{context.requesting_thread_id}' blocked on "
-                f"'{context.blocking_position_id}' by immovable thread "
-                f"'{context.blocking_thread_id}'."
-            ),
-            detail=context,
-            recovery_action=RecoveryAction.THREAD_RECOVER_ABORT,
-            execution_id=execution_id,
-            thread_id=context.requesting_thread_id,
-        )
-        self.pause_execution(execution_id, reason="system", message=incident.message)
-        return incident
-
-    def declare_action_failure(
-        self,
-        execution_id: str,
-        thread_id: str,
-        context: ActionFailedContext,
-    ) -> SystemIncident:
-        """Record an ACTION_FAILED incident for a default-PAUSE action error.
-
-        Auto-invoked from ``ExecutingLabwareThread._handle_action_error``
-        on the PAUSE branch, right after the thread pauses itself and
-        before it parks for an operator recovery decision. The thread is
-        already PAUSED with ``last_error`` set; this adds the queryable
-        record so the failure surfaces on ``orca incident list`` /
-        ``GET /api/incidents`` / ``incidents_list`` MCP -- it does NOT
-        fan out a pause (the single thread paused itself; other threads
-        keep running).
-
-        Recovery is the existing ``orca thread recover`` path, and the suggested
-        verb follows ``context.device_command``. A thread suspended inside a
-        device call is advised ``THREAD_RECOVER_RETRY_OP``: it reconciles
-        hardware and re-runs that one call, where the whole-action retry would
-        re-drive the body unreconciled and repeat the calls that already
-        succeeded. Everything else is advised ``THREAD_RECOVER_RETRY``, which is
-        the only retry the runtime accepts there.
-        """
-        from orca.runtime.incident_store import (
-            IncidentCategory,
-            IncidentSeverity,
-            RecoveryAction,
-        )
-        inside_call = (
-            f" inside device call '{context.device_command}'"
-            if context.device_command is not None else ""
-        )
-        return self._incident_service.record(
-            category=IncidentCategory.ACTION_FAILED,
-            severity=IncidentSeverity.ERROR,
-            message=(
-                f"Action '{context.action_command}' in method "
-                f"'{context.method_name}' failed{inside_call}: "
-                f"{context.error_type}: {context.error_message}"
-            ),
-            detail=context,
-            recovery_action=(
-                RecoveryAction.THREAD_RECOVER_RETRY_OP
-                if context.device_command is not None
-                else RecoveryAction.THREAD_RECOVER_RETRY
-            ),
-            execution_id=execution_id,
-            thread_id=thread_id,
-        )
-
-    def declare_thread_death(
-        self,
-        execution_id: str,
-        thread_id: str,
-        context: ThreadDiedContext,
-    ) -> SystemIncident:
-        """Record a THREAD_DIED incident for a thread that stopped uncaught.
-
-        Every fault the lab can produce parks the thread for a recovery
-        decision instead. Reaching here means the error escaped that handling,
-        so there is no paused thread to recover and no operator prompt: the run
-        carries on without this thread and its labware sits where the crash
-        left it. The incident names that position, because clearing it by hand
-        is the only way it moves.
-        """
-        from orca.runtime.incident_store import (
-            IncidentCategory,
-            IncidentSeverity,
-            RecoveryAction,
-        )
-        where = (
-            f" at {context.last_position_id}"
-            if context.last_position_id is not None else ""
-        )
-        return self._incident_service.record(
-            category=IncidentCategory.THREAD_DIED,
-            severity=IncidentSeverity.ERROR,
-            message=(
-                f"Thread '{context.thread_name}' stopped on an uncaught "
-                f"{context.error_type}: {context.error_message}. Its labware "
-                f"'{context.labware_name}' is{where or ' wherever it stopped'} "
-                f"and will not move on its own."
-            ),
-            detail=context,
-            recovery_action=RecoveryAction.NONE,
-            execution_id=execution_id,
-            thread_id=thread_id,
-        )
-
-    def declare_device_init_failure(
-        self,
-        execution_id: str,
-        error: DeviceInitializationError,
-    ) -> SystemIncident:
-        """Record a DEVICE_INIT_FAILED incident for a device that would not come up.
-
-        Called from ``_run_workflow`` around the lazy first-execution bring-up,
-        which runs before the executing workflow exists and so before the
-        thread-level incident declarer is wired. Without this the execution
-        failed with nothing in ``orca incident list`` and an error string that
-        did not even name the device.
-
-        Recovery is RESTART_EXECUTION: bring-up is not resumable from here, so
-        the operator fixes the device and resubmits.
-        """
-        from orca.runtime.incident_store import (
-            DeviceInitFailedDetail,
-            IncidentCategory,
-            IncidentSeverity,
-            RecoveryAction,
-        )
-        return self._incident_service.record(
-            category=IncidentCategory.DEVICE_INIT_FAILED,
-            severity=IncidentSeverity.ERROR,
-            message=(
-                f"Device '{error.device_name}' failed to initialize: "
-                f"{error.cause}"
-            ),
-            detail=DeviceInitFailedDetail(
-                device_name=error.device_name,
-                driver_error=str(error.cause),
-            ),
-            recovery_action=RecoveryAction.RESTART_EXECUTION,
-            execution_id=execution_id,
-        )
-
-    def declare_action_continued(
-        self,
-        execution_id: str,
-        thread_id: str,
-        context: ActionContinuedContext,
-    ) -> None:
-        """Record ACTION_CONTINUED when an operator carries on past an errored action.
-
-        The ACTION_FAILED incident for the same action stays unacknowledged:
-        continuing is not resolving. This one says what the operator did and
-        that nothing has re-checked the world model against the device since,
-        which is why the severity is WARNING and no recovery action applies --
-        there is nothing left to recover, only something to be aware of.
-        """
-        from orca.runtime.incident_store import (
-            IncidentCategory,
-            IncidentSeverity,
-            RecoveryAction,
-        )
-        self._incident_service.record(
-            category=IncidentCategory.ACTION_CONTINUED,
+            category=IncidentCategory.RECOVERABLE_TIMEOUT,
             severity=IncidentSeverity.WARNING,
-            message=(
-                f"Operator continued past errored action "
-                f"'{context.action_command}' in method '{context.method_name}' "
-                f"({context.error_type}: {context.error_message}). The action's "
-                f"side effects are unknown; state past this point is unverified."
-            ),
-            detail=context,
-            recovery_action=RecoveryAction.NONE,
-            execution_id=execution_id,
-            thread_id=thread_id,
-        )
-
-    def declare_move_failure(
-        self,
-        execution_id: str,
-        thread_id: str,
-        context: MoveFailedContext,
-    ) -> None:
-        """Record a MOVE_FAILED incident for a default-PAUSE routing move error.
-
-        The move-side mirror of ``declare_action_failure``: auto-invoked from
-        ``ExecutingLabwareThread._execute_move_action`` on the PAUSE branch,
-        after the thread pauses itself. Adds the queryable record; does NOT fan
-        out a pause. Recovery is the existing ``orca thread recover`` retry.
-
-        Always ``THREAD_RECOVER_RETRY``, never the op-level one: a move is not
-        an action body suspended inside a device call, so the runtime refuses
-        ``RETRY_OP`` at a move pause and whole-action retry is the only retry.
-        """
-        from orca.runtime.incident_store import (
-            IncidentCategory,
-            IncidentSeverity,
-            RecoveryAction,
-        )
-        self._incident_service.record(
-            category=IncidentCategory.MOVE_FAILED,
-            severity=IncidentSeverity.ERROR,
-            message=(
-                f"Move of '{context.labware}' from '{context.source}' to "
-                f"'{context.target}' via '{context.transporter}' failed: "
-                f"{context.error_type}: {context.error_message}"
-            ),
-            detail=context,
-            recovery_action=RecoveryAction.THREAD_RECOVER_RETRY,
-            execution_id=execution_id,
-            thread_id=thread_id,
-        )
-
-    def declare_move_continued(
-        self,
-        execution_id: str,
-        thread_id: str,
-        context: MoveContinuedContext,
-    ) -> None:
-        """Record MOVE_CONTINUED when an operator finishes a failed move by hand.
-
-        The MOVE_FAILED incident for the same move stays as it is: the arm did
-        fail. This one says the labware reached the target by hand, so an
-        operator reading incidents later sees which arrival rests on a person's
-        word rather than on a completed place.
-        """
-        from orca.runtime.incident_store import (
-            IncidentCategory,
-            IncidentSeverity,
-            RecoveryAction,
-        )
-        self._incident_service.record(
-            category=IncidentCategory.MOVE_CONTINUED,
-            severity=IncidentSeverity.WARNING,
-            message=(
-                f"Operator finished the move of '{context.labware}' from "
-                f"'{context.source}' to '{context.target}' by hand after "
-                f"'{context.transporter}' failed ({context.error_type}: "
-                f"{context.error_message}). The run continues from the target."
-            ),
-            detail=context,
-            recovery_action=RecoveryAction.NONE,
-            execution_id=execution_id,
-            thread_id=thread_id,
-        )
-
-    def declare_unresolved_anchor_insert(
-        self,
-        execution_id: str,
-        thread_id: str,
-        anchor_name: str,
-        direction: str,
-        target_type: str,
-        item_name: str | None,
-        anchor_reached: bool,
-    ) -> SystemIncident:
-        """Record a WARNING UNRESOLVED_ANCHOR_INSERT incident for a dropped insert.
-
-        Fired when a ``Before``/``After`` insert is still pending at lane
-        close. ``anchor_reached`` says which drop it was: the anchor name
-        never came past, or it did and the insert still never ran. Both are
-        expected (conditional methods/actions skip anchors; an aborted thread
-        ends with inserts still queued; an operator can anchor to a step the
-        lane has gone by), so this is informational, not recoverable -- it
-        only makes the otherwise-silent drop queryable.
-        """
-        from orca.runtime.incident_store import (
-            IncidentCategory,
-            IncidentSeverity,
-            RecoveryAction,
-            UnresolvedAnchorInsertDetail,
-        )
-        return self._incident_service.record(
-            category=IncidentCategory.UNRESOLVED_ANCHOR_INSERT,
-            severity=IncidentSeverity.WARNING,
-            message=(
-                f"Dropped {direction}-anchor insert of {target_type} "
-                f"'{item_name or '<unnamed>'}': "
-                + (
-                    f"'{anchor_name}' did appear, but the insert never ran"
-                    if anchor_reached
-                    else f"anchor '{anchor_name}' never appeared on the stream"
-                )
-            ),
-            detail=UnresolvedAnchorInsertDetail(
-                anchor_name=anchor_name,
-                direction=direction,
-                target_type=target_type,
-                item_name=item_name or "<unnamed>",
-                anchor_reached=anchor_reached,
+            message=_outcome_unknown_message(device_name, command, seconds, why),
+            detail=RecoverableTimeoutContext(
+                device_id=device_name, command=command, command_id=command_id,
+                elapsed_seconds=seconds, max_seconds=seconds if why is NoAnswer.TIMED_OUT else 0.0,
+                unheld=stored_command(device_name, statement),
             ),
             recovery_action=RecoveryAction.NONE,
             execution_id=execution_id,
-            thread_id=thread_id,
         )
-
-    def declare_orphaned_backlog(
-        self,
-        execution_id: str,
-        context: OrphanedBacklogContext,
-    ) -> None:
-        """Record an ORPHANED_BACKLOG incident for a quarantined slot.
-
-        The workflow already flagged the slot and pause-requested the
-        in-scope threads; this adds the queryable record. Recovery is the
-        EXECUTION-level resume (accept-partial): the orphaned contributions
-        are abandoned and their threads continue. Per-thread resume and the
-        recoverable-timeout resume path do not dispose of the backlog, and
-        JOIN_EXISTING submissions are refused until the resume.
-        """
-        from orca.runtime.incident_store import (
-            IncidentCategory,
-            IncidentSeverity,
-            RecoveryAction,
-        )
-        in_flight = (
-            f" plus in-flight method '{context.in_flight_method_name}'"
-            if context.in_flight_method_name is not None
-            else ""
-        )
-        self._incident_service.record(
-            category=IncidentCategory.ORPHANED_BACKLOG,
-            severity=IncidentSeverity.ERROR,
-            message=(
-                f"Receiver '{context.receiver_thread_name}' "
-                f"({context.receiver_status}) died still owing work on slot "
-                f"'{context.slot_key}': {context.undelivered_count} "
-                f"undelivered contribution(s){in_flight}. The slot is "
-                f"quarantined and the affected threads are pausing. Resume "
-                f"the EXECUTION to accept the partial fill: undelivered "
-                f"contributions are abandoned and their threads continue; "
-                f"work already executing or under error recovery finishes "
-                f"on its own channel."
-            ),
-            detail=context,
-            recovery_action=RecoveryAction.RESUME_EXECUTION,
-            execution_id=execution_id,
-            thread_id=context.receiver_thread_id,
-        )
+        return incident.id
 
     def declare_recoverable_timeout(
         self,
@@ -3219,8 +3026,7 @@ class SystemRuntime:
              command, command_id, elapsed seconds, and the max that was
              exceeded. Surfaces on every operator surface that consumes
              the IncidentService: ``orca incidents list`` (CLI),
-             ``GET /api/incidents`` (REST), ``incidents_list`` /
-             ``incidents_get`` (MCP).
+             ``GET /api/incidents`` (REST).
           2. Fans out ``pause_all_threads(execution_id)`` so every thread
              in the execution pauses at its next safe point. The
              workflow thread that submitted the overrun command is
@@ -3230,7 +3036,7 @@ class SystemRuntime:
 
         The operator resolves the incident through ``incidents.``
         ``recoverable_timeout_extend`` / ``_abort`` / ``_mark_complete``
-        (exposed over REST / MCP / CLI). The coordinator settles the held
+        (exposed over REST / CLI). The coordinator settles the held
         call's eventual state and calls ``resume_all_threads(execution_id)``
         once the workflow is safe to continue; abort and mark_complete also
         emit a wire cancel so the transport discards a late response.
@@ -3308,13 +3114,14 @@ class SystemRuntime:
         execution.new_threads_hold_reason = "manual"
         if execution.executing_workflow is not None:
             execution.executing_workflow.release_new_threads()
+            execution.executing_workflow.retry_the_unserved()
         threads = self._get_execution_threads(execution_id)
         resumed = 0
         pause_cancelled = 0
         error_skipped = 0
         completed_skipped = 0
         for thread in threads:
-            if thread.status in _TERMINAL_THREAD_STATES:
+            if thread.status.is_terminal():
                 completed_skipped += 1
                 continue
             if thread.status == LabwareThreadStatus.PAUSED:
@@ -3355,7 +3162,11 @@ class SystemRuntime:
         Called by the recoverable-timeout coordinator on mark-complete, where
         the cancel that resolves the timeout is what latched the fault.
         """
-        await device_controller.clear_fault(device_id)
+        await self._device_controller.clear_fault(device_id)
+
+    @property
+    def incident_declarer(self) -> IncidentDeclarer:
+        return self._incident_declarer
 
     @property
     def recoverable_timeout_coordinator(self) -> RecoverableTimeoutCoordinator:
@@ -3378,10 +3189,9 @@ class SystemRuntime:
     ) -> ThreadSnapshot:
         """Manually create and start a thread in a live execution.
 
-        Used for recovery from AUTO_SPAWN_FAILED incidents (the auto-spawn
-        machinery couldn't find a matching thread template and paused). The
-        operator names the template explicitly and optionally pins an
-        existing labware instance.
+        The operator names the template and optionally pins an existing labware
+        instance. The thread runs on its own: it does not join an action another
+        thread is waiting at, so it does not recover AUTO_SPAWN_FAILED.
         """
         execution = self._get_execution(execution_id)
         if execution.executing_workflow is None:
@@ -3401,15 +3211,15 @@ class SystemRuntime:
                 for (wf_name, name) in self._system.get_labware_thread_templates().keys()
                 if wf_name == execution.workflow_name
             )
-            raise KeyError(
+            raise ThreadTemplateNotFoundError(
                 f"No thread template named '{template_name}' in workflow "
                 f"'{execution.workflow_name}'. Known: {known}"
             )
         labware_instance = None
         if labware_id is not None:
-            found = await self._labware_store.get_by_id(labware_id)
+            found = await self._labware_service.get_by_id(labware_id)
             if found is None:
-                raise KeyError(f"No labware with id '{labware_id}'")
+                raise LabwareNotFoundError(labware_id)
             if found.template is not template.labware_template:
                 raise ValueError(
                     f"Labware '{labware_id}' has template "
@@ -3459,7 +3269,7 @@ class SystemRuntime:
         thread = self._find_thread(execution_id, thread_id)
         status = thread.status
 
-        if status in _TERMINAL_THREAD_STATES:
+        if status.is_terminal():
             raise ValueError(
                 f"Thread {thread.name} has status {status.name}, cannot mutate"
             )
@@ -3469,11 +3279,6 @@ class SystemRuntime:
             if thread.is_manual_paused:
                 self._system.resume_thread(thread_id)
             return
-
-        if self._event_bus is None:
-            raise RuntimeError(
-                "mutate_on_next_pause requires an event_bus on SystemRuntime"
-            )
 
         class _PauseHandler(IEventHandler):
             def __init__(self, system: ISystem, event_bus: IEventBus,
@@ -3526,21 +3331,52 @@ class SystemRuntime:
         self._event_bus.subscribe(f"THREAD.{thread_id}.COMPLETED", handler)
         self._system.pause_thread(thread_id)
 
+    async def _refuse_unless_its_devices_are_ready(self, mode: WorkflowRunMode) -> None:
+        """Refuse a fresh run at its start, never midway, when a device it uses cannot run.
+
+        Every run brings its devices up here, after the cheap refusals and before it is accepted; a check run's
+        orca-client runs inside Orca. A device that does not come up, or whose orca-client is not connected,
+        refuses the run unless it is in a pool where another device came up. Each one records an incident; a
+        tolerated one as a warning.
+        """
+        await self._assert_deck_layouts_configured(mode)
+        await self.flush_deck_reseeds()
+        unreachable = await self._device_registry.unreachable(
+            e.name for e in self._topology_registry.list_devices()
+        )
+        with mode_scope(mode):
+            if not any(not execution.task.done() for execution in self._executions.values()):
+                # A run already going uses these worlds; rebuilding them under it would race its records.
+                await self._system.device_worlds.mark_current_worlds()
+            try:
+                tolerated = await self._system.bring_up_for_a_run(unreachable)
+            except DevicesNotReadyError as exc:
+                for failure in exc.failures:
+                    self._incident_declarer.declare_device_init_failure(None, failure)
+                raise
+        for failure in tolerated:
+            self._incident_declarer.declare_device_init_failure(None, failure, tolerated=True)
+
+    async def _refuse_a_join_unless_its_devices_are_reachable(self, mode: WorkflowRunMode) -> None:
+        """A join is refused at its start, like a fresh run, when a device the run uses lost its orca-client."""
+        if mode is WorkflowRunMode.CHECK_RUN:
+            return
+        unreachable = await self._device_registry.unreachable(
+            e.name for e in self._topology_registry.list_devices()
+        )
+        try:
+            self._system.refuse_a_join_unless_its_devices_are_reachable(unreachable)
+        except DevicesNotReadyError as exc:
+            for failure in exc.failures:
+                self._incident_declarer.declare_device_init_failure(None, failure)
+            raise
+
     async def _assert_deck_layouts_configured(self, mode: WorkflowRunMode) -> None:
         """Reject submissions whose liquid handlers lack a resolvable deck_layout.
 
-        PURE_SIM: skipped. The runtime never dispatches to a real (or
-        device-sim) driver, so an unconfigured deck is harmless.
-
-        DEVICE_SIM and LIVE: every ``LiquidHandler`` in the topology must
-        declare a ``deck_layout`` (non-None) AND that name must resolve to
-        an entry in the device's ``deck_layout_store``. Aggregates every
-        offending handler into a single ``DeckLayoutRequiredError`` rather
-        than failing on the first so operators get the full picture in one
-        shot.
+        Every ``LiquidHandler`` must declare a ``deck_layout`` that resolves in its ``deck_layout_store``.
+        Every offending handler is named in one ``DeckLayoutRequiredError``.
         """
-        if mode is WorkflowRunMode.PURE_SIM:
-            return
         missing_declaration: list[str] = []
         unresolved_layout: list[tuple[str, str]] = []
         for device in self._liquid_handlers():
@@ -3558,12 +3394,9 @@ class SystemRuntime:
                 unresolved_layout=unresolved_layout,
             )
 
-    # -- Back-compat shims for the flat daemon API --------------------------
-    # Our daemon routes and pre-T6 tests call submit_workflow/wait/get_execution
-    # and consume ExecutionRecord. Dev renamed to submit/wait_for_execution/
-    # get_execution_status and introduced ExecutionStatus. These shims preserve
-    # our shape so routes + tests keep working; callers that want the richer
-    # T6 Submission model call the new methods directly.
+    # -- Flat ExecutionRecord API ---------------------------------------------
+    # submit_workflow/wait/get_execution answer with ExecutionRecord; callers that
+    # want the Submission model call submit/wait_for_execution/get_execution_status.
 
     async def submit_workflow(
         self,
@@ -3572,8 +3405,7 @@ class SystemRuntime:
         deployment_profile: str | None = None,
         *,
         mode: WorkflowRunMode | None = None,
-        acknowledge_warnings: bool = False,
-        sim_time_scale: float | None = None,
+        sim_speedup: float | None = None,
     ) -> ExecutionRecord:
         """Submit a workflow by name, get back a flat ExecutionRecord.
 
@@ -3584,25 +3416,14 @@ class SystemRuntime:
         the running execution; the variable store is the only resolver
         after submit.
 
-        ``mode`` is REQUIRED at submit time. No
-        deployment fallback. Before booting the execution, the runtime
-        validates every device declared in topology against ``mode`` via
-        ``runtime.device_registry.assert_runnable``. The static workflow
-        device set is not derivable today (methods yield action templates
-        from generators), so the validation operates on the topology's
-        declared devices: every declared device must be runnable under
-        ``mode``. Anything the workflow references mid-execution that is
-        missing or unconnected fails at action-spawn time.
-
-        ``acknowledge_warnings`` (default ``False``) suppresses the
-        ``LIVE_SUBMISSION_WITH_SIM_OVERRIDES_UNACKNOWLEDGED`` gate. CLI
-        maps this to ``--confirm``.
+        ``mode`` is REQUIRED at submit time. No deployment fallback. The run's devices are checked, and for a
+        sim or live run brought up, before it is accepted; see ``_refuse_unless_its_devices_are_ready``.
         """
         template = self._system.get_workflow_template(workflow_name)
         return await self._submit_template(
             template, variables, deployment_profile,
-            mode=mode, acknowledge_warnings=acknowledge_warnings,
-            sim_time_scale=sim_time_scale,
+            mode=mode,
+            sim_speedup=sim_speedup,
         )
 
     async def _submit_template(
@@ -3612,8 +3433,8 @@ class SystemRuntime:
         deployment_profile: str | None,
         *,
         mode: WorkflowRunMode | None,
-        acknowledge_warnings: bool,
-        sim_time_scale: float | None = None,
+        sim_speedup: float | None = None,
+        every_variable_is_read: bool = True,
     ) -> ExecutionRecord:
         """Shared submit tail for submit_workflow and submit_method.
 
@@ -3625,42 +3446,30 @@ class SystemRuntime:
         if mode is None:
             raise RunModeRequiredError()
         # A shape refusal comes before the device gate: 422 before 409.
-        _check_time_scale_applies(mode, sim_time_scale)
-        topology_names = [
-            entry.name for entry in self._topology_registry.list_devices()
-        ]
-        await self._device_registry.assert_runnable(topology_names, mode)
-        await self._assert_deck_layouts_configured(mode)
+        _check_sim_speedup_applies(mode, sim_speedup)
         submission = await self.submit(
             template,
             variables=variables or {},
             deployment_profile=deployment_profile,
             mode=mode,
-            acknowledge_warnings=acknowledge_warnings,
-            sim_time_scale=sim_time_scale,
+            sim_speedup=sim_speedup,
+            every_variable_is_read=every_variable_is_read,
         )
         execution = self._executions[submission.execution_id]
-        # Eager-register so profile resolution (between submit and
-        # _run_workflow) finds the partition; _run_workflow's call is idempotent.
-        self._system.variable_store.create_execution(
-            submission.execution_id, submission.workflow_name,
-        )
-        if deployment_profile is not None:
-            profile = await self._profile_store.get(deployment_profile)
-            if profile is None:
-                raise KeyError(
-                    f"DeploymentProfile {deployment_profile!r} not found",
-                )
-            self._system.variable_store.load_profile(
-                submission.execution_id, profile,
-            )
         return ExecutionRecord(
             id=submission.execution_id,
             workflow_name=submission.workflow_name,
             status=_phase_to_state(execution.phase),
             error=execution.error,
-            sim_time_scale=execution.sim_time_scale,
+            simulated=execution.simulated,
+            sim_speedup=execution.sim_speedup,
         )
+
+    def _named_location(self, name: str) -> Location:
+        try:
+            return self._system.get_location(name)
+        except KeyError as exc:
+            raise UnknownLocationError(name) from exc
 
     async def submit_method(
         self,
@@ -3672,7 +3481,8 @@ class SystemRuntime:
         deployment_profile: str | None = None,
         *,
         mode: WorkflowRunMode | None = None,
-        acknowledge_warnings: bool = False,
+        event_hooks: Sequence[str] | None = None,
+        sim_speedup: float | None = None,
     ) -> ExecutionRecord:
         """Run one method standalone, synthesizing a one-method workflow.
 
@@ -3692,13 +3502,22 @@ class SystemRuntime:
                 must be keyed.
             labware_end: Symmetric mapping of labware-template-name to end
                 location-name.
-            variables, deployment_profile, mode: Same semantics as
+            variables, deployment_profile, mode, sim_speedup: Same semantics as
                 ``submit_workflow``.
+            event_hooks: Which of the workflow's ``wf.on`` handlers the run
+                fires, by event name. None fires them all; ``[]`` fires none.
 
         Raises:
-            KeyError: workflow_name unknown, method_name not in that
-                workflow's bundle, or a labware template name doesn't
-                resolve.
+            KeyError: workflow_name unknown.
+            MethodNotFoundError: method_name not in that workflow's bundle.
+            LabwareTemplateNotFoundError: a labware template name doesn't resolve.
+            UnknownLocationError: a start or end location doesn't resolve.
+            ValueError: labware_start and labware_end key different labware.
+            TypeError: method_name names something that is not a method.
+            EventHooksNotInTheWorkflowError: event_hooks names an event the
+                workflow has no handler for.
+            NoLabwareCanOwnTheMethodError: every labware named is one the
+                workflow reuses where it stands.
         """
         parent_workflow = self._system.get_workflow_template(workflow_name)
         method_template = next(
@@ -3707,7 +3526,7 @@ class SystemRuntime:
         )
         if method_template is None:
             available = sorted(m.name for m in parent_workflow.bundled_methods)
-            raise KeyError(
+            raise MethodNotFoundError(
                 f"Method '{method_name}' not found in workflow "
                 f"'{workflow_name}' bundle. Available: {available}"
             )
@@ -3717,12 +3536,16 @@ class SystemRuntime:
                 f"(got {type(method_template).__name__})"
             )
 
+        hooks = _the_hooks_to_carry(parent_workflow, event_hooks)
+        if not labware_start:
+            raise ValueError(f"the run of '{workflow_name}.{method_name}' names no labware to start from")
+
         # Start/end must map the same labware; an unmatched key would hang on
         # co-labware that never arrives (action inputs aren't statically known).
         if set(labware_start) != set(labware_end):
             only_start = sorted(set(labware_start) - set(labware_end))
             only_end = sorted(set(labware_end) - set(labware_start))
-            raise KeyError(
+            raise ValueError(
                 "labware_start and labware_end must map the same labware; "
                 f"start-only={only_start}, end-only={only_end}"
             )
@@ -3733,22 +3556,29 @@ class SystemRuntime:
         threads: list[StandaloneThreadSpec] = []
         for lw_name, start_loc_name in labware_start.items():
             if lw_name not in labware_template_index:
-                raise KeyError(
+                raise LabwareTemplateNotFoundError(
                     f"Labware template '{lw_name}' not found. Available: "
                     f"{sorted(labware_template_index)}"
                 )
-            threads.append((
+            threads.append(with_the_workflows_kinds(
+                parent_workflow,
                 labware_template_index[lw_name],
-                self._system.get_location(start_loc_name),
-                self._system.get_location(labware_end[lw_name]),
+                self._named_location(start_loc_name),
+                self._named_location(labware_end[lw_name]),
             ))
+        owner = next((spec for spec in threads if not starts_from_reuse(spec)), None)
+        if owner is None:
+            raise NoLabwareCanOwnTheMethodError(method_name, [spec[0].name for spec in threads])
+        threads = [owner, *(spec for spec in threads if spec is not owner)]
 
         # Only the first thread is an entry thread; the rest are auto-spawned,
         # so _validate_start_locations would never look at them and an occupied
         # slot for thread 2..N would spin in the spawn retry until the stall
         # detector fired. Every start location this call routes to is its own.
+        # A reused start is meant to be occupied: the plate already standing there is the one the run takes.
+        starts = [start for _, start, _ in threads if isinstance(start, Location)]
         occupied = [
-            slot for slot in (_occupied_slot(start) for _, start, _ in threads)
+            slot for slot in (_occupied_slot(start) for start in starts)
             if slot is not None
         ]
         if occupied:
@@ -3765,6 +3595,7 @@ class SystemRuntime:
         )
         synthetic = build_standalone_method_workflow(
             synthetic_name, method_template, threads,
+            hooks,
         )
 
         # Carry the parent's variable definitions so method bodies relying on
@@ -3776,7 +3607,7 @@ class SystemRuntime:
 
         return await self._submit_template(
             synthetic, variables, deployment_profile,
-            mode=mode, acknowledge_warnings=acknowledge_warnings,
+            mode=mode, sim_speedup=sim_speedup, every_variable_is_read=False,
         )
 
     def get_execution(self, execution_id: str) -> ExecutionRecord:
@@ -3790,7 +3621,8 @@ class SystemRuntime:
             paused=status.paused,
             pause_reason=status.pause_reason,
             abort_armed=status.abort_armed,
-            sim_time_scale=status.sim_time_scale,
+            simulated=status.simulated,
+            sim_speedup=status.sim_speedup,
         )
 
     async def wait(self, execution_id: str) -> ExecutionRecord:
@@ -3810,9 +3642,8 @@ class SystemRuntime:
             pass
         except Exception:
             pass
-        # Drain the call_soon ``_on_task_done`` callback (it flips phase to the
-        # terminal value) before reading, else a stopped exec reads STOPPING.
-        await asyncio.sleep(0)
+        # The run's end is recorded once its events are saved; that wait is bounded.
+        await execution.ended.wait()
         return self.get_execution(execution_id)
 
     # -- Plugin lifecycle --------------------------------------------------
@@ -3829,94 +3660,8 @@ class SystemRuntime:
                 remaining.append(p)
         self._plugins = remaining
 
-    def disable_plugin(self, plugin_type: type[OrcaPlugin]) -> None:
-        """Mark a plugin type disabled without unregistering it."""
-        self._disabled_plugin_types.add(plugin_type)
-
-    def enable_plugin(self, plugin_type: type[OrcaPlugin]) -> None:
-        """Mark a plugin type enabled (default state)."""
-        self._disabled_plugin_types.discard(plugin_type)
-
     def list_plugins(self) -> list[PluginSnapshot]:
-        return [
-            PluginSnapshot(
-                type_name=type(p).__name__,
-                disabled=type(p) in self._disabled_plugin_types,
-                exposed_command_names=tuple(c.name for c in p.get_commands()),
-            )
-            for p in self._plugins
-        ]
-
-    def list_plugin_commands(self) -> list[PluginCommand]:
-        """Aggregate the command surface exposed by registered plugins."""
-        commands: list[PluginCommand] = []
-        for plugin in self._plugins:
-            commands.extend(plugin.get_commands())
-        return commands
-
-    async def execute_plugin_command(self, name: str, args: list[str]) -> str:
-        """Dispatch to the first matching plugin command's async handler."""
-        for plugin in self._plugins:
-            for cmd in plugin.get_commands():
-                if cmd.name == name:
-                    return await cmd.handler(args)
-        raise KeyError(f"No plugin command named '{name}'")
-
-    # -- Danger-action registry + event subscribe --------------------------
-
-    def describe_action(self, action_name: str) -> ActionDescriptor:
-        return _describe_action_global(action_name)
-
-    def list_actions(self) -> List[ActionDescriptor]:
-        return _list_actions_global()
-
-    async def subscribe_events(
-        self,
-        since: float | None = None,
-        execution_id: str | None = None,
-    ) -> AsyncIterator[RuntimeEvent]:
-        """Async generator over RuntimeEvents. Used by the SSE route.
-
-        Replays events since `since` (or from the start when None), then
-        streams live events until the caller closes the generator. If
-        `execution_id` is given, only events for that execution are emitted.
-        """
-        queue: asyncio.Queue[RuntimeEvent] = asyncio.Queue(maxsize=1000)
-        loop = asyncio.get_running_loop()
-
-        def _deliver(event: RuntimeEvent) -> None:
-            if execution_id is not None and event.execution_id != execution_id:
-                return
-            try:
-                queue.put_nowait(event)
-            except asyncio.QueueFull:
-                try:
-                    queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    pass
-                queue.put_nowait(event)
-
-        def sink(event: RuntimeEvent) -> None:
-            # The bus emits off-loop for incidents; marshal onto this loop so
-            # the asyncio.Queue is only touched on-loop.
-            deliver_on_loop(loop, _deliver, event)
-
-        # Replay backlog
-        backlog = (
-            self.get_events_for_execution(execution_id)
-            if execution_id is not None
-            else self.get_events_since(since)
-        )
-        for event in backlog:
-            if since is None or event.timestamp >= since:
-                yield event
-
-        self._system_event_bus.subscribe(sink)
-        try:
-            while True:
-                yield await queue.get()
-        finally:
-            self._system_event_bus.unsubscribe(sink)
+        return [PluginSnapshot(type_name=type(p).__name__) for p in self._plugins]
 
     def _get_execution_threads(self, execution_id: str) -> list[ExecutingLabwareThread]:
         """Get threads belonging to a specific execution."""
@@ -3925,23 +3670,9 @@ class SystemRuntime:
             return entry.executing_workflow.threads
         return []
 
-    def _find_thread_template(self, workflow_name: str, template_name: str):
-        """Look up a ThreadTemplate by its labware name or func_name.
-
-        Authors register thread templates via @orca.thread; the internal
-        key is the labware_template.name, but authors naturally use the
-        decorated function's name. Accept either to match the Submission
-        API's lookup convention. Thread names are unique per workflow, so
-        the search is scoped to the spawning execution's workflow.
-        """
+    def _find_thread_template(self, workflow_name: str, template_name: str) -> ThreadTemplate | None:
         templates = self._system.get_labware_thread_templates()
-        direct = templates.get((workflow_name, template_name))
-        if direct is not None:
-            return direct
-        for (wf_name, _name), template in templates.items():
-            if wf_name == workflow_name and template.func_name == template_name:
-                return template
-        return None
+        return thread_named((t for (wf_name, _), t in templates.items() if wf_name == workflow_name), template_name)
 
     def _find_thread(self, execution_id: str, thread_id: str) -> ExecutingLabwareThread:
         """Look up an ExecutingLabwareThread by execution and thread ID."""
@@ -3953,8 +3684,8 @@ class SystemRuntime:
     async def _run_workflow(self, execution_id: str, workflow: WorkflowTemplate) -> None:
         """Background coroutine: build workflow instance and execute.
 
-        Inlines WorkflowExecutor logic to capture workflow_instance_id
-        for the event forwarder mapping before execution starts. Per-group
+        Captures workflow_instance_id for the event forwarder mapping
+        before execution starts. Per-group
         entry threads are spawned (one per group per entry template) and
         tagged with group_id + submission_id for group-aware slot keying.
 
@@ -3962,11 +3693,10 @@ class SystemRuntime:
         submission before the task scheduled here is allowed to run, so
         `execution.submissions[0]` is always present. The submission's
         `run_mode` seeds `current_run_mode` for this task; child thread
-        tasks inherit it via asyncio context propagation. The first
-        execution under each run mode to reach
-        `ensure_runtime_initialized` triggers the lazy first-thread-touch
-        walk for that mode's world (LH deck configure + fresh non-sim
-        device-world init); later executions under the same mode no-op.
+        tasks inherit it via asyncio context propagation. A sim or live run's
+        devices were brought up at submit, so `ensure_runtime_initialized`
+        here only does that walk for a check run, or for a device dropped
+        since (LH deck configure + fresh device-world init).
         """
         execution = self._executions[execution_id]
         # Boot submission is guaranteed to be present under v3.4: `submit()`
@@ -3987,13 +3717,15 @@ class SystemRuntime:
         current_run_mode.set(run_mode)
         maybe_enable_sim_coroutine_diagnostics_from_env()
         try:
-            await self._system.ensure_runtime_initialized(workflow)
-        except DeviceInitializationError as exc:
-            self.declare_device_init_failure(execution_id, exc)
+            await self.flush_deck_reseeds()
+            await self._system.ensure_runtime_initialized()
+        except DevicesNotReadyError as exc:
+            for failure in exc.failures:
+                self._incident_declarer.declare_device_init_failure(execution_id, failure)
             raise
 
         # Pass id=execution_id so workflow_instance.id equals execution_id.
-        # Unified-id model: one UUID per execution on the T6 submission path,
+        # Unified-id model: one UUID per execution on the submission path,
         # letting the event forwarder stay a set-membership check.
         workflow_instance = await self._system.create_and_register_workflow_instance(
             workflow, submission_id=submission_id, groups=groups,
@@ -4020,11 +3752,11 @@ class SystemRuntime:
         if execution.new_threads_held:
             executing_workflow.hold_new_threads(reason=execution.new_threads_hold_reason)
         execution.workflow_attached.set()
-        executing_workflow.set_incident_declarer(self)
+        executing_workflow.set_incident_declarer(self._incident_declarer)
 
         # SUBMISSION.ACCEPTED for the boot submission fires now that the
         # workflow event bus + forwarder mapping is wired.
-        self._emit_submission_accepted(workflow_instance.id, workflow.name, submission)
+        self._accept_submission(workflow_instance.id, workflow.name, submission)
 
         # Held out here so the finally can reach it: nothing else owns this
         # task between its creation and the await below.
@@ -4032,10 +3764,8 @@ class SystemRuntime:
         try:
             # Schedule entry threads as a background task so the IN_PROGRESS
             # transition fires when work BEGINS rather than when entry threads
-            # complete. ExecutingWorkflow.start() awaits gather() over entry-
-            # thread coroutines internally; previously _run_workflow awaited
-            # start() directly, so SubmissionStatus stayed at ACCEPTED until
-            # every entry thread terminated -- 80s+ on real hardware.
+            # complete. ExecutingWorkflow.start() awaits gather() over every
+            # entry thread, so awaiting it here would hold ACCEPTED until they end.
             start_task = asyncio.create_task(executing_workflow.start())
             await executing_workflow.entry_threads_started.wait()
             # If start() failed synchronously (e.g. double-start RuntimeError
@@ -4054,11 +3784,8 @@ class SystemRuntime:
                     s.status = SubmissionStatus.IN_PROGRESS
             await start_task  # surfaces entry-thread startup errors
             await executing_workflow.wait_all_threads()
-            # Keep the workflow status in step with the execution phase roll-up
-            # (_terminal_phase_from_threads): a thread that ABORTED or STOPPED
-            # makes the run non-COMPLETED. Checking only PAUSED-with-error left
-            # executing_workflow.status=COMPLETED while execution.phase=ABORTED,
-            # so the two fields disagreed for any operator-aborted thread.
+            # ERRORED means not every thread completed, so it also covers a PARTIAL_COMPLETED run;
+            # the execution phase is the outcome a reader should use.
             any_non_completed = any(
                 t.status in (
                     LabwareThreadStatus.ABORTED,
@@ -4072,8 +3799,7 @@ class SystemRuntime:
                 WorkflowStatus.ERRORED if any_non_completed else WorkflowStatus.COMPLETED
             )
         except Exception as exc:
-            # Set FAILED synchronously + async teardown (like the spawned-contributor
-            # path) so a contributor parked at co-labware can't block the failure.
+            # FAILED is set at once; the end is recorded after the other threads are torn down.
             self._fail_execution_from_thread(execution_id, exc)
             raise
         finally:
@@ -4083,28 +3809,19 @@ class SystemRuntime:
                 # retrieved at interpreter exit.
                 start_task.cancel()
                 await asyncio.gather(start_task, return_exceptions=True)
+            executing_workflow.stop_hearing_events()
             self._system.variable_store.remove_execution(workflow_instance.id)
 
     def _terminal_phase_from_threads(self, execution: Execution) -> ExecutionPhase:
         """Roll up a cleanly-returned execution's phase from its threads.
 
-        A clean task return means every thread reached a terminal state, but
-        not necessarily COMPLETED: ABORT_THREAD and a cooperative stop both
-        return without raising. The execution is COMPLETED only if every thread
-        COMPLETED; any ABORTED or STOPPED thread makes it ABORTED.
+        A clean task return means every thread is terminal, not that every one COMPLETED: ABORT_THREAD and a
+        stop both return without raising. Any FAILED thread makes the run FAILED; a stopped thread, or no
+        thread completing, makes it ABORTED; an operator-aborted thread beside a completed one makes it
+        PARTIAL_COMPLETED.
         """
         ew = execution.executing_workflow
-        threads = ew.threads if ew is not None else []
-        # Load-bearing: a crashed thread sets ``completed`` via FAILED, so the
-        # clean-return rollup reaches here.
-        if any(t.status is LabwareThreadStatus.FAILED for t in threads):
-            return ExecutionPhase.FAILED
-        if any(
-            t.status in (LabwareThreadStatus.ABORTED, LabwareThreadStatus.STOPPED)
-            for t in threads
-        ):
-            return ExecutionPhase.ABORTED
-        return ExecutionPhase.COMPLETED
+        return run_phase_of([t.status for t in (ew.threads if ew is not None else [])])
 
     def _fail_execution_from_thread(
         self, execution_id: str, exc: BaseException
@@ -4115,66 +3832,121 @@ class SystemRuntime:
         run carries on.
 
         Marks FAILED now so the cancel scheduled below is not rolled back to
-        ABORTED by ``_on_task_done``; finalizes the terminal surface here (maps
-        submissions to FAILED and emits the terminal events) because
-        ``_on_task_done`` early-returns for a pre-set terminal phase and would
-        otherwise leave the record RUNNING and clients unnotified; then schedules
-        the async teardown that cancels the still-waiting contributors.
+        ABORTED by ``_on_task_done``. Schedules the teardown that cancels the
+        still-running threads, then finalizes the terminal surface here, because
+        ``_on_task_done`` early-returns for a pre-set terminal phase. The end is
+        recorded only once the teardown is done, so the threads' last events come
+        before the run's end event.
         """
         execution = self._executions.get(execution_id)
-        if execution is None or execution.phase in (
-            ExecutionPhase.COMPLETED,
-            ExecutionPhase.FAILED,
-            ExecutionPhase.ABORTED,
-        ):
+        if execution is None or execution.phase in _TERMINAL_PHASES:
             return
         execution.phase = ExecutionPhase.FAILED
         execution.error = str(exc)
         if execution.executing_workflow is not None:
             execution.executing_workflow.status = WorkflowStatus.ERRORED
-        self._finalize_execution_surface(execution)
         teardown = asyncio.get_running_loop().create_task(
             self._teardown_failed_execution(execution_id)
         )
         self._background_tasks.add(teardown)
         teardown.add_done_callback(self._background_tasks.discard)
+        self._finalize_execution_surface(execution, ExecutionPhase.FAILED, after=teardown)
 
-    def _finalize_execution_surface(self, execution: Execution) -> None:
-        """Map every submission to the execution's terminal phase and emit the
-        terminal submission + execution events. Runs once per execution: from
-        ``_on_task_done`` for the phases it determines, and from
-        ``_fail_execution_from_thread`` for the pre-set FAILED escalation path
-        (which ``_on_task_done`` then skips, so there is no double-emit). Emission
-        is a no-op when no workflow event bus is wired."""
-        submission_map = {
-            ExecutionPhase.COMPLETED: SubmissionStatus.COMPLETED,
-            ExecutionPhase.FAILED: SubmissionStatus.FAILED,
-            ExecutionPhase.ABORTED: SubmissionStatus.ABORTED,
-        }
-        mapped = submission_map.get(execution.phase)
-        if mapped is not None:
-            for submission in execution.submissions:
-                submission.status = mapped
+    def _finalize_execution_surface(
+        self, execution: Execution, phase: ExecutionPhase, *, after: asyncio.Task[None] | None = None,
+    ) -> None:
+        """End the run in order: every event it fired is saved, its final statuses and record are set, the
+        submissions' and the execution's end events fire, those are saved too, and only then is it ended.
+        ``after`` is work that still fires the run's events, such as a teardown; the end waits for it first.
 
+        Runs once per execution: from ``_on_task_done`` for the phases it determines, and from
+        ``_fail_execution_from_thread`` for the pre-set FAILED path, which ``_on_task_done`` then skips.
+        """
+        status_str = _END_STATUS.get(phase)
         ew = execution.executing_workflow
-        if ew is None:
+        if ew is None or status_str is None:
+            execution.phase = phase
+            submission_status = _END_SUBMISSION_STATUS.get(phase)
+            if submission_status is not None:
+                for submission in execution.submissions:
+                    submission.status = submission_status
+            execution.ended.set()
+            self._forwarder.unregister_execution(execution.id)
             return
-        phase_to_status = {
-            ExecutionPhase.COMPLETED: "COMPLETED",
-            ExecutionPhase.FAILED: "FAILED",
-            ExecutionPhase.ABORTED: "ABORTED",
-        }
-        status_str = phase_to_status.get(execution.phase)
-        if status_str is None:
+        ending = asyncio.get_running_loop().create_task(self._end_once_its_events_are_saved(execution, phase, after))
+        self._background_tasks.add(ending)
+        ending.add_done_callback(self._background_tasks.discard)
+        # A shutdown can cancel the task before it starts; the run still ends.
+        ending.add_done_callback(lambda _: self._end_now_if_not_ended(execution, phase))
+
+    async def _end_once_its_events_are_saved(
+        self, execution: Execution, phase: ExecutionPhase, after: asyncio.Task[None] | None,
+    ) -> None:
+        recorded = False
+        try:
+            if after is not None:
+                _, still_running = await asyncio.wait({after}, timeout=END_EVENTS_SAVE_TIMEOUT_S)
+                if still_running:
+                    self._unsaved_records.report(
+                        UnsavedRecord(
+                            kind="the run's events",
+                            record=(
+                                f"threads of run {execution.id} still stopping after {END_EVENTS_SAVE_TIMEOUT_S}s; "
+                                "their last events may come after the run's end"
+                            ),
+                            execution_id=execution.id,
+                        ),
+                        TimeoutError("the run's threads did not stop in time"),
+                    )
+            if not await self._event_saves.all_saved(END_EVENTS_SAVE_TIMEOUT_S):
+                self._unsaved_records.report(
+                    UnsavedRecord(
+                        kind="the run's events",
+                        record=f"events of run {execution.id} not confirmed saved in {END_EVENTS_SAVE_TIMEOUT_S}s",
+                        execution_id=execution.id,
+                    ),
+                    TimeoutError("the event store did not confirm the run's events"),
+                )
+            self._record_the_end(execution, phase)
+            recorded = True
+            # The end event too, so a reader that sees the run ended finds it.
+            await self._event_saves.all_saved(END_EVENTS_SAVE_TIMEOUT_S)
+        finally:
+            if not recorded:
+                self._record_the_end(execution, phase)
+            self._mark_ended(execution)
+
+    def _end_now_if_not_ended(self, execution: Execution, phase: ExecutionPhase) -> None:
+        if execution.ended.is_set():
             return
+        self._record_the_end(execution, phase)
+        self._mark_ended(execution)
+
+    def _record_the_end(self, execution: Execution, phase: ExecutionPhase) -> None:
+        """Set the final statuses, save the record, then fire the submissions' end events and the run's."""
+        status_str = _END_STATUS[phase]
+        execution.phase = phase
+        submission_status = _END_SUBMISSION_STATUS[phase]
+        for submission in execution.submissions:
+            submission.status = submission_status
+        ew = execution.executing_workflow
+        assert ew is not None
+        self._execution_record_service.mark_terminal(
+            execution_id=ew.id,
+            state=_phase_to_state(phase),
+            reason=execution.error,
+            terminal_at=datetime.now(timezone.utc),
+        )
         for submission in execution.submissions:
             self._emit_submission_terminal(
                 ew.id, execution.workflow_name, submission,
                 status_str, reason=execution.error,
             )
-        self._emit_execution_terminal(
-            ew.id, execution.workflow_name, execution, status_str,
-        )
+        self._emit_execution_terminal(ew.id, execution.workflow_name, execution, status_str)
+
+    def _mark_ended(self, execution: Execution) -> None:
+        execution.ended.set()
+        self._forwarder.unregister_execution(execution.id)
 
     async def _teardown_failed_execution(self, execution_id: str) -> None:
         """Cancel a fatally-failed execution's threads and task, preserving the
@@ -4204,23 +3976,26 @@ class SystemRuntime:
             # exception (if it raised) so asyncio does not warn it went unretrieved.
             if not execution.task.cancelled():
                 execution.task.exception()
+            # A shutdown sets ABORTED before the task ends and records nothing else; the run still has to end.
+            if execution.phase is ExecutionPhase.ABORTED and not execution.ended.is_set():
+                self._finalize_execution_surface(execution, ExecutionPhase.ABORTED)
             return
 
         task = execution.task
         if task.cancelled():
-            execution.phase = ExecutionPhase.ABORTED
+            phase = ExecutionPhase.ABORTED
             if execution.executing_workflow is not None:
                 execution.executing_workflow.status = WorkflowStatus.ERRORED
         elif task.exception() is not None:
             exc = task.exception()
-            execution.phase = ExecutionPhase.FAILED
+            phase = ExecutionPhase.FAILED
             execution.error = str(exc)
             logger.error(f"Execution {execution_id} failed: {exc}")
             if execution.executing_workflow is not None:
                 execution.executing_workflow.status = WorkflowStatus.ERRORED
         else:
-            execution.phase = self._terminal_phase_from_threads(execution)
-            if execution.phase is ExecutionPhase.FAILED and execution.error is None:
+            phase = self._terminal_phase_from_threads(execution)
+            if phase is ExecutionPhase.FAILED and execution.error is None:
                 # Clean-return FAILED rollup (a crashed thread). The wire must
                 # not show FAILED with a null error, and it has to name the
                 # cause: this is the only place the run states why it failed.
@@ -4240,4 +4015,16 @@ class SystemRuntime:
                     or "a thread died on an unhandled error"
                 )
 
-        self._finalize_execution_surface(execution)
+        self._finalize_execution_surface(execution, phase)
+
+
+async def declared_device_snapshots(registry: IDeviceRegistry, devices: IDeviceFacade) -> list[DeviceSnapshot]:
+    """A snapshot of every device the topology declares, in registry order.
+
+    A device only its orca-client reports has no snapshot to read.
+    """
+    return [
+        await devices.get_device_status(entry.name)
+        for entry in await registry.list_all()
+        if entry.topology_card is not None
+    ]

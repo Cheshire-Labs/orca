@@ -12,21 +12,24 @@ from collections.abc import AsyncIterator
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from orca.daemon.app import create_app
+from orca.daemon.app import InjectedSystem, create_app
 from orca.devices.devices import LiquidHandler
-from orca.runtime.deck_layout_service import seeded_deck_layout_service
 from orca.runtime.system_runtime import SystemRuntime
 
 from tests.test_system_runtime import _build_simple_system
+from tests.setup_package import deck_layout_file, with_deck_layouts
+from tests.daemon.started_daemon import started_daemon
+from tests.memory_activity import memory_daemon_system
 
 
 @pytest_asyncio.fixture
-async def runtime() -> AsyncIterator[SystemRuntime]:
+async def injected() -> AsyncIterator[InjectedSystem]:
     system, _ = await _build_simple_system()
-    rt = SystemRuntime(system)
+    started = await memory_daemon_system(system)
+    rt = started.runtime
     await rt.start()
     try:
-        yield rt
+        yield started
     finally:
         # shutdown tolerates being called after an earlier shutdown in a test.
         if rt.state.name == "RUNNING":
@@ -34,14 +37,19 @@ async def runtime() -> AsyncIterator[SystemRuntime]:
 
 
 @pytest_asyncio.fixture
-async def client(runtime: SystemRuntime) -> AsyncIterator[AsyncClient]:
+async def runtime(injected: InjectedSystem) -> SystemRuntime:
+    return injected.runtime
+
+
+@pytest_asyncio.fixture
+async def client(injected: InjectedSystem) -> AsyncIterator[AsyncClient]:
     """Pre-loaded client: bypasses mount by injecting the runtime directly.
 
     Used by route tests that exercise the loaded-system surface. For tests
     of the mount/load lifecycle itself or of the no-system-loaded state, use
     `empty_client`.
     """
-    app = create_app(initial_system_runtime=runtime)
+    app = create_app(injected=injected)
     async with AsyncClient(
         transport=ASGITransport(app=app),
         base_url="http://daemon.test",
@@ -55,11 +63,7 @@ async def empty_client() -> AsyncIterator[AsyncClient]:
     but before `orca topology mount`. Used to test the 409 gating on
     execution routes and the mount/load lifecycle.
     """
-    app = create_app(initial_system_runtime=None)
-    async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://daemon.test",
-    ) as c:
+    async with started_daemon(create_app()) as c:
         yield c
 
 
@@ -67,14 +71,14 @@ async def empty_client() -> AsyncIterator[AsyncClient]:
 async def lh_daemon_client() -> AsyncIterator[AsyncClient]:
     """A daemon with a mounted system carrying one liquid handler."""
     system, _ = await _build_simple_system()
-    lh = LiquidHandler(
+    lh = with_deck_layouts(LiquidHandler(
         name="lh1", sim=True,
-        deck_layout_store=seeded_deck_layout_service(),
-    )
+    ), deck_layout_file())
     system.add_resource(lh)
-    rt = SystemRuntime(system)
+    injected = await memory_daemon_system(system)
+    rt = injected.runtime
     await rt.start()
-    app = create_app(initial_system_runtime=rt)
+    app = create_app(injected=injected)
     try:
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://daemon.test",

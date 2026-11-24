@@ -30,7 +30,6 @@ from orca.state.projections import (
     has_volume_history,
     latest_driver_report,
     sparse_volumes,
-    went_unobserved as fold_went_unobserved,
     tip_layout,
     tip_positions_seen,
     tips_present,
@@ -110,9 +109,8 @@ class ContentsResolution:
     """The one answer to "what does this labware hold", plus its receipts.
 
     Modelled on the variable-resolution read: the resolved value, the layer it
-    came from, and every layer that was shadowed. ``get-tip-state`` and a
-    driver's own deck state stay available as the raw layers feeding this, which
-    is what they are -- diagnostics, not rival answers.
+    came from, and every layer that was shadowed. A driver's own deck state
+    stays available as a raw layer feeding this: a diagnostic, not a rival answer.
     """
 
     labware_id: str
@@ -160,49 +158,6 @@ class LabwareContentsLedger:
     async def of(self, labware: LabwareRef) -> LabwareContents:
         return self._fold(await self.ops_of(labware), labware.name)
 
-    def provenance_of(
-        self, ops: list[OperationRecord], labware_name: str,
-    ) -> Provenance:
-        """How well the record knows this labware, over ops already read.
-
-        Taken as a second entry point by callers that hold the ops already, so
-        the fold and the worklist cannot end up disagreeing about the same
-        labware. An action that has aspirated and not yet finished is holding
-        those records, which leaves this read behind: the numbers stay what the
-        record says, because an unfinished action may still be retried and
-        counting its operations twice is a different wrong answer, but the read
-        stops calling itself known.
-        """
-        provenance = contents_provenance(ops, labware_name)
-        if (
-            provenance is Provenance.KNOWN
-            and self._ops_history.unrecorded.touches_labware(labware_name)
-        ):
-            return Provenance.STALE
-        return provenance
-
-    def went_unobserved(
-        self, ops: list[OperationRecord], labware_name: str,
-    ) -> bool:
-        """Whether a gate may let work through at a position this reads empty.
-
-        The fold answers for the gaps it can see. An action still holding its
-        operations is not one of them, and it means the record is behind by
-        picks that really happened, so a rack the fold would have called
-        reloadable is refused while that action is unsettled.
-        """
-        if self._ops_history.unrecorded.touches_labware(labware_name):
-            return False
-        return fold_went_unobserved(ops, labware_name)
-
-    def is_behind(self, labware_name: str) -> bool:
-        """Whether an unfinished action is holding operations on this labware.
-
-        Different from every other stale: the record is not wrong, it has
-        simply not been told yet, and settling the action tells it.
-        """
-        return self._ops_history.unrecorded.touches_labware(labware_name)
-
     def _fold(self, ops: list[OperationRecord], name: str) -> LabwareContents:
         """What the record has actually spoken about, and how well it knows it.
 
@@ -223,7 +178,7 @@ class LabwareContentsLedger:
             tips = {pos: pos in present for pos in tip_positions_seen(ops, name)}
         volumes = well_volumes(ops, name) if has_volume_history(ops, name) else {}
         return LabwareContents(
-            provenance=self.provenance_of(ops, name),
+            provenance=contents_provenance(ops, name),
             volumes=volumes,
             tips=tips,
         )
@@ -321,11 +276,10 @@ class LabwareContentsLedger:
     ) -> tuple[dict[str, bool] | None, dict[str, float] | None]:
         """What the record has spoken about, as ``(tips, volumes)``.
 
-        Sparse on purpose: only what has been spoken about rides the wire, so an
-        undeclared labware keeps the driver's lenient tracker. A well drained to
-        exactly zero, or a position whose tip was picked, rides it explicitly
-        rather than dropping off -- otherwise the driver fills the silence with
-        its own factory default, which for a tip rack is a full rack.
+        Sparse on purpose, so an undeclared labware keeps the driver's lenient tracker.
+        Volumes: only wells declared with a non-zero start, and wells an operator set
+        (see ``sparse_volumes``). Tips: every position the record has spoken about,
+        a picked one included, or the driver would fill the silence with a full rack.
         """
         ops = await self.ops_of(labware)
         return tip_layout(ops, labware.name), sparse_volumes(ops, labware.name)

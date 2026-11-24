@@ -1,8 +1,7 @@
 """Tests for the periodic stale-connection sweep.
 
-WireHealthMonitor was extracted from ConnectionManager in the timeouts
-4-layer refactor. The monitor schedules sweep ticks at its configured
-interval and delegates the actual prune call to its ConnectionManager.
+The monitor schedules sweep ticks at its configured interval and asks its
+ConnectionManager to close each connection that missed its heartbeats.
 """
 
 import asyncio
@@ -27,10 +26,7 @@ class TestWireHealthMonitorLifecycle:
     async def test_start_then_stop_clean(self, manager):
         monitor = WireHealthMonitor(manager, interval_seconds=10.0, timeout_seconds=90)
 
-        async def _noop(_dropped):
-            return None
-
-        monitor.start(_noop)
+        monitor.start()
         assert monitor.is_running
 
         await monitor.stop()
@@ -45,10 +41,7 @@ class TestWireHealthMonitorLifecycle:
     async def test_double_stop_is_safe(self, manager):
         monitor = WireHealthMonitor(manager, interval_seconds=10.0)
 
-        async def _noop(_dropped):
-            return None
-
-        monitor.start(_noop)
+        monitor.start()
         await monitor.stop()
         await monitor.stop()
         assert not monitor.is_running
@@ -56,12 +49,9 @@ class TestWireHealthMonitorLifecycle:
     async def test_double_start_is_idempotent(self, manager):
         monitor = WireHealthMonitor(manager, interval_seconds=10.0)
 
-        async def _noop(_dropped):
-            return None
-
-        monitor.start(_noop)
+        monitor.start()
         first_task = monitor._task  # internal handle for assertion only
-        monitor.start(_noop)
+        monitor.start()
         # Second start must not replace the first task.
         assert monitor._task is first_task
         await monitor.stop()
@@ -70,7 +60,7 @@ class TestWireHealthMonitorLifecycle:
         """The configured timeout, not just its getter, decides a drop.
 
         A connection ~100s past its last heartbeat survives a monitor
-        whose timeout exceeds that age, and is dropped by one whose
+        whose timeout exceeds that age, and is closed by one whose
         timeout is below it.
         """
         ws = Mock()
@@ -80,40 +70,29 @@ class TestWireHealthMonitorLifecycle:
             client_id="lab1-client",
             site="boston", lab="molbio", workcell=None,
         )
-        await manager.attach_devices("lab1-client", ["shaker_1"])
         conn = await manager.get_connection("lab1-client")
         conn.last_heartbeat = datetime.now(timezone.utc) - timedelta(seconds=100)
-
-        seen: list[list[tuple[str, list[str]]]] = []
-
-        async def on_dropped(dropped):
-            seen.append(dropped)
 
         tolerant = WireHealthMonitor(
             manager, interval_seconds=0.05, timeout_seconds=200,
         )
-        tolerant.start(on_dropped)
+        tolerant.start()
         await wait_until(lambda: tolerant.sweep_count >= 1, timeout=5.0)
         await tolerant.stop()
-        assert seen == []
-        assert manager.get_active_connection_count() == 1
+        ws.close.assert_not_awaited()
 
         strict = WireHealthMonitor(
             manager, interval_seconds=0.05, timeout_seconds=30,
         )
-        strict.start(on_dropped)
-        await wait_until(lambda: len(seen) >= 1, timeout=5.0)
+        strict.start()
+        await wait_until(lambda: ws.close.await_count >= 1, timeout=5.0)
         await strict.stop()
-        assert seen == [[("lab1-client", ["shaker_1"])]]
-        assert manager.get_active_connection_count() == 0
+        ws.close.assert_awaited_once_with(code=1000, reason="Heartbeat timeout")
 
     async def test_stop_clears_state_when_task_cancelled_externally(self, manager):
         monitor = WireHealthMonitor(manager, interval_seconds=10.0)
 
-        async def _noop(_dropped):
-            return None
-
-        monitor.start(_noop)
+        monitor.start()
         # Simulate the task being cancelled by something other than stop()
         # (e.g. event loop shutdown racing the lifespan handler).
         assert monitor._task is not None
@@ -132,86 +111,51 @@ class TestWireHealthMonitorLifecycle:
 
 @pytest.mark.asyncio
 class TestWireHealthMonitorTickBehavior:
-    async def test_tick_invokes_callback_with_dropped_pairs(self, manager):
+    async def test_a_tick_closes_a_stale_connection(self, manager):
         ws = Mock()
         ws.close = AsyncMock()
-
         await manager.connect(
             websocket=ws,
             client_id="lab1-client",
             site="boston", lab="molbio", workcell=None,
         )
-        await manager.attach_devices("lab1-client", ["shaker_1"])
         conn = await manager.get_connection("lab1-client")
         conn.last_heartbeat = datetime.now(timezone.utc) - timedelta(seconds=300)
 
-        seen: list[list[tuple[str, list[str]]]] = []
-
-        async def on_dropped(dropped):
-            seen.append(dropped)
-
-        # Tight interval so the test does not have to wait long.
         monitor = WireHealthMonitor(
             manager, interval_seconds=0.05, timeout_seconds=90,
         )
-        monitor.start(on_dropped)
-        await wait_until(lambda: len(seen) >= 1, timeout=5.0)
+        monitor.start()
+        await wait_until(lambda: monitor.sweep_count >= 2, timeout=5.0)
         await monitor.stop()
 
-        assert len(seen) >= 1
-        assert seen[0] == [("lab1-client", ["shaker_1"])]
+        ws.close.assert_awaited_once_with(code=1000, reason="Heartbeat timeout")
 
-    async def test_no_callback_when_nothing_stale(self, manager):
+    async def test_nothing_is_closed_when_nothing_is_stale(self, manager):
         ws = Mock()
         ws.close = AsyncMock()
-
         await manager.connect(
             websocket=ws,
             client_id="lab1-client",
             site="boston", lab="molbio", workcell=None,
         )
 
-        seen: list[list[tuple[str, list[str]]]] = []
-
-        async def on_dropped(dropped):
-            seen.append(dropped)
-
         monitor = WireHealthMonitor(
             manager, interval_seconds=0.05, timeout_seconds=90,
         )
-        monitor.start(on_dropped)
+        monitor.start()
         await wait_until(lambda: monitor.sweep_count >= 1, timeout=5.0)
         await monitor.stop()
 
-        assert seen == []
+        ws.close.assert_not_awaited()
 
-    async def test_callback_exception_does_not_kill_loop(self, manager):
-        ws = Mock()
-        ws.close = AsyncMock()
+    async def test_a_failed_tick_does_not_stop_the_sweep(self):
+        failing = Mock()
+        failing.close_stale_connections = AsyncMock(side_effect=RuntimeError("boom"))
 
-        await manager.connect(
-            websocket=ws,
-            client_id="lab1-client",
-            site="boston", lab="molbio", workcell=None,
-        )
-        conn = await manager.get_connection("lab1-client")
-        conn.last_heartbeat = datetime.now(timezone.utc) - timedelta(seconds=300)
-
-        invocations = 0
-
-        async def on_dropped(_dropped):
-            nonlocal invocations
-            invocations += 1
-            raise RuntimeError("boom")
-
-        monitor = WireHealthMonitor(
-            manager, interval_seconds=0.05, timeout_seconds=90,
-        )
-        monitor.start(on_dropped)
-        # First tick prunes the stale entry + raises; wait for that callback,
-        # then confirm the loop continued past the exception.
-        await wait_until(lambda: invocations >= 1, timeout=5.0)
+        monitor = WireHealthMonitor(failing, interval_seconds=0.05, timeout_seconds=90)
+        monitor.start()
+        await wait_until(lambda: monitor.sweep_count >= 2, timeout=5.0)
         await monitor.stop()
 
-        assert invocations >= 1
-        assert monitor._task is None
+        assert failing.close_stale_connections.await_count >= 2

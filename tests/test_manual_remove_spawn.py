@@ -5,9 +5,8 @@ from tests.mock import EXTERNAL_MOVER
 `end="loc"` and explicit `end=("loc", MANUAL_REMOVE)`. Behavior
 branches on `thread.run_mode`:
 
-- `PURE_SIM` / `DEVICE_SIM`: auto-dispose -- call
-  `end_location.dispose_labware(labware)` exactly as today's terminal
-  branch of `_handle_thread_completion` does. No operator wait.
+- `CHECK_RUN` / `SIM`: return at once, with no operator wait. The
+  thread then calls `LabwarePlacer.left`, which frees the slot.
 - `LIVE`: poll `end_location.labware` every 0.5s. When the operator
   calls `labware_discharge(labware_id)`, the slot clears (discharge
   already walks slot + registry), the wait returns, and
@@ -21,13 +20,16 @@ These tests exercise the strategy directly. The engine's
 import asyncio
 
 from orca.resource_models.labware import LabwareInstance
+from orca.resource_models.labware_location_service import InMemoryLabwareLocationService
 from orca.resource_models.location import Location
 from orca.resource_models.plate_pad import PlatePad
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from orca.workflow_models.labware_threads.labware_thread import (
     LabwareThreadInstance,
 )
 from orca.workflow_models.spawn_actions import ManualRemoveSpawn
+from tests.placements_for_tests import this_tests_placements
+from tests.test_helpers import make_labware_placer
 
 
 def _make_platepad_location(name: str = "pad1") -> Location:
@@ -53,29 +55,32 @@ def _make_thread(
     )
 
 
-class TestManualRemoveSpawnSimModes:
-    """Sim modes auto-dispose via the same `dispose_labware` call the
-    legacy `_handle_thread_completion` branch ran. No operator wait."""
+async def _end_the_thread(spawn: ManualRemoveSpawn, thread: LabwareThreadInstance, at: Location) -> None:
+    """What `_handle_thread_completion` does at the end location: dispose, then the placer's `left`."""
+    await asyncio.wait_for(spawn.dispose(thread), timeout=2.0)
+    await make_labware_placer(InMemoryLabwareLocationService(this_tests_placements())).left(thread.labware, at)
 
-    async def test_pure_sim_calls_dispose_labware(self) -> None:
+
+class TestManualRemoveSpawnSimModes:
+    """Sim modes free the slot with no operator wait."""
+
+    async def test_check_run_frees_the_slot_without_an_operator_wait(self) -> None:
         location = _make_platepad_location()
         labware = _fresh_labware()
         location.initialize_labware(labware)
-        thread = _make_thread(labware, location, run_mode=WorkflowRunMode.PURE_SIM)
+        thread = _make_thread(labware, location, run_mode=WorkflowRunMode.CHECK_RUN)
 
-        spawn = ManualRemoveSpawn(location)
-        await spawn.dispose(thread)
+        await _end_the_thread(ManualRemoveSpawn(location), thread, location)
 
         assert location.labware is None
 
-    async def test_device_sim_calls_dispose_labware(self) -> None:
+    async def test_sim_frees_the_slot_without_an_operator_wait(self) -> None:
         location = _make_platepad_location()
         labware = _fresh_labware()
         location.initialize_labware(labware)
-        thread = _make_thread(labware, location, run_mode=WorkflowRunMode.DEVICE_SIM)
+        thread = _make_thread(labware, location, run_mode=WorkflowRunMode.SIM)
 
-        spawn = ManualRemoveSpawn(location)
-        await spawn.dispose(thread)
+        await _end_the_thread(ManualRemoveSpawn(location), thread, location)
 
         assert location.labware is None
 

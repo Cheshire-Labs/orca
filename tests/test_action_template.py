@@ -15,7 +15,7 @@ from orca.resource_models.resource_pool import ResourcePool
 from orca.workflow_models.action_context import ActionContext
 from orca.workflow_models.action_template import Action, ActionTemplate
 from orca.workflow_models.status_enums import FailurePolicy
-from orca.workflow_models.workflows.workflow_factories import MethodActionFactory
+from orca.workflow_models.actions.method_action_factory import MethodActionFactory
 from tests.mock import UniversalMockDevice
 from tests.test_helpers import create_test_plate_template
 

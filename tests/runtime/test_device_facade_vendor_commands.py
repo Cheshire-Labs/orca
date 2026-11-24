@@ -5,24 +5,24 @@ gateway's capability gate accepts them, so a hosted deployment's MCP and REST di
 The orca facade behind `orca device ...` and the daemon routes read a different
 source: the orca-side interface bridge. Anything the driver forwards to a vendor
 object (a PF400 controller command, the Flex gripper's jaws) was therefore
-listed nowhere, refused by `device invoke`, and refused by `device send` unless
-the device happened to implement IGenericExecutable.
+listed nowhere and refused by `device send` unless the device happened to
+implement a generic execute interface.
 
-`invoke` also stripped everything up to the last dot before dispatching, so a
-prefixed vendor name (`gripper.ungrip`) would have reached for `ungrip` on the
-wrong object.
+A prefixed vendor name (`gripper.ungrip`) is sent whole: trimming it to the
+part after the dot would reach for `ungrip` on the wrong object.
 """
 
 from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from cheshire_drivers.driver_introspection import MethodInfo
 
-from orca.gateway.adhoc import AdhocResult
+from tests.gateway_parts import gateway_with
 from orca.gateway.registry.snapshot import DeviceSnapshot
 from orca.runtime.facades.devices import DeviceFacade
+from tests.runtime.operator_calls import recording_runner, send
 
 
 DEVICE = "flex_1"
@@ -76,18 +76,16 @@ def facade() -> DeviceFacade:
     system.get_device.return_value = device
     faults = MagicMock()
     # Explicit: a MagicMock returns a truthy Mock for fault(), which would read
-    # every device as faulted in the union view.
+    # every device as faulted.
     faults.fault = MagicMock(return_value=None)
-    return DeviceFacade(
-        system, MagicMock(), MagicMock(), MagicMock(), MagicMock(), faults,
-    )
+    return DeviceFacade(system, MagicMock(), MagicMock(), gateway_with(controller=faults))
 
 
 @pytest.fixture(autouse=True)
 def connected():
     """The device is registered by an orca-client connection."""
     with patch(
-        "orca.runtime.facades.devices.device_connection_tracker.peek_snapshot",
+        "orca.gateway.registry.connection_tracker.DeviceConnectionTracker.peek_snapshot",
         return_value=_snapshot(),
     ):
         yield
@@ -113,43 +111,27 @@ def test_a_listed_vendor_command_carries_its_signature(facade: DeviceFacade) -> 
 
 
 @pytest.mark.asyncio
-async def test_invoke_sends_a_prefixed_vendor_command_whole(facade: DeviceFacade) -> None:
+async def test_send_sends_a_prefixed_vendor_command_whole(facade: DeviceFacade) -> None:
     """The prefix names the object the command lives on. Stripping it sends
     `ungrip` to the robot, which has no such command."""
-    with patch(
-        "orca.runtime.facades.devices.adhoc.execute_adhoc_command",
-        new=AsyncMock(return_value=AdhocResult(raw=None, interfaces=frozenset())),
-    ) as dispatch:
-        await facade.invoke(DEVICE, "gripper.ungrip", {}, confirm=True)
+    dispatch = recording_runner()
+    await send(facade, dispatch, DEVICE, "gripper.ungrip", {})
 
-    assert dispatch.await_args.kwargs["command"] == "gripper.ungrip"
+    assert dispatch.run_named.await_args_list[-1].args[1] == "gripper.ungrip"
 
 
 @pytest.mark.asyncio
-async def test_invoke_refuses_a_command_the_device_never_advertised(
-    facade: DeviceFacade,
-) -> None:
-    """The advertised set is the gate. Anything else is a typo or a command for
-    a different device, and dispatching it would reach the wire to find out."""
-    with pytest.raises(ValueError, match="ungrip_everything"):
-        await facade.invoke(DEVICE, "gripper.ungrip_everything", {}, confirm=True)
-
-
-@pytest.mark.asyncio
-async def test_send_reaches_a_device_that_is_not_generically_executable(
+async def test_send_reaches_a_vendor_command_over_the_wire(
     facade: DeviceFacade,
 ) -> None:
     """`orca device send` refused every device but a VENUS, because it required
     an orca-side interface only VENUS implements. A connected device's command
     goes to the gateway like any other."""
-    with patch(
-        "orca.runtime.facades.devices.adhoc.execute_adhoc_command",
-        new=AsyncMock(return_value=AdhocResult(raw=None, interfaces=frozenset())),
-    ) as dispatch:
-        await facade.execute(DEVICE, "retract_axis", {"axis": "z"}, confirm=True)
+    dispatch = recording_runner()
+    await send(facade, dispatch, DEVICE, "retract_axis", {"axis": "z"})
 
-    assert dispatch.await_args.kwargs["command"] == "retract_axis"
-    assert dispatch.await_args.kwargs["params"] == {"axis": "z"}
+    assert dispatch.run_named.await_args_list[-1].args[1] == "retract_axis"
+    assert dispatch.run_named.await_args_list[-1].args[2] == {"axis": "z"}
 
 
 def test_introspection_reports_what_the_connected_driver_advertises(
@@ -163,15 +145,16 @@ def test_introspection_reports_what_the_connected_driver_advertises(
     assert "gripper.ungrip" in info.methods
 
 
-@pytest.mark.asyncio
-async def test_an_unadvertised_prefixed_name_is_refused_not_trimmed(
-    facade: DeviceFacade,
-) -> None:
+def test_an_unadvertised_prefixed_name_is_not_trimmed(facade: DeviceFacade) -> None:
     """`move_to` exists on the gripper and on both mounts. Trimming an
-    unrecognised `gripper.move_to` down to `move_to` would find a name that is
-    allowed and send the command to whichever object owns it."""
-    with pytest.raises(ValueError, match="gripper.move_to"):
-        await facade.invoke(DEVICE, "gripper.move_to", {}, confirm=True)
+    unrecognised `gripper.move_to` down to `move_to` would send the command to
+    whichever object owns that name, so it goes whole and the device refuses it."""
+    assert facade.command_name(DEVICE, "gripper.move_to") == "gripper.move_to"
+
+
+def test_an_orca_side_namespace_is_dropped(facade: DeviceFacade) -> None:
+    """`device capabilities` prints an interface method under its namespace; the driver knows it by its bare name."""
+    assert facade.command_name(DEVICE, "liquid_handler.aspirate") == "aspirate"
 
 
 @pytest.mark.asyncio
@@ -182,25 +165,17 @@ async def test_the_vendor_confirm_reaches_the_gateway(facade: DeviceFacade) -> N
     operator had no flag to set and the refusal named a confirm they could not
     give.
     """
-    with patch(
-        "orca.runtime.facades.devices.adhoc.execute_adhoc_command",
-        new=AsyncMock(return_value=AdhocResult(raw=None, interfaces=frozenset())),
-    ) as dispatch:
-        await facade.invoke(
-            DEVICE, "gripper.ungrip", {}, confirm=True, vendor_confirm=True,
-        )
+    dispatch = recording_runner()
+    await send(facade, dispatch, DEVICE, "gripper.ungrip", {}, vendor_confirm=True)
 
-    assert dispatch.await_args.kwargs["confirm"] is True
+    assert dispatch.run_named.await_args_list[-1].kwargs["confirm"] is True
 
 
 @pytest.mark.asyncio
 async def test_nothing_is_acknowledged_by_default(facade: DeviceFacade) -> None:
     """The audit confirm every REST route supplies is not the operator saying
     yes to this particular command."""
-    with patch(
-        "orca.runtime.facades.devices.adhoc.execute_adhoc_command",
-        new=AsyncMock(return_value=AdhocResult(raw=None, interfaces=frozenset())),
-    ) as dispatch:
-        await facade.execute(DEVICE, "retract_axis", {"axis": "z"}, confirm=True)
+    dispatch = recording_runner()
+    await send(facade, dispatch, DEVICE, "retract_axis", {"axis": "z"})
 
-    assert dispatch.await_args.kwargs["confirm"] is False
+    assert dispatch.run_named.await_args_list[-1].kwargs["confirm"] is False

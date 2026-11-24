@@ -26,10 +26,10 @@ import pytest
 from orca.events.event_bus import EventBus
 from orca.events.execution_context import ExecutionContext
 from orca.resource_models.capacity import CapacityPolicy, OverflowAction
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from orca.resource_models.labware import LabwareInstance, LabwareTemplate
 from orca.state.records import DeclaredTracking
-from orca.resource_models.labware_state import (
+from orca.workflow_models.labware_state import (
     InMemoryLabwareRegistry,
     LabwareSlot,
     SLOT_CLOSED_SENTINEL,
@@ -119,6 +119,23 @@ class TestLabwareSlotReceiverDrained:
         slot.receiver_drained = True
         assert slot.has_active_thread() is False
 
+    def test_stashed_work_waits_for_the_handoff_only_while_the_receiver_is_alive(self) -> None:
+        """A drained receiver still running hands the slot on, so new work goes behind the stash. One that ended
+        without a handoff (stopped, aborted, failed) never will, so nothing waits on it."""
+        labware = _Labware("tips")
+        thread_inst = MagicMock(spec=LabwareThreadInstance)
+        thread_inst.labware = labware
+        active = _StubRegisteredThread(labware, _StubLabwareTemplate("tips", labware), thread_inst)
+        slot = LabwareSlot(slot_key="tips", labware_template_name="tips")
+        slot.active_thread = active
+        slot.pending.append(MagicMock(spec=ExecutingMethod))
+
+        assert slot.waits_for_its_handoff() is False, "still taking contributions"
+        slot.receiver_drained = True
+        assert slot.waits_for_its_handoff() is True
+        active.stop()
+        assert slot.waits_for_its_handoff() is False
+
     @pytest.mark.asyncio
     async def test_drain_for_handoff_resets_receiver_drained(self) -> None:
         """drain_for_handoff clears receiver_drained so the next receiver
@@ -126,7 +143,7 @@ class TestLabwareSlotReceiverDrained:
         slot = LabwareSlot(slot_key="tips", labware_template_name="tips")
         slot.receiver_drained = True
 
-        await slot.drain_for_handoff(callback=None, run_mode=WorkflowRunMode.PURE_SIM)
+        await slot.drain_for_handoff(callback=None, run_mode=WorkflowRunMode.CHECK_RUN)
 
         assert slot.receiver_drained is False
 
@@ -137,6 +154,7 @@ class TestLabwareSlotReceiverDrained:
         slot = LabwareSlot(slot_key="tips", labware_template_name="tips")
         slot.receiver_drained = True
         method = MagicMock(spec=ExecutingMethod)
+        method.partner_barcodes = {}
         method.name = "m"
         # ``ExecutingMethod.completed`` is an asyncio.Event set in __init__
         # so spec=ExecutingMethod does NOT auto-provide it. drain_for_handoff
@@ -153,7 +171,7 @@ class TestLabwareSlotReceiverDrained:
         async def callback(name: str, m: ExecutingMethod, run_mode: WorkflowRunMode) -> None:
             recorded.append((name, m))
 
-        routed = await slot.drain_for_handoff(callback=callback, run_mode=WorkflowRunMode.PURE_SIM)
+        routed = await slot.drain_for_handoff(callback=callback, run_mode=WorkflowRunMode.CHECK_RUN)
 
         assert slot.receiver_drained is False
         assert routed == 1
@@ -181,10 +199,12 @@ class TestLabwareSlotReceiverDrained:
         """
         slot = LabwareSlot(slot_key="tips", labware_template_name="tips")
         completed_method = MagicMock(spec=ExecutingMethod)
+        completed_method.partner_barcodes = {}
         completed_method.name = "completed_one"
         completed_method.completed = MagicMock()
         completed_method.completed.is_set.return_value = True
         pending_method = MagicMock(spec=ExecutingMethod)
+        pending_method.partner_barcodes = {}
         pending_method.name = "pending_one"
         pending_method.completed = MagicMock()
         pending_method.completed.is_set.return_value = False
@@ -195,7 +215,7 @@ class TestLabwareSlotReceiverDrained:
         async def callback(name: str, m: ExecutingMethod, run_mode: WorkflowRunMode) -> None:
             recorded.append((name, m))
 
-        routed = await slot.drain_for_handoff(callback=callback, run_mode=WorkflowRunMode.PURE_SIM)
+        routed = await slot.drain_for_handoff(callback=callback, run_mode=WorkflowRunMode.CHECK_RUN)
 
         # Only the non-completed method is routed.
         assert routed == 1
@@ -212,10 +232,12 @@ class TestLabwareSlotReceiverDrained:
         """
         slot = LabwareSlot(slot_key="tips", labware_template_name="tips")
         completed = MagicMock(spec=ExecutingMethod)
+        completed.partner_barcodes = {}
         completed.name = "completed_one"
         completed.completed = MagicMock()
         completed.completed.is_set.return_value = True
         pending = MagicMock(spec=ExecutingMethod)
+        pending.partner_barcodes = {}
         pending.name = "pending_one"
         pending.completed = MagicMock()
         pending.completed.is_set.return_value = False
@@ -226,7 +248,7 @@ class TestLabwareSlotReceiverDrained:
         async def callback(name: str, m: ExecutingMethod, run_mode: WorkflowRunMode) -> None:
             recorded.append((name, m))
 
-        routed = await slot.drain_for_handoff(callback=callback, run_mode=WorkflowRunMode.PURE_SIM)
+        routed = await slot.drain_for_handoff(callback=callback, run_mode=WorkflowRunMode.CHECK_RUN)
 
         assert routed == 1
         assert recorded == [("tips", pending)]
@@ -244,6 +266,7 @@ class TestLabwareSlotReceiverDrained:
 
         def _method(name: str, completed: bool) -> MagicMock:
             m = MagicMock(spec=ExecutingMethod)
+            m.partner_barcodes = {}
             m.name = name
             m.completed = MagicMock()
             m.completed.is_set.return_value = completed
@@ -263,7 +286,7 @@ class TestLabwareSlotReceiverDrained:
         async def callback(name: str, m: ExecutingMethod, run_mode: WorkflowRunMode) -> None:
             recorded.append((name, m))
 
-        routed = await slot.drain_for_handoff(callback=callback, run_mode=WorkflowRunMode.PURE_SIM)
+        routed = await slot.drain_for_handoff(callback=callback, run_mode=WorkflowRunMode.CHECK_RUN)
 
         # pending-first then queue, completed entries skipped:
         assert routed == 2
@@ -356,6 +379,7 @@ class TestSpawnCallbackHonorsReceiverDrained:
         slot.receiver_drained = True
 
         method = MagicMock(spec=ExecutingMethod)
+        method.partner_barcodes = {}
         method.name = "next_method"
         method.aggregate_demand = MagicMock(return_value=None)
         method.contributor_context = None
@@ -381,7 +405,7 @@ class TestSpawnCallbackHonorsReceiverDrained:
         workflow.add_thread = MagicMock(return_value=added)  # type: ignore[method-assign]
         workflow.start_thread = MagicMock()  # type: ignore[method-assign]
 
-        await callback(thread_template.labware_template.name, method, WorkflowRunMode.PURE_SIM)
+        await callback(thread_template.labware_template.name, method, WorkflowRunMode.CHECK_RUN)
 
         # The fresh-receiver branch must have been taken: create_thread_fn
         # was awaited. If the bug were live (no flag check), the active
@@ -409,6 +433,7 @@ class TestSpawnCallbackHonorsReceiverDrained:
         # receiver_drained intentionally left False (the default).
 
         method = MagicMock(spec=ExecutingMethod)
+        method.partner_barcodes = {}
         method.name = "next_method"
         method.aggregate_demand = MagicMock(return_value=None)
         method.contributor_context = None
@@ -416,7 +441,7 @@ class TestSpawnCallbackHonorsReceiverDrained:
         create_fn = cast(MagicMock, workflow._create_thread_fn)
         create_fn.reset_mock()
 
-        await callback(thread_template.labware_template.name, method, WorkflowRunMode.PURE_SIM)
+        await callback(thread_template.labware_template.name, method, WorkflowRunMode.CHECK_RUN)
 
         # Active branch: queue grew, contributions increment, no fresh spawn.
         assert create_fn.called is False, (
@@ -447,6 +472,7 @@ class TestSpawnCallbackHonorsReceiverDrained:
         prior_active = slot.active_thread
 
         method = MagicMock(spec=ExecutingMethod)
+        method.partner_barcodes = {}
         method.name = "next_method"
         method.aggregate_demand = MagicMock(return_value=None)
         method.contributor_context = None
@@ -464,7 +490,7 @@ class TestSpawnCallbackHonorsReceiverDrained:
         workflow.add_thread = MagicMock(return_value=added)  # type: ignore[method-assign]
         workflow.start_thread = MagicMock()  # type: ignore[method-assign]
 
-        await callback(thread_template.labware_template.name, method, WorkflowRunMode.PURE_SIM)
+        await callback(thread_template.labware_template.name, method, WorkflowRunMode.CHECK_RUN)
 
         # Fresh-receiver branch was taken; the slot must now point at the
         # newly-added thread, and receiver_drained must be reset.
@@ -513,6 +539,7 @@ class TestSpawnCallbackHonorsReceiverDrained:
         flag_flipping_lw.can_continue = race_can_continue  # type: ignore[method-assign]
 
         method = MagicMock(spec=ExecutingMethod)
+        method.partner_barcodes = {}
         method.name = "next_method"
         method.aggregate_demand = MagicMock(return_value=None)
         method.contributor_context = None
@@ -530,7 +557,7 @@ class TestSpawnCallbackHonorsReceiverDrained:
         workflow.add_thread = MagicMock(return_value=added)  # type: ignore[method-assign]
         workflow.start_thread = MagicMock()  # type: ignore[method-assign]
 
-        await callback(thread_template.labware_template.name, method, WorkflowRunMode.PURE_SIM)
+        await callback(thread_template.labware_template.name, method, WorkflowRunMode.CHECK_RUN)
 
         # Re-validation must have noticed the drain and fallen through to
         # fresh-receiver branch. Symptoms of correct behavior:

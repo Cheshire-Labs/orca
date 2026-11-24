@@ -5,12 +5,11 @@ for system-level consumption by plugins, sinks, and external systems.
 """
 
 import time
-from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, JsonValue
 from typing_extensions import Self
 
-from orca.events.execution_context import ExecutionContext
+from orca.events.execution_context import EventContext, ExecutionContext
 
 
 class RuntimeEvent(BaseModel):
@@ -29,7 +28,7 @@ class RuntimeEvent(BaseModel):
     entity_type: str
     entity_id: str
     status: str
-    context: ExecutionContext
+    context: EventContext
 
     @classmethod
     def from_event_bus(
@@ -57,5 +56,5 @@ class RuntimeEvent(BaseModel):
             context=context,
         )
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, JsonValue]:
         return self.model_dump(mode="json")

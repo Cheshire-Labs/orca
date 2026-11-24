@@ -16,13 +16,15 @@ the on-record emission seam the incident vertical uses is intentionally absent.
 """
 
 import asyncio
-from typing import List, Mapping, Optional, Tuple
+from typing import List, Protocol, Tuple
 
 from cheshire_drivers.liquid_handler_models import DeckLayoutConfig
 
-from orca.runtime.db import create_memory_engine
-from orca.runtime.interfaces import IDeckLayoutStore
-from orca.runtime.sqlite_deck_layout_store import SqliteDeckLayoutStore
+from orca.resource_models.store_interfaces import IDeckLayoutStore
+
+
+class IDeckLayoutService(IDeckLayoutStore, Protocol):
+    """One liquid handler's deck layouts, one at a time under one lock. It is used wherever a store is."""
 
 
 class DeckLayoutService:
@@ -52,20 +54,6 @@ class DeckLayoutService:
         async with self._lock:
             return await self._store.delete(name)
 
-    async def seed_if_missing(
-        self, configs: Mapping[str, DeckLayoutConfig],
-    ) -> None:
-        """Insert each layout whose name is not present; never overwrite.
-
-        Lets a liquid handler's registry outlive multiple topology mounts: each
-        mount re-declares its seed and existing rows (operator edits included)
-        win over the re-declared seed.
-        """
-        async with self._lock:
-            for name, config in configs.items():
-                if await self._store.get(name) is None:
-                    await self._store.add(name, config)
-
     async def create_schema(self) -> None:
         """Create the store's schema if absent (satisfies IDeckLayoutStore)."""
         await self._store.create_schema()
@@ -77,61 +65,3 @@ class DeckLayoutService:
     async def aclose(self) -> None:
         """Release the store (dispose its engine). Call from the owner's shutdown."""
         await self._store.aclose()
-
-
-class _LazySeededDeckLayoutService(DeckLayoutService):
-    """DeckLayoutService whose seed is reconciled on first async access.
-
-    For sync construction sites already on a running loop (topology ``build``,
-    test helpers) that cannot await the seed write. The seed is resolved
-    synchronously and reconciled into the store on the first CRUD call.
-    """
-
-    def __init__(
-        self,
-        store: IDeckLayoutStore,
-        seed: Mapping[str, DeckLayoutConfig],
-    ) -> None:
-        super().__init__(store)
-        self._pending_seed: dict[str, DeckLayoutConfig] = dict(seed)
-        self._seeded = False
-
-    async def _ensure_seeded(self) -> None:
-        if self._seeded:
-            return
-        self._seeded = True
-        if self._pending_seed:
-            await self.seed_if_missing(self._pending_seed)
-
-    async def get(self, name: str) -> DeckLayoutConfig | None:
-        await self._ensure_seeded()
-        return await super().get(name)
-
-    async def list(self) -> List[Tuple[str, DeckLayoutConfig]]:
-        await self._ensure_seeded()
-        return await super().list()
-
-    async def add(self, name: str, config: DeckLayoutConfig) -> None:
-        await self._ensure_seeded()
-        await super().add(name, config)
-
-    async def update(self, name: str, config: DeckLayoutConfig) -> None:
-        await self._ensure_seeded()
-        await super().update(name, config)
-
-    async def delete(self, name: str) -> bool:
-        await self._ensure_seeded()
-        return await super().delete(name)
-
-
-def seeded_deck_layout_service(
-    seed: Optional[Mapping[str, DeckLayoutConfig]] = None,
-) -> DeckLayoutService:
-    """A SQLite-backed DeckLayoutService seeded lazily on first async access.
-
-    Drop-in for sync construction sites that previously built an in-memory
-    deck-layout store with an immediate seed.
-    """
-    return _LazySeededDeckLayoutService(
-        SqliteDeckLayoutStore(create_memory_engine()), dict(seed or {}),
-    )

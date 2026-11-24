@@ -9,7 +9,7 @@ from cheshire_drivers.liquid_handler_models import (
 )
 from cheshire_drivers.pipetting import MixParams, PipettingProfile
 
-from orca.runtime.pipetting_parameters import (
+from orca.devices.pipetting_parameters import (
     DEFAULTS,
     LIQUID_CLASS,
     STEP,

@@ -18,7 +18,7 @@ import pytest
 
 from orca.events.event_bus import EventBus
 from orca.events.execution_context import ExecutionContext
-from orca.resource_models.labware_state import InMemoryLabwareRegistry
+from orca.workflow_models.labware_state import InMemoryLabwareRegistry
 from orca.workflow_models.method import ExecutingMethod
 from orca.workflow_models.workflows.executing_workflow import ExecutingWorkflow
 from orca.workflow_models.workflows.workflow import WorkflowInstance

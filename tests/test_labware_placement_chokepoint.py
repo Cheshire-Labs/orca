@@ -13,29 +13,36 @@ pick-side holders (driver-deck projection, site slot) are populated and the
 pick succeeds.
 """
 
+from orca.sdk.build import build_system_over
+from orca.events.event_bus import EventBus
 import pytest
 
 import orca.orca as orca
-from orca.spawn import DISPENSE, LEAVE_IN_PLACE, REUSE_EXISTING
+from orca.spawn import DISPENSE
 from cheshire_drivers import DeckLayoutConfig, DeckResourceConfig, Teachpoint
 from cheshire_drivers.liquid_handler_models import GetDeckStateRequest
 from cheshire_drivers import CartesianCoordinates as C
 from cheshire_drivers import RecordingLiquidHandlerDriver
-from cheshire_drivers.plr import ChatterboxLiquidHandlerDriver
 from orca.devices.devices import LiquidHandler, Storage
 from orca.resource_models.plate_pad import PlatePad
 from orca.resource_models.transporter import Transporter
-from orca.runtime.device_factory_context import use_device_factory
+from orca.runtime.labware_service import LabwareService
 from orca.runtime.labware_store import InMemoryLabwareStore
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.store_factory import InMemoryRuntimeStoreFactory
-from orca.runtime.system_runtime import SystemRuntime
+from orca.modes.run_modes import WorkflowRunMode
 from orca.sdk.build import Topology
 from orca.sdk.labware import PlateTemplate
 from orca.workflow_models.action_context import ActionContext
 from orca.workflow_models.method_context import MethodContext
 from orca.workflow_models.thread_context import ThreadContext
 from tests.test_helpers import run_to_quiescence
+from tests.setup_package import package_stores, write_deck_layouts, write_teachpoints
+from tests.setup_package import with_teachpoints, with_deck_layouts
+from tests.memory_activity import memory_ops_store, memory_runtime
+from tests.memory_activity import memory_unsaved_positions
+from tests.real_device_path import the_real_device_path
+from tests.recording_handler import RecordingHandler
+from orca.resource_models.labware_service_interface import ILabwareService
+from tests.memory_activity import memory_labware_service
 
 
 SAMPLE_START = "lh/carrier-7-0"
@@ -50,43 +57,30 @@ DECK_CONFIG = DeckLayoutConfig(
 )
 
 
-async def _build(recorder: RecordingLiquidHandlerDriver, *, wf_name: str, sample_start):
-    stores = InMemoryRuntimeStoreFactory()
+async def _build(recorder: RecordingLiquidHandlerDriver, *, wf_name: str, sample_start, labware_service: ILabwareService | None = None):
+    stores = package_stores()
 
     sample_plate = PlateTemplate(
         "sample_plate", labware_type="Cor_Falcon_96_wellplate_340ul_Fb_Black")
     reservoir = PlateTemplate(
         "reservoir", labware_type="AGenBio_1_troughplate_190000uL_Fl")
 
-    class _LhDeckFactory:
-        def __init__(self, lh: RecordingLiquidHandlerDriver) -> None:
-            self._lh = lh
-            from orca.runtime.device_factory import SimDeviceFactory
-            self._fallback = SimDeviceFactory()
-
-        def build_drivers(self, device_type: str, name: str, *, deck_modeling: bool = False):
-            if device_type == "liquid_handler":
-                return self._lh, self._lh
-            return self._fallback.build_drivers(device_type, name, deck_modeling=deck_modeling)
-
-    with use_device_factory(_LhDeckFactory(recorder)):
-        lh = LiquidHandler(
-            "lh",
-            deck_layout_store=stores.deck_layouts("lh", seed={"default": DECK_CONFIG}),
-            deck_layout="default",
-        )
-        stacker = Storage("stacker")
-        waste = Storage("waste")
-        pad = PlatePad("pad")
-        arm = Transporter(
-            "arm",
-            teachpoint_store=stores.teachpoints("arm", seed=[
-                Teachpoint("stacker", C(0, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("pad", C(200, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("lh/carrier-7-2", C(400, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("waste", C(600, 200, 300, 0, 90, 180), orientation="right"),
-            ]),
-        )
+    the_real_device_path().simulate_with("lh", recorder)
+    lh = with_deck_layouts(LiquidHandler(
+        "lh",
+        deck_layout="default",
+    ), write_deck_layouts(stores, "lh", {"default": DECK_CONFIG}))
+    stacker = Storage("stacker")
+    waste = Storage("waste")
+    pad = PlatePad("pad")
+    arm = with_teachpoints(Transporter(
+        "arm",
+    ), write_teachpoints(stores, "arm", [
+            Teachpoint("stacker", C(0, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("pad", C(200, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("lh/carrier-7-2", C(400, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("waste", C(600, 200, 300, 0, 90, 180), orientation="right"),
+        ]))
 
     @orca.action(device=lh, inputs=[sample_plate])
     async def touch_plate(ctx: ActionContext) -> None:
@@ -109,8 +103,8 @@ async def _build(recorder: RecordingLiquidHandlerDriver, *, wf_name: str, sample
         locations={"stacker": stacker, "pad": pad, "lh": lh, "waste": waste},
         transporters=[arm],
     )
-    build = await orca.build_system(
-        name="Placement Chokepoint", workflow=workflow, topology=topology, stores=stores)
+    build = await build_system_over(
+        name="Placement Chokepoint", workflow=workflow, topology=topology, stores=stores, event_bus=EventBus(), ops_history_store=memory_ops_store(), labware_service=labware_service or memory_labware_service(), unsaved_positions=memory_unsaved_positions())
     return build, lh
 
 
@@ -120,10 +114,10 @@ async def test_register_to_deck_site_populates_pick_holders() -> None:
     path reads: the flat site node's slot and the LH driver-deck projection.
     Pre-fix register wrote only the slot, so the pick-side holders stayed
     empty and the first move off the deck raised."""
-    recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    recorder = RecordingHandler()
     store = InMemoryLabwareStore()
-    build, _ = await _build(recorder, wf_name="chokepoint_register", sample_start=("stacker", DISPENSE))
-    runtime = SystemRuntime(build.system, event_bus=build.event_bus, labware_store=store)
+    build, _ = await _build(recorder, wf_name="chokepoint_register", sample_start=("stacker", DISPENSE), labware_service=LabwareService(store))
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
     await runtime.start()
 
     await runtime.labware.register("sample_plate", location=SAMPLE_START, confirm=True)
@@ -146,13 +140,13 @@ async def test_thread_starting_on_deck_site_is_picked_off_and_completes() -> Non
     and is then picked off the deck and routed to waste. Pre-fix the pick off
     the deck raised because the bridge loaded-list and transporter graph were
     never seeded at placement."""
-    recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    recorder = RecordingHandler()
     store = InMemoryLabwareStore()
-    build, _ = await _build(recorder, wf_name="chokepoint_e2e", sample_start=SAMPLE_START)
-    runtime = SystemRuntime(build.system, event_bus=build.event_bus, labware_store=store)
+    build, _ = await _build(recorder, wf_name="chokepoint_e2e", sample_start=SAMPLE_START, labware_service=LabwareService(store))
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
     await runtime.start()
 
-    record = await runtime.submit_workflow("chokepoint_e2e", mode=WorkflowRunMode.PURE_SIM)
+    record = await runtime.submit_workflow("chokepoint_e2e", mode=WorkflowRunMode.CHECK_RUN)
     statuses = await run_to_quiescence(runtime, record.id)
 
     assert statuses, "no threads were created"

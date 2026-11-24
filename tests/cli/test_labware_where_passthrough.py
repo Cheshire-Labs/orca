@@ -13,18 +13,18 @@ from unittest.mock import patch
 
 import httpx
 import pytest
-import typer
 from typer.testing import CliRunner
 
 from orca.cli.app import app
-from orca.cli.client import LocalDaemonClient
-from orca.daemon.schemas import LabwareDTO
+from orca.cli.client import OrcaClient
+from orca.cli.control_plane import ControlPlaneError
+from orca.operations.labware_models import LabwareSnapshotModel
 
 
 runner = CliRunner()
 
 
-def _labware(**overrides: Any) -> LabwareDTO:
+def _labware(**overrides: Any) -> LabwareSnapshotModel:
     base: dict[str, Any] = {
         "id": "7faedeec-1234-4abc-9def-000000000001",
         "name": "plate-1",
@@ -34,7 +34,7 @@ def _labware(**overrides: Any) -> LabwareDTO:
         "current_location": "pad1",
     }
     base.update(overrides)
-    return LabwareDTO(**base)
+    return LabwareSnapshotModel(**base)
 
 
 # -- where: daemon fall-through for store-only labware -----------------------
@@ -192,7 +192,7 @@ class TestLabwareEditVerbsPrefix:
         mock_local.return_value.labware_edit_location.assert_not_called()
 
 
-# -- LocalDaemonClient: _or_none variants ------------------------------------
+# -- OrcaClient: _or_none variants ------------------------------------
 
 
 def _transport(
@@ -207,12 +207,11 @@ def _transport(
     return httpx.MockTransport(handler)
 
 
-class _ProbeClient(LocalDaemonClient):
+class _ProbeClient(OrcaClient):
     """Constructs without a live daemon pid; injects a MockTransport."""
 
     def __init__(self, transport: httpx.MockTransport) -> None:
-        self._base_url = "http://daemon.test"
-        self._timeout = 1.0
+        super().__init__("http://daemon.test", timeout=1.0)
         self._transport = transport
 
     def _make_http_client(self) -> httpx.Client:
@@ -246,7 +245,7 @@ class TestClientOrNoneVariants:
         client = _ProbeClient(_transport(500, {
             "detail": {"code": "INTERNAL_ERROR", "message": "boom", "extras": {}},
         }))
-        with pytest.raises(typer.Exit):
+        with pytest.raises(ControlPlaneError):
             client.labware_get_by_id_or_none("x")
 
     def test_get_by_barcode_or_none_returns_none_on_404(self) -> None:

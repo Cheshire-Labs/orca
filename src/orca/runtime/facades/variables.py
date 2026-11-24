@@ -1,6 +1,6 @@
 """VariableFacade: the external UI surface over a `VariableService`.
 
-Reads pass through untouched. Writes are marked `@dangerous` so CLI/REST/MCP
+Reads pass through untouched. Writes are marked `@dangerous` so CLI/REST
 all get uniform confirmation prompts through the danger registry.
 
 **Module boundary note.** This file sits at the UI-boundary layer. Default
@@ -11,22 +11,20 @@ readable. Engine-internal code never calls facades -- it talks directly to
 the `VariableService` and skips the gate.
 """
 
-import json
-from pathlib import Path
-
 from orca.runtime.danger import DangerLevel, dangerous
-from orca.runtime.runtime_interface import IVariableFacade
-from orca.variables.deployment_profile import DeploymentProfile
+from orca.runtime.facade_interfaces import IVariableFacade
 from orca.variables.errors import OptionValue
 from orca.variables.resolution import VariableResolution
-from orca.variables.variable_store import VariableService
+from orca.runtime.global_variable_service import IGlobalVariableService
+from orca.variables.variable_store import IVariableService
 
 
 class VariableFacade(IVariableFacade):
     """Concrete VariableFacade implementation."""
 
-    def __init__(self, store: VariableService) -> None:
+    def __init__(self, store: IVariableService, globals_file: IGlobalVariableService) -> None:
         self._store = store
+        self._globals_file = globals_file
 
     def get(self, name: str, execution_id: str) -> OptionValue:
         return self._store.resolve(name, execution_id)
@@ -73,11 +71,12 @@ class VariableFacade(IVariableFacade):
         message="Set global variable '{name}'. Affects ALL executions that do not have "
                 "a local override. In-flight actions will not see the new value.",
     )
-    def set_global(
+    async def set_global(
         self, name: str, value: OptionValue,
         *, reason: str | None = None,
     ) -> None:
         del reason  # consumed by @dangerous audit
+        await self._globals_file.save_value(name, value)
         self._store.set_global(name, value)
 
     @dangerous(
@@ -129,23 +128,7 @@ class VariableFacade(IVariableFacade):
                 "variable fall through to computed / default values. In-flight "
                 "actions will not see the removal.",
     )
-    def unset_global(self, name: str, *, reason: str | None = None) -> None:
+    async def unset_global(self, name: str, *, reason: str | None = None) -> None:
         del reason  # consumed by @dangerous audit
+        await self._globals_file.clear_value(name)
         self._store.unset_global(name)
-
-    @dangerous(
-        name="variables.load_profile",
-        level=DangerLevel.CRITICAL,
-        message="Load deployment profile from '{profile_path}' into execution "
-                "'{execution_id}'. Replaces existing overrides; partial failure "
-                "is not rolled back by the underlying store.",
-        requires_reason=True,
-    )
-    def load_profile(
-        self, execution_id: str, profile_path: str,
-        *, reason: str | None = None,
-    ) -> None:
-        del reason  # consumed by @dangerous audit; facade ignores body
-        data = json.loads(Path(profile_path).read_text(encoding="utf-8"))
-        profile = DeploymentProfile.model_validate(data)
-        self._store.load_profile(execution_id, profile)

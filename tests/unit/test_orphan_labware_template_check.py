@@ -130,13 +130,10 @@ class TestDeriveLabwaresOrphanCheck:
         )
 
     def test_no_threads_anywhere_skips_check(self) -> None:
-        """StandaloneMethodExecutor path: no threads, labwares passed.
+        """No workflow declares a thread, so the orphan check is skipped.
 
-        When no workflow has any thread, the orphan check is skipped --
-        the standalone-method execution model binds labware via a
-        different mechanism (labware_start_mapping) and legitimately
-        passes templates directly. The check only applies when the
-        workflow execution model is in play.
+        Workflows that only hold methods for standalone runs pass their labware
+        templates directly; a standalone run names each one's start and end.
         """
         t1 = _FakeTemplate("plate_a", "Plate")
         t2 = _FakeTemplate("plate_b", "Plate")

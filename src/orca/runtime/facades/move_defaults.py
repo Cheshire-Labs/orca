@@ -1,6 +1,6 @@
 """MoveDefaultsFacade: the external surface over what an arm's moves start from.
 
-REST/MCP/CLI route through `deployment_registries.move_defaults.<method>`. The
+REST/CLI route through `deployment_registries.move_defaults.<method>`. The
 store instance the runtime resolves moves against IS the one this facade edits,
 so an operator's change reaches the next move rather than a second copy of the
 numbers.
@@ -19,22 +19,22 @@ from collections.abc import Iterable
 from cheshire_drivers.move_parameters import MoveParameterField, MoveParameterPatch
 
 from orca.runtime.danger import DangerLevel, dangerous
-from orca.runtime.move_defaults_service import MoveDefaultsService
-from orca.runtime.move_parameters import (
+from orca.runtime.move_defaults_service import IMoveDefaultsService
+from orca.resource_models.move_parameters import (
     reject_contradiction,
     reject_labware_owned,
     reject_site_owned,
     resolve_move_defaults,
 )
 from orca.runtime.move_parameter_models import TransporterMoveDefaults
-from orca.runtime.runtime_interface import IMoveDefaultsFacade
-from orca.system.resource_registry import IResourceRegistry
+from orca.runtime.facade_interfaces import IMoveDefaultsFacade
+from orca.resource_models.resource_registry import IResourceRegistry
 
 
 class MoveDefaultsFacade(IMoveDefaultsFacade):
     """Concrete IMoveDefaultsFacade implementation."""
 
-    def __init__(self, service: MoveDefaultsService) -> None:
+    def __init__(self, service: IMoveDefaultsService) -> None:
         self._service = service
 
     async def get(self, transporter_name: str) -> TransporterMoveDefaults:

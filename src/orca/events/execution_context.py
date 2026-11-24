@@ -18,6 +18,7 @@ class ThreadExecutionContext(WorkflowExecutionContext):
     thread_id: str
     thread_name: str
     template_name: str
+    group_id: Optional[str] = None
     # Populated only on the PAUSED transition that follows an action error
     # so THREAD.<id>.PAUSED events carry the cause, not just the fact of a
     # pause. None for every other transition (CREATED, RUNNING, manual pause).
@@ -68,9 +69,9 @@ class ExecutionLifecycleContext(WorkflowExecutionContext):
     reason: Optional[str] = None
 
 
-class ExecutionTimeScaleContext(WorkflowExecutionContext):
-    """Context for EXECUTION.<id>.TIME_SCALE_CHANGED: the simulated time scale now in force."""
-    sim_time_scale: float
+class ExecutionSimSpeedupContext(WorkflowExecutionContext):
+    """Context for EXECUTION.<id>.SIM_SPEEDUP_CHANGED: the sim speed-up now in force."""
+    sim_speedup: float
 
 
 class OperatorInstructionContext(WorkflowExecutionContext):
@@ -98,8 +99,8 @@ class ManualInterventionContext(ThreadExecutionContext):
 class CustomEventContext(WorkflowExecutionContext):
     """Context for CUSTOM.* events published by ctx.emit.
 
-    ``event_name`` is the author's name verbatim; the bus event's entity_id
-    is a dot-sanitized copy of it (the three-part event grammar owns dots).
+    ``event_name`` is the author's name, which is also the bus event's
+    entity_id: the event-name rule allows no dots in it.
     ``thread_id`` names the single owning thread when the emit has one
     (thread-level emits, and action-level emits from a single-thread action);
     None when no single thread owns it, such as a shared or co-thread action.
@@ -149,6 +150,50 @@ class DeviceFaultContext(BaseModel):
     execution_id: Optional[str] = None
 
 
+class DeviceCommandContext(BaseModel):
+    """Context for COMMAND.<device>.STARTED / .COMPLETED / .FAILED: one device command, whoever sent it.
+
+    `command_id` is the wire command's id, which the driver's own events carry as their call id.
+    """
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    command_id: str
+    device_name: str
+    command: str
+    params: dict[str, JsonValue]
+    # None for a command refused before it reached a device.
+    mode: Optional[str] = None
+    execution_id: Optional[str] = None
+    # The thread that sent a run's command; None for a command no thread sent, such as an operator's.
+    thread_id: Optional[str] = None
+    thread_name: Optional[str] = None
+    # How many times faster than real time the sender's run goes; None when no run paces the command.
+    sim_speedup: Optional[float] = None
+    # Seconds the engine budgets for the command at real-time pace, which a simulator waits out; None when it budgets none.
+    nominal_seconds: Optional[float] = None
+    result: JsonValue = None
+    outcome: Optional[str] = None
+    error: Optional[str] = None
+    error_type: Optional[str] = None
+    duration_ms: Optional[float] = None
+
+
+class LabwareRecordContext(BaseModel):
+    """Context for LABWARE.<id>.SAVED / .MOVED / .CLEARED: the labware record changed, so a read of it is stale."""
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    labware_id: str
+    position_id: Optional[str] = None
+
+
+class DeviceConnectionContext(BaseModel):
+    """Context for DEVICE.<name>.CONNECTED / .DISCONNECTED."""
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    device_name: str
+    client_id: Optional[str] = None
+
+
 ExecutionContext = Union[
     WorkflowExecutionContext,
     ThreadExecutionContext,
@@ -158,10 +203,25 @@ ExecutionContext = Union[
     SubmissionExecutionContext,
     GroupLifecycleContext,
     ExecutionLifecycleContext,
-    ExecutionTimeScaleContext,
+    ExecutionSimSpeedupContext,
     OperatorInstructionContext,
     ManualInterventionContext,
     CustomEventContext,
     IncidentContext,
     DeviceFaultContext,
+]
+
+class HostedEventContext(BaseModel):
+    """Context of an event a hosted server adds to the stream; its fields and their contract are that server's."""
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+
+# What a RuntimeEvent can carry: a workflow's own contexts, the facts a server sends from outside any workflow,
+# and a hosted server's own events.
+EventContext = Union[
+    ExecutionContext,
+    DeviceCommandContext,
+    LabwareRecordContext,
+    DeviceConnectionContext,
+    HostedEventContext,
 ]

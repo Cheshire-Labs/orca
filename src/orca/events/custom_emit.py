@@ -26,14 +26,12 @@ def emit_custom_event(
     data: dict[str, JsonValue] | None,
 ) -> None:
     """Best-effort: a directly-built context (no emitter wired) keeps working
-    off the EventChannel path alone. Dots in the author's name are sanitized
-    for the bus's three-part event grammar; the context keeps the name verbatim.
+    off the EventChannel path alone. The name was checked by the context, so it goes on the bus as written.
     """
     if emitter is None or workflow_name is None:
         return
-    safe_name = event_name.replace(".", "_")
     emitter(
-        f"CUSTOM.{safe_name}.EMITTED",
+        f"CUSTOM.{event_name}.EMITTED",
         CustomEventContext(
             execution_id=execution_id,
             workflow_name=workflow_name,

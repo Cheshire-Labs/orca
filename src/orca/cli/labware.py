@@ -6,7 +6,7 @@ register) work against either.
 
 Read verbs: list, catalog, where, history, journey.
 Operator-override verbs: edit-location, edit-barcode, reset-location, register,
-carry, carry-normally.
+carry, carry-normally, load-run.
 
 ``list`` and ``catalog`` are intentionally distinct nouns:
 - ``list`` (local-only) enumerates runtime labware INSTANCES tracked
@@ -14,18 +14,21 @@ carry, carry-normally.
 - ``catalog`` (both backends) enumerates labware DEFINITIONS via the
   deployment-registries catalog facade -- the seeded geometry rows +
   operator-custom rows used to author deck layouts and workflows. The store
-  behind the facade is in-memory (daemon) or Postgres (cloud).
+  behind the facade is in-memory on the daemon, or whatever store the server injects.
 """
 
 import sys
 
 import typer
-from cheshire_drivers.move_parameters import MoveParameterPatch
-from pydantic import JsonValue, ValidationError
+from cheshire_drivers.move_parameters import MoveParameterField, MoveParameterPatch
+from pydantic import JsonValue, TypeAdapter, ValidationError
 
 from orca.cli import output
 from orca.cli.backend import get_client
-from orca.cli.control_plane import IControlPlaneClient, JourneyMoveDTO, LabwareDTO
+from orca.cli.control_plane import IControlPlaneClient
+from orca.operations.labware_models import JourneyMove
+from orca.operations.run_loading_models import LoadRunLabwareRequest, RunLabwareItem
+from orca.operations.labware_models import LabwareSnapshotModel
 from orca.state.placement import PlacementState
 from orca.state.provenance import Provenance
 
@@ -40,6 +43,11 @@ def _stdin_is_tty() -> bool:
     return sys.stdin.isatty()
 
 
+def _each_item(values: list[str]) -> list[str]:
+    """Every value of a repeatable option, a comma-separated one counting as several."""
+    return [item.strip() for value in values for item in value.split(",") if item.strip()]
+
+
 def _resolve_labware_id_or_passthrough(
     client: IControlPlaneClient, labware_id: str,
 ) -> str:
@@ -51,7 +59,7 @@ def _resolve_labware_id_or_passthrough(
     disambiguation context.
 
     Pass-through covers the store-only-after-rebuild case. The daemon's
-    `LabwareFacade._find_by_id` checks `ILabwareStore` first, while
+    `LabwareFacade._find_by_id` checks the labware service first, while
     `list_all` only iterates `system.labwares`. After a runtime rebuild
     a labware can live in the durable store without appearing in
     `labware_list()`; passing the input through lets the daemon do the
@@ -89,7 +97,7 @@ def list_labware() -> None:
     )
 
 
-def _where(item: LabwareDTO) -> str:
+def _where(item: LabwareSnapshotModel) -> str:
     """The location column, saying so when the labware is not there yet."""
     if item.current_location is None:
         return ""
@@ -125,7 +133,7 @@ def get_labware(
 ) -> None:
     """Show one labware definition by labware_type. Works on both backends.
 
-    Mirrors ``GET /api/labware/{labware_type}``. 404 on miss.
+    Mirrors ``GET /api/labware-catalog/{labware_type}``. 404 on miss.
     """
     client = get_client()
     entry = client.get_labware(labware_type)
@@ -241,7 +249,7 @@ def catalog(
     """List labware definitions from the catalog. Works on both backends.
 
     List routes through the deployment-registries catalog facade on both the
-    local daemon (in-memory seed store) and cloud (Postgres store), so each row
+    local daemon and a hosted server, so each row
     is a geometry-free ``LabwareCatalogSummary`` (labware_type + display_name +
     category + vendor + source + plr_class_name) regardless of backend; fetch
     geometry per row via ``labware get``.
@@ -275,7 +283,7 @@ def where(
     Resolution order: exact id, exact barcode, then id-prefix (>=4 chars
     matching the prefix shown in ``labware list``). On a local miss,
     falls through to the daemon's store-first lookup so a labware that
-    survived a runtime rebuild (lives in `ILabwareStore` but not in
+    survived a runtime rebuild (lives in the labware service but not in
     `system.labwares`) is still reachable. The daemon calls use
     non-bailing variants so a missed id lookup does not leak a 404 to
     stderr before the barcode fallback runs.
@@ -313,46 +321,24 @@ def where(
         ])
 
 
-@app.command("history")
-def history(
-    labware_id: str = typer.Argument(
-        ..., help="Labware id (full or 4+ char prefix).",
-    ),
-    limit: int = typer.Option(20, "--limit"),
-) -> None:
-    """Show the location history of one labware instance."""
-    client = get_client()
-    resolved = _resolve_labware_id_or_passthrough(client, labware_id)
-    events = client.labware_history(resolved)
-    truncated = events[-limit:]
-    if output.get_mode().value == "json":
-        output.emit_json([e.model_dump(mode="json") for e in truncated])
-        return
-    output.emit_table(
-        f"History ({resolved[:8]})",
-        ["seq", "location"],
-        [[str(e.sequence), e.position_id] for e in truncated],
-    )
-
-
 @app.command("journey")
 def journey(
-    labware_id: str = typer.Argument(..., help="Labware id (full UUID)."),
+    labware_id: str = typer.Argument(..., help="Labware id (full or 4+ char prefix)."),
     kind: list[str] = typer.Option(
         [], "--kind",
-        help="Filter entries by kind (move/action). Repeat for both.",
+        help="Filter entries by kind (move/action). Repeat for both. --kind move is the location history.",
+    ),
+    limit: int | None = typer.Option(
+        None, "--limit", min=1,
+        help="Show only the newest N entries. Default: every entry.",
     ),
 ) -> None:
-    """Show a chronologically-merged moves + actions journey for one
-    labware. Works against both backends.
-
-    Full UUID required -- cloud has no list-instances endpoint, so
-    client-side prefix resolution would round-trip per labware. Operators
-    typically arrive here from ``labware list`` (local) or from a
-    cloud event; copy-paste the full id.
-    """
+    """Show one labware's moves and the operations done to it, oldest first."""
     client = get_client()
+    labware_id = _resolve_labware_id_or_passthrough(client, labware_id)
     payload = client.labware_journey(labware_id, kinds=kind or None)
+    if limit is not None:
+        payload = payload.model_copy(update={"entries": payload.entries[-limit:]})
     if output.get_mode().value == "json":
         output.emit_json(payload.model_dump(mode="json"))
         return
@@ -364,7 +350,7 @@ def journey(
             [
                 e.kind,
                 str(e.timestamp),
-                e.position_id if isinstance(e, JourneyMoveDTO) else e.operation,
+                e.position_id if isinstance(e, JourneyMove) else e.operation,
             ]
             for e in entries
         ],
@@ -442,15 +428,16 @@ def carry(
             "z_offset": z_offset,
             "speed": speed,
         })
+        cleared = TypeAdapter(list[MoveParameterField]).validate_python(clear)
     except ValidationError as exc:
         output.fail(str(exc), code=output.EXIT_USAGE)
-    if not patch.model_dump(exclude_none=True) and not clear:
+    if not patch.model_dump(exclude_none=True) and not cleared:
         output.fail(
             "name at least one field to set or --clear", code=output.EXIT_USAGE,
         )
     client = get_client()
     resolved = _resolve_labware_id_or_passthrough(client, labware_id)
-    carried = client.labware_set_carry_override(resolved, patch, clear, reason=reason)
+    carried = client.labware_set_carry_override(resolved, patch, cleared, reason=reason)
     named = carried.model_dump(exclude_none=True)
     if output.get_mode().value == "json":
         output.emit_json({"labware_id": resolved, "carry_override": named})
@@ -586,29 +573,25 @@ def register(
 
 
 
-@app.command("get-volumes")
-def get_volumes(
-    labware_id: str = typer.Argument(
-        ..., help="Labware id (full or 4+ char prefix).",
-    ),
+@app.command("check-run")
+def check_run(
+    execution_id: str = typer.Argument(..., help="The check run's execution id."),
 ) -> None:
-    """Show per-well volumes (uL) for a labware, folded from the ledger.
+    """Show where a check run left each labware, and its volumes, from the run's own store.
 
-    Reads the authoritative ledger projection: seeded volumes plus any
-    operator set-volume, minus aspirate/dispense deltas. Empty when no
-    well has been seeded or set.
+    A check run works on a copy of the record, so this is never the real deck.
     """
-    client = get_client()
-    resolved = _resolve_labware_id_or_passthrough(client, labware_id)
-    answer = client.labware_get_well_volumes(resolved)
+    answer = get_client().check_run_labware(execution_id)
     if output.get_mode().value == "json":
         output.emit_json(answer.model_dump(mode="json"))
         return
     output.emit_table(
-        f"Well volumes ({resolved[:8]})"
-        + (" [STALE]" if answer.provenance is Provenance.STALE else ""),
-        ["well", "volume_uL"],
-        [[well, str(vol)] for well, vol in sorted(answer.well_volumes.items())],
+        f"Check run {execution_id[:8]}: labware",
+        ["id", "template", "location", "wells_known", "provenance"],
+        [
+            [lw.id[:8], lw.template_name, lw.location, str(len(lw.well_volumes)), lw.provenance.value]
+            for lw in answer.labware
+        ],
     )
 
 
@@ -619,7 +602,7 @@ def set_volume(
     ),
     well: list[str] = typer.Option(
         ..., "--well",
-        help="WELL=VOLUME pair in uL, e.g. --well A1=100. Repeat per well.",
+        help="WELL=VOLUME pair in uL, e.g. --well A1=100. Repeat per well, or separate pairs with commas.",
     ),
     reason: str = typer.Option(
         ..., "--reason", help="Why (audit trail).",
@@ -632,7 +615,7 @@ def set_volume(
     on-deck. Overfill beyond a well's capacity is rejected.
     """
     volumes: dict[str, float] = {}
-    for pair in well:
+    for pair in _each_item(well):
         if "=" not in pair:
             output.fail(
                 f"invalid --well {pair!r}: expected WELL=VOLUME (e.g. A1=100)",
@@ -706,8 +689,8 @@ def mark_tips_used(
         ..., help="Tip rack id (full or 4+ char prefix).",
     ),
     position: list[str] = typer.Option(
-        [], "--position", "-p",
-        help="Position that is actually empty. Repeat for several.",
+        ..., "--position", "-p",
+        help="Position that is actually empty. Repeat for several, or separate them with commas.",
     ),
     reason: str = typer.Option(..., "--reason", help="Why (audited)."),
 ) -> None:
@@ -718,35 +701,10 @@ def mark_tips_used(
     """
     client = get_client()
     resolved = _resolve_labware_id_or_passthrough(client, labware_id)
-    answer = client.labware_mark_tips_used(resolved, list(position), reason)
+    answer = client.labware_mark_tips_used(resolved, _each_item(position), reason)
     output.info(
         f"rack [cyan]{resolved[:8]}[/cyan] now holds "
         f"{len(answer.tip_positions_present)} tips"
-    )
-
-
-@app.command("get-tips")
-def get_tips(
-    labware_id: str = typer.Argument(
-        ..., help="Tip rack id (full or 4+ char prefix).",
-    ),
-) -> None:
-    """The ledger's tip layout on its own. Prefer `orca labware contents`.
-
-    A raw layer, kept for diagnosis: positions listed hold a tip, anything else
-    the record has seen is empty.
-    """
-    client = get_client()
-    resolved = _resolve_labware_id_or_passthrough(client, labware_id)
-    state = client.labware_get_tip_state(resolved)
-    if output.get_mode().value == "json":
-        output.emit_json(state.model_dump(mode="json"))
-        return
-    output.emit_table(
-        f"Tips present ({resolved[:8]})"
-        + (" [STALE]" if state.provenance is Provenance.STALE else ""),
-        ["position"],
-        [[pos] for pos in state.tip_positions_present],
     )
 
 
@@ -758,7 +716,7 @@ def set_tips(
     position: list[str] = typer.Option(
         [], "--position",
         help="Position that holds a tip, e.g. --position A1. Repeat per "
-             "position; none asserts an empty rack.",
+             "position, or separate them with commas; none asserts an empty rack.",
     ),
     reason: str = typer.Option(
         ..., "--reason", help="Why (audit trail).",
@@ -772,10 +730,11 @@ def set_tips(
     """
     client = get_client()
     resolved = _resolve_labware_id_or_passthrough(client, labware_id)
-    client.labware_set_tip_state(resolved, list(position), reason)
+    positions = _each_item(position)
+    client.labware_set_tip_state(resolved, positions, reason)
     output.info(
         f"labware [cyan]{resolved[:8]}[/cyan] tip layout set: "
-        + (", ".join(position) if position else "(empty rack)")
+        + (", ".join(positions) if positions else "(empty rack)")
     )
 
 
@@ -894,24 +853,77 @@ def clear_all(
     the operator MUST pass `--yes` explicitly so a typo doesn't wipe
     a live deck.
     """
-    is_tty = _stdin_is_tty()
-    if not yes:
-        if not is_tty:
-            output.info(
-                "clear-all refuses without --yes on a non-TTY: this would "
-                "wipe EVERY labware in the runtime."
-            )
-            raise typer.Exit(code=2)
-        confirmed = typer.confirm(
-            "Clear EVERY labware in the runtime? This is the panic button.",
-            default=False,
-        )
-        if not confirmed:
-            output.info("clear-all aborted by operator")
-            raise typer.Exit(code=1)
+    _confirm_clearing_every_labware("clear-all", yes)
     client = get_client()
     result = client.labware_clear_all(force=force, reason=reason)
     if output.get_mode().value == "json":
         output.emit_json(result)
         return
     output.info(f"cleared {len(result['cleared_labware_ids'])} labware")
+
+
+def _confirm_clearing_every_labware(verb: str, yes: bool) -> None:
+    """Prompt on a TTY; refuse without --yes on a non-TTY, so a typo never wipes a live deck."""
+    if yes:
+        return
+    if not _stdin_is_tty():
+        output.info(
+            f"{verb} refuses without --yes on a non-TTY: this would "
+            "wipe EVERY labware in the runtime."
+        )
+        raise typer.Exit(code=2)
+    confirmed = typer.confirm(
+        "Clear EVERY labware in the runtime? This is the panic button.",
+        default=False,
+    )
+    if not confirmed:
+        output.info(f"{verb} aborted by operator")
+        raise typer.Exit(code=1)
+
+
+def _run_item(text: str) -> RunLabwareItem:
+    name, sep, volume = text.partition("=")
+    if not sep:
+        return RunLabwareItem(thread_template_name=name)
+    try:
+        return RunLabwareItem(thread_template_name=name, volume_ul=float(volume))
+    except ValueError as exc:
+        raise typer.BadParameter(f"{text!r}: give a volume in uL, zero or more, after '='") from exc
+
+
+@app.command("load-run")
+def load_run(
+    workflow_name: str = typer.Argument(..., help="The workflow whose labware is being put down."),
+    items: list[str] = typer.Option(
+        [], "--item",
+        help="Load only this thread, as NAME, or NAME=UL to set uL in every well. Repeat for each. "
+             "Omitted, every thread the workflow puts down before a run is loaded.",
+    ),
+    clear_all_first: bool = typer.Option(
+        False, "--clear-all-first",
+        help="Clear every labware record first, reused labware included.",
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Skip the --clear-all-first confirmation prompt (required on non-TTY).",
+    ),
+) -> None:
+    """Record a run's labware as loaded: keep reused labware in place, otherwise take off what is there, record it, set its volume."""
+    if clear_all_first:
+        _confirm_clearing_every_labware("load-run --clear-all-first", yes)
+    request = LoadRunLabwareRequest(
+        workflow_name=workflow_name, items=[_run_item(i) for i in items], clear_all_first=clear_all_first,
+    )
+    result = get_client().labware_load_run(request)
+    if output.get_mode().value == "json":
+        output.emit_json(result.model_dump(mode="json"))
+        return
+    if result.cleared:
+        output.info(f"cleared {len(result.cleared)} labware")
+    for loaded in result.loaded:
+        output.info(f"{loaded.thread_template_name}: loaded as {loaded.labware_id}")
+    for kept in result.kept:
+        output.info(f"{kept.thread_template_name}: already there, kept as {kept.labware_id}")
+    for failed in result.not_loaded:
+        output.info(f"{failed.thread_template_name}: not loaded: {failed.message}")
+    if result.not_loaded:
+        raise typer.Exit(code=1)

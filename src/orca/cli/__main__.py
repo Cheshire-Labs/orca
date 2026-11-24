@@ -6,23 +6,29 @@ Or (once installed): orca <noun> <verb>
 Delegates to the Typer app in `orca.cli.app`.
 """
 
+import errno
+import os
 import sys
 
-from orca.cli import output
 from orca.cli.app import app
-from orca.cli.control_plane import ControlPlaneError
+
+# Windows reports a write to a pipe its reader closed as EINVAL, where POSIX reports EPIPE.
+_CLOSED_PIPE = frozenset({errno.EPIPE, errno.EINVAL})
+
+
+def _discard_what_is_left_to_write() -> None:
+    os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
 
 
 def main() -> None:
-    # A backend client raises ControlPlaneError; without this the operator
-    # gets a traceback instead of the message it carries.
     try:
         app()
-    except ControlPlaneError as exc:
-        output.error(str(exc))
-        if exc.exit_code is not None:
-            sys.exit(exc.exit_code)
-        sys.exit(output.exit_code_for_status(exc.http_status))
+    except OSError as failed:
+        if failed.errno not in _CLOSED_PIPE:
+            raise
+        # The interpreter flushes stdout as it exits, and would fail on the closed pipe a second time.
+        _discard_what_is_left_to_write()
+        sys.exit(1)
 
 
 if __name__ == "__main__":

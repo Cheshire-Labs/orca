@@ -23,8 +23,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from orca.resource_models.labware import PlateTemplate
-from orca.resource_models.labware_state import IRegisteredThread, LabwareSlot
-from orca.runtime.group_aware_labware_registry import GroupAwareLabwareRegistry
+from orca.workflow_models.labware_state import IRegisteredThread, LabwareSlot
+from orca.workflow_models.group_aware_labware_registry import GroupAwareLabwareRegistry
 from orca.sdk.workflow import ThreadTemplate, WorkflowTemplate
 from orca.workflow_models.labware_threads.executing_labware_thread import (
     ExecutingLabwareThread,

@@ -5,6 +5,7 @@ and reads back Submission records the runtime stashes on each Execution.
 Exposes four operations:
 
   submit_group     : accept one submission (a workflow + groups).
+  submit_method    : run one method of a workflow as its own submission.
   list_submissions : list all known submissions (optionally per-execution).
   get_submission   : fetch one submission by id.
   close_execution  : transition an execution from ACCEPTING to DRAINING so
@@ -23,12 +24,12 @@ from orca.runtime.danger import DangerLevel, dangerous
 from orca.runtime.execution import Execution, StopOutcome
 from orca.runtime.execution_record import ExecutionRecord
 from orca.runtime.execution_phase import ExecutionPhase
-from orca.runtime.labware_group import LabwareGroup
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.runtime_interface import ISubmissionFacade
+from orca.workflow_models.labware_group import LabwareGroup
+from orca.modes.run_modes import WorkflowRunMode
+from orca.runtime.facade_interfaces import ISubmissionFacade
 from orca.runtime.status_models import SubmissionCloseResult, SubmissionSnapshot
-from orca.runtime.submission import Submission
-from orca.runtime.submission_modes import BatchMode
+from orca.workflow_models.submission import Submission
+from orca.workflow_models.submission_modes import BatchMode
 from orca.system.system_interface import ISystem
 from orca.variables.errors import OptionValue
 from orca.workflow_models.workflow_templates import WorkflowTemplate
@@ -53,21 +54,23 @@ class ISubmissionRuntimeAccess(Protocol):
         operator_id: str | None = None,
         deployment_profile: str | None = None,
         mode: WorkflowRunMode | None = None,
-        acknowledge_warnings: bool = False,
-        sim_time_scale: float | None = None,
+        sim_speedup: float | None = None,
     ) -> Submission: ...
 
     def close_execution(self, execution_id: str) -> ExecutionPhase: ...
 
-    async def submit_workflow(
+    async def submit_method(
         self,
         workflow_name: str,
+        method_name: str,
+        labware_start: Mapping[str, str],
+        labware_end: Mapping[str, str],
         variables: Mapping[str, OptionValue] | None = None,
         deployment_profile: str | None = None,
         *,
         mode: WorkflowRunMode | None = None,
-        acknowledge_warnings: bool = False,
-        sim_time_scale: float | None = None,
+        event_hooks: Sequence[str] | None = None,
+        sim_speedup: float | None = None,
     ) -> ExecutionRecord: ...
 
     async def stop_execution(
@@ -113,11 +116,8 @@ class SubmissionFacade(ISubmissionFacade):
         operator_id: str | None = None,
         deployment_profile: str | None = None,
         mode: WorkflowRunMode | None = None,
-        acknowledge_warnings: bool = False,
-        sim_time_scale: float | None = None,
-        reason: str | None = None,
+        sim_speedup: float | None = None,
     ) -> SubmissionSnapshot:
-        del reason  # consumed by @dangerous audit
         template = self._runtime.system.get_workflow_template(workflow_name)
         submission = await self._runtime.submit(
             template,
@@ -127,31 +127,32 @@ class SubmissionFacade(ISubmissionFacade):
             operator_id=operator_id,
             deployment_profile=deployment_profile,
             mode=mode,
-            acknowledge_warnings=acknowledge_warnings,
-            sim_time_scale=sim_time_scale,
+            sim_speedup=sim_speedup,
         )
         return _snapshot(submission)
 
     @dangerous(
-        name="submission.submit_workflow",
+        name="submission.submit_method",
         level=DangerLevel.OPERATOR,
-        message="Submit workflow '{workflow_name}' as one fresh execution.",
+        message="Run method '{method_name}' of workflow '{workflow_name}' as one fresh execution.",
     )
-    async def submit_workflow(
-        self,
+    async def submit_method(
+        self, *,
         workflow_name: str,
+        method_name: str,
+        labware_start: Mapping[str, str],
+        labware_end: Mapping[str, str],
         variables: Mapping[str, OptionValue] | None = None,
-        *,
+        deployment_profile: str | None = None,
         mode: WorkflowRunMode | None = None,
-        acknowledge_warnings: bool = False,
-        sim_time_scale: float | None = None,
-        reason: str | None = None,
+        event_hooks: Sequence[str] | None = None,
+        sim_speedup: float | None = None,
     ) -> ExecutionRecord:
-        del reason  # consumed by @dangerous audit
-        return await self._runtime.submit_workflow(
-            workflow_name, variables,
-            mode=mode, acknowledge_warnings=acknowledge_warnings,
-            sim_time_scale=sim_time_scale,
+        return await self._runtime.submit_method(
+            workflow_name, method_name, labware_start, labware_end, variables, deployment_profile,
+            mode=mode,
+            event_hooks=event_hooks,
+            sim_speedup=sim_speedup,
         )
 
     @dangerous(

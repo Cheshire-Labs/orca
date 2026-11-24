@@ -12,11 +12,15 @@ the on-record emission seam the incident vertical uses is intentionally absent.
 """
 
 import asyncio
-from typing import Iterable, List
+from typing import List, Protocol
 
 from cheshire_drivers.teachpoints import AccessConfig
 
-from orca.runtime.interfaces import IAccessConfigStore
+from orca.resource_models.store_interfaces import IAccessConfigStore
+
+
+class IAccessConfigService(IAccessConfigStore, Protocol):
+    """Access configs, one at a time under one lock. It is used wherever a store is."""
 
 
 class AccessConfigService:
@@ -45,18 +49,6 @@ class AccessConfigService:
     async def delete(self, name: str) -> bool:
         async with self._lock:
             return await self._store.delete(name)
-
-    async def seed_if_missing(self, configs: Iterable[AccessConfig]) -> None:
-        """Insert each config whose name is not already present; never overwrite.
-
-        Lets one deployment-wide registry outlive multiple topology mounts: each
-        mount re-declares its seed and existing rows (operator edits included)
-        win over the re-declared seed.
-        """
-        async with self._lock:
-            for config in configs:
-                if await self._store.get(config.name) is None:
-                    await self._store.add(config)
 
     async def create_schema(self) -> None:
         """Create the store's schema if absent (satisfies IAccessConfigStore)."""

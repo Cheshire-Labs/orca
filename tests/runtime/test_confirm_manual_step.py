@@ -224,7 +224,7 @@ class TestConfirmManualStep:
         )
         assert isinstance(step_id, str)
 
-        with pytest.raises(asyncio.TimeoutError):
+        with pytest.raises(TimeoutError):
             await task
         assert not registry.has_manual_step(step_id)
         with pytest.raises(KeyError):

@@ -5,17 +5,17 @@ The execution phase was derived purely from the workflow task's outcome: a
 clean task return became COMPLETED. But an operator-aborted thread (ABORT_THREAD)
 and a stopped thread both return cleanly -- the task does not raise -- so an
 execution with an aborted thread was mislabeled COMPLETED. The phase must be a
-roll-up of the per-thread terminal states: COMPLETED only if every thread
-COMPLETED; ABORTED if any thread ended ABORTED or STOPPED.
+roll-up of the per-thread terminal states; see ``run_phase_of``.
 """
 
+from orca.config import OrcaConfig
 import asyncio
 from collections.abc import AsyncGenerator
 
 import orca.orca as orca
 from orca.events.event_bus import EventBus
 from orca.resource_models.resource_pool import ResourcePool
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from orca.runtime.system_runtime import ExecutionState, SystemRuntime
 from orca.sdk.system import ResourceRegistry, SystemMap
 from orca.sdk.workflow import WorkflowTemplate
@@ -39,6 +39,10 @@ from tests.test_helpers import (
     wait_for_paused_threads,
     wire_system_map,
 )
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 
 class _FailOnceDevice(UniversalMockDevice):
@@ -95,17 +99,20 @@ async def _build_single_thread_system() -> tuple[SystemRuntime, WorkflowTemplate
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=event_bus,
+        event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
-    runtime = SystemRuntime(builder.get_system(), event_bus=event_bus)
+    runtime = await memory_runtime(builder.get_system(), event_bus=event_bus)
     return runtime, workflow, device
 
 
 async def test_execution_not_completed_when_thread_aborted() -> None:
     runtime, workflow, device = await _build_single_thread_system()
     await runtime.start()
-    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.PURE_SIM)
+    record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
     try:
         await wait_for_paused_threads(runtime, record.id)
         paused = runtime.get_paused_threads(record.id)

@@ -3,25 +3,13 @@
 Every runtime mutation that can harm state (hardware, in-flight executions,
 calibration history, etc.) is decorated with `@dangerous`. The decorator:
 
-1. Records the method in a module-level `ActionRegistry` so UIs can list and
-   describe every dangerous action (`list_actions`, `describe_action`).
+1. Attaches an `ActionDescriptor` to the method (`action_descriptor`).
 2. Enforces at call time that the caller pass `confirm=True`. If False, raises
-   `ConfirmationRequired` carrying the `ActionDescriptor` so the UI can render
+   `ConfirmationRequired` carrying the descriptor so the UI can render
    the right prompt without hardcoding message copy.
 
-UIs consume the registry uniformly:
-
-  - CLI: reads `describe_action(name)` to pick y/N vs typed-phrase prompt,
-    then re-calls the method with `confirm=True` after operator approves.
-  - REST (future): rejects calls without `confirm: true` in the body, returns
-    the descriptor so the client can show a confirmation screen.
-  - MCP (future): tool schemas are auto-generated from the registry so the LLM
-    sees each tool's danger level and must ask the user before setting
-    `confirm: True`.
-
-The action registry is populated at import time: decorating a method calls
-`register_action(...)`. Downstream lookup is by action name (e.g.
-`"labware.edit_location"`).
+An action done outside its facade writes the same audit row with
+`record_audit(action_descriptor(method), ...)`.
 """
 
 import dataclasses
@@ -36,7 +24,9 @@ from typing import Any, Callable
 
 from pydantic import BaseModel, JsonValue
 
-audit_logger = logging.getLogger("orca.audit")
+from orca.runtime.audit_store import AUDIT_ENTRY_ATTR, AUDIT_LOGGER_NAME, AuditEntry
+
+audit_logger = logging.getLogger(AUDIT_LOGGER_NAME)
 
 # Strip CPython memory-address noise from `repr` fallbacks so audit rows
 # stay diff-friendly across runs: "<orca.X.Y object at 0x...>" -> "<orca.X.Y object>".
@@ -48,9 +38,8 @@ def _to_json_safe(value: Any) -> JsonValue:
 
     `@dangerous` captures whatever the caller passed, including rich domain
     objects (`Teachpoint`, `WorkflowTemplate`, dataclass DTOs). Every
-    downstream surface -- the in-memory audit ring buffer, the daemon's
-    REST/refusal payloads, a hosted deployment's persisted audit store -- needs JSON-safe
-    data, not a Python object a JSON encoder chokes on. Structured objects
+    downstream surface -- REST refusal payloads and each server's audit
+    store -- needs JSON-safe data, not a Python object a JSON encoder chokes on. Structured objects
     (dataclasses, Pydantic models, anything with `to_dict()`) project to
     their field shape so audit consumers can read values like teachpoint
     coordinates back; anything else falls back to a repr.
@@ -101,8 +90,8 @@ class ParamSpec:
 class ActionDescriptor:
     """Advertised metadata for one dangerous action.
 
-    Returned by `describe_action(name)`. Drives CLI prompts, REST docs,
-    MCP tool schemas.
+    Read with `action_descriptor(method)`. A refusal carries it, so the UI
+    can render the prompt.
     """
     name: str                                  # e.g. "labware.edit_location"
     danger_level: DangerLevel
@@ -133,103 +122,15 @@ class ConfirmationRequired(Exception):
         )
 
 
-class ActionRegistry:
-    """Module-level registry of all @dangerous-decorated methods.
-
-    Populated at import time as decorators run. Lookups go by qualified name
-    (e.g. "LabwareFacade.edit_location" -> "labware.edit_location" after a
-    short post-processing step done in the facade module that owns the method).
-    """
-
-    def __init__(self) -> None:
-        self._by_name: dict[str, ActionDescriptor] = {}
-
-    def register(self, descriptor: ActionDescriptor) -> None:
-        if descriptor.name in self._by_name:
-            raise ValueError(
-                f"Action name collision: '{descriptor.name}' is already registered. "
-                f"Each @dangerous method must have a unique action name."
-            )
-        self._by_name[descriptor.name] = descriptor
-
-    def describe(self, name: str) -> ActionDescriptor:
-        if name not in self._by_name:
-            raise KeyError(f"No action registered with name '{name}'")
-        return self._by_name[name]
-
-    def list_all(self) -> list[ActionDescriptor]:
-        return list(self._by_name.values())
-
-    def clear(self) -> None:
-        """Test helper. NOT for production use."""
-        self._by_name.clear()
+_DESCRIPTOR_ATTR = "__orca_action__"
 
 
-@dataclass(frozen=True)
-class AuditEntry:
-    """One successful dangerous-action invocation.
-
-    Written by the @dangerous decorator on every confirmed call, and by
-    `record_audit` for an audited action done outside its facade. UIs can
-    query the ring buffer via `list_audit_entries()` and downstream sinks
-    can subscribe to the `orca.audit` logger for persistence.
-    """
-    timestamp: float                           # unix seconds, time.time()
-    action_name: str
-    danger_level: DangerLevel
-    reason: str | None
-    call_args: dict[str, JsonValue]
-
-
-class AuditTrail:
-    """In-memory ring buffer of successful audited actions.
-
-    Bounded to avoid unbounded growth on long-running daemons. Persistence
-    is opt-in via the `orca.audit` logger (see `audit_logger`): wire a file
-    handler in the daemon to durably record every entry.
-    """
-
-    _MAX_ENTRIES = 1000
-
-    def __init__(self) -> None:
-        self._entries: list[AuditEntry] = []
-
-    def record(self, entry: AuditEntry) -> None:
-        self._entries.append(entry)
-        overflow = len(self._entries) - self._MAX_ENTRIES
-        if overflow > 0:
-            del self._entries[:overflow]
-
-    def list_all(self) -> list[AuditEntry]:
-        return list(self._entries)
-
-    def clear(self) -> None:
-        """Test helper. NOT for production use."""
-        self._entries.clear()
-
-
-_REGISTRY = ActionRegistry()
-_AUDIT_TRAIL = AuditTrail()
-
-
-def list_audit_entries() -> list[AuditEntry]:
-    """Snapshot of the audit trail. UIs use this for operator activity views."""
-    return _AUDIT_TRAIL.list_all()
-
-
-def clear_audit_trail() -> None:
-    """Test helper. NOT for production use."""
-    _AUDIT_TRAIL.clear()
-
-
-def describe_action(name: str) -> ActionDescriptor:
-    """Look up the descriptor for a registered dangerous action."""
-    return _REGISTRY.describe(name)
-
-
-def list_actions() -> list[ActionDescriptor]:
-    """List every registered dangerous action."""
-    return _REGISTRY.list_all()
+def action_descriptor(method: Callable[..., Any]) -> ActionDescriptor:
+    """The descriptor `@dangerous` attached to `method`. KeyError when it has none."""
+    descriptor = getattr(method, _DESCRIPTOR_ATTR, None)
+    if not isinstance(descriptor, ActionDescriptor):
+        raise KeyError(f"{getattr(method, '__qualname__', method)!r} is not a @dangerous action")
+    return descriptor
 
 
 def _build_param_specs(
@@ -286,7 +187,6 @@ def dangerous(
             requires_reason=requires_reason,
             parameters=_build_param_specs(func),
         )
-        _REGISTRY.register(descriptor)
 
         is_coroutine = inspect.iscoroutinefunction(func)
 
@@ -305,6 +205,7 @@ def dangerous(
                 result = await func(*args, **kwargs)
                 _record_audit(name, level, reason, func, args, kwargs)
                 return result
+            setattr(async_wrapper, _DESCRIPTOR_ATTR, descriptor)
             return async_wrapper
 
         @functools.wraps(func)
@@ -321,6 +222,7 @@ def dangerous(
             result = func(*args, **kwargs)
             _record_audit(name, level, reason, func, args, kwargs)
             return result
+        setattr(sync_wrapper, _DESCRIPTOR_ATTR, descriptor)
         return sync_wrapper
 
     return decorator
@@ -334,40 +236,38 @@ def _record_audit(
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
 ) -> None:
-    """Append an audit entry and emit a log record after a confirmed call."""
+    """Log the audit entry for a confirmed call."""
     call_args = _bind_call_args(func, args, kwargs)
     call_args.pop("reason", None)
-    _write_audit(name, level, reason, call_args)
+    write_audit(name, level, reason, call_args)
 
 
 def record_audit(
-    name: str, reason: str | None, call_args: dict[str, JsonValue],
+    action: ActionDescriptor, reason: str | None, call_args: dict[str, JsonValue],
 ) -> None:
-    """Write the audit row for a registered action done outside its facade.
-
-    The level comes from the registry, so an unknown name raises KeyError.
-    """
-    level = describe_action(name).danger_level
+    """Write the audit row for a dangerous action done outside its facade, at the action's own level."""
     kept = {k: v for k, v in call_args.items() if k not in ("reason", "confirm")}
-    _write_audit(name, level, reason, kept)
+    write_audit(action.name, action.danger_level, reason, kept)
 
 
-def _write_audit(
+def write_audit(
     name: str,
     level: DangerLevel,
     reason: str | None,
     call_args: dict[str, JsonValue],
 ) -> None:
-    _AUDIT_TRAIL.record(AuditEntry(
+    """Log one audit row on `orca.audit`, carrying the full entry for the audit store."""
+    entry = AuditEntry(
         timestamp=time.time(),
         action_name=name,
-        danger_level=level,
+        danger_level=level.name,
         reason=reason,
         call_args=call_args,
-    ))
+    )
     audit_logger.info(
         "%s level=%s reason=%r args=%r",
         name, level.name, reason, call_args,
+        extra={AUDIT_ENTRY_ATTR: entry},
     )
 
 

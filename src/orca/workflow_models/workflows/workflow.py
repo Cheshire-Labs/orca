@@ -30,7 +30,7 @@ class WorkflowInstance(IWorkflow):
         # execution_id returned from submit_workflow. They are the same concept
         # (one submission = one workflow instance); the external REST API uses
         # execution_id, internal code uses workflow.id, they must be equal.
-        # Callers that don't need the tie-in (topology-building, legacy tests)
+        # Callers that don't need the tie-in (topology-building, tests)
         # get a fresh UUID.
         self._id = id if id is not None else str(uuid.uuid4())
         self._name = name

@@ -56,13 +56,12 @@ def list_deck_layouts(
     ``device list``.
     """
     client = get_client()
+    items = client.deck_layouts_list(device_id)
     if device_id is None:
-        items = client.deck_layouts_list_all()
         title = "DeckLayouts (all)"
         columns = ["device_id", "name", "deck_type"]
         rows = [[i.device_id, i.name, i.deck_type] for i in items]
     else:
-        items = client.deck_layouts_list(device_id)
         title = f"DeckLayouts ({device_id})"
         columns = ["name", "deck_type"]
         rows = [[i.name, i.deck_type] for i in items]
@@ -110,10 +109,10 @@ def show_deck_layout(
         output.emit_json(layout.config.model_dump(mode="json"))
 
 
-@app.command("create")
-def create_deck_layout(
+@app.command("save")
+def save_deck_layout(
     device_id: str = typer.Argument(..., help="Liquid handler device id."),
-    name: str = typer.Argument(..., help="New deck layout name."),
+    name: str = typer.Argument(..., help="Deck layout name."),
     config_file: str = typer.Option(
         ..., "--config-file",
         help="Path to a JSON file with the DeckLayoutConfig.",
@@ -122,40 +121,21 @@ def create_deck_layout(
         None, "--reason", help="Why, for the audit trail.",
     ),
 ) -> None:
-    """Register a new deck layout. 404 if the device is not a liquid
-    handler; 409 on a duplicate name. Rebuild-required to take effect."""
+    """Store a deck layout under its name, new or replacing the one stored.
+
+    404 when the device is not a liquid handler; refused when the layout names a
+    resource the labware catalog does not list as a carrier. Takes effect on the
+    next reload.
+    """
     config = _read_config_from_path(config_file)
     client = get_client()
-    created = client.deck_layouts_add(device_id, name, config, reason=reason)
+    saved = client.deck_layouts_save(device_id, name, config, reason=reason)
     if output.get_mode().value == "json":
-        output.emit_json(created.model_dump(mode="json"))
+        output.emit_json(saved.model_dump(mode="json"))
         return
     output.info(
-        f"created deck_layout [cyan]{created.name}[/cyan] "
-        f"on {created.device_id} (rebuild-required)",
-    )
-
-
-@app.command("update")
-def update_deck_layout(
-    device_id: str = typer.Argument(..., help="Liquid handler device id."),
-    name: str = typer.Argument(..., help="Deck layout name to update."),
-    config_file: str = typer.Option(..., "--config-file"),
-    reason: str | None = typer.Option(
-        None, "--reason", help="Why, for the audit trail.",
-    ),
-) -> None:
-    """Update a deck layout. 404 on unknown device or name.
-    Rebuild-required to take effect."""
-    config = _read_config_from_path(config_file)
-    client = get_client()
-    updated = client.deck_layouts_update(device_id, name, config, reason=reason)
-    if output.get_mode().value == "json":
-        output.emit_json(updated.model_dump(mode="json"))
-        return
-    output.info(
-        f"updated deck_layout [cyan]{updated.name}[/cyan] "
-        f"on {updated.device_id} (rebuild-required)",
+        f"saved deck_layout [cyan]{saved.name}[/cyan] "
+        f"on {saved.device_id} (rebuild-required)",
     )
 
 

@@ -23,7 +23,7 @@ from orca.system.reservation_manager.deadlock_manager import (
     ThreadDeadlockDetector,
 )
 from orca.system.reservation_manager.location_reservation import LocationReservation
-from orca.system.reservation_manager.move_handler import (
+from orca.workflow_models.actions.move_handler import (
     MoveActionCollectionReservationRequest,
 )
 from orca.system.reservation_manager.reservation_manager import (

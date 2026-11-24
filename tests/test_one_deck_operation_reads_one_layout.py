@@ -22,14 +22,18 @@ not have.
 from cheshire_drivers import (
     DeckLayoutConfig, DeckResourceConfig, RecordingLiquidHandlerDriver,
 )
-from cheshire_drivers.plr import ChatterboxLiquidHandlerDriver
 
 from orca.devices.devices import LiquidHandler
-from orca.runtime.device_factory_context import use_device_factory
-from orca.runtime.interfaces import IDeckLayoutStore
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.store_factory import InMemoryRuntimeStoreFactory
-from tests.test_helpers import PairDriverFactory, seeded
+from orca.resource_models.store_interfaces import IDeckLayoutStore
+from orca.modes.run_modes import WorkflowRunMode
+from orca.modes.device_modes import DeviceMode
+from tests.device_modes import set_to
+from tests.test_helpers import seeded
+from tests.setup_package import package_stores, write_deck_layouts
+from tests.setup_package import with_deck_layouts
+from tests.mock import outside_any_system
+from tests.real_device_path import the_real_device_path
+from tests.recording_handler import RecordingHandler
 
 
 def _layout(name: str, rail: int) -> DeckLayoutConfig:
@@ -45,13 +49,14 @@ _RAIL_7 = _layout("carrier-7", 7)
 _RAIL_9 = _layout("carrier-9", 9)
 
 
-def _recorded_lh() -> tuple[LiquidHandler, RecordingLiquidHandlerDriver, IDeckLayoutStore]:
-    live = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
-    sim = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
-    stores = InMemoryRuntimeStoreFactory()
-    store = stores.deck_layouts("lh", seed={"default": _RAIL_7})
-    with use_device_factory(PairDriverFactory(live, sim)):
-        lh = LiquidHandler("lh", deck_layout_store=store, deck_layout="default")
+async def _recorded_lh() -> tuple[LiquidHandler, RecordingLiquidHandlerDriver, IDeckLayoutStore]:
+    live = RecordingHandler()
+    stores = package_stores()
+    store = write_deck_layouts(stores, "lh", {"default": _RAIL_7})
+    the_real_device_path().simulate_with("lh", live)
+    lh = outside_any_system(with_deck_layouts(LiquidHandler("lh", deck_layout="default"), store))
+    set_to(lh, "lh", DeviceMode.LIVE)
+    await the_real_device_path().connect_devices(lh)
     return lh, live, store
 
 
@@ -65,14 +70,14 @@ def _configures(driver: RecordingLiquidHandlerDriver) -> list[str]:
 
 class TestTheFirstAskLaysTheDeckOut:
     async def test_the_declared_layout_reaches_the_driver(self) -> None:
-        lh, live, _store = _recorded_lh()
+        lh, live, _store = await _recorded_lh()
         with seeded(WorkflowRunMode.LIVE):
             answer = await lh.deck_world_layout()
         assert answer == (_RAIL_7, True)
         assert _configures(live) == ["carrier-7"]
 
     async def test_asking_again_does_not_lay_it_out_twice(self) -> None:
-        lh, live, _store = _recorded_lh()
+        lh, live, _store = await _recorded_lh()
         with seeded(WorkflowRunMode.LIVE):
             await lh.deck_world_layout()
             answer = await lh.deck_world_layout()
@@ -82,8 +87,8 @@ class TestTheFirstAskLaysTheDeckOut:
     async def test_a_device_declaring_no_layout_answers_nothing(self) -> None:
         """Distinct from "already laid out". Conflating the two is what let a
         narrow write land on a deck nothing had configured."""
-        lh = LiquidHandler("lh")
-        with seeded(WorkflowRunMode.PURE_SIM):
+        lh = outside_any_system(LiquidHandler("lh"))
+        with seeded(WorkflowRunMode.CHECK_RUN):
             assert await lh.deck_world_layout() is None
 
 
@@ -94,7 +99,7 @@ class TestEditingALayoutDoesNotWedgeTheRunningDeck:
     place anything, ever again."""
 
     async def test_the_world_keeps_the_layout_it_was_laid_out_with(self) -> None:
-        lh, live, store = _recorded_lh()
+        lh, live, store = await _recorded_lh()
         with seeded(WorkflowRunMode.LIVE):
             await lh.deck_world_layout()
             await store.update("default", _RAIL_9)
@@ -108,7 +113,7 @@ class TestEditingALayoutDoesNotWedgeTheRunningDeck:
     async def test_the_edit_lands_on_the_next_rebuilt_world(self) -> None:
         """Invalidating is what a rebuild does. The new layout takes effect
         then, which is the contract the edit prompt states."""
-        lh, live, store = _recorded_lh()
+        lh, live, store = await _recorded_lh()
         with seeded(WorkflowRunMode.LIVE):
             await lh.deck_world_layout()
             await store.update("default", _RAIL_9)
@@ -120,10 +125,10 @@ class TestEditingALayoutDoesNotWedgeTheRunningDeck:
 
 class TestEachWorldIsLaidOutSeparately:
     async def test_a_sim_layout_does_not_satisfy_the_live_instrument(self) -> None:
-        lh, live, _store = _recorded_lh()
-        with seeded(WorkflowRunMode.PURE_SIM):
+        lh, live, _store = await _recorded_lh()
+        with seeded(WorkflowRunMode.SIM):
             await lh.deck_world_layout()
-        assert _configures(live) == []
+        assert _configures(live) == ["carrier-7"]
         with seeded(WorkflowRunMode.LIVE):
             assert await lh.deck_world_layout() == (_RAIL_7, True)
-        assert _configures(live) == ["carrier-7"]
+        assert _configures(live) == ["carrier-7", "carrier-7"]

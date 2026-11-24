@@ -28,6 +28,7 @@ The invariant the test pins is that NEITHER receiver fails to visit
 the device.
 """
 
+from orca.config import OrcaConfig
 import asyncio
 from collections.abc import AsyncGenerator
 from uuid import uuid4
@@ -35,11 +36,10 @@ from uuid import uuid4
 import pytest
 
 import orca.orca as orca
-from orca.plugins import LabwareJourneyTracker, MethodTracker
+from tests.thread_recorder import ThreadRecorder
 from orca.resource_models.labware import PlateTemplate
 from orca.resource_models.resource_pool import ResourcePool
-from orca.runtime.labware_group import LabwareGroup, LabwareGroupMember
-from orca.runtime.system_runtime import SystemRuntime
+from orca.workflow_models.labware_group import LabwareGroup, LabwareGroupMember
 from orca.sdk.events import EventBus
 from orca.sdk.system import ResourceRegistry, SystemMap
 from orca.sdk.workflow import MethodTemplate, ThreadTemplate, WorkflowTemplate
@@ -48,13 +48,17 @@ from orca.system.system_interface import ISystem
 from orca.workflow_models.action_context import ActionContext
 from orca.workflow_models.action_template import ActionTemplate
 from orca.workflow_models.method_template import IMethodTemplate
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from tests.test_helpers import (
     execution_outcome,
     create_test_device,
     create_test_transporter,
     wire_system_map,
 )
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 
 async def _build_two_method_single_yield_receiver_system() -> tuple[
@@ -143,7 +147,10 @@ async def _build_two_method_single_yield_receiver_system() -> tuple[
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=event_bus,
+        event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     return builder.get_system(), workflow, event_bus
@@ -175,16 +182,14 @@ class TestSingleYieldReceiverTwoMethods:
         system, workflow, event_bus = (
             await _build_two_method_single_yield_receiver_system()
         )
-        runtime = SystemRuntime(system, event_bus=event_bus)
-        method_tracker = MethodTracker()
-        journey_tracker = LabwareJourneyTracker()
-        runtime.register_plugin(method_tracker)
-        runtime.register_plugin(journey_tracker)
+        runtime = await memory_runtime(system, event_bus=event_bus)
+        recorder = ThreadRecorder()
+        runtime.register_plugin(recorder)
         await runtime.start()
         try:
             submission = await runtime.submit(
                 workflow, groups=[_owner_group()],
-                mode=WorkflowRunMode.PURE_SIM,
+                mode=WorkflowRunMode.CHECK_RUN,
             )
             status = await execution_outcome(runtime, submission, timeout=60.0)
         finally:
@@ -192,7 +197,7 @@ class TestSingleYieldReceiverTwoMethods:
         assert status.status == "completed"
 
         receiver_names = [
-            name for name in method_tracker.thread_names.values()
+            name for name in recorder.thread_names.values()
             if name.startswith("receiver")
         ]
         assert len(receiver_names) >= 1, (
@@ -200,8 +205,8 @@ class TestSingleYieldReceiverTwoMethods:
         )
 
         receiver_journeys = [
-            j for tid, j in journey_tracker.all_completed_journeys.items()
-            if journey_tracker.thread_names.get(tid, "").startswith("receiver")
+            j for tid, j in recorder.completed_journeys.items()
+            if recorder.thread_names.get(tid, "").startswith("receiver")
         ]
         # A zombie receiver never visits a station site (Bug 3 shape); undeclared
         # inputs land on ANY free site, so match by device prefix, not exact site.

@@ -34,6 +34,7 @@ def _thread(status: LabwareThreadStatus) -> MagicMock:
     # Consulted before status, so a mock left to auto-vivify would answer
     # every case with a lock wait that is not there.
     thread.blocked_on_lock = None
+    thread.pending_reservation_candidates = []
     return thread
 
 

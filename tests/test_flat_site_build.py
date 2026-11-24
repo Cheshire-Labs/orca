@@ -9,6 +9,7 @@ Target structure pinned here:
   it teaches (site-qualified points); the internal gripper relays between
   all deck sites. Multi-site device names are invalid in journeys.
 """
+from orca.events.event_bus import EventBus
 import pytest
 
 from cheshire_drivers import CartesianCoordinates, DeckLayoutConfig, Teachpoint
@@ -16,8 +17,11 @@ from orca.devices.devices import LiquidHandler, Storage
 from orca.resource_models.deck_site_location import DeckSiteLocation
 from orca.resource_models.plate_pad import PlatePad
 from orca.resource_models.transporter import Transporter
-from orca.runtime.store_factory import InMemoryRuntimeStoreFactory
-from orca.sdk.build import SystemBuild, Topology, build_system
+from orca.sdk.build import SystemBuild, Topology
+from orca.sdk.package import build_system
+from tests.setup_package import package_stores, write_deck_layouts, write_teachpoints
+from tests.setup_package import with_teachpoints, with_deck_layouts
+from tests.memory_activity import memory_ops_store
 
 FLEX_DECK = DeckLayoutConfig(deck_type="FlexDeck", resources=[])
 _DECK_HANDOFF = "D3-slot"
@@ -25,31 +29,29 @@ _PLATE_SLOT = "C2-slot"
 
 
 async def _build() -> SystemBuild:
-    stores = InMemoryRuntimeStoreFactory()
-    flex = LiquidHandler(
+    stores = package_stores()
+    flex = with_deck_layouts(LiquidHandler(
         "flex",
-        deck_layout_store=stores.deck_layouts("flex", seed={"default": FLEX_DECK}),
         deck_layout="default",
         sim=True,
-    )
+    ), write_deck_layouts(stores, "flex", {"default": FLEX_DECK}))
     stacker = Storage("stacker")
     waste = Storage("waste")
     pad = PlatePad("pad")
     c = CartesianCoordinates
-    arm = Transporter(
+    arm = with_teachpoints(Transporter(
         "arm",
-        teachpoint_store=stores.teachpoints("arm", seed=[
+    ), write_teachpoints(stores, "arm", [
             Teachpoint("stacker", c(0, 200, 300, 0, 90, 180), orientation="right"),
             Teachpoint("pad", c(200, 200, 300, 0, 90, 180), orientation="right"),
             Teachpoint(f"flex/{_DECK_HANDOFF}", c(400, 200, 300, 0, 90, 180), orientation="right"),
             Teachpoint("waste", c(600, 200, 300, 0, 90, 180), orientation="right"),
-        ]),
-    )
+        ]))
     topology = Topology(
         locations={"flex": flex, "stacker": stacker, "waste": waste, "pad": pad},
         transporters=[arm],
     )
-    return await build_system("flat-site-build", topology, stores)
+    return await build_system("flat-site-build", topology, stores, event_bus=EventBus(), ops_history_store=memory_ops_store())
 
 
 async def test_deck_sites_are_flat_routing_nodes_with_owners() -> None:

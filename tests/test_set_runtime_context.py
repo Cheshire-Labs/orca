@@ -6,20 +6,21 @@ one entry point that performs that registration; without it the
 thread is invisible to those lookups.
 
 (An earlier change widened this method into `set_runtime_context`
-to plumb `labware_store` + `system` refs onto the thread for the
+to plumb `labware_service` + `system` refs onto the thread for the
 operator clear surface. Those refs turned out to be dead state --
 written but never read -- and were removed; the registration
 responsibility is back to `set_labware_registry`.)
 """
 
 import asyncio
+from tests.thread_builder import build_executing_thread
 from typing import Any, Awaitable, Callable
 from unittest.mock import MagicMock
 
 import pytest
 
 from orca.resource_models.labware import LabwareInstance
-from orca.resource_models.labware_state import (
+from orca.workflow_models.labware_state import (
     InMemoryLabwareRegistry, LabwareState,
 )
 from orca.runtime.recoverable_timeout import recoverable_timeout_coordinator
@@ -46,7 +47,7 @@ def _make_thread(name: str = "t1") -> LabwareThreadInstance:
 
 
 def _make_executing(thread: LabwareThreadInstance) -> ExecutingLabwareThread:
-    return ExecutingLabwareThread(
+    return build_executing_thread(
         thread=thread,
         event_bus=MagicMock(),
         move_handler=MagicMock(),
@@ -112,9 +113,9 @@ class _SentinelCoordinator:
     def mark_complete(self, incident_id: str, operator: str, reason: str) -> None: ...
 
 
-class _ShortCircuit(Exception):
-    """Aborts ``start()`` right after the ContextVar seed so the heavy
-    method-loop machinery never runs."""
+class _ShortCircuit(BaseException):
+    """Aborts ``start()`` right after the ContextVar seed so the heavy method-loop machinery never runs. A
+    BaseException, so the crash pause does not catch it."""
 
 
 class TestStartSeedsCoordinatorToNoneWithoutDeclarer:
@@ -130,7 +131,7 @@ class TestStartSeedsCoordinatorToNoneWithoutDeclarer:
         # `start()` reaches `initialize_labware()` only when status == CREATED.
         status_manager = MagicMock()
         status_manager.get_status.return_value = "CREATED"
-        et = ExecutingLabwareThread(
+        et = build_executing_thread(
             thread=thread,
             event_bus=MagicMock(),
             move_handler=MagicMock(),

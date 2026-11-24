@@ -18,7 +18,7 @@ from orca.resource_models.location import Location
 from orca.resource_models.plate_pad import PlatePad
 from orca.resource_models.transporter_base import TransporterBase
 from orca.runtime.facades.registry import RegistryFacade
-from orca.system.resource_registry import ResourceRegistry
+from orca.resource_models.resource_registry import ResourceRegistry
 from orca.system.system_map import SystemMap
 
 

@@ -18,7 +18,7 @@ from typing import cast
 from unittest.mock import MagicMock
 
 from orca.resource_models.labware import PlateTemplate
-from orca.runtime.group_aware_labware_registry import GroupAwareLabwareRegistry
+from orca.workflow_models.group_aware_labware_registry import GroupAwareLabwareRegistry
 from orca.sdk.workflow import ThreadTemplate, WorkflowTemplate
 from orca.workflow_models.labware_threads.executing_labware_thread import (
     ExecutingLabwareThread,
@@ -133,7 +133,7 @@ def _thread_publishing() -> ExecutingLabwareThread:
 
     # `MagicMock(name=...)` names the mock itself, so every `.name` this
     # publish reads has to be set after construction.
-    inner = MagicMock(id="t1", template_name="sample")
+    inner = MagicMock(id="t1", template_name="sample", group_id=None)
     inner.name = "sample_1"
     inner.labware = MagicMock(id="lw1")
     inner.labware.name = "plate_1"

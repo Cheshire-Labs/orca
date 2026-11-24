@@ -15,6 +15,7 @@ the per-thread state -- the documented "freeze at safe point, not mid-action"
 caveat.
 """
 
+from orca.config import OrcaConfig
 import asyncio
 from collections.abc import AsyncGenerator
 from uuid import uuid4
@@ -26,12 +27,13 @@ from orca.events.event_bus import EventBus
 from orca.resource_models.labware import PlateTemplate
 from orca.resource_models.resource_pool import ResourcePool
 from orca.runtime.execution import ExecutionPhase
-from orca.runtime.labware_group import LabwareGroup, LabwareGroupMember
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.runtime_interface import SubmissionToPausedExecutionError
+from orca.workflow_models.labware_group import LabwareGroup, LabwareGroupMember
+from orca.modes.run_modes import WorkflowRunMode
+from orca.runtime.errors import SubmissionToPausedExecutionError
 from orca.runtime.sinks import CollectorSink
-from orca.runtime.submission import BatchMode, SubmissionStatus
+from orca.workflow_models.submission import BatchMode, SubmissionStatus
 from orca.runtime.system_runtime import ExecutionState, SystemRuntime
+from orca.system.system_interface import ISystem
 from orca.sdk.system import ResourceRegistry, SystemMap
 from orca.sdk.workflow import ThreadTemplate, WorkflowTemplate
 from orca.system.SdkToSystemBuilder import SdkToSystemBuilder
@@ -42,6 +44,10 @@ from orca.workflow_models.method_template import IMethodTemplate, MethodTemplate
 from orca.workflow_models.thread_context import ThreadContext
 from tests.mock import UniversalMockDevice
 from tests.test_helpers import create_test_transporter, wire_system_map
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 
 class _HangingDevice(UniversalMockDevice):
@@ -67,6 +73,12 @@ def _owner_group() -> LabwareGroup:
 
 
 async def _build_hanging_owner_system() -> tuple[SystemRuntime, WorkflowTemplate, _HangingDevice, EventBus]:
+    system, workflow, device, event_bus = await hanging_owner_system()
+    runtime = await memory_runtime(system, event_bus=event_bus)
+    return runtime, workflow, device, event_bus
+
+
+async def hanging_owner_system() -> tuple[ISystem, WorkflowTemplate, _HangingDevice, EventBus]:
     """One entry thread ("owner") that runs a single hanging shake action."""
     device = _HangingDevice("station")
     transporter = create_test_transporter("robot1", ["start_pad", "station", "waste"])
@@ -111,12 +123,13 @@ async def _build_hanging_owner_system() -> tuple[SystemRuntime, WorkflowTemplate
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=event_bus,
+        event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
-    system = builder.get_system()
-    runtime = SystemRuntime(system, event_bus=event_bus)
-    return runtime, workflow, device, event_bus
+    return builder.get_system(), workflow, device, event_bus
 
 
 async def _submit_and_run_to_hang(
@@ -124,7 +137,7 @@ async def _submit_and_run_to_hang(
 ) -> str:
     await runtime.start()
     submission = await runtime.submit(
-        workflow, groups=[_owner_group()], mode=WorkflowRunMode.PURE_SIM,
+        workflow, groups=[_owner_group()], mode=WorkflowRunMode.CHECK_RUN,
     )
     await asyncio.wait_for(device.in_shake.wait(), timeout=10.0)
     return submission.execution_id
@@ -283,7 +296,7 @@ async def test_join_existing_into_paused_execution_is_rejected() -> None:
         with pytest.raises(SubmissionToPausedExecutionError) as excinfo:
             await runtime.submit(
                 workflow, groups=[_owner_group()],
-                mode=WorkflowRunMode.PURE_SIM,
+                mode=WorkflowRunMode.CHECK_RUN,
                 batch_mode=BatchMode.JOIN_EXISTING,
             )
         assert "paused" in str(excinfo.value).lower()

@@ -11,12 +11,13 @@ from cheshire_drivers.move_parameters import MoveParameterPatch
 from cheshire_drivers.teachpoints import AccessConfig, CartesianCoordinates, Teachpoint
 
 from orca.resource_models.transporter import Transporter
-from orca.runtime.db import create_memory_engine
-from orca.runtime.deployment_registries import build_in_memory_deployment_layer
+from orca.runtime.startup import PackageSetupStoreFactory, deployment_registries_over
+from orca.runtime.store_factory import default_package_root
 from orca.runtime.grip_profile_service import GripProfileService
-from orca.runtime.sqlite_grip_profile_store import SqliteGripProfileStore
-from orca.runtime.system_runtime import SystemRuntime
 from tests.test_system_runtime import _build_simple_system
+from tests.setup_package import fresh_grip_profiles
+from tests.memory_activity import memory_runtime
+from cheshire_drivers.device_setup import BUILTIN_CLIENT
 
 
 def _teachpoint() -> Teachpoint:
@@ -43,10 +44,10 @@ async def test_a_started_runtime_binds_every_transporter_to_the_stored_profiles(
     ever consults.
     """
     system, _ = await _build_simple_system()
-    service = GripProfileService(SqliteGripProfileStore(create_memory_engine()))
+    service = GripProfileService(fresh_grip_profiles())
     await service.set("costar_96", MoveParameterPatch(resource_width=76.0))
 
-    runtime = SystemRuntime(system, grip_profile_service=service)
+    runtime = await memory_runtime(system, grip_profile_service=service)
     await runtime.start()
     try:
         transporter = system.transporters[0]
@@ -65,7 +66,8 @@ async def test_the_daemon_runtime_reads_the_profiles_the_operator_writes() -> No
     own store instead would read an empty table and silently grip at the default
     width, which looks exactly like the feature working.
     """
-    factory, registries = build_in_memory_deployment_layer()
+    factory = PackageSetupStoreFactory(default_package_root(), default_client=BUILTIN_CLIENT)
+    registries = deployment_registries_over(factory)
     profile = MoveParameterPatch(resource_width=82.0)
     await registries.grip_profiles.apply("tip_box_1000ul", profile, confirm=True)
 

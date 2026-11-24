@@ -8,6 +8,9 @@ a wall-clock cap. See ``StallDetector`` for the classification rationale.
 """
 import pytest
 
+from orca.config import ReservationConfig
+from orca.runtime.startup import STALL_CHECK_INTERVAL_SECONDS, STALL_REQUIRED_STABLE_TICKS
+
 from orca.runtime.stall_detector import (
     StallDetector,
     ThreadStallSnapshot,
@@ -309,3 +312,9 @@ class TestParkedContributor:
         assert d.evaluate([_blocked("owner", "tips"), acting]) is None
         assert d.evaluate([_blocked("owner", "tips"), parked]) is None
         assert d.evaluate([_blocked("owner", "tips"), parked]) is not None
+
+
+def test_a_starved_move_gets_to_vacate_before_the_earliest_possible_stall_verdict() -> None:
+    """A verdict can land just after the first tick that saw the state, so N ticks only guarantee N-1 intervals."""
+    shortest_window = (STALL_REQUIRED_STABLE_TICKS - 1) * STALL_CHECK_INTERVAL_SECONDS
+    assert shortest_window > ReservationConfig().site_vacate_patience

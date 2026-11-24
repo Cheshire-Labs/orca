@@ -10,6 +10,7 @@ empirically: if every N completes, the operator's stall was not the
 method count; if N>=3 hangs, it confirms a spawn-derivation bug.
 """
 
+from orca.config import OrcaConfig
 import asyncio
 from collections.abc import AsyncGenerator
 from uuid import uuid4
@@ -17,11 +18,10 @@ from uuid import uuid4
 import pytest
 
 import orca.orca as orca
-from orca.plugins import LabwareJourneyTracker, MethodTracker
+from tests.thread_recorder import ThreadRecorder
 from orca.resource_models.labware import PlateTemplate
 from orca.resource_models.resource_pool import ResourcePool
-from orca.runtime.labware_group import LabwareGroup, LabwareGroupMember
-from orca.runtime.system_runtime import SystemRuntime
+from orca.workflow_models.labware_group import LabwareGroup, LabwareGroupMember
 from orca.sdk.events import EventBus
 from orca.sdk.system import ResourceRegistry, SystemMap
 from orca.sdk.workflow import MethodTemplate, ThreadTemplate, WorkflowTemplate
@@ -32,13 +32,17 @@ from orca.workflow_models.action_template import ActionTemplate
 from orca.workflow_models.method_context import MethodContext
 from orca.workflow_models.method_template import IMethodTemplate
 from orca.workflow_models.thread_context import ThreadContext
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from tests.test_helpers import (
     execution_outcome,
     create_test_device,
     create_test_transporter,
     wire_system_map,
 )
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 
 async def _build_n_method_bare_join_system(n: int) -> tuple[
@@ -117,7 +121,10 @@ async def _build_n_method_bare_join_system(n: int) -> tuple[
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=event_bus,
+        event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     return builder.get_system(), workflow, event_bus
@@ -220,7 +227,10 @@ async def _build_noncontiguous_system(*, loop: bool) -> tuple[
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=event_bus,
+        event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     return builder.get_system(), workflow, event_bus
@@ -335,7 +345,10 @@ async def _build_v2_shape_system(*, loop: bool, leading_method: bool = False) ->
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=event_bus,
+        event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     return builder.get_system(), workflow, event_bus
@@ -416,7 +429,10 @@ async def _build_nway_convergence_system(n_cothreads: int) -> tuple[
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=event_bus,
+        event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     return builder.get_system(), workflow, event_bus
@@ -435,14 +451,14 @@ class TestBareMultiAllowJoinByMethodCount:
     @pytest.mark.asyncio
     async def test_bare_join_spawns_receiver_for_n_methods(self, n: int) -> None:
         system, workflow, event_bus = await _build_n_method_bare_join_system(n)
-        runtime = SystemRuntime(system, event_bus=event_bus)
-        method_tracker = MethodTracker()
-        runtime.register_plugin(method_tracker)
+        runtime = await memory_runtime(system, event_bus=event_bus)
+        recorder = ThreadRecorder()
+        runtime.register_plugin(recorder)
         await runtime.start()
         try:
             submission = await runtime.submit(
                 workflow, groups=[_owner_group()],
-                mode=WorkflowRunMode.PURE_SIM,
+                mode=WorkflowRunMode.CHECK_RUN,
             )
             status = await execution_outcome(runtime, submission, timeout=45.0)
         finally:
@@ -454,7 +470,7 @@ class TestBareMultiAllowJoinByMethodCount:
             f"spawn-derivation bug at this method count."
         )
         receiver_names = [
-            name for name in method_tracker.thread_names.values()
+            name for name in recorder.thread_names.values()
             if name.startswith("receiver")
         ]
         assert len(receiver_names) >= 1, (
@@ -473,16 +489,16 @@ class TestBareMultiAllowJoinByMethodCount:
         interleaved), not the method count of the join.
         """
         system, workflow, event_bus = await _build_noncontiguous_system(loop=loop)
-        runtime = SystemRuntime(system, event_bus=event_bus)
-        method_tracker = MethodTracker()
-        runtime.register_plugin(method_tracker)
+        runtime = await memory_runtime(system, event_bus=event_bus)
+        recorder = ThreadRecorder()
+        runtime.register_plugin(recorder)
         await runtime.start()
         timed_out = False
         status = None
         try:
             submission = await runtime.submit(
                 workflow, groups=[_owner_group()],
-                mode=WorkflowRunMode.PURE_SIM,
+                mode=WorkflowRunMode.CHECK_RUN,
             )
             # Diagnostic bed: a timeout is an OUTCOME here, not a failure.
             try:
@@ -519,16 +535,16 @@ class TestBareMultiAllowJoinByMethodCount:
         spawned" shape spawns and completes here.
         """
         system, workflow, event_bus = await _build_v2_shape_system(loop=loop)
-        runtime = SystemRuntime(system, event_bus=event_bus)
-        method_tracker = MethodTracker()
-        runtime.register_plugin(method_tracker)
+        runtime = await memory_runtime(system, event_bus=event_bus)
+        recorder = ThreadRecorder()
+        runtime.register_plugin(recorder)
         await runtime.start()
         timed_out = False
         status = None
         try:
             submission = await runtime.submit(
                 workflow, groups=[_owner_group()],
-                mode=WorkflowRunMode.PURE_SIM,
+                mode=WorkflowRunMode.CHECK_RUN,
             )
             # Diagnostic bed: a timeout is an OUTCOME here, not a failure.
             try:
@@ -541,7 +557,7 @@ class TestBareMultiAllowJoinByMethodCount:
             await runtime.shutdown()
 
         tips_threads = [
-            name for name in method_tracker.thread_names.values()
+            name for name in recorder.thread_names.values()
             if name.startswith("tips")
         ]
         outcome = "TIMEOUT/STALL" if timed_out else (status.status if status else "?")
@@ -571,16 +587,16 @@ class TestBareMultiAllowJoinByMethodCount:
         system, workflow, event_bus = await _build_v2_shape_system(
             loop=False, leading_method=True,
         )
-        runtime = SystemRuntime(system, event_bus=event_bus)
-        method_tracker = MethodTracker()
-        runtime.register_plugin(method_tracker)
+        runtime = await memory_runtime(system, event_bus=event_bus)
+        recorder = ThreadRecorder()
+        runtime.register_plugin(recorder)
         await runtime.start()
         timed_out = False
         status = None
         try:
             submission = await runtime.submit(
                 workflow, groups=[_owner_group()],
-                mode=WorkflowRunMode.PURE_SIM,
+                mode=WorkflowRunMode.CHECK_RUN,
             )
             # Diagnostic bed: a timeout is an OUTCOME here, not a failure.
             try:
@@ -593,7 +609,7 @@ class TestBareMultiAllowJoinByMethodCount:
             await runtime.shutdown()
 
         tips_threads = [
-            name for name in method_tracker.thread_names.values()
+            name for name in recorder.thread_names.values()
             if name.startswith("tips")
         ]
         outcome = "TIMEOUT/STALL" if timed_out else (status.status if status else "?")
@@ -621,16 +637,16 @@ class TestBareMultiAllowJoinByMethodCount:
         run completes, or whether convergence past 2-3 co-threads stalls.
         """
         system, workflow, event_bus = await _build_nway_convergence_system(n_cothreads)
-        runtime = SystemRuntime(system, event_bus=event_bus)
-        method_tracker = MethodTracker()
-        runtime.register_plugin(method_tracker)
+        runtime = await memory_runtime(system, event_bus=event_bus)
+        recorder = ThreadRecorder()
+        runtime.register_plugin(recorder)
         await runtime.start()
         timed_out = False
         status = None
         try:
             submission = await runtime.submit(
                 workflow, groups=[_owner_group()],
-                mode=WorkflowRunMode.PURE_SIM,
+                mode=WorkflowRunMode.CHECK_RUN,
             )
             # Diagnostic bed: a timeout is an OUTCOME here, not a failure.
             try:
@@ -643,7 +659,7 @@ class TestBareMultiAllowJoinByMethodCount:
             await runtime.shutdown()
 
         co_threads = [
-            name for name in method_tracker.thread_names.values()
+            name for name in recorder.thread_names.values()
             if name.startswith("co_")
         ]
         outcome = "TIMEOUT/STALL" if timed_out else (status.status if status else "?")

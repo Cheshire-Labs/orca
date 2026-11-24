@@ -10,27 +10,29 @@ import pytest
 from typer.testing import CliRunner
 
 from orca.cli.app import app
-from orca.cli.control_plane import RuntimeStatusResponseDTO
+from orca.operations.wire_models import (
+    RuntimeStatusResponse,
+)
 
 
 runner = CliRunner()
 
 
 class _FakeCloud:
-    def __init__(self, payload: RuntimeStatusResponseDTO) -> None:
+    def __init__(self, payload: RuntimeStatusResponse) -> None:
         self.calls = 0
         self._payload = payload
 
-    def runtime_status(self) -> RuntimeStatusResponseDTO:
+    def runtime_status(self) -> RuntimeStatusResponse:
         self.calls += 1
         return self._payload
 
 
 @pytest.fixture
 def cloud_built(monkeypatch: pytest.MonkeyPatch) -> Iterator[_FakeCloud]:
-    stub = _FakeCloud(RuntimeStatusResponseDTO(built=True, last_build_error=None))
+    stub = _FakeCloud(RuntimeStatusResponse(built=True, last_build_error=None))
     monkeypatch.setattr("orca.cli.status.resolve_backend", lambda _b: "cloud")
-    monkeypatch.setattr("orca.cli.status.cloud_client", lambda: stub)
+    monkeypatch.setattr("orca.cli.status.get_client", lambda: stub)
     yield stub
 
 
@@ -52,7 +54,7 @@ def test_status_cloud_json_mode(cloud_built: _FakeCloud) -> None:
 
 def test_status_cloud_not_built_shows_error(monkeypatch: pytest.MonkeyPatch) -> None:
     stub = _FakeCloud(
-        RuntimeStatusResponseDTO(
+        RuntimeStatusResponse(
             built=False,
             last_build_error={
                 "type": "ModuleNotFoundError",
@@ -62,7 +64,7 @@ def test_status_cloud_not_built_shows_error(monkeypatch: pytest.MonkeyPatch) -> 
         ),
     )
     monkeypatch.setattr("orca.cli.status.resolve_backend", lambda _b: "cloud")
-    monkeypatch.setattr("orca.cli.status.cloud_client", lambda: stub)
+    monkeypatch.setattr("orca.cli.status.get_client", lambda: stub)
     result = runner.invoke(app, ["status"])
     assert result.exit_code == 0, result.output
     assert "ModuleNotFoundError" in result.output

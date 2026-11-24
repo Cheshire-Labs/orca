@@ -1,8 +1,6 @@
 """`orca incident ...` noun sub-app.
 
-Backend-dispatched: ``list`` / ``get`` / ``ack`` / ``ack-all`` route to the
-cloud control-plane client when ``active_backend()`` is "cloud", else to the
-local daemon. SystemIncidents are non-Action runtime errors (variable
+Every verb works against either backend through ``get_client()``. SystemIncidents are non-Action runtime errors (variable
 resolution failures, co-labware timeouts, plugin exceptions, etc.). See
 orca.runtime.incident_store for the category list.
 
@@ -21,7 +19,7 @@ import typer
 
 from orca.cli import output, resolve
 from orca.cli.app import STATE
-from orca.cli.backend import active_backend, cloud_client, get_client, local_client
+from orca.cli.backend import get_client
 
 
 app = typer.Typer(help="Non-Action error records: query + acknowledge.", no_args_is_help=True)
@@ -40,10 +38,7 @@ def _resolve_incident_id(incident_id: str) -> str:
     pass-through to the daemon would not find anything local enumeration
     missed.
     """
-    if active_backend() == "cloud":
-        ids = [inc.id for inc in cloud_client().incidents_list()]
-    else:
-        ids = [inc.id for inc in local_client().incidents_list()]
+    ids = [inc.id for inc in get_client().incidents_list()]
     return resolve.resolve_id(incident_id, ids, what="incident")
 
 
@@ -54,18 +49,11 @@ def list_incidents(
     execution: str = typer.Option("", "--execution"),
 ) -> None:
     """List incidents, optionally filtered by state / category / execution."""
-    if active_backend() == "cloud":
-        items = cloud_client().incidents_list(
-            unacknowledged_only=unacknowledged,
-            category=category or None,
-            execution_id=execution or None,
-        )
-    else:
-        items = local_client().incidents_list(
-            unacknowledged_only=unacknowledged,
-            category=category or None,
-            execution_id=execution or None,
-        )
+    items = get_client().incidents_list(
+        unacknowledged_only=unacknowledged,
+        category=category or None,
+        execution_id=execution or None,
+    )
     if output.get_mode().value == "json":
         output.emit_json([i.model_dump(mode="json") for i in items])
         return
@@ -90,10 +78,7 @@ def get(
 ) -> None:
     """Show one incident's full detail."""
     resolved = _resolve_incident_id(incident_id)
-    if active_backend() == "cloud":
-        inc = cloud_client().incidents_get(resolved)
-    else:
-        inc = local_client().incidents_get(resolved)
+    inc = get_client().incidents_get(resolved)
     output.emit_json(inc.model_dump(mode="json"))
     output.emit_kv(f"incident {inc.id[:8]}", [
         ("category", inc.category),
@@ -123,10 +108,7 @@ def ack(
             f"Acknowledge incident {resolved[:8]}?", default=False,
         ):
             output.confirmation_denied()
-    if active_backend() == "cloud":
-        cloud_client().incidents_ack(resolved, reason=reason)
-    else:
-        local_client().incidents_ack(resolved, reason=reason)
+    get_client().incidents_ack(resolved, reason=reason)
     output.info(f"acknowledged incident {resolved[:8]}")
 
 
@@ -144,10 +126,7 @@ def ack_all(
             f"Acknowledge all incidents ({target})?", default=False,
         ):
             output.confirmation_denied()
-    if active_backend() == "cloud":
-        result = cloud_client().incidents_ack_all(category=category or None, reason=reason)
-    else:
-        result = local_client().incidents_ack_all(category=category or None, reason=reason)
+    result = get_client().incidents_ack_all(category=category or None, reason=reason)
     output.info(f"acknowledged {result.acknowledged_count} incidents")
 
 
@@ -261,3 +240,8 @@ def recoverable_timeout_mark_complete(
         f"marked incident {result.incident_id[:8]} complete "
         f"(operator-asserted)",
     )
+    if result.record_left_as_it_is:
+        output.info(
+            "the record was not changed: the labware is no longer where that command started from. "
+            "State where it is with `orca labware edit-location` if the record is wrong.",
+        )

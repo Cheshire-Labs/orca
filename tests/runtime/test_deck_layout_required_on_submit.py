@@ -1,21 +1,20 @@
 """Submit-time validation: LiquidHandlers must declare a resolvable
-``deck_layout`` under DEVICE_SIM and LIVE run modes.
+``deck_layout`` in every run mode.
 
-Per the device-bound deck-layout contract:
+A check run runs the same simulator a sim run does, so it needs the same deck:
 
-* PURE_SIM: ``deck_layout`` is optional; the sim driver runs against an
-  empty deck state.
-* DEVICE_SIM / LIVE: every ``LiquidHandler`` in the topology MUST declare
+* Every ``LiquidHandler`` in the topology MUST declare
   a non-None ``deck_layout`` AND that name must resolve to an entry in
   the device's ``deck_layout_store``. Failing either check raises
   ``DeckLayoutRequiredError`` at submit-time, before the execution
   boots.
 
-The validator runs INSIDE the same flow as ``assert_runnable``: tests
+The validator runs INSIDE the same flow as ``unreachable``: tests
 that pass connection cards but omit deck-layout configuration must
 still fail.
 """
 
+from orca.config import OrcaConfig
 from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 
@@ -25,12 +24,10 @@ import orca.orca as orca
 from tests.mock import TRANSPORTER_MOCK_INTERFACES
 from orca.devices.devices import LiquidHandler
 from orca.resource_models.resource_pool import ResourcePool
-from orca.runtime.deck_layout_service import seeded_deck_layout_service
-from orca.runtime.registries import NullGatewayRegistry
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.runtime_interface import DeckLayoutRequiredError
+from tests.no_devices import NullGatewayRegistry
+from orca.modes.run_modes import WorkflowRunMode
+from orca.runtime.errors import DeckLayoutRequiredError
 from orca.runtime.status_models import ConnectionCard
-from orca.runtime.system_runtime import SystemRuntime
 from orca.sdk.events import EventBus
 from orca.sdk.system import ResourceRegistry, SystemMap
 from orca.sdk.workflow import (
@@ -52,6 +49,11 @@ from tests.test_helpers import (
     create_test_transporter,
     wire_system_map,
 )
+from tests.setup_package import deck_layout_file, with_deck_layouts
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 
 def _layout(deck_type: str = "STARlet") -> DeckLayoutConfig:
@@ -63,6 +65,11 @@ def _layout(deck_type: str = "STARlet") -> DeckLayoutConfig:
             DeckResourceConfig(name="carrier-1", catalog_ref="PLT_CAR_L5AC_A00", rail=7),
         ],
     )
+
+
+async def build_system_with_a_laid_out_lh() -> ISystem:
+    """One liquid handler whose deck layout resolves, so any run mode accepts it."""
+    return await _build_system_with_lh(deck_layout="smc_v1", store_layouts={"smc_v1": _layout("STAR")})
 
 
 async def _build_system_with_lh(
@@ -78,12 +85,11 @@ async def _build_system_with_lh(
     """
     plate = create_test_plate_template("plate_96")
 
-    store = seeded_deck_layout_service(store_layouts or {})
-    lh = LiquidHandler(
+    store = deck_layout_file(store_layouts or {})
+    lh = with_deck_layouts(LiquidHandler(
         "lh_1",
-        deck_layout_store=store,
         deck_layout=deck_layout,
-    )
+    ), store)
     # A multi-site LH has no bare-name teachpoint alias, so teach a
     # site-qualified point; a None layout keeps "lh_1/slot" (bare name works).
     resolved = await lh.resolve_deck_config_async()
@@ -133,46 +139,46 @@ async def _build_system_with_lh(
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=EventBus(),
+        event_bus=EventBus(), config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     return builder.get_system()
 
 
 def _connection_card_for_lh(name: str = "lh_1") -> ConnectionCard:
-    """Connection card claiming both LiquidHandler interfaces so
-    ``assert_runnable`` passes when we only want to probe the
-    deck-layout check. Topology declares ILiquidHandler AND
-    IProtocolRunner (per the LiquidHandler class hierarchy); the
-    superset check refuses anything narrower."""
+    """Connection card claiming every interface the topology declares for a
+    LiquidHandler, so ``unreachable`` passes when we only want to probe the
+    deck-layout check; the superset check refuses anything narrower."""
     return ConnectionCard(
         name=name,
         client_id=f"client-{name}",
         connection_id=f"conn-{name}",
         last_heartbeat=datetime.now(timezone.utc),
         advertised_kind="SimLiquidHandlerDriver",
-        advertised_interfaces=frozenset({"ILiquidHandler", "IProtocolRunner"}),
+        advertised_interfaces=frozenset({"IGantryParking", "ILiquidHandler", "IProtocolRunner"}),
     )
 
 
-async def test_pure_sim_accepts_lh_with_no_deck_layout() -> None:
-    """PURE_SIM intentionally skips the deck-layout check; the sim
-    driver runs against an empty deck state."""
+async def test_a_check_run_rejects_lh_with_no_deck_layout_as_a_sim_run_does() -> None:
     system = await _build_system_with_lh(deck_layout=None)
-    runtime = SystemRuntime(
+    runtime = await memory_runtime(
         system,
         gateway_registry=NullGatewayRegistry(),
     )
     await runtime.start()
     try:
-        record = await runtime.submit_workflow("deck_layout_test_wf", mode=WorkflowRunMode.PURE_SIM)
-        assert record.workflow_name == "deck_layout_test_wf"
+        with pytest.raises(DeckLayoutRequiredError) as excinfo:
+            await runtime.submit_workflow("deck_layout_test_wf", mode=WorkflowRunMode.CHECK_RUN)
+        assert "lh_1" in str(excinfo.value)
     finally:
         await runtime.shutdown()
 
 
-async def test_device_sim_rejects_lh_with_no_deck_layout() -> None:
-    """DEVICE_SIM must reject a LiquidHandler whose constructor
+async def test_sim_rejects_lh_with_no_deck_layout() -> None:
+    """SIM must reject a LiquidHandler whose constructor
     omitted ``deck_layout``. The error names the offending device."""
     system = await _build_system_with_lh(deck_layout=None)
     transporter_card = ConnectionCard(
@@ -186,7 +192,7 @@ async def test_device_sim_rejects_lh_with_no_deck_layout() -> None:
     source = FakeConnectionSource(
         [_connection_card_for_lh("lh_1"), transporter_card],
     )
-    runtime = SystemRuntime(
+    runtime = await memory_runtime(
         system,
         gateway_registry=NullGatewayRegistry(),
         connection_source=source,
@@ -196,20 +202,20 @@ async def test_device_sim_rejects_lh_with_no_deck_layout() -> None:
         with pytest.raises(DeckLayoutRequiredError) as excinfo:
             await runtime.submit_workflow(
                 "deck_layout_test_wf",
-                mode=WorkflowRunMode.DEVICE_SIM,
+                mode=WorkflowRunMode.SIM,
             )
         err = excinfo.value
-        assert err.mode is WorkflowRunMode.DEVICE_SIM
+        assert err.mode is WorkflowRunMode.SIM
         assert err.missing_declaration == ["lh_1"]
         assert err.unresolved_layout == []
         assert "lh_1" in str(err)
-        assert "DEVICE_SIM" in str(err)
+        assert "SIM" in str(err)
     finally:
         await runtime.shutdown()
 
 
 async def test_live_rejects_lh_with_no_deck_layout() -> None:
-    """LIVE submissions enforce the same contract as DEVICE_SIM."""
+    """LIVE submissions enforce the same contract as SIM."""
     system = await _build_system_with_lh(deck_layout=None)
     transporter_card = ConnectionCard(
         name="robot1",
@@ -222,7 +228,7 @@ async def test_live_rejects_lh_with_no_deck_layout() -> None:
     source = FakeConnectionSource(
         [_connection_card_for_lh("lh_1"), transporter_card],
     )
-    runtime = SystemRuntime(
+    runtime = await memory_runtime(
         system,
         gateway_registry=NullGatewayRegistry(),
         connection_source=source,
@@ -239,7 +245,7 @@ async def test_live_rejects_lh_with_no_deck_layout() -> None:
         await runtime.shutdown()
 
 
-async def test_device_sim_rejects_lh_with_unresolved_deck_layout() -> None:
+async def test_sim_rejects_lh_with_unresolved_deck_layout() -> None:
     """A handler with ``deck_layout='missing'`` and no such entry in
     the store must fail with an ``unresolved_layout`` entry."""
     system = await _build_system_with_lh(
@@ -257,7 +263,7 @@ async def test_device_sim_rejects_lh_with_unresolved_deck_layout() -> None:
     source = FakeConnectionSource(
         [_connection_card_for_lh("lh_1"), transporter_card],
     )
-    runtime = SystemRuntime(
+    runtime = await memory_runtime(
         system,
         gateway_registry=NullGatewayRegistry(),
         connection_source=source,
@@ -267,7 +273,7 @@ async def test_device_sim_rejects_lh_with_unresolved_deck_layout() -> None:
         with pytest.raises(DeckLayoutRequiredError) as excinfo:
             await runtime.submit_workflow(
                 "deck_layout_test_wf",
-                mode=WorkflowRunMode.DEVICE_SIM,
+                mode=WorkflowRunMode.SIM,
             )
         err = excinfo.value
         assert err.missing_declaration == []
@@ -278,9 +284,9 @@ async def test_device_sim_rejects_lh_with_unresolved_deck_layout() -> None:
         await runtime.shutdown()
 
 
-async def test_device_sim_accepts_lh_with_resolvable_deck_layout() -> None:
+async def test_sim_accepts_lh_with_resolvable_deck_layout() -> None:
     """A handler with a deck_layout that resolves in its store passes
-    the deck-layout check and submits cleanly under DEVICE_SIM."""
+    the deck-layout check and submits cleanly under SIM."""
     system = await _build_system_with_lh(
         deck_layout="smc_v1",
         store_layouts={"smc_v1": _layout("STAR")},
@@ -296,7 +302,7 @@ async def test_device_sim_accepts_lh_with_resolvable_deck_layout() -> None:
     source = FakeConnectionSource(
         [_connection_card_for_lh("lh_1"), transporter_card],
     )
-    runtime = SystemRuntime(
+    runtime = await memory_runtime(
         system,
         gateway_registry=NullGatewayRegistry(),
         connection_source=source,
@@ -305,7 +311,7 @@ async def test_device_sim_accepts_lh_with_resolvable_deck_layout() -> None:
     try:
         record = await runtime.submit_workflow(
             "deck_layout_test_wf",
-            mode=WorkflowRunMode.DEVICE_SIM,
+            mode=WorkflowRunMode.SIM,
         )
         assert record.workflow_name == "deck_layout_test_wf"
     finally:

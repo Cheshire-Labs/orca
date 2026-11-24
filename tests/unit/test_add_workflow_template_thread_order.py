@@ -5,6 +5,7 @@ Both paths register the same templates. `build_system` lists them in
 or `list_thread_templates()` orders the same workflow two ways.
 """
 
+from orca.events.event_bus import EventBus
 from collections.abc import AsyncGenerator
 
 import orca.orca as orca
@@ -13,8 +14,9 @@ from cheshire_drivers import AccessConfig, CartesianCoordinates, Teachpoint
 from orca.devices.shaker import Shaker
 from orca.resource_models.plate_pad import PlatePad
 from orca.resource_models.transporter import Transporter
-from orca.runtime.store_factory import InMemoryRuntimeStoreFactory, IRuntimeStoreFactory
-from orca.sdk.build import Topology, add_workflow_template, build_system
+from orca.runtime.store_factory import IRuntimeStoreFactory
+from orca.sdk.build import Topology, add_workflow_template
+from orca.sdk.package import build_system
 from orca.sdk.labware import PlateTemplate
 from orca.sdk.workflow import MethodTemplate
 from orca.workflow_models.action_context import ActionContext
@@ -23,16 +25,19 @@ from orca.workflow_models.method_context import MethodContext
 from orca.workflow_models.thread_context import ThreadContext
 from orca.workflow_models.workflow_context import WorkflowContext
 from orca.workflow_models.workflow_templates import WorkflowTemplate
+from tests.setup_package import package_stores, write_access_configs, write_teachpoints
+from tests.setup_package import with_teachpoints
+from tests.memory_activity import memory_ops_store
 
 
 def _topology(stores: IRuntimeStoreFactory) -> Topology:
     access = AccessConfig(name="vertical", access_type="vertical")
-    stores.access_configs(seed=[access])
+    write_access_configs(stores, [access])
     points = [
         Teachpoint(name, CartesianCoordinates(x, 0, 0, 0, 90, 180), orientation="right", access=access)
         for x, name in ((0, "shaker_1"), (100, "pad_1"))
     ]
-    arm = Transporter("arm", teachpoint_store=stores.teachpoints("arm", seed=points))
+    arm = with_teachpoints(Transporter("arm"), write_teachpoints(stores, "arm", points))
     return Topology(
         locations={"shaker_1": Shaker("shaker_1"), "pad_1": PlatePad("pad_1")},
         transporters=[arm],
@@ -78,18 +83,17 @@ def _workflow_decorated_in_the_other_order(topology: Topology) -> WorkflowTempla
 
 
 async def test_a_workflow_added_after_the_build_registers_threads_in_the_build_order() -> None:
-    built_stores = InMemoryRuntimeStoreFactory()
+    built_stores = package_stores()
     built_topology = _topology(built_stores)
     built = await build_system(
         "built_with_workflow", built_topology, built_stores,
-        workflow=_workflow_decorated_in_the_other_order(built_topology),
-        configure_logging=False,
+        workflow=_workflow_decorated_in_the_other_order(built_topology), event_bus=EventBus(), ops_history_store=memory_ops_store(),
     )
 
-    added_stores = InMemoryRuntimeStoreFactory()
+    added_stores = package_stores()
     added_topology = _topology(added_stores)
     added = await build_system(
-        "workflow_added_later", added_topology, added_stores, configure_logging=False,
+        "workflow_added_later", added_topology, added_stores, event_bus=EventBus(), ops_history_store=memory_ops_store(),
     )
     await add_workflow_template(added.system, _workflow_decorated_in_the_other_order(added_topology))
 

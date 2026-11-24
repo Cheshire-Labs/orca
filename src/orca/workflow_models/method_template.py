@@ -7,6 +7,7 @@ from orca.workflow_models.interfaces import IMethod
 from orca.workflow_models.method import ExecutingMethod, MethodInstance
 from orca.workflow_models.method_context import MethodContext
 from orca.workflow_models.status_enums import FailurePolicy
+from orca.workflow_models.actions.method_action_factory import MethodActionFactory
 
 from abc import ABC, abstractmethod
 
@@ -21,9 +22,6 @@ class IMethodTemplate(ABC):
 
     Every implementation must expose a stable ``name`` so the registry,
     event bus, and method-completion bookkeeping can identify the step.
-    Promoting this to the interface removes the ``isinstance`` /
-    ``getattr`` dance previously needed by callers that walk
-    ``WorkflowTemplate.bundled_methods``.
     """
 
     @property
@@ -51,7 +49,7 @@ class MethodTemplateNameCollisionError(KeyError):
     Method names are unique per workflow, not deployment-wide: two
     workflows may each declare a ``combine_plates`` method. The collision
     fires only when two distinct method objects claim the same name inside
-    the same workflow's bundle. Inherits ``KeyError`` for backward compat.
+    the same workflow's bundle.
     """
 
     def __init__(
@@ -214,13 +212,7 @@ async def populate_method_actions(
     method: IMethod,
     ctx: MethodContext,
 ) -> None:
-    """Append each action the template's generator yields to `method`.
-
-    Single source for materializing a method's actions: used both by the
-    live thread path (MethodTemplate.schedule) and by StandaloneMethodExecutor,
-    which pre-builds the shared executing method before any thread runs.
-    """
-    from orca.workflow_models.workflows.workflow_factories import MethodActionFactory
+    """Append each action the template's generator yields to `method`."""
     async for action_item in template.func(ctx):
         action_templates = action_item if isinstance(action_item, list) else [action_item]
         for at in action_templates:

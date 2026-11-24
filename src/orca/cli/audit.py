@@ -1,9 +1,7 @@
 """`orca audit` -- inspect the @dangerous audit trail.
 
-Reads the active backend's in-memory ring buffer via GET /audit (local
-daemon) or GET /api/audit (cloud). The durable mirror lives at
-log_dir/orca_audit.log (rotating handler). Use this command for live
-operator inspection without parsing the file.
+Reads the active server's audit store via GET /api/audit: the local daemon's
+activity database, or a hosted server's.
 """
 
 import datetime as _dt

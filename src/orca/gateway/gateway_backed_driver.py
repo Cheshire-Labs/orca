@@ -10,9 +10,14 @@ local driver that grew an attribute of the same name would otherwise widen a
 dispatch gate with nothing going red.
 """
 
+from typing import ClassVar
+
 
 class GatewayBackedDriver:
     """A driver whose device answers over the gateway rather than in-process."""
+
+    # orca-client's driver runs each command's hooks, so the forwarder runs none.
+    runs_hooks: ClassVar[bool] = False
 
     def __init__(self, declared_interfaces: frozenset[str] | None = None) -> None:
         self._declared_interfaces = declared_interfaces

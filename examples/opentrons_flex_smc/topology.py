@@ -27,36 +27,27 @@ independent of any particular workflow. ``build_topology()`` returns a fresh
 state.
 
 Devices use the no-driver SDK constructor; the bound device factory supplies the
-(live, sim) driver pair. ``SIM_DRIVERS`` gives both Flexes a
-``ChatterboxLiquidHandlerDriver`` (a PLR-backed sim that tracks tips, well
-volumes, and deck-resource placement) when no factory is bound, so the example
-runs standalone in orca-core sim. Binding ``RemoteDeviceFactory``
-first makes the Flexes dispatch to orca-client over the WebSocket. Tests that need
-to inspect the pushed calls bind their own factory first (one returning a
-``RecordingLiquidHandlerDriver`` per Flex); a bound factory always wins.
+(live, sim) driver pair. The daemon binds ``RemoteDeviceFactory``, which makes every
+device dispatch to orca-client over the WebSocket. Tests pass a factory of their own.
 """
 
-from collections.abc import Callable
 
-from cheshire_drivers import (
-    AccessConfig,
-    CartesianCoordinates,
-    DeckLayoutConfig,
-    Teachpoint,
+from orca.sdk.devices import (
+    Centrifuge,
+    Delidder,
+    LiquidHandler,
+    PlatePad,
+    PlateWasher,
+    Reader,
+    ResourcePool,
+    Sealer,
+    Shaker,
+    Storage,
+    Thermocycler,
+    Translator,
+    Transporter,
+    Waste,
 )
-from cheshire_drivers.plr import ChatterboxLiquidHandlerDriver
-
-from orca.devices.centrifuge import Centrifuge
-from orca.devices.devices import Delidder, LiquidHandler, PlateWasher, Reader, Storage, Waste
-from orca.devices.sealer import Sealer
-from orca.devices.shaker import Shaker
-from orca.devices.thermocycler import Thermocycler
-from orca.resource_models.plate_pad import PlatePad
-from orca.resource_models.resource_pool import ResourcePool
-from orca.resource_models.translator import Translator
-from orca.resource_models.transporter import Transporter
-from orca.runtime.device_factory_protocol import DriverPairElement
-from orca.runtime.store_factory import IRuntimeStoreFactory
 from orca.sdk.build import Topology
 
 
@@ -67,27 +58,8 @@ SYSTEM_DESCRIPTION = (
     "Flex pair (flex_1 capture/detection, flex_2 elution/neutralize)"
 )
 
-# The two bridge translators get their one-carriage driver from being declared
-# `Translator`, not from this table.
-SIM_DRIVERS: dict[str, Callable[[], DriverPairElement]] = {
-    "liquid_handler": lambda: ChatterboxLiquidHandlerDriver(num_channels=8),
-}
 
-
-# Two handoff lanes per Flex: the DDR arm is taught a plate-handoff slot (D1) and
-# a tip-handoff slot (D2); it drops transit labware there and the Flex's internal
-# gripper relays it to the deck_positions= working slot named by the action. Two
-# lanes (mirroring Hamilton's two handoff carriers) keep plate and tip traffic
-# from serializing on one slot in a batch. Troughs are deck residents anchored via
-# @orca.thread(start=("<flex>/<slot>-slot", REUSE_EXISTING)); transit labware
-# enters via @orca.action(deck_positions=...). A Flex deck's slots (A1..D3, A3 is
-# the trash) are built-in structure, so DeckLayoutConfig declares no resources --
-# the child Locations (e.g. flex_1/C2-slot) are derived from the deck's slot list.
-FLEX_1_DECK = DeckLayoutConfig(deck_type="FlexDeck", resources=[])
-FLEX_2_DECK = DeckLayoutConfig(deck_type="FlexDeck", resources=[])
-
-
-def build_topology(stores: IRuntimeStoreFactory) -> Topology:
+def build_topology() -> Topology:
     """Build a fresh Opentrons Flex SMC assay topology (Hamilton SMC bench with
     the two ML STARs replaced by two Flexes).
 
@@ -103,88 +75,15 @@ def build_topology(stores: IRuntimeStoreFactory) -> Topology:
         |
       DDR-3 (zone 3): biotek_2, flex_2, plate_hotel, smc_pro, waste_2, pads 7-9
     """
-    c = CartesianCoordinates
-
-    default_vertical = AccessConfig(name="default_vertical", access_type="vertical")
-    default_horizontal = AccessConfig(name="default_horizontal", access_type="horizontal")
-    stores.access_configs(seed=[default_vertical, default_horizontal])
-
-    ddr_1_teachpoints = [
-        Teachpoint("biotek_1",            c(100, 200, 300, 0, 90, 180), orientation="right", access=default_vertical),
-        Teachpoint("flex_1/D1-slot",      c(300, 200, 300, 0, 90, 180), orientation="right", access=default_vertical),
-        Teachpoint("flex_1/D2-slot",      c(320, 200, 300, 0, 90, 180), orientation="right", access=default_vertical),
-        Teachpoint("translator_1_start",  c(450, 200, 300, 0, 90, 180), orientation="right", access=default_horizontal),
-        Teachpoint("waste_1",             c(100, 400, 200, 0, 90, 180), orientation="right", access=default_vertical),
-        Teachpoint("pad_1",               c(200, 100, 300, 0, 90, 180), orientation="right", access=default_vertical),
-        Teachpoint("pad_2",               c(200, 300, 300, 0, 90, 180), orientation="right", access=default_vertical),
-        Teachpoint("pad_3",               c(400, 100, 300, 0, 90, 180), orientation="right", access=default_vertical),
-    ]
-
-    ddr_2_teachpoints = [
-        Teachpoint("centrifuge",          c(600, 200, 300, 0, 90, 180), orientation="right", access=default_vertical),
-        Teachpoint("sealer",              c(700, 200, 300, 0, 90, 180), orientation="right", access=default_horizontal),
-        Teachpoint("delidder",            c(1350, 100, 300, 0, 90, 180), orientation="right", access=default_vertical),
-        Teachpoint("translator_1_end",    c(600,  50, 300, 0, 90, 180), orientation="right", access=default_horizontal),
-        Teachpoint("translator_2_start",  c(1800, 50, 300, 0, 90, 180), orientation="right", access=default_horizontal),
-        Teachpoint("stacker_1",           c(800,  50, 300, 0, 90, 180), orientation="right", access=default_vertical),
-        Teachpoint("stacker_2",           c(900,  50, 300, 0, 90, 180), orientation="right", access=default_vertical),
-        Teachpoint("stacker_3",           c(1000, 50, 300, 0, 90, 180), orientation="right", access=default_vertical),
-        Teachpoint("stacker_4",           c(1100, 50, 300, 0, 90, 180), orientation="right", access=default_vertical),
-        Teachpoint("stacker_5",           c(1200, 50, 300, 0, 90, 180), orientation="right", access=default_vertical),
-        Teachpoint("stacker_6",           c(1300, 50, 300, 0, 90, 180), orientation="right", access=default_vertical),
-        Teachpoint("stacker_7",           c(1400, 50, 300, 0, 90, 180), orientation="right", access=default_vertical),
-        Teachpoint("stacker_8",           c(1450, 50, 300, 0, 90, 180), orientation="right", access=default_vertical),
-        Teachpoint("shaker_1",            c(800,  200, 300, 0, 90, 180), orientation="right", access=default_vertical),
-        Teachpoint("shaker_2",            c(900,  200, 300, 0, 90, 180), orientation="right", access=default_vertical),
-        Teachpoint("shaker_3",            c(1000, 200, 300, 0, 90, 180), orientation="right", access=default_vertical),
-        Teachpoint("shaker_4",            c(1100, 200, 300, 0, 90, 180), orientation="right", access=default_vertical),
-        Teachpoint("shaker_5",            c(1200, 200, 300, 0, 90, 180), orientation="right", access=default_vertical),
-        Teachpoint("shaker_6",            c(800,  400, 300, 0, 90, 180), orientation="right", access=default_vertical),
-        Teachpoint("shaker_7",            c(900,  400, 300, 0, 90, 180), orientation="right", access=default_vertical),
-        Teachpoint("shaker_8",            c(1000, 400, 300, 0, 90, 180), orientation="right", access=default_vertical),
-        Teachpoint("shaker_9",            c(1100, 400, 300, 0, 90, 180), orientation="right", access=default_vertical),
-        Teachpoint("shaker_10",           c(1200, 400, 300, 0, 90, 180), orientation="right", access=default_vertical),
-        Teachpoint("pad_4",               c(1500, 200, 300, 0, 90, 180), orientation="right", access=default_vertical),
-        Teachpoint("pad_5",               c(1600, 200, 300, 0, 90, 180), orientation="right", access=default_vertical),
-        Teachpoint("pad_6",               c(1700, 200, 300, 0, 90, 180), orientation="right", access=default_vertical),
-        Teachpoint("thermocycler_1",      c(1300, 400, 300, 0, 90, 180), orientation="right", access=default_vertical),
-        Teachpoint("thermocycler_2",      c(1400, 400, 300, 0, 90, 180), orientation="right", access=default_vertical),
-        Teachpoint("thermocycler_3",      c(1500, 400, 300, 0, 90, 180), orientation="right", access=default_vertical),
-        Teachpoint("thermocycler_4",      c(1600, 400, 300, 0, 90, 180), orientation="right", access=default_vertical),
-    ]
-
-    ddr_3_teachpoints = [
-        Teachpoint("biotek_2",            c(1900, 200, 300, 0, 90, 180), orientation="right", access=default_vertical),
-        Teachpoint("flex_2/D1-slot",      c(2100, 200, 300, 0, 90, 180), orientation="right", access=default_vertical),
-        Teachpoint("flex_2/D2-slot",      c(2120, 200, 300, 0, 90, 180), orientation="right", access=default_vertical),
-        Teachpoint("plate_hotel",         c(2300, 200, 300, 0, 90, 180), orientation="right", access=default_vertical),
-        Teachpoint("smc_pro",             c(2300, 400, 300, 0, 90, 180), orientation="right", access=default_vertical),
-        Teachpoint("translator_2_end",    c(1900, 50,  300, 0, 90, 180), orientation="right", access=default_horizontal),
-        Teachpoint("waste_2",             c(2400, 100, 200, 0, 90, 180), orientation="right", access=default_vertical),
-        Teachpoint("pad_7",               c(2000, 100, 300, 0, 90, 180), orientation="right", access=default_vertical),
-        Teachpoint("pad_8",               c(2100, 100, 300, 0, 90, 180), orientation="right", access=default_vertical),
-        Teachpoint("pad_9",               c(2200, 100, 300, 0, 90, 180), orientation="right", access=default_vertical),
-    ]
-
-    translator_1_teachpoints = [
-        Teachpoint("translator_1_start",  c(0,   0, 300, 0, 90, 180), orientation="right", access=default_horizontal),
-        Teachpoint("translator_1_end",    c(500, 0, 300, 0, 90, 180), orientation="right", access=default_horizontal),
-    ]
-    translator_2_teachpoints = [
-        Teachpoint("translator_2_start",  c(0,   0, 300, 0, 90, 180), orientation="right", access=default_horizontal),
-        Teachpoint("translator_2_end",    c(500, 0, 300, 0, 90, 180), orientation="right", access=default_horizontal),
-    ]
 
     biotek_1 = PlateWasher("biotek_1")
     biotek_2 = PlateWasher("biotek_2")
     flex_1 = LiquidHandler(
         "flex_1",
-        deck_layout_store=stores.deck_layouts("flex_1", seed={"default": FLEX_1_DECK}),
         deck_layout="default",
     )
     flex_2 = LiquidHandler(
         "flex_2",
-        deck_layout_store=stores.deck_layouts("flex_2", seed={"default": FLEX_2_DECK}),
         deck_layout="default",
     )
     sealer = Sealer("sealer")
@@ -211,28 +110,13 @@ def build_topology(stores: IRuntimeStoreFactory) -> Topology:
     translator_2_start = PlatePad("translator_2_start", supports_deadlock_resolution=False)
     translator_2_end = PlatePad("translator_2_end", supports_deadlock_resolution=False)
 
-    ddr_1 = Transporter(
-        "ddr_1",
-        teachpoint_store=stores.teachpoints("ddr_1", seed=ddr_1_teachpoints),
-    )
-    ddr_2 = Transporter(
-        "ddr_2",
-        teachpoint_store=stores.teachpoints("ddr_2", seed=ddr_2_teachpoints),
-    )
-    ddr_3 = Transporter(
-        "ddr_3",
-        teachpoint_store=stores.teachpoints("ddr_3", seed=ddr_3_teachpoints),
-    )
+    ddr_1 = Transporter("ddr_1")
+    ddr_2 = Transporter("ddr_2")
+    ddr_3 = Transporter("ddr_3")
     # A translator is ONE carriage on a rail: start/end are the same pad
     # at two positions.
-    translator_1 = Translator(
-        "translator_1",
-        teachpoint_store=stores.teachpoints("translator_1", seed=translator_1_teachpoints),
-    )
-    translator_2 = Translator(
-        "translator_2",
-        teachpoint_store=stores.teachpoints("translator_2", seed=translator_2_teachpoints),
-    )
+    translator_1 = Translator("translator_1")
+    translator_2 = Translator("translator_2")
 
     shaker_collection = ResourcePool("shaker_collection", list(shakers.values()))
 

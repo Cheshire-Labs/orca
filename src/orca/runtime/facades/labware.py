@@ -1,9 +1,9 @@
-"""LabwareFacade: external UI surface over `ILabwareStore` + `ILabwareLocationService`.
+"""LabwareFacade: external UI surface over `ILabwareService` + `ILabwareLocationService`.
 
-The store owns identity (id + barcode + relationships). The location service
+The labware service owns identity (id + barcode). The location service
 owns position + history. This facade bridges them so UIs talk to one object.
 
-All methods are async to match the store's async contract.
+All methods are async to match the labware service's async contract.
 
 Guard scope for 7.5a: the `@dangerous` decorator + confirmation prompt is the
 primary UX guard. Engine-level refusals (thread-status, reserved-target,
@@ -19,11 +19,12 @@ from cheshire_drivers.move_parameters import MoveParameterField, MoveParameterPa
 
 from orca.state.unsettled import SettleNoun, set_verb
 from orca.state.confirm_refusals import (
-    HeldByUnfinishedActionError, NothingToConfirmError, WorkLostError,
+    NothingToConfirmError, WorkLostError,
 )
-from orca.runtime.move_parameters import reject_contradiction
+from orca.resource_models.move_parameters import reject_contradiction
 
 from orca.resource_models.adhoc_labware import LabwareHasNoModel
+from orca.resource_models.labware_placement import Arrival, PositionNotSavedError, Relocation, TurnPerLabware
 from orca.resource_models.labware import (
     LabwareInstance,
     LabwareTemplate,
@@ -35,26 +36,32 @@ from orca.state.placement import PlacementState
 from orca.state.contents import ContentsResolution
 from orca.state.projections import unsettled_gaps
 from orca.state.records import GAPS_THAT_LOST_WORK
-from orca.resource_models.labware_staging_bridge import LabwareStagingBridge
 from orca.resource_models.location import Location
 from orca.resource_models.transporter_base import TransporterBase
 from orca.resource_models.resources import ILabwareStateHolder
 from orca.runtime.danger import DangerLevel, dangerous
-from orca.runtime.run_modes import OPERATOR_DEVICE_WRITE_BASE, mode_scope
 from orca.runtime.execution import Execution
-from orca.runtime.interfaces import ILabwareStore
-from orca.runtime.runtime_interface import (
+from orca.resource_models.labware_service_interface import ILabwareService
+from orca.runtime.labware_holds import holds_labware, refusal_to_change_position
+from orca.runtime.stored_labware import adopt_stored_labware
+from orca.runtime.errors import (
     ActiveExecutionRefusedError,
     BarcodeInUseError,
-    ClearSubmissionResult,
-    IExecutionIterator,
-    ILabwareFacade,
     LabwareNotFoundError,
+    LabwareInUseByThreadError,
     LocationReservedError,
-    MoverHoldRelease,
     MoverHoldsNothingError,
-    SpawnIncompatibleError,
+    UnknownLocationError,
 )
+from orca.runtime.facade_interfaces import (
+    ClearSubmissionResult,
+    ILabwareFacade,
+    MoverHoldRelease,
+)
+from orca.runtime.runtime_interface import (
+    IExecutionIterator,
+)
+from orca.workflow_models.errors import SpawnIncompatibleError
 from orca.runtime.status_models import (
     LabwareSnapshot,
     LocationEvent,
@@ -73,6 +80,14 @@ from orca.workflow_models.labware_threads.executing_labware_thread import (
 from orca.workflow_models.status_enums import LabwareThreadStatus
 
 orca_logger = logging.getLogger("orca")
+
+
+def _status_of(thread: ExecutingLabwareThread) -> LabwareThreadStatus | None:
+    """None when it cannot be read: status is filed under the labware id and a LIVE place swaps it."""
+    try:
+        return thread.status
+    except KeyError:
+        return None
 
 
 def _barcode_or_none(barcode: str | None) -> str | None:
@@ -105,20 +120,22 @@ class LabwareFacade(ILabwareFacade):
     operator's call is never inside an execution, so the ambient mode is the
     metadata fallback: without a stated base the deck projection lands on the
     device's sim-world driver and the instrument is never told. A device
-    declaring `sim_override` still resolves sim.
+    set to sim still resolves sim.
     """
 
     def __init__(
         self,
         system: ISystem,
-        labware_store: ILabwareStore,
+        labware_service: ILabwareService,
         execution_iterator: IExecutionIterator,
     ) -> None:
         self._system = system
-        self._store = labware_store
+        self._labware_service = labware_service
         self._execution_iterator = execution_iterator
         self._location_service: ILabwareLocationService = system.labware_location_service
         self._contents = system.labware_contents
+        # One position statement per labware at a time, from reading where it is to writing where it now is.
+        self._statements = TurnPerLabware()
 
     # -- Reads ---------------------------------------------------------------
 
@@ -140,7 +157,7 @@ class LabwareFacade(ILabwareFacade):
         for instance in self._system.labwares:
             if instance.id == labware_id:
                 return instance
-        return await self._store.get_by_id(labware_id)
+        return await self._labware_service.get_by_id(labware_id)
 
     async def get_by_id(self, labware_id: str) -> LabwareSnapshot:
         instance = await self._find_by_id(labware_id)
@@ -153,7 +170,7 @@ class LabwareFacade(ILabwareFacade):
     ) -> None:
         if barcode is None:
             return
-        holder = await self._store.get_by_barcode(barcode)
+        holder = await self._labware_service.get_by_barcode(barcode)
         if holder is None:
             holder = next(
                 (lw for lw in self._system.labwares if lw.barcode == barcode), None,
@@ -162,7 +179,7 @@ class LabwareFacade(ILabwareFacade):
             raise BarcodeInUseError(barcode, holder.id)
 
     async def get_by_barcode(self, barcode: str) -> LabwareSnapshot:
-        stored = await self._store.get_by_barcode(barcode)
+        stored = await self._labware_service.get_by_barcode(barcode)
         if stored is not None:
             return await self._snapshot(stored)
         # Fallback for instances the engine spawned without routing through
@@ -192,7 +209,7 @@ class LabwareFacade(ILabwareFacade):
         # ``reset()`` clears its internal log. Fall back to the in-process
         # location service for runtimes that haven't routed updates
         # through the store yet.
-        store_events = await self._store.get_location_history(labware_id)
+        store_events = await self._labware_service.get_location_history(labware_id)
         if store_events:
             return [
                 LocationEvent(sequence=i, position_id=name, timestamp=ts)
@@ -244,14 +261,14 @@ class LabwareFacade(ILabwareFacade):
         while the source still holds the labware shows it at two sites at once,
         which is an ordinary move between two slots of one liquid handler.
 
-        Persistence rides the chokepoint's location listener (the runtime
-        mirrors position changes into the store); the facade never writes the
-        store's location directly, so each placement lands exactly one history
-        row. A busy target or an unreachable device fails with both holders left
-        where they were, so the operator's own re-issue is the repair.
+        The placer also saves the position through the labware service; the
+        facade never writes it, so each placement lands exactly one history row.
+        A busy target or an unreachable device fails with both holders left
+        where they were, so the operator's own re-issue is the repair. A save
+        that fails reaches the caller.
 
-        Same-location no-op: when source == target the in-process steps are
-        skipped; the store ``update_location`` still refreshes the timestamp.
+        Same location: nothing moves, and the placer saves the position again,
+        which refreshes its timestamp.
         A labware that is only EXPECTED somewhere has no source, so the operator
         asserting it is at that same location is a real placement and takes the
         full path -- skipping it would persist a position for a plate nothing
@@ -259,9 +276,9 @@ class LabwareFacade(ILabwareFacade):
 
         Two things make a target impossible rather than merely awkward, and
         both refuse before anything is written: another labware is already
-        there, and another thread has the position reserved. Owning the labware
-        is NOT one of them -- a thread carrying it is told to plan its move
-        again from where the operator says the labware now is.
+        there, and another thread has the position reserved. A thread moving the
+        labware or running an action on it also refuses. Any other thread carrying
+        it is told to plan its move again from where the operator says it now is.
         """
         del reason  # consumed by @dangerous audit; facade ignores body
         await self._assert_position(labware_id, location)
@@ -273,26 +290,24 @@ class LabwareFacade(ILabwareFacade):
         without re-entering an audited method: one operator action writes one
         audit row.
         """
+        async with self._statements.turn(labware_id):
+            await self._assert_position_now(labware_id, location)
+
+    async def _assert_position_now(self, labware_id: str, location: str) -> None:
         instance, target_location, carrier = await self._prepare_placement(
             labware_id, location,
         )
-        current_location = self._present_location(instance)
+        current_location = self._location_service.present_location(instance)
         if current_location is not target_location:
-            with mode_scope(OPERATOR_DEVICE_WRITE_BASE):
-                if current_location is None:
-                    await self._system.labware_placer.place(instance, target_location)
-                else:
-                    await self._system.labware_placer.relocate(
-                        instance, current_location, target_location,
-                    )
-                # Every other world still holds the plate where it was, and
-                # that stale copy refuses the next run that site.
-                await self._system.retract_labware_from_other_lh_worlds(instance)
+            if current_location is None:
+                await self._system.labware_placer.arrived(instance, target_location, Arrival.STATED)
+            else:
+                await self._system.labware_placer.relocate(
+                    instance, current_location, target_location, Relocation.STATED,
+                )
             self._tell_carrier_to_look_again(carrier)
         else:
-            # place() skipped, so the mirror listener never fires; refresh the
-            # store timestamp directly with the resolved position id.
-            await self._store.update_location(labware_id, target_location.position_id)
+            await self._system.labware_placer.confirmed(instance, target_location)
 
     async def _prepare_placement(
         self, labware_id: str, location: str,
@@ -302,11 +317,26 @@ class LabwareFacade(ILabwareFacade):
         become the way round the other's guard."""
         instance = await self._find_by_id(labware_id)
         if instance is None:
-            raise KeyError(f"No labware with id '{labware_id}'")
-        target = self._system.system_map.resolve_placement_location(location)
+            raise LabwareNotFoundError(labware_id)
+        try:
+            target = self._system.system_map.resolve_placement_location(location)
+        except KeyError as exc:
+            raise UnknownLocationError(location) from exc
         carrier = self._active_thread_for(instance)
+        self._refuse_while_a_thread_is_using_it(instance, carrier)
         self._refuse_impossible_placement(instance, target, carrier)
+        if not any(held is instance for held in self._system.labwares):
+            instance = await adopt_stored_labware(self._system, instance)
         return instance, target, carrier
+
+    def _refuse_while_a_thread_is_using_it(
+        self, instance: LabwareInstance, carrier: ExecutingLabwareThread | None,
+    ) -> None:
+        if carrier is None:
+            return
+        refusal = refusal_to_change_position(_status_of(carrier), instance.name, carrier.name)
+        if refusal is not None:
+            raise LabwareInUseByThreadError(refusal)
 
     @staticmethod
     def _tell_carrier_to_look_again(
@@ -386,7 +416,7 @@ class LabwareFacade(ILabwareFacade):
             return None
         reservation_id, thread_id = found
         labware = reservation.labware if reservation is not None else None
-        at = self._present_location(labware) if labware is not None else None
+        at = self._location_service.present_location(labware) if labware is not None else None
         return ReservationHolder(
             reservation_id=reservation_id,
             holder_thread_id=thread_id,
@@ -420,7 +450,7 @@ class LabwareFacade(ILabwareFacade):
         previous = instance.barcode
         instance.barcode = barcode
         try:
-            await self._store.register(instance)
+            await self._labware_service.register(instance)
         except BarcodeInUseError:
             instance.barcode = previous
             raise
@@ -456,7 +486,7 @@ class LabwareFacade(ILabwareFacade):
             **patch.model_dump(exclude_none=True),
             **dict.fromkeys(clear),
         })
-        await self._store.register(instance)
+        await self._labware_service.register(instance)
         return instance.carry_override
 
     @dangerous(
@@ -471,7 +501,7 @@ class LabwareFacade(ILabwareFacade):
         del reason  # consumed by @dangerous audit
         instance = await self._require(labware_id)
         instance.carry_normally()
-        await self._store.register(instance)
+        await self._labware_service.register(instance)
 
     async def _require(self, labware_id: str) -> LabwareInstance:
         instance = await self._find_by_id(labware_id)
@@ -494,7 +524,7 @@ class LabwareFacade(ILabwareFacade):
     ) -> None:
         """Say where the labware is AND forget everywhere it has been.
 
-        Refused for the same two reasons ``edit_location`` is, and a thread
+        Refused for the same reasons ``edit_location`` is, and a thread
         carrying the labware is told to plan again the same way: a position an
         operator cannot state one way cannot be stated the other way either.
 
@@ -508,20 +538,22 @@ class LabwareFacade(ILabwareFacade):
         old holder would put one plate at two sites.
         """
         del reason  # consumed by @dangerous audit; facade ignores body
+        async with self._statements.turn(labware_id):
+            await self._restate_position(labware_id, location)
+
+    async def _restate_position(self, labware_id: str, location: str) -> None:
         instance, target_location, carrier = await self._prepare_placement(
             labware_id, location,
         )
-        current_location = self._present_location(instance)
+        current_location = self._location_service.present_location(instance)
         # Unlike edit, a restatement still goes through the placer: this verb
         # exists to re-establish a position, so the deck is told again.
-        with mode_scope(OPERATOR_DEVICE_WRITE_BASE):
-            if current_location is None or current_location is target_location:
-                await self._system.labware_placer.place(instance, target_location)
-            else:
-                await self._system.labware_placer.relocate(
-                    instance, current_location, target_location,
-                )
-        self._location_service.reset(instance, target_location)
+        if current_location is None or current_location is target_location:
+            await self._system.labware_placer.arrived(instance, target_location, Arrival.RESTATED)
+        else:
+            await self._system.labware_placer.relocate(
+                instance, current_location, target_location, Relocation.RESTATED,
+            )
         if current_location is not target_location:
             self._tell_carrier_to_look_again(carrier)
 
@@ -554,8 +586,8 @@ class LabwareFacade(ILabwareFacade):
         When a thread is parked waiting for labware of this template at this
         location, the operator has just placed THAT labware, not a second piece
         of it -- so the expectation is adopted and its instance is what arrives.
-        Minting a fresh instance instead is what used to leave the engine
-        holding one id while the operator surfaces showed another. Only a slot
+        Minting a fresh instance would leave the engine holding one id while the
+        operator surfaces show another. Only a slot
         nothing is waiting on mints a new instance.
 
         When ``location`` is provided, placement routes through the system
@@ -581,7 +613,10 @@ class LabwareFacade(ILabwareFacade):
         template_name = await self._resolve_template_name(template_name, labware_type)
         target_location = None
         if location is not None:
-            target_location = self._system.system_map.resolve_placement_location(location)
+            try:
+                target_location = self._system.system_map.resolve_placement_location(location)
+            except KeyError as exc:
+                raise UnknownLocationError(location) from exc
         adopted = self._adopt_expected(target_location, template_name)
         await self._refuse_a_barcode_held_by_another(
             barcode, adopted.id if adopted is not None else None,
@@ -617,11 +652,10 @@ class LabwareFacade(ILabwareFacade):
         if target_location is not None:
             # Fail-fast: the chokepoint writes the slot first and raises
             # SlotOccupiedError on a busy slot, before the registry mutations below.
-            with mode_scope(OPERATOR_DEVICE_WRITE_BASE):
-                await self._system.labware_placer.place(instance, target_location)
+            await self._system.labware_placer.arrived(instance, target_location, Arrival.PLACED)
         if adopted is None:
             self._system.add_labware(instance)
-            await self._store.register(instance)
+            await self._labware_service.register(instance)
         return await self._snapshot(instance)
 
     async def _resolve_template_name(
@@ -706,6 +740,8 @@ class LabwareFacade(ILabwareFacade):
         if instance is None:
             raise KeyError(f"No labware with id '{labware_id}'")
         for well_id, vol in volumes.items():
+            if not instance.has_well(well_id):
+                raise ValueError(f"labware '{labware_id}' has no well '{well_id}'")
             if vol < 0:
                 raise ValueError(
                     f"volume for well '{well_id}' must be non-negative, got {vol}"
@@ -756,24 +792,14 @@ class LabwareFacade(ILabwareFacade):
         """Confirming is agreeing with the record, and there are two states the
         record is known not to describe.
 
-        An unfinished action is holding operations nobody has folded, so the
-        read is behind and a confirm freezes the number it is behind by. An
-        aborted action threw its operations away, so the read is wrong by an
-        amount nothing can state, and the labware looks right to anyone
-        glancing at it. The first is settled by ending the action, the second
-        by measuring and stating.
+        A stop, a timeout or a failure that cut a command off leaves the read wrong by an amount nothing
+        can state, and the labware looks right to anyone glancing at it. It is
+        settled by measuring and stating.
         """
-        if self._contents.is_behind(instance.name):
-            raise HeldByUnfinishedActionError(
-                f"an unfinished action has done things to '{instance.id}' that "
-                f"the record has not been told about, so there is nothing here "
-                f"worth agreeing with; settle the action (retry, continue or "
-                f"abort) and the record catches up on its own"
-            )
         ops = await self._contents.ops_of(instance.ref)
         if unsettled_gaps(ops, instance.name) & GAPS_THAT_LOST_WORK:
             raise WorkLostError(
-                f"an aborted action lost work it had really done to "
+                f"a stop, a timeout or a failure cut off a command that was working on "
                 f"'{instance.id}', so the record is wrong by an amount nothing "
                 f"can state and confirming it would mark that wrong number "
                 f"checked; measure it and state it with set_{noun.replace('-', '_')}",
@@ -937,25 +963,10 @@ class LabwareFacade(ILabwareFacade):
         reason to destroy and re-create every plate beside it, which is what a
         deck-wide rebuild does, on a live instrument, with no way back if it
         stops half way."""
-        location = self._present_location(instance)
+        location = self._location_service.present_location(instance)
         if location is None:
             return
-        with mode_scope(OPERATOR_DEVICE_WRITE_BASE):
-            await self._system.project_labware_on_lh_decks(instance, location)
-
-    def _present_location(self, instance: LabwareInstance) -> Location | None:
-        """Where this labware IS, or None.
-
-        Everything asking "where is it" means present. A labware that is only
-        expected somewhere, or that has been retired from where it was, is
-        nowhere as far as an operator surface acting on position is concerned.
-        """
-        try:
-            if self._location_service.placement(instance) is not PlacementState.PRESENT:
-                return None
-            return self._location_service.get(instance)
-        except KeyError:
-            return None
+        await self._system.labware_placer.contents_set(instance, location)
 
     # -- Operator clear surfaces ---------------------------------------------
 
@@ -976,8 +987,8 @@ class LabwareFacade(ILabwareFacade):
         executions as well as live ones.
 
         ``force=True`` bypasses the refusal that fires when the execution
-        this submission belongs to is still running. Another run being in
-        flight elsewhere is not a reason to refuse. Force does NOT bypass the
+        this submission belongs to is still running, or when another running
+        execution holds or names one of its plates. Force does NOT bypass the
         reuse-bound skip: deck-resident reagents always survive a
         per-submission clear, regardless of force.
 
@@ -1022,6 +1033,12 @@ class LabwareFacade(ILabwareFacade):
             raise ActiveExecutionRefusedError(
                 scope="submission", submission_id=submission_id,
             )
+        in_use = next(
+            (i for i in candidates if self._has_active_thread_for(i) or self._named_by_a_submission_with_no_thread_yet(i)),
+            None,
+        )
+        if in_use is not None and not force:
+            raise ActiveExecutionRefusedError(scope="labware", labware_id=in_use.id)
         cleared: list[str] = []
         for instance in candidates:
             cleared.append(instance.id)
@@ -1057,8 +1074,8 @@ class LabwareFacade(ILabwareFacade):
         without one the labware is discharged, which is the answer when the
         jaws are empty and the record is wrong. Discharging refuses while a
         live thread still carries the labware unless ``force``, the same rule
-        ``discharge_labware`` applies -- asserting a position does not, because
-        a carrying thread is told to plan again rather than stranded.
+        ``discharge_labware`` applies. Asserting a position refuses only what
+        ``edit_location`` refuses; a carrying thread is told to plan again.
         """
         del reason  # consumed by @dangerous audit; facade ignores body
         mover = self._find_mover(mover_name)
@@ -1071,7 +1088,7 @@ class LabwareFacade(ILabwareFacade):
             # Empty jaws must not still name where the plate was picked from:
             # the labware is gone from the gripper, and the pick origin is the
             # other half of the same answer.
-            await mover.reset_labware_state()
+            await self._system.labware_placer.jaws_released(mover)
             return MoverHoldRelease(
                 mover_name=mover_name, labware_id=held.id,
                 labware_name=held.name, released_to=to_location, discharged=False,
@@ -1081,7 +1098,7 @@ class LabwareFacade(ILabwareFacade):
         # The wipe walks the grippers too (see ``_all_locations``), so this is
         # what frees the jaws; the reset drops the pick origin with them.
         await self._wipe_labware(held)
-        await mover.reset_labware_state()
+        await self._system.labware_placer.jaws_released(mover)
         return MoverHoldRelease(
             mover_name=mover_name, labware_id=held.id,
             labware_name=held.name, released_to=None, discharged=True,
@@ -1123,7 +1140,7 @@ class LabwareFacade(ILabwareFacade):
 
         ``force=True`` bypasses the refusal that fires when any active
         thread (in any non-terminal execution) currently references this
-        labware. Use after physically picking the labware off the deck;
+        labware, or a running execution has named it and not built its thread yet. Use after physically picking the labware off the deck;
         force only when you've verified no in-flight thread still holds it.
         Releasing an ``AWAITING_MANUAL_REMOVE`` park needs no force: the
         thread waiting on that removal is exempt from the refusal.
@@ -1131,7 +1148,9 @@ class LabwareFacade(ILabwareFacade):
         instance = await self._find_by_id(labware_id)
         if instance is None:
             raise LabwareNotFoundError(labware_id)
-        if not force and self._has_active_thread_for(instance):
+        if not force and (
+            self._has_active_thread_for(instance) or self._named_by_a_submission_with_no_thread_yet(instance)
+        ):
             raise ActiveExecutionRefusedError(
                 scope="labware", labware_id=labware_id,
             )
@@ -1163,35 +1182,9 @@ class LabwareFacade(ILabwareFacade):
         for instance in list(self._system.labwares):
             cleared.append(instance.id)
             await self._wipe_labware(instance)
-        # Clear store phantoms the in-memory registry never knew about, else
-        # they rehydrate and re-seed device projections on the next boot.
-        for labware_id, _position_id in await self._store.list_active_locations():
-            if labware_id not in cleared:
-                await self._store.clear_location(labware_id)
-                cleared.append(labware_id)
-        # Wipe the ledger, then reconcile every holder to it via the one reset
-        # contract (transporters + LH deck; stateless devices no-op).
-        self._location_service.clear_all()
-        # The staging bridge keeps a loaded list off the Location.labware slot,
-        # so the slot-walk above can miss a device-resident plate; reset each.
-        for location in self._all_locations():
-            resource = location.resource
-            if isinstance(resource, LabwareStagingBridge):
-                resource.reset_loaded_labware()
-        holders: list[ILabwareStateHolder] = [
-            *self._system.devices, *self._system.movers,
-        ]
-        for holder in holders:
-            # Best-effort: an offline/erroring holder must not block the panic
-            # button. Engine state is already authoritative-empty.
-            try:
-                await holder.reset_labware_state_everywhere()
-            except Exception as exc:
-                orca_logger.warning(
-                    "clear_all_labware: reset_labware_state failed on %s: %s",
-                    holder.name, exc,
-                )
-        return cleared
+        holders: list[ILabwareStateHolder] = [*self._system.devices, *self._system.movers]
+        saved_only = await self._system.labware_placer.cleared_all(self._all_locations(), holders)
+        return cleared + [labware_id for labware_id in saved_only if labware_id not in cleared]
 
     def _all_locations(self) -> Iterator[Location]:
         """Every Location a labware can be at. Deck sites are covered by
@@ -1203,81 +1196,60 @@ class LabwareFacade(ILabwareFacade):
         for mover in self._system.movers:
             yield mover.gripper_location
 
-    async def _clear_holders_at(
-        self, instance: LabwareInstance, location: Location,
-    ) -> None:
-        """Remove an instance from the holders at ``location``: the slot, the
-        parent staging-bridge loaded-list (deck-site child), and the LH driver
-        deck projection. The removal counterpart to the placement chokepoint, so
-        a single discharge / edit-location source clear reaches a deck resident's
-        bridge loaded-list and driver deck, not just the slot. The slot is
-        released first, so the projection that follows finds this labware gone
-        and takes it off the driver deck, leaving its neighbours standing. No-op
-        off a liquid handler.
-
-        Only runs when this location still holds the labware, so it is not what
-        guarantees the driver deck ends up clear. ``_wipe_labware`` does that.
-
-        The slot is freed whatever the device says. A projection that raises on
-        an unreachable handler must not abandon a wipe halfway, with the slot
-        released and the labware still in the registry.
-        """
-        await location.dispose_labware(instance)
-        try:
-            with mode_scope(OPERATOR_DEVICE_WRITE_BASE):
-                await self._system.project_labware_on_lh_decks(instance, location)
-        except Exception as exc:
-            orca_logger.warning(
-                "could not re-project %s at %s after freeing the slot (%s); "
-                "that deck may still hold it.",
-                instance.name, location.position_id, exc,
-            )
-
     async def _wipe_labware(self, instance: LabwareInstance) -> None:
         """Remove a single instance from every runtime store.
 
-        Three stores: ``system.labwares`` (in-memory engine registry),
-        ``ILabwareStore`` (identity / barcode index), and the position holders
-        at whatever location currently holds it (slot + bridge loaded-list + LH
-        deck projection, via ``_clear_holders_at``). Best-effort -- a missing
-        entry in any store is treated as already cleared.
+        The placer's ``left`` frees each slot that still holds it, retires its
+        position, clears its saved position and takes it off that site's deck.
+        The engine registry drops it. The labware service keeps the row:
+        discharge is a lifecycle end, not a retraction, so history and volumes
+        stay queryable. A save that fails reaches the caller once the decks and
+        the registry are cleaned.
 
-        The driver decks are then cleared again, without asking any of those
-        stores where the labware was. A thread that ends retires its labware and
-        frees the slot, so a run that finished leaves the walk above nothing to
-        match on, and a plate it left standing on a liquid handler rode through
-        its own discharge. The next run was then refused that slot by labware
-        the operator had been told was gone.
+        The driver decks are then cleared again, without asking any store where
+        the labware was. A thread that ends retires its labware and frees the
+        slot, so a plate it left standing on a liquid handler would ride through
+        its own discharge and refuse the next run that slot.
 
-        That last step runs after the stores are written, and cannot raise. A
-        discharge is what an operator reaches for WHEN a handler is down, so one
-        that gives up on an unreachable deck leaves them the row, the slot and
-        no way out but a restart.
+        A device that cannot be reached never stops a discharge: it is what an
+        operator reaches for WHEN a handler is down.
         """
-        for location in self._all_locations():
-            if location.labware is instance:
-                await self._clear_holders_at(instance, location)
-        self._system.remove_labware(instance.id)
-        # Exactly one applies: retire ends a labware that was here, and
-        # stop_expecting drops one that never arrived. A wipe must leave
-        # neither behind.
-        self._location_service.retire(instance)
-        self._location_service.stop_expecting(instance)
-        # Clear the active position, keep the row: discharge is a lifecycle
-        # end, not a retraction -- history and volumes stay queryable.
-        await self._store.clear_location(instance.id)
-        await self._system.retract_labware_from_lh_decks(instance)
+        carrier = self._active_thread_for(instance)
+        holders = [location for location in self._all_locations() if location.labware is instance]
+        for location in holders:
+            try:
+                await self._system.labware_placer.left(instance, location)
+            except PositionNotSavedError:
+                # The discharge below clears the same saved position again, and raises if that fails too.
+                pass
+            except Exception as exc:
+                orca_logger.warning(
+                    "could not take %s off the deck at %s (%s); that deck may still hold it.",
+                    instance.name, location.position_id, exc,
+                )
+        # Retired whatever a holder or a device said above, so the record never keeps a plate the operator removed.
+        # A labware that never arrived was only expected; a wipe leaves neither behind, on no deck in any world.
+        try:
+            await self._system.labware_placer.left(instance, None)
+        finally:
+            self._system.remove_labware(instance.id)
+        if carrier is not None:
+            carrier.notify_labware_discharged()
+
+    def tell_threads_to_look_again(self) -> None:
+        for execution in self._iter_active_executions():
+            ew = execution.executing_workflow
+            if ew is None:
+                continue
+            for thread in ew.threads:
+                thread.notify_labware_moved()
 
     def _active_thread_for(
         self, instance: LabwareInstance,
     ) -> ExecutingLabwareThread | None:
         """The live thread carrying this labware, or None.
 
-        A thread parked at ``AWAITING_MANUAL_REMOVE`` on this labware does not
-        count: it is waiting for exactly this discharge, so refusing on its
-        account would leave the operator with no way to release the park short
-        of ``force``, which would also skip the check for every other thread.
-        Only a status that reads as that park exempts a thread.
+        What counts as carrying is ``holds_labware``.
         """
         for execution in self._iter_active_executions():
             ew = execution.executing_workflow
@@ -1286,22 +1258,27 @@ class LabwareFacade(ILabwareFacade):
             for thread in ew.threads:
                 if thread.thread_instance.labware is not instance:
                     continue
-                if self._is_awaiting_manual_remove(thread):
-                    continue
-                return thread
+                if holds_labware(_status_of(thread)):
+                    return thread
         return None
-
-    @staticmethod
-    def _is_awaiting_manual_remove(thread: ExecutingLabwareThread) -> bool:
-        try:
-            return thread.status is LabwareThreadStatus.AWAITING_MANUAL_REMOVE
-        except KeyError:
-            # Status is filed under the labware id and a LIVE manual place
-            # swaps it, so "cannot tell" means still holding it.
-            return False
 
     def _has_active_thread_for(self, instance: LabwareInstance) -> bool:
         return self._active_thread_for(instance) is not None
+
+    def _named_by_a_submission_with_no_thread_yet(self, instance: LabwareInstance) -> bool:
+        """A submission claims its named labware from acceptance; its threads are built later. Once a thread holds
+        the labware, `_has_active_thread_for` judges it instead."""
+        for execution in self._iter_active_executions():
+            ew = execution.executing_workflow
+            if any(t.thread_instance.labware is instance for t in (() if ew is None else ew.threads)):
+                continue
+            if any(
+                claim.labware_instance is not None and claim.labware_instance.id == instance.id
+                for submission in execution.submissions
+                for claim in submission.resolved_acquisitions.values()
+            ):
+                return True
+        return False
 
     def _has_any_active_thread(self) -> bool:
         for _ in self._iter_active_executions():
@@ -1311,7 +1288,7 @@ class LabwareFacade(ILabwareFacade):
     def _iter_active_executions(self) -> Iterator[Execution]:
         """Snapshot active executions before iteration.
 
-        Round 5 S2 defensive: callers iterate while doing async work
+        Callers iterate while doing async work
         (events, store writes) so a live generator over the underlying
         ``iter_executions()`` is fragile against mid-iteration mutation
         of the registry. Materialize the snapshot up front; iterating

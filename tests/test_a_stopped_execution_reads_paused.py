@@ -14,7 +14,6 @@ test_two_phase_stop.py, which pins the stop semantics themselves.
 
 from orca.operations.execution import ListExecutionsOperation
 from orca.operations.execution_models import (
-    ExecutionRecordModel,
     GetExecutionDetailResponse,
     ListExecutionsRequest,
 )
@@ -54,7 +53,8 @@ async def test_the_first_stop_shows_up_on_the_status_snapshot() -> None:
         assert status.pause_reason == "manual"
         assert status.abort_armed is True
 
-        wire = ExecutionRecordModel.from_status(status)
+        # The execution list's row is built from the same detail.
+        wire = GetExecutionDetailResponse.from_detail(runtime.get_execution_detail(eid)).record()
         assert wire.paused is True
         assert wire.pause_reason == "manual"
         assert wire.abort_armed is True
@@ -82,13 +82,20 @@ async def test_the_detail_snapshot_carries_the_latch() -> None:
         await runtime.shutdown()
 
 
+async def _no_check_runs() -> set[str]:
+    return set()
+
+
 async def test_the_execution_list_carries_the_latch() -> None:
     runtime, workflow, device, _bus = await _build_hanging_owner_system()
     eid = await _submit_and_run_to_hang(runtime, workflow, device)
     try:
         await runtime.stop_execution(eid)
 
-        listed = await ListExecutionsOperation(runtime).run(ListExecutionsRequest())
+        listed = await ListExecutionsOperation(
+            runtime, terminal_list=runtime.execution_records.list_records,
+            check_run_executions=_no_check_runs,
+        ).run(ListExecutionsRequest())
         row = next(r for r in listed.executions if r.id == eid)
 
         assert row.paused is True

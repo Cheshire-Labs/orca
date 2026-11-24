@@ -1,7 +1,5 @@
 from typing import ClassVar
 
-from cheshire_drivers.interfaces import ITransporterDriver
-from cheshire_drivers.translator_driver import SimTranslatorDriver
 from orca.resource_models.transporter import Transporter
 
 
@@ -16,7 +14,7 @@ class Translator(Transporter):
 
     Declaring the machine here rather than leaving a plain ``Transporter`` and
     hoping the right driver turns up is what makes the fact survive a hosted
-    deployment: the device kind selects the driver pair, so a factory that
+    deployment: the device kind selects the driver, so a factory that
     knows nothing about this workcell still builds a translator driver. A
     package-local factory that special-cased the name was silently replaced by
     whatever factory the host bound, and the workcell came up with two plates
@@ -24,4 +22,3 @@ class Translator(Transporter):
     """
 
     KIND: ClassVar[str] = "translator"
-    DEFAULT_SIM_DRIVER: ClassVar[type[ITransporterDriver]] = SimTranslatorDriver

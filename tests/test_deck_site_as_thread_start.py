@@ -8,22 +8,21 @@ nodes named "<device>/<carrier>-<site_index>"; this test asserts those names
 resolve as thread start/end locations.
 """
 
+from orca.events.event_bus import EventBus
 import pytest
+
+from tests.recording_handler import RecordingHandler
 
 import orca.orca as orca
 from orca.spawn import DISPENSE, LEAVE_IN_PLACE, MANUAL_REMOVE, REUSE_EXISTING
 from cheshire_drivers import DeckLayoutConfig, DeckResourceConfig, Teachpoint
 from cheshire_drivers import RecordingLiquidHandlerDriver
-from cheshire_drivers.plr import ChatterboxLiquidHandlerDriver
+from cheshire_drivers.plr import ChatterboxLiquidHandlerWithProtocolDriver
 from orca.devices.devices import LiquidHandler, Storage
 from orca.resource_models.deck_site import DeckSite
 from orca.resource_models.plate_pad import PlatePad
 from orca.resource_models.transporter import Transporter
-from orca.runtime.device_factory_protocol import DriverPairElement
-from orca.runtime.device_factory_context import use_device_factory
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.store_factory import InMemoryRuntimeStoreFactory
-from orca.runtime.system_runtime import SystemRuntime
+from orca.modes.run_modes import WorkflowRunMode
 from orca.sdk.build import SystemBuild, Topology
 from orca.sdk.labware import PlateTemplate
 from orca.workflow_models.action_context import ActionContext
@@ -36,6 +35,10 @@ from orca.workflow_models.thread_template import (
 )
 from orca.workflow_models.workflow_templates import WorkflowTemplate
 from tests.test_helpers import run_to_quiescence
+from tests.setup_package import package_stores, write_deck_layouts, write_teachpoints
+from tests.setup_package import with_teachpoints, with_deck_layouts
+from tests.memory_activity import memory_ops_store, memory_runtime
+from tests.real_device_path import the_real_device_path
 
 
 DECK_CONFIG = DeckLayoutConfig(
@@ -54,46 +57,31 @@ async def _build(
     recorder: RecordingLiquidHandlerDriver,
     reservoir_end: EndArg = ("lh/carrier-25-0", LEAVE_IN_PLACE),
 ) -> tuple[SystemBuild, ThreadTemplate, WorkflowTemplate]:
-    stores = InMemoryRuntimeStoreFactory()
+    stores = package_stores()
 
     sample_plate = PlateTemplate(
         "sample_plate", labware_type="Cor_Falcon_96_wellplate_340ul_Fb_Black")
     reservoir = PlateTemplate(
         "reservoir", labware_type="AGenBio_1_troughplate_190000uL_Fl")
 
-    class _LhDeckFactory:
-        def __init__(self, lh: RecordingLiquidHandlerDriver) -> None:
-            self._lh = lh
-            from orca.runtime.device_factory import SimDeviceFactory
-            self._fallback = SimDeviceFactory()
+    the_real_device_path().simulate_with("lh", recorder)
+    lh = with_deck_layouts(LiquidHandler(
+        "lh",
+        deck_layout="default",
+    ), write_deck_layouts(stores, "lh", {"default": DECK_CONFIG}))
+    stacker = Storage("stacker")
+    waste = Storage("waste")
+    pad = PlatePad("pad")
 
-        def build_drivers(
-            self, device_type: str, name: str, *, deck_modeling: bool = False,
-        ) -> tuple[DriverPairElement, DriverPairElement]:
-            if device_type == "liquid_handler":
-                return self._lh, self._lh
-            return self._fallback.build_drivers(device_type, name, deck_modeling=deck_modeling)
-
-    with use_device_factory(_LhDeckFactory(recorder)):
-        lh = LiquidHandler(
-            "lh",
-            deck_layout_store=stores.deck_layouts("lh", seed={"default": DECK_CONFIG}),
-            deck_layout="default",
-        )
-        stacker = Storage("stacker")
-        waste = Storage("waste")
-        pad = PlatePad("pad")
-
-        from cheshire_drivers import CartesianCoordinates as C
-        arm = Transporter(
-            "arm",
-            teachpoint_store=stores.teachpoints("arm", seed=[
-                Teachpoint("stacker", C(0, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("pad", C(200, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint(ARM_DECK_ENTRY, C(400, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("waste", C(600, 200, 300, 0, 90, 180), orientation="right"),
-            ]),
-        )
+    from cheshire_drivers import CartesianCoordinates as C
+    arm = with_teachpoints(Transporter(
+        "arm",
+    ), write_teachpoints(stores, "arm", [
+            Teachpoint("stacker", C(0, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("pad", C(200, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint(ARM_DECK_ENTRY, C(400, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("waste", C(600, 200, 300, 0, 90, 180), orientation="right"),
+        ]))
 
     # Reservoir is deck-resident at carrier-25-0; the transit sample_plate is
     # routed to its own site (carrier-7-0) via deck_positions. Body is a no-op.
@@ -133,13 +121,13 @@ async def _build(
         transporters=[arm],
     )
     build = await orca.build_system(
-        name="Deck Site Start", workflow=workflow, topology=topology, stores=stores)
+        name="Deck Site Start", workflow=workflow, topology=topology, stores=stores, event_bus=EventBus(), ops_history_store=memory_ops_store())
     return build, reservoir_journey, workflow
 
 
 async def test_thread_can_start_at_a_deck_site_child_location() -> None:
-    inner = ChatterboxLiquidHandlerDriver(num_channels=8)
-    recorder = RecordingLiquidHandlerDriver(inner)
+    inner = ChatterboxLiquidHandlerWithProtocolDriver(num_channels=8)
+    recorder = RecordingHandler(inner)
 
     # Pre-fix: build_system raises KeyError resolving "lh/carrier-25-0"
     # (child deck sites are not graph nodes, so get_location rejects them).
@@ -159,8 +147,8 @@ async def test_deck_site_end_without_leave_in_place_is_rejected() -> None:
     does not route labware back to the named deck site, so a non-LEAVE end
     would dispose against an empty site and the labware would never clear.
     build_system must refuse the combination at build time."""
-    inner = ChatterboxLiquidHandlerDriver(num_channels=8)
-    recorder = RecordingLiquidHandlerDriver(inner)
+    inner = ChatterboxLiquidHandlerWithProtocolDriver(num_channels=8)
+    recorder = RecordingHandler(inner)
 
     with pytest.raises(DeckSiteEndRequiresLeaveInPlaceError) as exc:
         await _build(recorder, reservoir_end=("lh/carrier-25-0", MANUAL_REMOVE))
@@ -174,8 +162,8 @@ async def test_deck_site_among_end_candidates_is_rejected() -> None:
     isinstance that skipped rather than raised. A deck site hidden among
     otherwise-fine candidates is the shape that would slip through.
     """
-    inner = ChatterboxLiquidHandlerDriver(num_channels=8)
-    recorder = RecordingLiquidHandlerDriver(inner)
+    inner = ChatterboxLiquidHandlerWithProtocolDriver(num_channels=8)
+    recorder = RecordingHandler(inner)
 
     with pytest.raises(DeckSiteEndRequiresLeaveInPlaceError) as exc:
         await _build(
@@ -191,18 +179,15 @@ async def test_deck_site_resident_reservoir_runs_in_sim() -> None:
     """End-to-end: a REUSE_EXISTING reservoir pinned to a deck site co-locates
     with the transit plate (routed to its own site via deck_positions) and the
     workflow completes. Proves the deck-site start binds, the arm's deck entry
-    site stays free, and the reservoir does not wedge at CREATED.
-
-    Runs through SystemRuntime (not SystemBuild.run, whose source-available WorkflowExecutor
-    path does not plumb the labware_store the reuse-bind needs)."""
-    inner = ChatterboxLiquidHandlerDriver(num_channels=8)
-    recorder = RecordingLiquidHandlerDriver(inner)
+    site stays free, and the reservoir does not wedge at CREATED."""
+    inner = ChatterboxLiquidHandlerWithProtocolDriver(num_channels=8)
+    recorder = RecordingHandler(inner)
 
     build, _, _ = await _build(recorder)
-    runtime = SystemRuntime(build.system, event_bus=build.event_bus)
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
     await runtime.start()
     record = await runtime.submit_workflow(
-        "deck_site_start_wf", mode=WorkflowRunMode.PURE_SIM)
+        "deck_site_start_wf", mode=WorkflowRunMode.CHECK_RUN)
 
     statuses = await run_to_quiescence(runtime, record.id)
 

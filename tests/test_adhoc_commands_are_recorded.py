@@ -8,40 +8,72 @@ the ledger is both what every operator surface reads AND what the next deck
 reconcile pushes back down over the driver.
 """
 
+from collections.abc import Awaitable, Callable
+from datetime import datetime, timezone
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import Any, AsyncIterator
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
+from pydantic import JsonValue
+from orca.resource_models.transporter import Transporter
+from cheshire_drivers.transporter_models import PickAtCoordsRequest
 import pytest_asyncio
-
-from cheshire_drivers import RecordingLiquidHandlerDriver
 from cheshire_drivers.liquid_handler_models import (
     DropTipsRequest,
     GetDeckStateRequest,
     PickUpTipsRequest,
     TipPick,
 )
-from cheshire_drivers.plr import ChatterboxLiquidHandlerDriver
-from orca.gateway import adhoc
-from orca.gateway.batch import BatchExecutor, DeviceCommand
-from orca.runtime.incident_store import (
-    DeckReconcileConflictDetail,
-    IncidentCategory,
-    LedgerContradictionDetail,
-)
-from orca.runtime.adhoc_ledger import _details_for, record_operator_command
+
+from orca.gateway import operator_commands, operator_recorder
+from orca.gateway.controller.command_pipeline import DeviceCommandPipeline, PartialChannelFailureError
+from orca.resource_models.command_effects import CommandStatement, device_move
+from tests.gateway._operator_command import run_operator_command
+from orca.gateway.operator_commands import OperatorDeviceCommands
+from orca.operations.operator_device import BatchCommand, NamedCommands, run_batch
+from orca.operations.operator_device_models import BatchCommandResultDTO
+from orca.gateway.controller.exceptions import CommandNotSavedError, InvalidCommandError
+from orca.gateway.registry.snapshot import DeviceSnapshot
+from orca.resource_models.device_error import MoverAlreadyHoldingError, TipsNotPresentError
 from orca.resource_models.labware_location_service import PlacementState
-from orca.runtime.labware_store import InMemoryLabwareStore
+from orca.gateway.operator_recorder import record_operator_command
+from orca.runtime.incident_store import (
+    IncidentCategory,
+)
+from orca.events.emitter import IEventEmitter
+from orca.runtime.incident_service import IncidentService
+from orca.runtime.server_events import ServerEvents
+from orca.runtime.sinks import CollectorSink
+from orca.events.execution_context import LabwareRecordContext
+from orca.modes.run_modes import WorkflowRunMode, current_run_mode
+from orca.runtime.system_runtime import SystemRuntime
+from orca.state.command_operations import ChannelFailureNotReadError, RecordContext, operations_for_request
+from orca.state.ops_store import OpsHistorySearchQuery
 from orca.state.provenance import Provenance
 from orca.state.records import (
+    AspirateDetails,
+    DeviceOperation,
+    GenericOperationDetails,
     ObservationGapCause,
+    OperationDetails,
+    OperationRecord,
+    TipDrop96Details,
     TipDropDetails,
     TipPickUpDetails,
+    TrackingSource,
 )
-from orca.runtime.run_modes import WorkflowRunMode, current_run_mode
-from orca.runtime.system_runtime import SystemRuntime
+from orca.events.execution_context import MethodExecutionContext
+from orca.workflow_models.actions.device_call_dispatcher import CommandRecorder
+from orca.workflow_models.actions.executable_location_action import ExecutableLocationAction
+from orca.workflow_models.device_handle import ActionRequest
+from tests.gateway_parts import gateway_with
+from orca.resource_models.labware_service_interface import ILabwareService
+from tests.memory_activity import announced_labware_service, memory_labware_service, memory_runtime
 from tests.test_deck_resident_reagent_pipetting import build_pipetting_bench
 from tests.test_labware_state_reconciliation import RESERVOIR_SITE, _build
+from tests.recording_handler import RecordingHandler
 
 WORKING_SITE = "lh/carrier-7-0"
 TIPS_SITE = "lh/carrier-15-0"
@@ -81,11 +113,20 @@ class _Bench:
 
 @pytest_asyncio.fixture
 async def bench() -> AsyncIterator[_Bench]:
-    recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
-    build, lh = await _build(recorder, wf_name="adhoc_recording")
-    runtime = SystemRuntime(
-        build.system, event_bus=build.event_bus, labware_store=InMemoryLabwareStore(),
-    )
+    async with running_lh_bench() as built:
+        yield built
+
+
+def _labware_record(labware_events: IEventEmitter | None) -> ILabwareService:
+    return memory_labware_service() if labware_events is None else announced_labware_service(labware_events)
+
+
+@asynccontextmanager
+async def running_lh_bench(labware_events: IEventEmitter | None = None) -> AsyncIterator[_Bench]:
+    """A liquid handler with a reservoir registered on its deck."""
+    recorder = RecordingHandler()
+    build, lh = await _build(recorder, wf_name="adhoc_recording", labware_service=_labware_record(labware_events))
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
     await runtime.start()
     snapshot = await runtime.labware.register(
         "reservoir", location=RESERVOIR_SITE, confirm=True,
@@ -99,21 +140,29 @@ async def bench() -> AsyncIterator[_Bench]:
         await runtime.shutdown()
 
 
+async def _nothing_sent() -> None:
+    return None
+
+
+async def _nothing_recorded(_answer: None) -> None:
+    return None
+
+
 def _wire_to(bench: _Bench):
     """Stand in for the WebSocket only: run the command on the real driver."""
 
     async def execute_command(*, device_id: str, command: str,
                               params: dict[str, Any], **_: Any) -> Any:
-        from cheshire_drivers.lh_request_validation import (
-            LH_REQUEST_MODELS, wrap_lh_payload,
-        )
-        if command not in LH_REQUEST_MODELS:
+        from cheshire_drivers.command_table import COMMANDS
+
+        found = COMMANDS.find({"ILiquidHandler"}, command)
+        if found is None:
             # An arm command under external control: the driver validates and
             # mutates nothing by contract, so there is no driver state to drive.
             return None
         device = bench.runtime.system.get_device(bench.lh_name)
         result = await getattr(device.driver, command)(
-            **wrap_lh_payload(command, params)
+            **found.driver_kwargs(params)
         )
         return result.model_dump(mode="json") if result is not None else None
 
@@ -126,13 +175,14 @@ async def _adhoc(bench: _Bench, command: str, params: dict[str, Any]) -> None:
     tracker_snapshot.interfaces = ["ILiquidHandler"]
     token = current_run_mode.set(WorkflowRunMode.LIVE)
     try:
-        with patch("orca.gateway.adhoc.device_connection_tracker") as tracker, \
-             patch("orca.gateway.adhoc.device_controller") as controller:
-            tracker.get_device = AsyncMock(return_value=tracker_snapshot)
-            controller.execute_command = AsyncMock(side_effect=_wire_to(bench))
-            await adhoc.execute_adhoc_command(
-                bench.runtime, bench.lh_name, command, params,
-            )
+        tracker = MagicMock()
+        controller = MagicMock()
+        tracker.get_device = AsyncMock(return_value=tracker_snapshot)
+        controller.execute_command = AsyncMock(side_effect=_wire_to(bench))
+        await run_operator_command(
+            gateway_with(tracker=tracker, controller=controller),
+            bench.runtime, bench.lh_name, command, params,
+        )
     finally:
         current_run_mode.reset(token)
 
@@ -162,6 +212,37 @@ async def test_an_adhoc_move_puts_the_labware_where_it_actually_went(
     )
 
 
+@pytest.mark.out_of_run
+@pytest.mark.timeout(30)
+async def test_an_adhoc_move_on_a_liquid_handler_the_topology_does_not_declare_is_sent(bench: _Bench) -> None:
+    """No site of an undeclared device is in the record, so the move states no labware motion and goes to the device."""
+    undeclared = "lh_the_topology_does_not_declare"
+    tracker = MagicMock()
+    tracker.get_device = AsyncMock(return_value=DeviceSnapshot(
+        type="liquid_handler", name=undeclared, interfaces=["ILiquidHandler"], capabilities=[],
+        provides_state=True, methods={}, site="test", lab="test", workcell=None, status="ready",
+        last_seen=datetime.now(timezone.utc),
+    ))
+    controller = MagicMock()
+    controller.execute_command = AsyncMock(return_value=None)
+    token = current_run_mode.set(WorkflowRunMode.LIVE)
+    try:
+        await run_operator_command(
+            gateway_with(tracker=tracker, controller=controller),
+            bench.runtime, undeclared, "move_plate", {
+                "plate": bench.labware_name,
+                "to_position": WORKING_SITE.split("/", 1)[1],
+                "from_position": RESERVOIR_SITE.split("/", 1)[1],
+            },
+        )
+    finally:
+        current_run_mode.reset(token)
+
+    controller.execute_command.assert_awaited_once()
+    assert bench.ledger_site() == RESERVOIR_SITE
+
+
+@pytest.mark.out_of_run
 @pytest.mark.timeout(30)
 async def test_an_adhoc_move_reaches_the_driver_deck_too(bench: _Bench) -> None:
     """A move within one deck leaves the plate at one site, and says so.
@@ -189,10 +270,10 @@ async def test_an_adhoc_move_reaches_the_driver_deck_too(bench: _Bench) -> None:
 
 @pytest_asyncio.fixture
 async def tip_bench() -> AsyncIterator[_Bench]:
-    recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    recorder = RecordingHandler()
     build, lh = await build_pipetting_bench(recorder)
-    runtime = SystemRuntime(
-        build.system, event_bus=build.event_bus, labware_store=InMemoryLabwareStore(),
+    runtime = await memory_runtime(
+        build.system, event_bus=build.event_bus
     )
     await runtime.start()
     snapshot = await runtime.labware.register("tips", location=TIPS_SITE, confirm=True)
@@ -236,48 +317,27 @@ async def test_an_adhoc_tip_pickup_leaves_the_rack_layout_true(
 
 
 @pytest.mark.timeout(30)
-async def test_a_pick_the_record_says_is_impossible_reaches_the_operator(
+async def test_a_pick_the_record_says_is_impossible_is_refused_before_it_is_sent(
     tip_bench: _Bench,
 ) -> None:
-    """An operator picking from holes the record calls empty is telling us the
-    record is wrong, and only a person can say by how much.
-
-    The command has already run, so refusing it is not on offer, and believing
-    the operator is right: they were standing at the rack. What cannot happen
-    is that it goes quiet. The pick tells us there was a tip at A2; it does not
-    tell us what else is on the rack, so the count stays wrong by an amount
-    nothing can compute.
-    """
+    """An operator's tip pick-up passes the check a run's does: holes the record calls empty, on a rack someone has
+    looked at, refuse the pick before the driver is told. The record is left as the operator last stated it."""
     runtime = tip_bench.runtime
     await runtime.labware.set_tip_state(
         tip_bench.labware_id, ["A1"], reason="bench setup", confirm=True,
     )
     settled = await runtime.labware.resolve_contents(tip_bench.labware_id)
     assert settled.provenance is Provenance.KNOWN
+    with pytest.raises(TipsNotPresentError, match="A2"):
+        await _adhoc(tip_bench, "pick_up_tips", {
+            "picks": [{"tip_rack": tip_bench.labware_name, "positions": ["A2"]}],
+        })
 
-    await _adhoc(tip_bench, "pick_up_tips", {
-        "picks": [{"tip_rack": tip_bench.labware_name, "positions": ["A2"]}],
-    })
-
-    incidents = await runtime.incidents.list(
-        category=IncidentCategory.LEDGER_CONTRADICTED,
-    )
-    assert len(incidents) == 1, (
-        "a command that only makes sense if the record is wrong has to reach "
-        f"a surface someone reads; found {len(incidents)} incidents"
-    )
-    detail = incidents[0].detail
-    assert isinstance(detail, LedgerContradictionDetail)
-    assert detail.labware_name == tip_bench.labware_name
-    assert detail.positions == ["A2"]
-    assert detail.command == "pick_up_tips"
-    assert tip_bench.labware_name in incidents[0].message
-
+    assert [
+        op for op in await _all_ops(tip_bench) if op.operation is DeviceOperation.PICK_UP_TIPS
+    ] == [], "a refused command leaves no record"
     after = await runtime.labware.resolve_contents(tip_bench.labware_id)
-    assert after.provenance is Provenance.STALE, (
-        "the record is now known to be wrong by an amount only a person can "
-        "settle, so it must stop reading as an answer"
-    )
+    assert after.provenance is Provenance.KNOWN
 
 
 @pytest.mark.timeout(30)
@@ -344,13 +404,14 @@ async def test_a_rack_nobody_described_is_not_a_contradiction(
     ) == []
 
 
-@pytest_asyncio.fixture
-async def arm_bench() -> AsyncIterator[_Bench]:
-    recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
-    build, lh = await _build(recorder, wf_name="adhoc_arm")
-    runtime = SystemRuntime(
-        build.system, event_bus=build.event_bus, labware_store=InMemoryLabwareStore(),
-    )
+@asynccontextmanager
+async def running_arm_bench(
+    labware_events: IEventEmitter | None = None, incident_service: IncidentService | None = None,
+) -> AsyncIterator[_Bench]:
+    """An arm, a pad, a storage device and a liquid handler, with a plate on the pad."""
+    recorder = RecordingHandler()
+    build, lh = await _build(recorder, wf_name="adhoc_arm", labware_service=_labware_record(labware_events))
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus, incident_service=incident_service)
     await runtime.start()
     snapshot = await runtime.labware.register(
         "sample_plate", location="pad", confirm=True,
@@ -365,8 +426,40 @@ async def arm_bench() -> AsyncIterator[_Bench]:
         await runtime.shutdown()
 
 
+@pytest_asyncio.fixture
+async def arm_bench() -> AsyncIterator[_Bench]:
+    async with running_arm_bench() as bench:
+        yield bench
+
+
+async def _commands_named(bench: _Bench, command: str) -> list[str]:
+    return [
+        op.device_name for op in await _all_ops(bench)
+        if op.operation is DeviceOperation.COMMAND
+        and isinstance(op.details, GenericOperationDetails) and op.details.command == command
+    ]
+
+
+@pytest.mark.timeout(30)
+async def test_putting_labware_on_a_deck_saves_the_push_to_the_driver(tip_bench: _Bench) -> None:
+    """The engine tells the driver its deck changed; that is a command like any other."""
+    assert await _commands_named(tip_bench, "reconcile_deck_occupancy") == [tip_bench.lh_name]
+
+
+@pytest.mark.timeout(30)
+async def test_a_hand_move_shows_between_a_place_and_a_pick_somewhere_else(arm_bench: _Bench) -> None:
+    """A plate placed at one site and later picked from another has the move between them on its history."""
+    await arm_bench.runtime.labware.edit_location(
+        arm_bench.labware_id, "stacker/slot", reason="moved by hand", confirm=True,
+    )
+    await _adhoc(arm_bench, "pick_at_coords", _teachpoint("stacker"))
+
+    history = await arm_bench.runtime.labware.get_history(arm_bench.labware_id)
+    assert [event.position_id for event in history][-3:] == ["pad", "stacker/slot", "arm/gripper"]
+
+
 def _teachpoint(position_id: str) -> dict[str, Any]:
-    return {"teachpoint": {"position_id": position_id}, "external_control": True}
+    return {"teachpoint": {"position_id": position_id}}
 
 
 @pytest.mark.timeout(30)
@@ -402,14 +495,115 @@ async def test_an_adhoc_arm_place_puts_the_plate_down_again(
     assert arm_bench.ledger_site() == "stacker/slot"
 
 
+def _arm_requests(bench: _Bench) -> list[tuple[str, str]]:
+    """Each pick and place the arm's own driver is sent, with the labware type it carries."""
+    sent: list[tuple[str, str]] = []
+    arm = next(m for m in bench.runtime.system.movers if m.name == bench.lh_name)
+    assert isinstance(arm, Transporter)
+    for command in ("pick_at_coords", "place_at_coords"):
+        real = getattr(arm.driver, command)
+
+        async def recorded(request: PickAtCoordsRequest, real=real, command=command) -> None:
+            sent.append((command, request.labware_type))
+            await real(request)
+
+        setattr(arm.driver, command, recorded)
+    return sent
+
+
 @pytest.mark.timeout(30)
-async def test_jogging_the_arm_over_an_empty_teachpoint_records_nothing(
+async def test_a_pick_and_place_at_a_site_with_no_plate_on_record_use_the_default_grip(
     arm_bench: _Bench,
 ) -> None:
-    """Teaching and jogging use the same verbs. Nothing was there to pick."""
+    """Not refused: sent with no labware type, so the arm grips with its own default.
+    The record moves no plate and the jaws stay empty."""
+    sent = _arm_requests(arm_bench)
+
     await _adhoc(arm_bench, "pick_at_coords", _teachpoint("stacker"))
+    await _adhoc(arm_bench, "place_at_coords", _teachpoint("stacker"))
+
+    assert sent == [("pick_at_coords", ""), ("place_at_coords", "")]
+    assert arm_bench.ledger_site() == "pad"
+    arm = next(m for m in arm_bench.runtime.system.movers if m.name == arm_bench.lh_name)
+    assert arm.labware is None
+    assert await _commands_named(arm_bench, "pick_at_coords") == [arm_bench.lh_name]
+
+
+@pytest.mark.timeout(30)
+@pytest.mark.parametrize("command", ["initialize", "home", "is_connected"])
+async def test_an_arm_command_with_no_labware_completes(
+    arm_bench: _Bench, command: str,
+) -> None:
+    """A transporter is not a resource with a site, so nothing stands at it. The command is still on the record."""
+    await record_operator_command(arm_bench.runtime.system, "arm", command, {}, interfaces=frozenset({"ITransporter"}))
 
     assert arm_bench.ledger_site() == "pad"
+    recorded = [op for op in await _all_ops(arm_bench) if op.device_name == "arm" and op.source is TrackingSource.OPERATOR]
+    assert [(op.operation, op.details) for op in recorded] == [
+        (DeviceOperation.COMMAND, GenericOperationDetails(command=command, args_repr="{}")),
+    ]
+
+
+@pytest.mark.timeout(30)
+async def test_an_adhoc_home_on_a_liquid_handler_is_recorded(tip_bench: _Bench) -> None:
+    """A robotic movement is an operation even when it changes no labware."""
+    await _adhoc(tip_bench, "home", {})
+
+    assert [op.operation for op in await _all_ops(tip_bench) if op.details == GenericOperationDetails(command="home", args_repr="{}")] == [
+        DeviceOperation.COMMAND,
+    ]
+
+
+@pytest.mark.timeout(30)
+async def test_an_adhoc_arm_pick_is_recorded_as_well_as_followed(arm_bench: _Bench) -> None:
+    await _adhoc(arm_bench, "pick_at_coords", _teachpoint("pad"))
+
+    assert [
+        op.operation for op in await _all_ops(arm_bench) if op.device_name == "arm" and op.source is TrackingSource.OPERATOR
+    ] == [DeviceOperation.COMMAND]
+
+
+async def _operator_reach_in(bench: _Bench, device_id: str, command: str, position_id: str) -> None:
+    """An operator's pick or place, sent the way the operator surface sends it."""
+    token = current_run_mode.set(WorkflowRunMode.LIVE)
+    try:
+        await _runner_on(bench, _wire_to(bench)).run_named(device_id, command, _teachpoint(position_id))
+    finally:
+        current_run_mode.reset(token)
+
+
+@pytest.mark.timeout(30)
+async def test_an_operator_deck_gripper_place_is_saved_once(bench: _Bench) -> None:
+    """The gripper's place sends `move_plate` to its handler, and that call is the place, not a second command."""
+    gripper = f"{bench.lh_name}/gripper"
+    driver = bench.runtime.system.get_device(bench.lh_name).driver
+    await _operator_reach_in(bench, gripper, "pick_at_coords", RESERVOIR_SITE)
+    assert bench.ledger_site() == f"{gripper}/gripper", "the plate is in the gripper's jaws"
+    assert bench.labware_name in await _driver_deck(bench), (
+        "the handler's own gripper holds the plate on its deck; the pick must not take it off the driver"
+    )
+    with patch.object(driver, "move_plate", wraps=driver.move_plate) as move_plate:
+        await _operator_reach_in(bench, gripper, "place_at_coords", WORKING_SITE)
+
+    assert move_plate.await_count == 1
+
+    moves = [
+        (op.device_name, op.details.command, op.source) for op in await _all_ops(bench)
+        if isinstance(op.details, GenericOperationDetails)
+        and op.details.command in ("pick_at_coords", "place_at_coords", "move_plate")
+    ]
+    assert moves == [
+        (gripper, "pick_at_coords", TrackingSource.OPERATOR),
+        (gripper, "place_at_coords", TrackingSource.OPERATOR),
+    ]
+    assert bench.ledger_site() == WORKING_SITE
+
+
+async def _driver_deck(bench: _Bench) -> set[str]:
+    """The labware names the liquid handler's driver has on its deck."""
+    driver = bench.runtime.system.get_device(bench.lh_name).driver
+    state = await driver.get_deck_state(GetDeckStateRequest())
+    return {resource.name for resource in state.labware}
 
 
 async def _register_at(bench: _Bench, location: str) -> str:
@@ -454,34 +648,17 @@ async def test_an_adhoc_pick_at_a_device_named_teachpoint_finds_the_plate(
 
 
 @pytest.mark.timeout(30)
-async def test_a_second_pick_onto_full_jaws_reaches_the_operator(
+async def test_a_second_pick_onto_full_jaws_is_refused_before_the_arm_moves(
     arm_bench: _Bench,
 ) -> None:
-    """Closing the jaws on a second plate is a collision the ledger can see.
-
-    The command has already run, so refusing it is not on offer. But the two
-    records now contradict each other, and a warning in the log is not a
-    surface anyone reads, so it has to land on the incident list.
-    """
+    """The arm's own holding guard refuses it, as it refuses a run's: the jaws would close on a second plate."""
     second = await _register_at(arm_bench, "stacker")
     await _adhoc(arm_bench, "pick_at_coords", _teachpoint("pad"))
     assert arm_bench.ledger_site() == "arm/gripper"
 
-    await _adhoc(arm_bench, "pick_at_coords", _teachpoint("stacker"))
+    with pytest.raises(MoverAlreadyHoldingError):
+        await _adhoc(arm_bench, "pick_at_coords", _teachpoint("stacker"))
 
-    conflicts = await arm_bench.runtime.incidents.list(
-        category=IncidentCategory.DECK_RECONCILE_CONFLICT,
-    )
-    assert len(conflicts) == 1, (
-        "an operator whose second pick went unrecorded has to be told; "
-        f"found {len(conflicts)} incidents"
-    )
-    incident = conflicts[0]
-    assert isinstance(incident.detail, DeckReconcileConflictDetail)
-    assert incident.detail.labware_name == second
-    assert incident.detail.position_id == "arm/gripper"
-    assert incident.detail.blocking_labware_name == arm_bench.labware_name
-    assert second in incident.message and arm_bench.labware_name in incident.message
     assert arm_bench.ledger_site() == "arm/gripper", (
         "the record that was already there is not overwritten"
     )
@@ -491,50 +668,80 @@ async def test_a_second_pick_onto_full_jaws_reaches_the_operator(
 
 
 @pytest.mark.timeout(30)
-async def test_a_ledger_move_that_fails_halfway_leaves_one_record(
+async def test_a_pick_whose_record_fails_leaves_the_plate_where_the_arm_put_it(
     arm_bench: _Bench,
 ) -> None:
-    """Half a move is worse than none.
+    """The arm moved, so the record says where the arm left the plate, and the command fails saying it ran.
 
-    The target is written before the source is cleared. If the clear does not
-    happen, the plate reads as present at both positions, which blocks every
-    reservation at both and leaves nothing able to say which one is real.
+    The same as a run's pick whose save fails (record not saved). The ledger holds one position.
     """
-    pad = arm_bench.runtime.system.system_map.resolve_placement_location("pad")
-
     with patch.object(
-        pad, "dispose_labware",
+        operator_recorder, "save_outside_a_run",
         AsyncMock(side_effect=RuntimeError("the observer wire went down")),
-    ):
+    ), pytest.raises(CommandNotSavedError, match="observer wire.*do not send it again"):
         await _adhoc(arm_bench, "pick_at_coords", _teachpoint("pad"))
 
-    assert arm_bench.holders_of(arm_bench.labware_name) == ["pad"], (
-        "the recording did not go through, so the ledger has to read exactly "
-        "as it did before the command"
-    )
-    assert arm_bench.ledger_site() == "pad"
+    assert arm_bench.ledger_site() == "arm/gripper"
 
 
-async def _batched(bench: _Bench, command: str, params: dict[str, Any]) -> None:
-    """The same command, sent the way a batch route sends it."""
+@dataclass(frozen=True)
+class _Batch:
+    results: list[BatchCommandResultDTO]
+
+    @property
+    def success(self) -> bool:
+        return all(r.success for r in self.results)
+
+
+def _runner_on(bench: _Bench, execute_command: Callable[..., Awaitable[Any]]) -> OperatorDeviceCommands:
     tracker_snapshot = MagicMock()
     tracker_snapshot.interfaces = ["ILiquidHandler"]
+    tracker = MagicMock()
+    controller = MagicMock()
+    tracker.get_device = AsyncMock(return_value=tracker_snapshot)
+    controller.execute_command = AsyncMock(side_effect=execute_command)
+    return OperatorDeviceCommands(
+        gateway_with(tracker=tracker, controller=controller), lambda: bench.runtime)
+
+
+async def _batched(
+    bench: _Bench, command: str, params: dict[str, Any], *, times: int = 1, stop_on_error: bool = True,
+) -> _Batch:
+    """The same command, sent the way the batch route sends it."""
     token = current_run_mode.set(WorkflowRunMode.LIVE)
     try:
-        with patch("orca.gateway.adhoc.device_connection_tracker") as tracker,              patch("orca.gateway.adhoc.device_controller") as controller:
-            tracker.get_device = AsyncMock(return_value=tracker_snapshot)
-            controller.execute_command = AsyncMock(side_effect=_wire_to(bench))
-            executor = BatchExecutor(
-                controller,
-                lambda _device: WorkflowRunMode.LIVE,
-                runtime=bench.runtime,
-            )
-            result = await executor.execute_batch([DeviceCommand(
-                device_id=bench.lh_name, command=command, params=params,
-            )])
+        results, _, _ = await run_batch(
+            NamedCommands(bench.runtime, _runner_on(bench, _wire_to(bench)), bench.lh_name),
+            [BatchCommand(command=command, params=params)] * times, stop_on_error=stop_on_error, reason=None,
+        )
     finally:
         current_run_mode.reset(token)
-    assert result.success, result.results[0].error
+    return _Batch(results)
+
+
+@pytest.mark.timeout(30)
+async def test_a_batched_command_whose_save_fails_says_it_ran(arm_bench: _Bench) -> None:
+    """A batch reports the failed save as its own error, so nobody resends a command that ran."""
+    with patch.object(
+        operator_recorder, "save_outside_a_run",
+        AsyncMock(side_effect=RuntimeError("the observer wire went down")),
+    ):
+        result = await _batched(arm_bench, "pick_at_coords", _teachpoint("pad"))
+
+    assert not result.success
+    assert result.results[0].error_type == "CommandNotSavedError"
+
+
+@pytest.mark.timeout(30)
+async def test_a_batch_told_to_keep_going_still_stops_after_a_command_it_could_not_save(arm_bench: _Bench) -> None:
+    """Every later command would act on a record that is missing the one that ran."""
+    with patch.object(
+        operator_recorder, "save_outside_a_run",
+        AsyncMock(side_effect=RuntimeError("the observer wire went down")),
+    ):
+        result = await _batched(arm_bench, "pick_at_coords", _teachpoint("pad"), times=2, stop_on_error=False)
+
+    assert [r.error_type for r in result.results] == ["CommandNotSavedError"]
 
 
 @pytest.mark.timeout(30)
@@ -549,11 +756,12 @@ async def test_a_batched_move_leaves_the_same_trail_as_a_single_one(
     """
     assert bench.ledger_site() == RESERVOIR_SITE
 
-    await _batched(bench, "move_plate", {
+    result = await _batched(bench, "move_plate", {
         "plate": bench.labware_name,
         "to_position": WORKING_SITE.split("/", 1)[1],
         "from_position": RESERVOIR_SITE.split("/", 1)[1],
     })
+    assert result.success, result.results[0].error
 
     assert bench.ledger_site() == WORKING_SITE, (
         "a command sent through the batch route moved the plate on the "
@@ -577,22 +785,13 @@ async def test_a_batch_holds_external_control_for_its_whole_run(
         seen.append(device.under_external_control)
         return await _wire_to(bench)(**kwargs)
 
-    tracker_snapshot = MagicMock()
-    tracker_snapshot.interfaces = ["ILiquidHandler"]
     token = current_run_mode.set(WorkflowRunMode.LIVE)
     try:
-        with patch("orca.gateway.adhoc.device_connection_tracker") as tracker,              patch("orca.gateway.adhoc.device_controller") as controller:
-            tracker.get_device = AsyncMock(return_value=tracker_snapshot)
-            controller.execute_command = AsyncMock(side_effect=watching)
-            executor = BatchExecutor(
-                controller,
-                lambda _device: WorkflowRunMode.LIVE,
-                runtime=bench.runtime,
-            )
-            await executor.execute_batch([
-                DeviceCommand(device_id=bench.lh_name, command="get_deck_state"),
-                DeviceCommand(device_id=bench.lh_name, command="get_deck_state"),
-            ])
+        await run_batch(
+            NamedCommands(bench.runtime, _runner_on(bench, watching), bench.lh_name),
+            [BatchCommand(command="get_deck_state"), BatchCommand(command="get_deck_state")],
+            stop_on_error=True, reason=None,
+        )
     finally:
         current_run_mode.reset(token)
 
@@ -706,9 +905,12 @@ async def test_a_move_of_a_plate_with_no_position_yet_is_recorded(
         lw.name for lw in await runtime.labware.list_all() if lw.id == expected.id
     )
 
-    await record_operator_command(
-        runtime.system, bench.lh_name, "move_plate",
-        {"plate": name, "to_position": WORKING_SITE.split("/", 1)[1]},
+    instance = runtime.system.get_labware(name)
+    target = runtime.system.system_map.get_location(WORKING_SITE)
+    await runtime.system.command_pipeline.run(
+        bench.lh_name, "move_plate", _nothing_sent, _nothing_recorded,
+        statement=device_move(bench.lh_name, instance, None, target), checks=(), params=None,
+        execution_id=None, events=None, carries_out=None,
     )
 
     landed = next(
@@ -730,10 +932,18 @@ class TestSplittingChannelsAcrossRackSlices:
     the fold dropped those tips."""
 
     @staticmethod
-    def _picked(request: PickUpTipsRequest) -> list[tuple[list[int] | None, bool]]:
+    def _details(request: PickUpTipsRequest | DropTipsRequest) -> list[OperationDetails]:
+        context = RecordContext(
+            device_name="lh", action_id="a", thread_id="t",
+            source=TrackingSource.OPERATOR, resolve_labware_id=lambda _name: None,
+        )
+        return [op.details for op in operations_for_request(request, context)]
+
+    @classmethod
+    def _picked(cls, request: PickUpTipsRequest) -> list[tuple[list[int] | None, bool]]:
         return [
             (details.use_channels, details.channels_were_counted)
-            for _, _, details in _details_for(request)
+            for details in cls._details(request)
             if isinstance(details, TipPickUpDetails)
         ]
 
@@ -777,7 +987,7 @@ class TestSplittingChannelsAcrossRackSlices:
         )
         emptied = [
             details.use_channels
-            for _, _, details in _details_for(request)
+            for details in self._details(request)
             if isinstance(details, TipDropDetails)
         ]
         assert emptied == [[5], [7]]
@@ -803,3 +1013,419 @@ class TestAnUnnamedPickStillLandsOnTheHead:
         carrying = await runtime.devices.get_mounted_tips(tip_bench.lh_name)
         assert sorted(carrying.by_channel) == [0, 1]
         assert all(tip.channel_is_inferred for tip in carrying.by_channel.values())
+
+
+async def _all_ops(bench: _Bench) -> list[OperationRecord]:
+    """Every operation the record holds, across every bucket."""
+    hits = await bench.runtime.system.ops_history.store.search(OpsHistorySearchQuery())
+    return [op for _execution_id, record in hits for op in record.operations]
+
+
+@pytest.mark.timeout(30)
+async def test_an_adhoc_command_keeps_what_the_driver_answered(
+    tip_bench: _Bench,
+) -> None:
+    """The driver's own report of the command is kept, not thrown away.
+
+    A workflow action keeps that report as a witness to compare its own record
+    against. The operator path had the same report in hand and dropped it, so
+    the one path where a person is standing at the instrument was the one path
+    with nothing to compare.
+    """
+    runtime = tip_bench.runtime
+    await runtime.labware.set_tip_state(
+        tip_bench.labware_id, ["A1", "B1"], reason="bench setup", confirm=True,
+    )
+
+    await _adhoc(tip_bench, "pick_up_tips", {
+        "picks": [{"tip_rack": tip_bench.labware_name, "positions": ["A1"]}],
+    })
+
+    witnessed = [
+        op for op in await _all_ops(tip_bench)
+        if op.source is TrackingSource.DRIVER_OBSERVED
+    ]
+    assert witnessed, (
+        "the driver reported its racks back on the pick and nothing kept it"
+    )
+    assert any(tip_bench.labware_name in op.affected_labware for op in witnessed)
+
+
+@pytest.mark.timeout(30)
+async def test_an_adhoc_aspirate_with_a_failed_channel_is_saved_per_channel(tip_bench: _Bench) -> None:
+    """The same record a workflow's aspirate leaves: the failed channel moved nothing, and the command fails."""
+    with pytest.raises(PartialChannelFailureError):
+        await record_operator_command(
+            tip_bench.runtime.system, tip_bench.lh_name, "aspirate",
+            {"aspirations": [{"labware": "plate_p", "positions": ["A1", "B1"], "volumes": [10.0, 10.0]}]},
+            result={"success": False, "per_channel_errors": [{
+                "channel_id": 1, "well_position": "B1", "labware": "plate_p", "attempted_volume": 10.0,
+                "error_code": "no_liquid", "error_message": "no liquid found",
+            }]},
+            interfaces=frozenset({"ILiquidHandler"}),
+        )
+
+    saved = [op.details for op in await _all_ops(tip_bench) if op.operation is DeviceOperation.ASPIRATE]
+    assert [(d.positions, d.volumes, d.certainty) for d in saved if isinstance(d, AspirateDetails)] == [
+        (["A1"], [10.0], "confirmed_transferred"),
+        (["B1"], [0.0], "definitely_not_transferred"),
+    ]
+    assert all(op.source is TrackingSource.OPERATOR for op in await _all_ops(tip_bench) if op.operation is DeviceOperation.ASPIRATE)
+
+
+def _failed_tip_channel(rack: str, position: str | None, channel: int) -> dict[str, JsonValue]:
+    return {
+        "channel_id": channel, "well_position": position, "labware": rack, "attempted_volume": 0.0,
+        "error_code": "TipNotMoved", "error_message": "the channel did not go",
+    }
+
+
+@pytest.mark.timeout(30)
+async def test_an_adhoc_tip_pickup_with_a_failed_channel_takes_only_the_tips_that_went(tip_bench: _Bench) -> None:
+    """Three channels were sent and one got no tip: its tip stays in the rack, its channel stays bare, and the command fails."""
+    runtime = tip_bench.runtime
+    rack = tip_bench.labware_name
+    await runtime.labware.set_tip_state(tip_bench.labware_id, ["A1", "B1", "C1"], reason="bench setup", confirm=True)
+
+    with pytest.raises(PartialChannelFailureError):
+        await record_operator_command(
+            runtime.system, tip_bench.lh_name, "pick_up_tips",
+            {"picks": [{"tip_rack": rack, "positions": ["A1", "B1", "C1"]}]},
+            result={"success": False, "per_channel_errors": [_failed_tip_channel(rack, "B1", 1)]},
+            interfaces=frozenset({"ILiquidHandler"}),
+        )
+
+    assert (await runtime.labware.get_tip_state(tip_bench.labware_id)).positions_present == ["B1"]
+    assert sorted((await runtime.devices.get_mounted_tips(tip_bench.lh_name)).by_channel) == [0, 2]
+
+
+@pytest.mark.timeout(30)
+async def test_an_adhoc_tip_drop_with_a_failed_channel_returns_only_the_tips_that_went(tip_bench: _Bench) -> None:
+    """Two channels were sent back to the rack and one kept its tip: the rack gets one tip back, and the command fails."""
+    runtime = tip_bench.runtime
+    rack = tip_bench.labware_name
+    await runtime.labware.set_tip_state(tip_bench.labware_id, ["A1", "B1"], reason="bench setup", confirm=True)
+    await _adhoc(tip_bench, "pick_up_tips", {"picks": [{"tip_rack": rack, "positions": ["A1", "B1"]}]})
+
+    with pytest.raises(PartialChannelFailureError):
+        await record_operator_command(
+            runtime.system, tip_bench.lh_name, "drop_tips",
+            {"drops": [{"tip_rack": rack, "positions": ["A1", "B1"]}], "to_waste": False},
+            result={"success": False, "per_channel_errors": [_failed_tip_channel(rack, "B1", 1)]},
+            interfaces=frozenset({"ILiquidHandler"}),
+        )
+
+    assert (await runtime.labware.get_tip_state(tip_bench.labware_id)).positions_present == ["A1"]
+    assert sorted((await runtime.devices.get_mounted_tips(tip_bench.lh_name)).by_channel) == [1]
+
+
+@pytest.mark.timeout(30)
+async def test_an_adhoc_discard_with_a_failed_channel_bins_only_the_tips_that_went(tip_bench: _Bench) -> None:
+    """Two named channels were sent to waste and one kept its tip: the head still carries that one."""
+    runtime = tip_bench.runtime
+    rack = tip_bench.labware_name
+    await runtime.labware.set_tip_state(tip_bench.labware_id, ["A1", "B1"], reason="bench setup", confirm=True)
+    await _adhoc(tip_bench, "pick_up_tips", {"picks": [{"tip_rack": rack, "positions": ["A1", "B1"]}]})
+
+    with pytest.raises(PartialChannelFailureError):
+        await record_operator_command(
+            runtime.system, tip_bench.lh_name, "discard_tips", {"use_channels": [0, 1]},
+            result={"success": False, "per_channel_errors": [_failed_tip_channel("trash", None, 1)]},
+            interfaces=frozenset({"ILiquidHandler"}),
+        )
+
+    assert sorted((await runtime.devices.get_mounted_tips(tip_bench.lh_name)).by_channel) == [1]
+
+
+@pytest.mark.timeout(30)
+async def test_a_discard_naming_no_channels_with_a_failed_channel_writes_no_row(tip_bench: _Bench) -> None:
+    """Nothing says which channels let go, so no row is written: one row for the failed channel alone would leave
+    the others reading as known on the head."""
+    runtime = tip_bench.runtime
+    rack = tip_bench.labware_name
+    await runtime.labware.set_tip_state(tip_bench.labware_id, ["A1", "B1"], reason="bench setup", confirm=True)
+    await _adhoc(tip_bench, "pick_up_tips", {"picks": [{"tip_rack": rack, "positions": ["A1", "B1"]}]})
+
+    with pytest.raises(ChannelFailureNotReadError):
+        await record_operator_command(
+            runtime.system, tip_bench.lh_name, "discard_tips", {},
+            result={"success": False, "per_channel_errors": [_failed_tip_channel("trash", None, 1)]},
+            interfaces=frozenset({"ILiquidHandler"}),
+        )
+
+    assert not [op for op in await _all_ops(tip_bench) if op.operation is DeviceOperation.DISCARD_TIPS]
+    assert sorted((await runtime.devices.get_mounted_tips(tip_bench.lh_name)).by_channel) == [0, 1]
+
+
+async def _failed_channel_not_read(_answer: None) -> None:
+    raise ChannelFailureNotReadError("discard_tips")
+
+
+@pytest.mark.timeout(30)
+async def test_a_channel_failure_nothing_can_read_fails_the_command_as_a_failed_channel() -> None:
+    """The pipeline answers it as a failed channel with no rows, so a run does not send it again and an operator
+    gets `channel_failed`."""
+    pipeline: DeviceCommandPipeline[CommandStatement] = DeviceCommandPipeline(())
+
+    with pytest.raises(PartialChannelFailureError) as failed:
+        await pipeline.run_device_command(
+            "lh", "discard_tips", _nothing_sent, _failed_channel_not_read, checks=(), execution_id=None, named=(), params=None,
+        )
+
+    assert failed.value.records == []
+
+
+@pytest.mark.timeout(30)
+async def test_an_adhoc_96_head_pick_up_and_return_show_on_the_head(tip_bench: _Bench) -> None:
+    """A 96-head pick-up by hand loads the 96 head on the record, and a return takes the tips off again."""
+    runtime = tip_bench.runtime
+    lh = frozenset({"ILiquidHandler"})
+
+    await record_operator_command(
+        runtime.system, tip_bench.lh_name, "pick_up_tips96", {"tip_rack": tip_bench.labware_name}, interfaces=lh,
+    )
+    loaded = await runtime.devices.get_mounted_tips(tip_bench.lh_name)
+    assert len(loaded.head96) == 96
+    assert {tip.tip_rack for tip in loaded.head96.values()} == {tip_bench.labware_name}
+    assert loaded.by_channel == {}
+
+    await record_operator_command(runtime.system, tip_bench.lh_name, "return_tips96", {}, interfaces=lh)
+    assert (await runtime.devices.get_mounted_tips(tip_bench.lh_name)).head96 == {}
+
+
+@pytest.mark.timeout(30)
+async def test_a_cut_off_96_head_pick_up_keeps_the_head_in_doubt_through_a_channel_discard(tip_bench: _Bench) -> None:
+    """Nothing ever mentioned this handler's 96 head. A 96-head pick-up gets no answer, then the channels are
+    discarded. The head may hold 96 tips, so the read stays stale."""
+    runtime = tip_bench.runtime
+
+    await runtime.system.note_no_answer(tip_bench.lh_name, None, [tip_bench.labware_name], "pick_up_tips96")
+    await record_operator_command(
+        runtime.system, tip_bench.lh_name, "discard_tips", {}, interfaces=frozenset({"ILiquidHandler"}),
+    )
+
+    assert (await runtime.devices.get_mounted_tips(tip_bench.lh_name)).provenance is Provenance.STALE
+
+
+@pytest.mark.timeout(30)
+async def test_a_96_head_return_puts_the_tips_back_in_the_rack_they_came_from(tip_bench: _Bench) -> None:
+    """A full rack is picked up by the 96 head and returned: the rack reads full and known again, and the next
+    96-head pick-up from it is accepted."""
+    runtime = tip_bench.runtime
+    lh = frozenset({"ILiquidHandler"})
+    rack = runtime.system.get_labware(tip_bench.labware_name)
+    every_spot = sorted(rack.every_tip_position())
+    await runtime.labware.set_tip_state(tip_bench.labware_id, every_spot, reason="a full rack", confirm=True)
+    pick_up = {"tip_rack": tip_bench.labware_name}
+
+    await record_operator_command(runtime.system, tip_bench.lh_name, "pick_up_tips96", pick_up, interfaces=lh)
+    assert (await runtime.labware.get_tip_state(tip_bench.labware_id)).positions_present == []
+
+    await record_operator_command(runtime.system, tip_bench.lh_name, "return_tips96", {}, interfaces=lh)
+
+    back = await runtime.labware.get_tip_state(tip_bench.labware_id)
+    assert sorted(back.positions_present) == every_spot
+    assert back.provenance is Provenance.KNOWN
+    await operator_recorder.check_before_sending(runtime.system, "pick_up_tips96", pick_up, lh)
+
+
+def _stated_on_the_96_head(rack: str, spots: list[str]) -> dict[int, tuple[str, str]]:
+    return {channel: (rack, spot) for channel, spot in enumerate(spots)}
+
+
+@pytest.mark.timeout(30)
+async def test_a_96_head_return_credits_the_spots_the_head_holds_not_the_racks_last_layout(tip_bench: _Bench) -> None:
+    """The rack was stated at 56 tips and the 96 head as holding the other 40 from it. The return puts those 40
+    spots back, so the rack reads all 96."""
+    runtime = tip_bench.runtime
+    lh = frozenset({"ILiquidHandler"})
+    every_spot = sorted(runtime.system.get_labware(tip_bench.labware_name).every_tip_position())
+    in_the_rack, on_the_head = every_spot[:56], every_spot[56:]
+    await runtime.labware.set_tip_state(tip_bench.labware_id, in_the_rack, reason="56 left", confirm=True)
+    await runtime.devices.set_mounted_tips(
+        tip_bench.lh_name, {}, head96=_stated_on_the_96_head(tip_bench.labware_name, on_the_head),
+        reason="40 on the 96 head", confirm=True,
+    )
+
+    await record_operator_command(runtime.system, tip_bench.lh_name, "return_tips96", {}, interfaces=lh)
+
+    back = await runtime.labware.get_tip_state(tip_bench.labware_id)
+    assert sorted(back.positions_present) == every_spot
+    assert (await runtime.devices.get_mounted_tips(tip_bench.lh_name)).head96 == {}
+
+
+@pytest.mark.timeout(30)
+async def test_a_96_head_return_of_tips_from_two_racks_credits_each_rack_its_own_spots(tip_bench: _Bench) -> None:
+    """A head stated as holding tips from two racks returns each tip to the rack and spot it came from."""
+    runtime = tip_bench.runtime
+    lh = frozenset({"ILiquidHandler"})
+    first = tip_bench.labware_name
+    await runtime.labware.set_tip_state(tip_bench.labware_id, ["C1"], reason="one left", confirm=True)
+    await runtime.devices.set_mounted_tips(
+        tip_bench.lh_name, {}, head96={0: (first, "A1"), 1: (first, "B1"), 8: ("another_rack", "A2")},
+        reason="two racks", confirm=True,
+    )
+
+    await record_operator_command(runtime.system, tip_bench.lh_name, "return_tips96", {}, interfaces=lh)
+
+    assert sorted((await runtime.labware.get_tip_state(tip_bench.labware_id)).positions_present) == ["A1", "B1", "C1"]
+    returns = [
+        op.details for op in await _all_ops(tip_bench)
+        if op.operation is DeviceOperation.RETURN_TIPS96 and isinstance(op.details, TipDrop96Details)
+    ]
+    assert sorted((d.tip_rack or "", d.positions or []) for d in returns) == [
+        ("another_rack", ["A2"]), (first, ["A1", "B1"]),
+    ]
+
+
+@pytest.mark.timeout(30)
+async def test_a_runs_96_head_return_puts_the_tips_back_in_the_rack(tip_bench: _Bench) -> None:
+    """The same through a run's save point: the action's recorder names the rack from the record of the head."""
+    runtime = tip_bench.runtime
+    system = runtime.system
+    lh = frozenset({"ILiquidHandler"})
+    every_spot = sorted(system.get_labware(tip_bench.labware_name).every_tip_position())
+    await runtime.labware.set_tip_state(tip_bench.labware_id, every_spot, reason="a full rack", confirm=True)
+    await record_operator_command(
+        system, tip_bench.lh_name, "pick_up_tips96", {"tip_rack": tip_bench.labware_name}, interfaces=lh,
+    )
+    action = Mock(id="action_1", command="return_tips96", device=system.get_device(tip_bench.lh_name), declares=None)
+    action.build_template_to_instance_map.return_value = {}
+    executable = ExecutableLocationAction(
+        Mock(), action,
+        MethodExecutionContext(
+            execution_id="run_1", workflow_name="return", method_id="m1", method_name="method",
+            thread_id="thread_1", thread_name="thread_1", participating_thread_ids=("thread_1",),
+        ),
+        tracking_context=system.tracking_context,
+    )
+    executable._wire_recorder()
+    recorder: CommandRecorder = action.set_recorder.call_args[0][0]
+
+    await recorder.save_completed(
+        ActionRequest(device_name=tip_bench.lh_name, command="return_tips96", args=(), kwargs={}), None, [], [],
+    )
+
+    back = await runtime.labware.get_tip_state(tip_bench.labware_id)
+    assert sorted(back.positions_present) == every_spot
+    assert (await runtime.devices.get_mounted_tips(tip_bench.lh_name)).head96 == {}
+
+
+@pytest.mark.timeout(30)
+async def test_an_adhoc_mix_leaves_the_record_a_workflow_mix_leaves(
+    tip_bench: _Bench,
+) -> None:
+    """One reader, so a verb cannot be tracked on one path and not the other.
+
+    Mix was read on the workflow path and skipped on the operator one, because
+    two readers would have written two shapes for it. There is one reader now,
+    so there is one shape.
+    """
+    runtime = tip_bench.runtime
+    await runtime.labware.set_tip_state(
+        tip_bench.labware_id, ["A1"], reason="bench setup", confirm=True,
+    )
+    reservoir = await runtime.labware.register(
+        "reservoir", location=RESERVOIR_SITE, confirm=True,
+    )
+    reservoir_name = next(
+        lw.name for lw in await runtime.labware.list_all() if lw.id == reservoir.id
+    )
+    await _adhoc(tip_bench, "pick_up_tips", {
+        "picks": [{"tip_rack": tip_bench.labware_name, "positions": ["A1"]}],
+    })
+
+    await _adhoc(tip_bench, "mix", {
+        "labware": reservoir_name,
+        "volume": 50.0,
+        "repetitions": 3,
+        "positions": ["A1"],
+    })
+
+    mixes = [
+        op for op in await _all_ops(tip_bench)
+        if op.operation is DeviceOperation.MIX
+    ]
+    assert len(mixes) == 1, f"expected one mix in the record, found {len(mixes)}"
+    assert mixes[0].source is TrackingSource.OPERATOR
+    assert mixes[0].affected_labware == [reservoir_name]
+
+
+def _watching() -> tuple[ServerEvents, CollectorSink]:
+    sink = CollectorSink()
+    events = ServerEvents()
+    events.add_sink(sink)
+    return events, sink
+
+
+def _moves_of(sink: CollectorSink, labware_id: str) -> list[str | None]:
+    return [
+        e.context.position_id for e in sink.events
+        if isinstance(e.context, LabwareRecordContext) and e.entity_id == labware_id and e.status == "MOVED"
+    ]
+
+
+@pytest.mark.timeout(30)
+async def test_an_operator_pick_and_place_each_announce_where_the_plate_went() -> None:
+    events, sink = _watching()
+    async with running_arm_bench(events) as bench:
+        sink.clear()
+
+        await _adhoc(bench, "pick_at_coords", _teachpoint("pad"))
+        picked = _moves_of(sink, bench.labware_id)
+        await _adhoc(bench, "place_at_coords", _teachpoint("stacker"))
+
+        assert picked == ["arm/gripper"]
+        assert _moves_of(sink, bench.labware_id)[1:] == [bench.ledger_site()]
+
+
+@pytest.mark.timeout(30)
+async def test_an_operator_pick_records_the_position_it_reached_and_not_the_keys_the_reach_ignored() -> None:
+    async with running_arm_bench(ServerEvents()) as bench:
+        await _adhoc(bench, "pick_at_coords", {**_teachpoint("pad"), "speed": "fast"})
+
+        picks = [
+            op.details for op in await _all_ops(bench)
+            if isinstance(op.details, GenericOperationDetails) and op.details.command == "pick_at_coords"
+        ]
+        assert [pick.args_repr for pick in picks] == [repr(_teachpoint("pad"))]
+
+
+@pytest.mark.timeout(30)
+async def test_an_operator_plate_move_announces_the_plate_it_names() -> None:
+    events, sink = _watching()
+    async with running_lh_bench(events) as bench:
+        sink.clear()
+
+        await _adhoc(bench, "move_plate", {
+            "plate": bench.labware_name,
+            "to_position": WORKING_SITE.split("/", 1)[1],
+            "from_position": RESERVOIR_SITE.split("/", 1)[1],
+        })
+
+        assert _moves_of(sink, bench.labware_id) == [WORKING_SITE]
+
+
+@pytest.mark.timeout(30)
+async def test_an_operator_command_whose_params_do_not_fit_is_refused_as_invalid(tip_bench: _Bench) -> None:
+    """Its labware motion and tip check are read before it is sent, so bad params are refused there, as invalid."""
+    with pytest.raises(InvalidCommandError, match="aspirate"):
+        await _adhoc(tip_bench, "aspirate", {"aspirations": "not a list"})
+
+
+@pytest.mark.timeout(30)
+async def test_an_operator_place_onto_a_deck_site_the_record_fills_is_refused_before_the_arm_moves(
+    bench: _Bench,
+) -> None:
+    gripper = f"{bench.lh_name}/gripper"
+    driver = bench.runtime.system.get_device(bench.lh_name).driver
+    await bench.runtime.labware.register("reservoir", location=WORKING_SITE, confirm=True)
+    await _operator_reach_in(bench, gripper, "pick_at_coords", RESERVOIR_SITE)
+
+    with patch.object(driver, "move_plate", wraps=driver.move_plate) as move_plate, pytest.raises(
+        ValueError, match="already contains labware",
+    ):
+        await _operator_reach_in(bench, gripper, "place_at_coords", WORKING_SITE)
+
+    assert move_plate.await_count == 0
+    assert bench.ledger_site() != WORKING_SITE

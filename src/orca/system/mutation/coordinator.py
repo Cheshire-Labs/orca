@@ -8,7 +8,8 @@ chain for insert operations.
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
-from orca.system.interfaces import IMethodRegistry, IThreadTemplateRegistry
+from orca.system.interfaces import IThreadTemplateRegistry
+from orca.workflow_models.workflows.registry_interfaces import IMethodRegistry
 from orca.system.mutation.errors import (
     ActionAlreadyExecutingError,
     CannotReplaceCurrentMethodError,
@@ -20,7 +21,7 @@ from orca.system.mutation.errors import (
     ThreadNotPausedError,
 )
 from orca.resource_models.labware import AnyLabwareTemplate, LabwareTemplate
-from orca.system.thread_manager_interface import IThreadManager
+from orca.workflow_models.labware_threads.thread_manager_interface import IThreadManager
 from orca.workflow_models.action_template import ActionTemplate
 from orca.workflow_models.actions.dynamic_resource_action import UnresolvedLocationAction
 from orca.workflow_models.labware_threads.executing_labware_thread import ExecutingLabwareThread
@@ -30,7 +31,7 @@ from orca.workflow_models.method_template import MethodTemplate
 from orca.workflow_models.mutation_position import AtHead, Before, InsertPosition
 from orca.workflow_models.status_enums import LabwareThreadStatus, MethodStatus
 from orca.variables.variable_store import NullVariableResolver
-from orca.workflow_models.workflows.workflow_factories import MethodActionFactory
+from orca.workflow_models.actions.method_action_factory import MethodActionFactory
 from orca.workflow_models.workflows.workflow_registry import IExecutingMethodRegistry
 
 
@@ -85,37 +86,16 @@ class MutationCoordinator:
                 return m
         return None
 
-    def skip_method(
-        self,
-        thread_id: str,
-        method_id: str | None = None,
-        method_name: str | None = None,
-    ) -> None:
-        if method_id is None and method_name is None:
-            raise ValueError("Must provide method_id or method_name")
-        if method_id is not None and method_name is not None:
-            raise ValueError("Provide only one of method_id or method_name")
+    def skip_method(self, thread_id: str, method_name: str) -> None:
         thread = self._get_thread(thread_id)
         self._validate_paused(thread)
-        # Exactly one is non-None by the validation above. ``or`` between
-        # two real Optional[str] values is fine; the cheat would be a
-        # literal-string fallback. Assert narrows for the type checker.
-        skip_name = method_name or method_id
-        assert skip_name is not None
-        in_progress = self._find_in_progress_method(skip_name)
+        in_progress = self._find_in_progress_method(method_name)
         if in_progress is not None:
-            raise MethodAlreadyInProgressError(method_name=skip_name)
-        thread.method_lane.add_skip(skip_name)
+            raise MethodAlreadyInProgressError(method_name=method_name)
+        thread.method_lane.add_skip(method_name)
 
-    async def abort_method(
-        self,
-        thread_id: str,
-        method_id: str | None = None,
-        method_name: str | None = None,
-    ) -> None:
+    async def abort_method(self, thread_id: str, method_name: str) -> None:
         """Abort an in-progress method: abort running action + skip remaining."""
-        if method_id is None and method_name is None:
-            raise ValueError("Must provide method_id or method_name")
         thread = self._get_thread(thread_id)
         self._validate_paused(thread)
         method = thread.assigned_method
@@ -123,12 +103,10 @@ class MutationCoordinator:
             raise ValueError(
                 f"Thread {thread.name} has no assigned method to abort."
             )
-        target_name = method_name or method_id
-        assert target_name is not None
-        if method.name != target_name:
+        if method.name != method_name:
             raise ValueError(
                 f"Thread {thread.name}'s current method is '{method.name}', "
-                f"not '{target_name}'."
+                f"not '{method_name}'."
             )
         await method.abort()
 

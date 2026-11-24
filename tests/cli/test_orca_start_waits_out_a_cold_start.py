@@ -52,8 +52,8 @@ def _health_answers_after(monkeypatch: pytest.MonkeyPatch, clock: _Clock, second
             raise httpx.ConnectError("daemon still starting", request=request)
         return httpx.Response(200, json={"status": "ok"})
 
-    def client(timeout: float) -> httpx.Client:
-        return real_client(timeout=timeout, transport=httpx.MockTransport(answer))
+    def client(**settings: float | str | dict[str, str]) -> httpx.Client:
+        return real_client(transport=httpx.MockTransport(answer), **settings)
 
     monkeypatch.setattr(httpx, "Client", client)
 

@@ -12,17 +12,17 @@ Found on hardware 2026-08-27: the second submission died on
 incubator, because the second run was handed the first run's terminal thread.
 """
 
+import pytest
+from orca.events.event_bus import EventBus
 import orca.orca as orca
 from cheshire_drivers import DeckLayoutConfig, DeckResourceConfig, Teachpoint
 from cheshire_drivers import CartesianCoordinates as C
 from orca.devices.devices import LiquidHandler, Storage
 from orca.resource_models.plate_pad import PlatePad
 from orca.resource_models.transporter import Transporter
-from orca.runtime.labware_group import LabwareGroup, LabwareGroupMember
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.submission import BatchMode
-from orca.runtime.store_factory import InMemoryRuntimeStoreFactory
-from orca.runtime.system_runtime import SystemRuntime
+from orca.workflow_models.labware_group import LabwareGroup, LabwareGroupMember
+from orca.modes.run_modes import WorkflowRunMode
+from orca.workflow_models.submission import BatchMode
 from orca.sdk.build import Topology
 from orca.sdk.labware import PlateTemplate
 from orca.spawn import DISPENSE, LEAVE_IN_PLACE, REUSE_EXISTING
@@ -30,7 +30,13 @@ from orca.workflow_models.action_context import ActionContext
 from orca.workflow_models.method_context import MethodContext
 from orca.workflow_models.thread_context import ThreadContext
 from tests.test_helpers import run_to_quiescence
+from tests.setup_package import package_stores, write_deck_layouts, write_teachpoints
+from tests.setup_package import with_teachpoints, with_deck_layouts
+from tests.memory_activity import memory_ops_store, memory_runtime
 
+
+# The system build must reach every position these runs touch.
+pytestmark = pytest.mark.positions_bound_by_the_build
 
 _DECK_CONFIG = DeckLayoutConfig(
     deck_type="STARlet",
@@ -44,27 +50,25 @@ _ARM_DECK_ENTRY = "lh/carrier-7-2"
 
 
 async def _build_resident_system():
-    stores = InMemoryRuntimeStoreFactory()
+    stores = package_stores()
     sample = PlateTemplate("sample", labware_type="Cor_Falcon_96_wellplate_340ul_Fb_Black")
     reservoir = PlateTemplate("reservoir", labware_type="AGenBio_1_troughplate_190000uL_Fl")
 
-    lh = LiquidHandler(
+    lh = with_deck_layouts(LiquidHandler(
         "lh",
-        deck_layout_store=stores.deck_layouts("lh", seed={"default": _DECK_CONFIG}),
         deck_layout="default",
-    )
+    ), write_deck_layouts(stores, "lh", {"default": _DECK_CONFIG}))
     stacker = Storage("stacker")
     waste = Storage("waste")
     pad = PlatePad("pad")
-    arm = Transporter(
+    arm = with_teachpoints(Transporter(
         "arm",
-        teachpoint_store=stores.teachpoints("arm", seed=[
+    ), write_teachpoints(stores, "arm", [
             Teachpoint("stacker", C(0, 200, 300, 0, 90, 180), orientation="right"),
             Teachpoint("pad", C(200, 200, 300, 0, 90, 180), orientation="right"),
             Teachpoint(_ARM_DECK_ENTRY, C(400, 200, 300, 0, 90, 180), orientation="right"),
             Teachpoint("waste", C(600, 200, 300, 0, 90, 180), orientation="right"),
-        ]),
-    )
+        ]))
 
     @orca.action(device=lh, inputs=[sample, reservoir], deck_positions={sample: "carrier-7-0"})
     async def add_reagent(ctx: ActionContext) -> None:
@@ -97,7 +101,7 @@ async def _build_resident_system():
         transporters=[arm],
     )
     return await orca.build_system(
-        name="Deck Resident", workflow=workflow, topology=topology, stores=stores)
+        name="Deck Resident", workflow=workflow, topology=topology, stores=stores, event_bus=EventBus(), ops_history_store=memory_ops_store())
 
 
 def _thread_name(statuses: dict[str, str], template_name: str) -> str:
@@ -108,17 +112,17 @@ def _thread_name(statuses: dict[str, str], template_name: str) -> str:
 
 async def test_a_left_in_place_resident_serves_the_next_execution() -> None:
     build = await _build_resident_system()
-    runtime = SystemRuntime(build.system, event_bus=build.event_bus)
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
     template = build.system.get_workflow_template("resident_wf")
     await runtime.start()
     try:
-        first = await runtime.submit(template, mode=WorkflowRunMode.PURE_SIM)
+        first = await runtime.submit(template, mode=WorkflowRunMode.CHECK_RUN)
         first_statuses = await run_to_quiescence(runtime, first.execution_id, timeout=60.0)
         assert first_statuses and all(s == "COMPLETED" for s in first_statuses.values()), (
             f"first run must complete; got {first_statuses}"
         )
 
-        second = await runtime.submit(template, mode=WorkflowRunMode.PURE_SIM)
+        second = await runtime.submit(template, mode=WorkflowRunMode.CHECK_RUN)
         second_statuses = await run_to_quiescence(runtime, second.execution_id, timeout=60.0)
     finally:
         await runtime.shutdown(confirm=True)
@@ -139,7 +143,7 @@ async def test_a_joining_submission_is_served_by_the_same_resident() -> None:
     served by the resident already on the deck -- one trough, one identity, no
     second registration."""
     build = await _build_resident_system()
-    runtime = SystemRuntime(build.system, event_bus=build.event_bus)
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
     template = build.system.get_workflow_template("resident_wf")
     await runtime.start()
     try:
@@ -147,14 +151,14 @@ async def test_a_joining_submission_is_served_by_the_same_resident() -> None:
             template,
             groups=[LabwareGroup(id="g1", members=(
                 LabwareGroupMember(thread_template_name="plate_journey"),))],
-            mode=WorkflowRunMode.PURE_SIM,
+            mode=WorkflowRunMode.CHECK_RUN,
         )
         second = await runtime.submit(
             template,
             groups=[LabwareGroup(id="g2", members=(
                 LabwareGroupMember(thread_template_name="plate_journey"),))],
             batch_mode=BatchMode.JOIN_EXISTING,
-            mode=WorkflowRunMode.PURE_SIM,
+            mode=WorkflowRunMode.CHECK_RUN,
         )
         assert second.execution_id == first.execution_id, (
             "JOIN_EXISTING must deliver into the in-flight execution"

@@ -9,12 +9,12 @@ navigate.
 import pytest
 
 from orca.daemon.app import create_app
-from orca.daemon.route_tags import RouteTag
+from orca.operations.route_tags import RouteTag
 
 
 @pytest.fixture
 def schema() -> dict[str, object]:
-    return create_app(initial_system_runtime=None).openapi()
+    return create_app().openapi()
 
 
 def _tags_by_path(schema: dict[str, object]) -> dict[str, list[str]]:
@@ -53,42 +53,36 @@ def test_specific_tag_assignments(schema: dict[str, object]) -> None:
     tags = _tags_by_path(schema)
     cases = {
         "/health": "lifecycle",
-        "/mount-topology": "lifecycle",
-        "/workflows": "lifecycle",
-        "/executions": "executions",
-        "/executions/{execution_id}/threads": "threads",
-        "/executions/{execution_id}/reservations": "reservations",
-        "/reservations": "reservations",
-        "/variables": "variables",
-        "/incidents": "incidents",
-        "/teachpoints": "teachpoints",
-        "/deck-layouts": "deck-layouts",
-        "/access-configs": "access-configs",
-        "/devices/{device_name}": "devices",
-        "/plugins": "plugins",
-        "/audit": "audit",
-        "/events": "events",
-        "/system": "system",
-        "/catalog/workflows": "catalog",
-        "/operations/submit-execution": "submissions",
-        "/operations/list-submissions": "submissions",
-        "/operations/get-submission": "submissions",
-        "/operations/system-info": "system",
-        "/operations/pause": "threads",
-        "/operations/resume": "threads",
-        "/operations/spawn-thread": "threads",
-        "/operations/skip-method": "threads",
-        "/operations/close-execution": "executions",
-        "/operations/list-executions": "executions",
-        "/operations/stop-execution": "executions",
-        "/operations/set-execution-time-scale": "executions",
-        "/operations/list-labware": "labware",
-        "/operations/edit-labware-barcode": "labware",
-        "/operations/register-labware": "labware",
-        "/operations/list-devices": "devices",
-        "/operations/initialize-device": "devices",
-        "/operations/list-workflows": "catalog",
-        "/operations/get-method": "catalog",
+        "/api/runtime/mount-package": "lifecycle",
+        "/api/runtime/unload": "lifecycle",
+        "/api/executions": "executions",
+        "/api/executions/{execution_id}/threads": "threads",
+        "/api/executions/{execution_id}/reservations/{reservation_id}": "reservations",
+        "/api/reservations": "reservations",
+        "/api/variables": "variables",
+        "/api/incidents": "incidents",
+        "/api/teachpoints": "teachpoints",
+        "/api/deck-layouts": "deck-layouts",
+        "/api/access-configs": "access-configs",
+        "/api/devices/{device_id}/introspection": "devices",
+        "/api/plugins": "plugins",
+        "/api/audit": "audit",
+        "/api/events": "events",
+        "/api/submissions": "submissions",
+        "/api/submissions/{submission_id}": "submissions",
+        "/api/system": "system",
+        "/api/pause": "threads",
+        "/api/resume": "threads",
+        "/api/executions/{execution_id}/threads/{thread_id}/skip-method": "threads",
+        "/api/executions/{execution_id}/close": "executions",
+        "/api/executions/{execution_id}/stop": "executions",
+        "/api/executions/{execution_id}/sim-speedup": "executions",
+        "/api/labware-instances": "labware",
+        "/api/labware-instances/{labware_id}/discharge": "labware",
+        "/api/labware-instances/{labware_id}/barcode": "labware",
+        "/api/devices/{device_id}/initialize": "devices",
+        "/api/workflows": "catalog",
+        "/api/methods/{name}": "catalog",
     }
     for path, expected in cases.items():
         assert path in tags, f"{path} not registered"

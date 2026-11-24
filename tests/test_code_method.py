@@ -4,6 +4,7 @@ Tests the DeviceHandle, ActionRequest, and code method integration
 with the existing MergeLane-based execution pipeline.
 """
 
+from orca.config import OrcaConfig
 import asyncio
 from typing import ClassVar
 
@@ -21,6 +22,7 @@ from orca.variables.variable_store import NullVariableResolver
 from orca.workflow_models.device_handle import ActionRequest, DeviceHandle
 from orca.workflow_models.method_context import MethodContext
 from orca.workflow_models.status_enums import FailurePolicy, MethodStatus, WorkflowStatus
+from orca.resource_models.labware import LabwareInstance
 from tests.mock import UniversalMockDevice, UniversalSimDriver
 from tests.test_helpers import (
     execution_outcome,
@@ -29,6 +31,7 @@ from tests.test_helpers import (
     create_test_transporter,
     wait_until,
 )
+from tests.labware_catalog import bundled_labware_catalog
 
 
 # ---------------------------------------------------------------------------
@@ -203,7 +206,7 @@ class TestMethodContext:
 
     def _make_ctx(
         self,
-        labware: dict[str, object] | None = None,
+        labware: dict[str, LabwareInstance] | None = None,
     ) -> tuple[MethodContext, asyncio.Queue[ActionRequest | None]]:
         queue: asyncio.Queue[ActionRequest | None] = asyncio.Queue()
         ctx = MethodContext(
@@ -256,9 +259,9 @@ class TestMethodContext:
         assert devices == ["shaker_1", "reader_1"]
 
     def test_labware_returns_instance(self) -> None:
-        fake_plate = object()
-        ctx, _ = self._make_ctx(labware={"plate_1": fake_plate})
-        assert ctx.labware("plate_1") is fake_plate
+        plate = LabwareInstance("plate_1", "96_well")
+        ctx, _ = self._make_ctx(labware={"plate_1": plate})
+        assert ctx.labware("plate_1") is plate
 
     def test_labware_missing_raises(self) -> None:
         ctx, _ = self._make_ctx()
@@ -279,7 +282,10 @@ class TestMethodContext:
 
 from dataclasses import dataclass
 from orca.sdk.labware import PlateTemplate
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.memory_activity import memory_labware_service
 
 
 @dataclass
@@ -336,11 +342,14 @@ async def _build_system(
         name="test_system", description="",
         labwares=[topo.plate], resources_registry=topo.registry,
         system_map=topo.system_map,
-        workflows=[workflow], event_bus=event_bus,
+        workflows=[workflow], event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     system = builder.get_system()
-    runtime = SystemRuntime(system, event_bus=event_bus)
+    runtime = await memory_runtime(system, event_bus=event_bus)
     return runtime, workflow
 
 
@@ -351,7 +360,7 @@ class ValueReturningMockDevice(Device):
 
     def __init__(self, name: str) -> None:
         driver = UniversalSimDriver(name)
-        super().__init__(name, driver, driver)
+        super().__init__(name, driver)
 
     async def measure(self, protocol: str) -> dict[str, list[float]]:
         return {"absorbance": [0.5, 0.6, 0.7]}
@@ -377,7 +386,7 @@ class TestCodeMethodIntegration:
 
         runtime, workflow = await _build_system(topo, shake_method)
         await runtime.start()
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
         status = await execution_outcome(runtime, submission, timeout=10.0)
 
         assert status.status == "completed", f"Expected completed, got {status.status}: {status.error}"
@@ -404,7 +413,7 @@ class TestCodeMethodIntegration:
 
         runtime, workflow = await _build_system(topo, read_method)
         await runtime.start()
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
         status = await execution_outcome(runtime, submission, timeout=10.0)
 
         assert status.status == "completed", f"Expected completed, got {status.status}: {status.error}"
@@ -443,7 +452,7 @@ class TestCodeMethodIntegration:
 
         runtime, workflow = await _build_system(topo, multi_step)
         await runtime.start()
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
         status = await execution_outcome(runtime, submission, timeout=10.0)
 
         assert status.status == "completed", f"Expected completed, got {status.status}: {status.error}"
@@ -465,7 +474,7 @@ class TestCodeMethodIntegration:
 
         runtime, workflow = await _build_system(topo, failing_method)
         await runtime.start()
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
         status = await execution_outcome(runtime, submission, timeout=10.0)
 
         assert status.status == "failed", (
@@ -504,7 +513,7 @@ class TestCodeMethodIntegration:
 
         runtime, workflow = await _build_system(topo, blocking_method)
         await runtime.start()
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
 
         # Wait for the first action to complete and user func to reach sleep
         await asyncio.wait_for(entered.wait(), timeout=10.0)
@@ -539,7 +548,7 @@ class TestCodeMethodIntegration:
 
         runtime, workflow = await _build_system(topo, shake_method)
         await runtime.start()
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
 
         status = await execution_outcome(runtime, submission, timeout=10.0)
         assert status.status == "completed"
@@ -566,7 +575,7 @@ class TestCodeMethodIntegration:
 
         runtime, workflow = await _build_system(topo, failing_method)
         await runtime.start()
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
 
         status = await execution_outcome(runtime, submission, timeout=10.0)
         assert status.status == "failed"
@@ -574,6 +583,53 @@ class TestCodeMethodIntegration:
         exec_entry = runtime._executions[submission.execution_id]
         assert exec_entry.executing_workflow is not None
         assert exec_entry.executing_workflow.status == WorkflowStatus.ERRORED
+
+        await runtime.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_a_workflow_cannot_call_an_engine_method_on_a_device(self) -> None:
+        """Only a device command, or a method the user's own device class adds, may be called from a workflow."""
+        topo = await _make_topology()
+
+        @orca.action(device=topo.pool, inputs=[topo.plate], failure_policy=FailurePolicy.ABORT)
+        async def wipe_the_deck(ctx):
+            await ctx.device().reset_labware_state()
+
+        @orca.method
+        async def wipe_method(ctx):
+            yield wipe_the_deck
+
+        runtime, workflow = await _build_system(topo, wipe_method)
+        await runtime.start()
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
+
+        status = await execution_outcome(runtime, submission, timeout=10.0)
+        assert status.status == "failed"
+        assert "reset_labware_state" in (status.error or "")
+        assert "not a device command" in (status.error or "")
+
+        await runtime.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_a_workflow_cannot_send_a_lifecycle_command(self) -> None:
+        """Only its own operation sends `disconnect`, since that operation brings the deck record in line after it."""
+        topo = await _make_topology()
+
+        @orca.action(device=topo.pool, inputs=[topo.plate], failure_policy=FailurePolicy.ABORT)
+        async def hand_back(ctx):
+            await ctx.device().disconnect()
+
+        @orca.method
+        async def hand_back_method(ctx):
+            yield hand_back
+
+        runtime, workflow = await _build_system(topo, hand_back_method)
+        await runtime.start()
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
+
+        status = await execution_outcome(runtime, submission, timeout=10.0)
+        assert status.status == "failed"
+        assert "'disconnect' is a lifecycle command" in (status.error or "")
 
         await runtime.shutdown()
 
@@ -595,7 +651,7 @@ class TestCodeMethodIntegration:
 
         runtime, workflow = await _build_system(topo, shake_method)
         await runtime.start()
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
 
         # Poll until we see at least one reservation (action being resolved)
         deadline = asyncio.get_event_loop().time() + 10.0

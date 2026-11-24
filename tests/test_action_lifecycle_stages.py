@@ -205,6 +205,7 @@ class TestMoveExecutableFactory:
         context.thread_id = "t1"
         context.thread_name = "thread1"
         context.template_name = "tmpl"
+        context.group_id = None
 
         executable = move.executable(
             Mock(), context, Mock(), Mock(), no_source_hold(),

@@ -1,19 +1,18 @@
 """End-to-end: a standalone method submitted via runtime.submit_method runs
 to completion in sim, and the run-mode gate is enforced.
 
-Distinct from test_standalone_executor, which drives StandaloneMethodExecutor
-directly and never touches the submission API. This exercises the public
-submit_method path: resolving the method from its parent workflow's bundle,
+This exercises the public submit_method path: resolving the method from its parent workflow's bundle,
 the run-mode gate, the synthetic one-method workflow, and real execution
 through the runtime to a terminal state. That path is what the daemon REST /
 CLI and the hosted MCP and REST mirror call, so the gate (mode is required) and the
-run-to-completion must hold here, not just at the executor.
+run-to-completion must hold here.
 
 The workflow is built through the @orca.workflow decorator (the real
 authoring path) so its bundled_methods is populated; submit_method resolves
 the method by (workflow_name, method_name) from that bundle.
 """
 
+from orca.events.event_bus import EventBus
 import asyncio
 from collections.abc import AsyncGenerator
 
@@ -24,14 +23,14 @@ from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.plate_pad import PlatePad
 from orca.resource_models.resource_pool import ResourcePool
 from orca.state.ops_store import SYSTEM_ID
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.runtime_interface import (
+from orca.modes.run_modes import WorkflowRunMode
+from orca.runtime.errors import (
     RunModeRequiredError,
     StartLocationsOccupiedError,
 )
-from orca.runtime.store_factory import InMemoryRuntimeStoreFactory
 from orca.runtime.system_runtime import SystemRuntime
-from orca.sdk.build import Topology, build_system
+from orca.sdk.build import Topology
+from orca.sdk.package import build_system
 from orca.workflow_models.action_context import ActionContext
 from orca.workflow_models.action_template import ActionTemplate
 from orca.workflow_models.method_context import MethodContext
@@ -41,20 +40,22 @@ from orca.workflow_models.workflow_context import WorkflowContext
 
 from tests.daemon.daemon_test_fixture_topology import build_topology, build_workflow
 from tests.test_helpers import create_test_device, create_test_plate_template, create_test_transporter
+from tests.setup_package import package_stores
+from tests.memory_activity import memory_ops_store, memory_runtime
 
 
-_TERMINAL = {"completed", "failed", "aborted", "stopped"}
+_TERMINAL = {"completed", "partial_completed", "failed", "aborted", "stopped"}
 
 
 async def _start_runtime() -> SystemRuntime:
-    stores = InMemoryRuntimeStoreFactory()
-    topology = build_topology(stores)
+    stores = package_stores()
+    topology = build_topology()
     workflow = build_workflow(topology)
     build = await build_system(
         "standalone_method_e2e", topology, stores,
-        workflow=workflow, configure_logging=False,
+        workflow=workflow, event_bus=EventBus(), ops_history_store=memory_ops_store(),
     )
-    runtime = SystemRuntime(build.system, event_bus=build.event_bus)
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
     await runtime.start()
     return runtime
 
@@ -101,13 +102,12 @@ async def _start_converge_runtime() -> SystemRuntime:
         wf.start(owner)
         wf.thread(contributor)
 
-    stores = InMemoryRuntimeStoreFactory()
+    stores = package_stores()
     build = await build_system(
         "converge_e2e", topology, stores,
-        workflow=converge_wf, labwares=[plate_a, plate_b],
-        configure_logging=False,
+        workflow=converge_wf, labwares=[plate_a, plate_b], event_bus=EventBus(), ops_history_store=memory_ops_store(),
     )
-    runtime = SystemRuntime(build.system, event_bus=build.event_bus)
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
     await runtime.start()
     return runtime
 
@@ -126,9 +126,16 @@ async def _wait_terminal(
 
 
 @pytest.mark.asyncio
-async def test_submit_method_runs_to_completion_in_pure_sim() -> None:
+
+def _run_labware(runtime: SystemRuntime, execution_id: str, template_name: str) -> LabwareInstance:
+    """The run's own plate; one the run took away at its end is no longer in ``system.labwares``."""
+    executing = runtime._executions[execution_id].executing_workflow
+    assert executing is not None
+    return next(t.labware for t in executing.threads if t.labware is not None and t.labware.template_name == template_name)
+
+async def test_submit_method_runs_to_completion_in_check_run() -> None:
     """submit_method synthesizes a one-method workflow and runs it to
-    completion in PURE_SIM; ops_history records the method's action and the
+    completion in CHECK_RUN; ops_history records the method's action and the
     labware visits the device."""
     runtime = await _start_runtime()
     system = runtime.system
@@ -138,7 +145,7 @@ async def test_submit_method_runs_to_completion_in_pure_sim() -> None:
         method_name="shake_method",
         labware_start={"plate_96": "pad1"},
         labware_end={"plate_96": "pad1"},
-        mode=WorkflowRunMode.PURE_SIM,
+        mode=WorkflowRunMode.CHECK_RUN,
     )
 
     final = await _wait_terminal(runtime, record.id)
@@ -156,7 +163,7 @@ async def test_submit_method_runs_to_completion_in_pure_sim() -> None:
         "the synthesized workflow never executed the method's action"
     )
 
-    plate = next(lw for lw in system.labwares if lw.template_name == "plate_96")
+    plate = _run_labware(runtime, record.id, "plate_96")
     journey = [
         loc.name
         for loc in system.labware_location_service.get_history(plate).get_history()
@@ -199,7 +206,7 @@ async def test_submit_method_converges_multiple_labware() -> None:
         method_name="converge",
         labware_start={"plate_a": "pad_a", "plate_b": "pad_b"},
         labware_end={"plate_a": "pad_a", "plate_b": "pad_b"},
-        mode=WorkflowRunMode.PURE_SIM,
+        mode=WorkflowRunMode.CHECK_RUN,
     )
 
     final = await _wait_terminal(runtime, record.id)
@@ -207,9 +214,7 @@ async def test_submit_method_converges_multiple_labware() -> None:
 
     assert final == "completed", f"convergence did not complete: {final}"
     for template_name, pad in (("plate_a", "pad_a"), ("plate_b", "pad_b")):
-        plate = next(
-            lw for lw in system.labwares if lw.template_name == template_name
-        )
+        plate = _run_labware(runtime, record.id, template_name)
         journey = [
             loc.name
             for loc in system.labware_location_service.get_history(plate).get_history()
@@ -239,7 +244,7 @@ async def test_submit_method_refuses_an_occupied_start_location() -> None:
                 method_name="shake_method",
                 labware_start={"plate_96": "pad1"},
                 labware_end={"plate_96": "pad1"},
-                mode=WorkflowRunMode.PURE_SIM,
+                mode=WorkflowRunMode.CHECK_RUN,
             )
 
         occupied = exc_info.value.occupied
@@ -274,7 +279,7 @@ async def test_every_start_location_is_checked_not_just_the_first() -> None:
                 method_name="converge",
                 labware_start={"plate_a": "pad_a", "plate_b": "pad_b"},
                 labware_end={"plate_a": "pad_a", "plate_b": "pad_b"},
-                mode=WorkflowRunMode.PURE_SIM,
+                mode=WorkflowRunMode.CHECK_RUN,
             )
 
         refused = {slot.position_id for slot in caught.value.occupied}

@@ -1,21 +1,23 @@
-"""A discharge takes the labware off whichever driver deck actually holds it.
+"""A discharge takes the labware off whichever driver deck actually holds it, by the next command to that deck.
 
 On the bench five plates were discharged, each answering "discharged", and the
 ledger went empty. The next run was then refused at three slots, each refusal
 naming one of the five as the occupant, and only a restart cleared them.
 
-The plates had been put down by a PURE_SIM run, so they lived in the sim
-driver's deck world. An operator discharge resolves to LIVE, so the clear was
-applied to a different world and the sim world kept them. Engine and driver
+The plates had been put down by a sim run on a handler set to live, so they
+lived in its sim deck world. An operator discharge resolves to LIVE, so the
+clear was applied to a different world and the sim world kept them. Engine and driver
 disagreeing about what is standing on a deck is how an arm gets routed into an
 occupied site, so the clear has to reach the world the labware is really in.
 
 Reaching it also means finding it. A thread that ends retires its labware and
 frees the slot, so a run that finished leaves the discharge nothing to match on
-and the plate stands on the driver deck untouched. The clear asks the handlers
-instead of asking the engine where the plate was.
+and the plate stands on the driver deck untouched. The clear marks every deck world
+instead of asking the engine where the plate was, and each world is rebuilt from
+the ledger before its next command.
 """
 
+from orca.events.event_bus import EventBus
 import pytest
 
 import orca.orca as orca
@@ -30,16 +32,11 @@ from cheshire_drivers.liquid_handler_models import (
     AddDeckLabwareRequest,
     GetDeckStateRequest,
 )
-from cheshire_drivers.plr import ChatterboxLiquidHandlerDriver
 from orca.devices.device_interfaces import ILiquidHandler
 from orca.devices.devices import LiquidHandler, Storage
 from orca.resource_models.plate_pad import PlatePad
 from orca.resource_models.transporter import Transporter
-from orca.runtime.device_factory_context import use_device_factory
-from orca.runtime.device_factory_protocol import DriverPairElement
-from orca.runtime.labware_store import InMemoryLabwareStore
-from orca.runtime.run_modes import WorkflowRunMode, mode_scope
-from orca.runtime.store_factory import InMemoryRuntimeStoreFactory
+from orca.modes.run_modes import WorkflowRunMode, mode_scope
 from orca.runtime.system_runtime import SystemRuntime
 from orca.sdk.build import Topology
 from orca.sdk.labware import PlateTemplate, TipRackTemplate
@@ -48,6 +45,14 @@ from orca.workflow_models.action_context import ActionContext
 from orca.workflow_models.method_context import MethodContext
 from orca.workflow_models.thread_context import ThreadContext
 from tests.test_helpers import named_for_template, run_to_quiescence
+from tests.setup_package import package_stores, write_deck_layouts, write_teachpoints
+from tests.setup_package import with_teachpoints, with_deck_layouts
+from tests.memory_activity import memory_ops_store, memory_runtime
+from tests.one_deck_per_world import OneDeckPerWorld
+from orca.modes.device_modes import DeviceMode
+from tests.device_modes import set_to
+from tests.recording_handler import RecordingHandler
+from tests.real_device_path import the_real_device_path
 
 DECK_CONFIG = DeckLayoutConfig(
     deck_type="STARlet",
@@ -58,32 +63,14 @@ DECK_CONFIG = DeckLayoutConfig(
 )
 
 RESERVOIR_SITE = "lh/carrier-25-0"
+
+
+async def _next_sim_command_to_the_handler(runtime: SystemRuntime, handler: str = "lh") -> None:
+    """What runs before any command to the handler in the sim world: its world is rebuilt if it was marked."""
+    with mode_scope(WorkflowRunMode.SIM):
+        await runtime.system.device_worlds.bring_up_to_date(handler)
 NEIGHBOUR_SITE = "lh/carrier-25-1"
 ARM_DECK_ENTRY = "lh/carrier-7-2"
-
-
-class _SplitLhFactory:
-    """Give the liquid handler two DIFFERENT drivers, one per world.
-
-    The real factory does this too. Tests that hand the same recorder to both
-    slots collapse the sim and live worlds into one dict, and a clear applied
-    to the wrong world then looks like it worked.
-    """
-
-    def __init__(
-        self, live: RecordingLiquidHandlerDriver, sim: RecordingLiquidHandlerDriver,
-    ) -> None:
-        self._live = live
-        self._sim = sim
-        from orca.runtime.device_factory import SimDeviceFactory
-        self._fallback = SimDeviceFactory()
-
-    def build_drivers(
-        self, device_type: str, name: str, *, deck_modeling: bool = False,
-    ) -> tuple[DriverPairElement, DriverPairElement]:
-        if device_type == "liquid_handler":
-            return self._live, self._sim
-        return self._fallback.build_drivers(device_type, name, deck_modeling=deck_modeling)
 
 
 async def _build(
@@ -91,7 +78,7 @@ async def _build(
 ):
     """A workflow that parks a reservoir on a liquid-handler deck site and
     leaves it there, so a run ends with a plate standing on the driver deck."""
-    stores = InMemoryRuntimeStoreFactory()
+    stores = package_stores()
     sample_plate = PlateTemplate(
         "sample_plate", labware_type="Cor_Falcon_96_wellplate_340ul_Fb_Black")
     reservoir = PlateTemplate(
@@ -99,24 +86,23 @@ async def _build(
     neighbour = PlateTemplate(
         "neighbour", labware_type="AGenBio_1_troughplate_190000uL_Fl")
 
-    with use_device_factory(_SplitLhFactory(live, sim)):
-        lh = LiquidHandler(
-            "lh",
-            deck_layout_store=stores.deck_layouts("lh", seed={"default": DECK_CONFIG}),
-            deck_layout="default",
-        )
-        stacker = Storage("stacker")
-        waste = Storage("waste")
-        pad = PlatePad("pad")
-        arm = Transporter(
-            "arm",
-            teachpoint_store=stores.teachpoints("arm", seed=[
-                Teachpoint("stacker", C(0, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("pad", C(200, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint(ARM_DECK_ENTRY, C(400, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("waste", C(600, 200, 300, 0, 90, 180), orientation="right"),
-            ]),
-        )
+    the_real_device_path().simulate_with("lh", OneDeckPerWorld(live=live, sim=sim))
+    lh = with_deck_layouts(LiquidHandler(
+        "lh",
+        deck_layout="default",
+    ), write_deck_layouts(stores, "lh", {"default": DECK_CONFIG}))
+    set_to(lh, "lh", DeviceMode.LIVE)
+    stacker = Storage("stacker")
+    waste = Storage("waste")
+    pad = PlatePad("pad")
+    arm = with_teachpoints(Transporter(
+        "arm",
+    ), write_teachpoints(stores, "arm", [
+            Teachpoint("stacker", C(0, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("pad", C(200, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint(ARM_DECK_ENTRY, C(400, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("waste", C(600, 200, 300, 0, 90, 180), orientation="right"),
+        ]))
 
     @orca.action(
         device=lh,
@@ -164,7 +150,7 @@ async def _build(
         transporters=[arm],
     )
     build = await orca.build_system(
-        name="Discharge Worlds", workflow=workflow, topology=topology, stores=stores)
+        name="Discharge Worlds", workflow=workflow, topology=topology, stores=stores, event_bus=EventBus(), ops_history_store=memory_ops_store())
     return build, lh
 
 
@@ -176,17 +162,17 @@ async def _deck_names(driver: RecordingLiquidHandlerDriver) -> set[str]:
 @pytest.mark.slow
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
-async def test_discharging_a_plate_a_pure_sim_run_left_behind_clears_that_deck() -> None:
-    live = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
-    sim = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+async def test_discharging_a_plate_a_sim_run_left_behind_clears_that_deck() -> None:
+    live = RecordingHandler()
+    sim = RecordingHandler()
     build, _ = await _build(live, sim)
-    runtime = SystemRuntime(
-        build.system, event_bus=build.event_bus, labware_store=InMemoryLabwareStore(),
+    runtime = await memory_runtime(
+        build.system, event_bus=build.event_bus
     )
     await runtime.start()
     try:
         record = await runtime.submit_workflow(
-            "resident_reagent_wf", mode=WorkflowRunMode.PURE_SIM)
+            "resident_reagent_wf", mode=WorkflowRunMode.SIM)
         await run_to_quiescence(runtime, record.id)
 
         on_sim_deck = await _deck_names(sim)
@@ -202,6 +188,7 @@ async def test_discharging_a_plate_a_pure_sim_run_left_behind_clears_that_deck()
         assert rows, "the reservoir on the deck is not in the ledger"
         for row in rows:
             await runtime.labware.discharge_labware(row.id, force=True, confirm=True)
+        await _next_sim_command_to_the_handler(runtime)
 
         left_behind = {
             n for n in await _deck_names(sim) if named_for_template(n, "reservoir")
@@ -223,16 +210,16 @@ async def test_the_discharge_leaves_the_plate_beside_it_on_that_same_deck() -> N
     the resident standing next to it stays on the driver deck. Non-regression:
     it holds either side of the world fix, and would break the day a discharge
     goes back to rebuilding the whole deck."""
-    live = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
-    sim = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    live = RecordingHandler()
+    sim = RecordingHandler()
     build, _ = await _build(live, sim)
-    runtime = SystemRuntime(
-        build.system, event_bus=build.event_bus, labware_store=InMemoryLabwareStore(),
+    runtime = await memory_runtime(
+        build.system, event_bus=build.event_bus
     )
     await runtime.start()
     try:
         record = await runtime.submit_workflow(
-            "resident_reagent_wf", mode=WorkflowRunMode.PURE_SIM)
+            "resident_reagent_wf", mode=WorkflowRunMode.SIM)
         await run_to_quiescence(runtime, record.id)
 
         before = await _deck_names(sim)
@@ -256,21 +243,21 @@ async def test_the_discharge_leaves_the_plate_beside_it_on_that_same_deck() -> N
 @pytest.mark.slow
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
-async def test_clear_all_empties_the_deck_a_pure_sim_run_filled() -> None:
+async def test_clear_all_empties_the_deck_a_sim_run_filled() -> None:
     """The panic button leaves nothing the ledger knew about standing on the
     deck. Non-regression: clear-all wipes every labware through the same
     `_clear_holders_at`, so it is the verb the world fix could most easily
     break, and it is the one an operator reaches for when the deck is wrong."""
-    live = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
-    sim = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    live = RecordingHandler()
+    sim = RecordingHandler()
     build, _ = await _build(live, sim)
-    runtime = SystemRuntime(
-        build.system, event_bus=build.event_bus, labware_store=InMemoryLabwareStore(),
+    runtime = await memory_runtime(
+        build.system, event_bus=build.event_bus
     )
     await runtime.start()
     try:
         record = await runtime.submit_workflow(
-            "resident_reagent_wf", mode=WorkflowRunMode.PURE_SIM)
+            "resident_reagent_wf", mode=WorkflowRunMode.SIM)
         await run_to_quiescence(runtime, record.id)
 
         residents = {
@@ -309,30 +296,29 @@ async def _build_finished_run(
     live: RecordingLiquidHandlerDriver, sim: RecordingLiquidHandlerDriver,
 ):
     """The bench's own workflow: a transfer whose tip rack lives on the deck."""
-    stores = InMemoryRuntimeStoreFactory()
+    stores = package_stores()
     source = PlateTemplate("r7_source", labware_type="Cor_96_wellplate_360ul_Fb")
     final = PlateTemplate("r7_final", labware_type="Cor_96_wellplate_360ul_Fb")
     rack = TipRackTemplate(
         "r7_tips", labware_type="flex_96_tiprack_1000ul", with_tips=True)
 
-    with use_device_factory(_SplitLhFactory(live, sim)):
-        flex = LiquidHandler(
-            "flex_1",
-            deck_layout_store=stores.deck_layouts("flex_1", seed={"default": FLEX_DECK}),
-            deck_layout="default",
-        )
-        source_pad = PlatePad(SOURCE_PAD)
-        final_pad = PlatePad(FINAL_PAD)
-        arm = Transporter(
-            "pf400_1",
-            teachpoint_store=stores.teachpoints("pf400_1", seed=[
-                Teachpoint(SOURCE_PAD, C(0, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint(FINAL_PAD, C(100, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("flex_1/C1-slot", C(200, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("flex_1/C2-slot", C(300, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint(RACK_SLOT, C(400, 200, 300, 0, 90, 180), orientation="right"),
-            ]),
-        )
+    the_real_device_path().simulate_with("flex_1", OneDeckPerWorld(live=live, sim=sim))
+    flex = with_deck_layouts(LiquidHandler(
+        "flex_1",
+        deck_layout="default",
+    ), write_deck_layouts(stores, "flex_1", {"default": FLEX_DECK}))
+    set_to(flex, "flex_1", DeviceMode.LIVE)
+    source_pad = PlatePad(SOURCE_PAD)
+    final_pad = PlatePad(FINAL_PAD)
+    arm = with_teachpoints(Transporter(
+        "pf400_1",
+    ), write_teachpoints(stores, "pf400_1", [
+            Teachpoint(SOURCE_PAD, C(0, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint(FINAL_PAD, C(100, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("flex_1/C1-slot", C(200, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("flex_1/C2-slot", C(300, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint(RACK_SLOT, C(400, 200, 300, 0, 90, 180), orientation="right"),
+        ]))
 
     @orca.action(
         device=flex,
@@ -384,7 +370,7 @@ async def _build_finished_run(
         transporters=[arm],
     )
     build = await orca.build_system(
-        name="Bench Shape", workflow=workflow, topology=topology, stores=stores)
+        name="Bench Shape", workflow=workflow, topology=topology, stores=stores, event_bus=EventBus(), ops_history_store=memory_ops_store())
     return build
 
 
@@ -402,17 +388,17 @@ async def test_a_finished_run_leaves_nothing_a_discharge_cannot_reach() -> None:
     Two things keep this green now: the departure a finishing thread projects,
     and the discharge's own retract. It guards the outcome rather than either
     mechanism, so it stays honest if one of them moves."""
-    live = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
-    sim = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    live = RecordingHandler()
+    sim = RecordingHandler()
     build = await _build_finished_run(live, sim)
-    runtime = SystemRuntime(
-        build.system, event_bus=build.event_bus, labware_store=InMemoryLabwareStore(),
+    runtime = await memory_runtime(
+        build.system, event_bus=build.event_bus
     )
     await runtime.start()
     try:
         first = await runtime.submit_method(
             "transfer_wf", "transfer_method", labware_start=_STARTS,
-            labware_end=_STARTS, mode=WorkflowRunMode.PURE_SIM)
+            labware_end=_STARTS, mode=WorkflowRunMode.SIM)
         statuses = await run_to_quiescence(runtime, first.id)
         assert set(statuses.values()) == {"COMPLETED"}, f"first run: {statuses}"
 
@@ -421,6 +407,7 @@ async def test_a_finished_run_leaves_nothing_a_discharge_cannot_reach() -> None:
         for row in rows:
             await runtime.labware.discharge_labware(row.id, force=True, confirm=True)
         assert not await runtime.labware.list_all(), "the ledger still holds rows"
+        await _next_sim_command_to_the_handler(runtime, "flex_1")
 
         left_behind = {
             n for n in await _deck_names(sim) if named_for_template(n, "r7_tips")
@@ -432,7 +419,7 @@ async def test_a_finished_run_leaves_nothing_a_discharge_cannot_reach() -> None:
 
         second = await runtime.submit_method(
             "transfer_wf", "transfer_method", labware_start=_STARTS,
-            labware_end=_STARTS, mode=WorkflowRunMode.PURE_SIM)
+            labware_end=_STARTS, mode=WorkflowRunMode.SIM)
         statuses = await run_to_quiescence(runtime, second.id)
         assert set(statuses.values()) == {"COMPLETED"}, (
             f"the run after the discharge did not complete: {statuses}"
@@ -441,6 +428,7 @@ async def test_a_finished_run_leaves_nothing_a_discharge_cannot_reach() -> None:
         await runtime.shutdown()
 
 
+@pytest.mark.out_of_run
 @pytest.mark.slow
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
@@ -448,16 +436,16 @@ async def test_moving_a_plate_off_a_deck_clears_the_world_it_was_really_in() -> 
     """An operator stating a new position writes it in their own world. The
     worlds they are not in were left holding the plate at the site it had left,
     which is the same refusal a discharge used to cause, one verb over."""
-    live = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
-    sim = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    live = RecordingHandler()
+    sim = RecordingHandler()
     build, _ = await _build(live, sim)
-    runtime = SystemRuntime(
-        build.system, event_bus=build.event_bus, labware_store=InMemoryLabwareStore(),
+    runtime = await memory_runtime(
+        build.system, event_bus=build.event_bus
     )
     await runtime.start()
     try:
         record = await runtime.submit_workflow(
-            "resident_reagent_wf", mode=WorkflowRunMode.PURE_SIM)
+            "resident_reagent_wf", mode=WorkflowRunMode.SIM)
         await run_to_quiescence(runtime, record.id)
 
         resident = [
@@ -470,6 +458,7 @@ async def test_moving_a_plate_off_a_deck_clears_the_world_it_was_really_in() -> 
 
         await runtime.labware.edit_location(
             moved.id, "pad", reason="carried it to the pad", confirm=True)
+        await _next_sim_command_to_the_handler(runtime)
 
         assert moved.name not in await _deck_names(sim), (
             f"{moved.name} is on the pad now, but the sim deck still stands it "
@@ -486,17 +475,17 @@ async def test_clear_all_reaches_a_resident_no_orca_record_knows_about() -> None
     """The panic button's whole job. A plate loaded through the vendor's own
     app, or left by an earlier process, is in a driver world and in no orca
     record, so only a deck-wide reset per world can reach it."""
-    live = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
-    sim = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
+    live = RecordingHandler()
+    sim = RecordingHandler()
     build, lh = await _build(live, sim)
-    runtime = SystemRuntime(
-        build.system, event_bus=build.event_bus, labware_store=InMemoryLabwareStore(),
+    runtime = await memory_runtime(
+        build.system, event_bus=build.event_bus
     )
     await runtime.start()
     try:
         # Lay both worlds out, then put a plate on the live one behind orca's
         # back, the way a vendor app does.
-        for mode in (WorkflowRunMode.PURE_SIM, WorkflowRunMode.LIVE):
+        for mode in (WorkflowRunMode.SIM, WorkflowRunMode.LIVE):
             with mode_scope(mode):
                 assert await lh.deck_world_layout() is not None
         await live.add_deck_labware(AddDeckLabwareRequest(

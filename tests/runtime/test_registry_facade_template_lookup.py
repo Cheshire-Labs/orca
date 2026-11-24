@@ -18,8 +18,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from orca.modes.run_modes import OUT_OF_RUN_BASE
+from orca.runtime.startup import build_device_gateway
 from orca.runtime.facades.registry import RegistryFacade
-from orca.runtime.registries.null_gateway_registry import NullDeviceConnectionSource
+from tests.no_devices import NullDeviceConnectionSource
+from orca.runtime.server_events import ServerEvents
 
 
 def _make_facade(method_templates: dict[tuple[str, str], object]) -> RegistryFacade:
@@ -30,6 +33,8 @@ def _make_facade(method_templates: dict[tuple[str, str], object]) -> RegistryFac
         list_reservations_fn=lambda eid: [],
         cancel_reservation_fn=lambda eid, rid: None,
         connections=NullDeviceConnectionSource(),
+        faults=build_device_gateway(ServerEvents(), None).controller,
+        base_mode=lambda: OUT_OF_RUN_BASE,
     )
     return facade
 

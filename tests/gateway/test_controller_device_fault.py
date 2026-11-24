@@ -9,17 +9,14 @@ machine had been left part-way through something.
 import asyncio
 from datetime import datetime
 from typing import Any, Dict
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock
+
+from orca.modes.device_modes import DeviceMode
 
 import pytest
 
 from orca.gateway.controller.command_kind import CommandKind
-from orca.runtime.status_models import (
-    DeviceUnionEntry,
-    GatewayDeviceEntry,
-    TopologyDeviceEntry,
-)
-from orca.gateway import adhoc
+from orca.gateway import operator_commands
 from orca.gateway.controller.controller import DeviceController
 from orca.gateway.device_fault import FAULTED_STATUS, DeviceFaultOutcome
 from orca.gateway.controller.exceptions import (
@@ -30,18 +27,20 @@ from orca.gateway.controller.exceptions import (
     InvalidCommandError,
 )
 from orca.gateway.registry.snapshot import DeviceSnapshot
-from orca.daemon.schemas import DeviceDTO, DeviceRegistryEntryDTO
-from orca.cli.control_plane import (
-    DeviceRegistryEntryDTO as CliDeviceRegistryEntryDTO,
+from orca.operations.wire_models import DeviceRegistryEntryResponse
+from orca.operations.wire_models import (
+    DeviceRegistryEntryResponse as CliDeviceRegistryEntryDTO,
 )
 from cheshire_drivers.driver_errors import InstrumentOutcome
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from tests.test_helpers import wait_until
+from unittest.mock import MagicMock
+from tests.gateway_parts import gateway_parts, new_controller
 
 
 @pytest.fixture
 def controller() -> DeviceController:
-    return DeviceController()
+    return gateway_parts().controller
 
 
 def _snapshot(device_id: str = "flex_1") -> DeviceSnapshot:
@@ -145,11 +144,10 @@ class TestACommandThatFailsLatchesAFault:
         assert fault is not None
         assert fault.outcome is DeviceFaultOutcome.UNKNOWN
 
-    @patch("orca.gateway.controller.controller.connection_manager")
-    @patch("orca.gateway.controller.controller.device_connection_tracker")
-    async def test_a_cancel_mid_flight_latches_an_unknown_fault(
-        self, mock_tracker: Mock, mock_mgr: Mock, controller: DeviceController,
-    ) -> None:
+    async def test_a_cancel_mid_flight_latches_an_unknown_fault(self) -> None:
+        mock_tracker = MagicMock()
+        mock_mgr = MagicMock()
+        controller = new_controller(mock_tracker, mock_mgr)
         mock_tracker.get_client_for_device = AsyncMock(return_value="client_1")
         mock_mgr.send_to_client = AsyncMock(return_value=True)
         dispatched = _stub_preflight(controller)
@@ -347,13 +345,12 @@ class TestAWorldSyncOpLeavesNoFault:
 
         assert controller.fault("flex_1") is None
 
-    @patch("orca.gateway.controller.controller.connection_manager")
-    @patch("orca.gateway.controller.controller.device_connection_tracker")
-    async def test_a_cancelled_world_sync_op_latches_no_fault(
-        self, mock_tracker: Mock, mock_mgr: Mock, controller: DeviceController,
-    ) -> None:
+    async def test_a_cancelled_world_sync_op_latches_no_fault(self) -> None:
         """A cancel of a move latches UNKNOWN because the device bridge task
         stops and the motion does not. A seed had no motion to leave running."""
+        mock_tracker = MagicMock()
+        mock_mgr = MagicMock()
+        controller = new_controller(mock_tracker, mock_mgr)
         mock_tracker.get_client_for_device = AsyncMock(return_value="client_1")
         mock_mgr.send_to_client = AsyncMock(return_value=True)
         dispatched = _stub_preflight(controller)
@@ -440,70 +437,6 @@ class TestAWorldSyncOpLeavesNoFault:
 
         controller._command_futures[move_command_id].set_result(None)
         assert await move is None
-
-
-class TestTheListSaysWhichDevicesAreFaulted:
-    """One stop cancels every in-flight dispatch, so it can fault several
-    devices at once. Without a flag on the list an operator has to read each
-    device by name to find out which, and the fault is per-device only.
-    """
-
-    def _entries(self, faulted_names: set[str]) -> list[DeviceUnionEntry]:
-        from orca.runtime.facades.devices import _merge_union_view
-
-        topology = [
-            TopologyDeviceEntry(
-                name=name, kind="shaker",
-                interfaces=("IShaker",), position_ids=(),
-                interfaces_are_class_defaults=False,
-            )
-            for name in ("shaker_1", "shaker_2")
-        ]
-        return _merge_union_view(topology, [], lambda n: n in faulted_names)
-
-    def test_a_faulted_device_is_flagged(self) -> None:
-        entries = {e.name: e for e in self._entries({"shaker_2"})}
-
-        assert entries["shaker_2"].faulted is True
-        assert entries["shaker_1"].faulted is False
-
-    def test_nothing_faulted_reads_false_everywhere(self) -> None:
-        assert all(e.faulted is False for e in self._entries(set()))
-
-    def _with_agent(self, faulted_names: set[str]) -> dict[str, DeviceUnionEntry]:
-        from orca.runtime.facades.devices import _merge_union_view
-
-        topology = [
-            TopologyDeviceEntry(
-                name="shaker_1", kind="shaker",
-                interfaces=("IShaker",), position_ids=(),
-                interfaces_are_class_defaults=False,
-            )
-        ]
-        gateway = [
-            GatewayDeviceEntry(
-                name="shaker_1", driver_class_observed="SimShaker",
-                interfaces=("IShaker",), last_heartbeat=None,
-                connection_id="c1", status="ready",
-            )
-        ]
-        entries = _merge_union_view(topology, gateway, lambda n: n in faulted_names)
-        return {e.name: e for e in entries}
-
-    def test_a_faulted_device_does_not_read_ready(self) -> None:
-        """The device bridge says "ready" for a faulted device, because the
-        driver behind it is idle and answering. Every other device list folds
-        the fault into the status, and a reader comparing two lists that disagree
-        believes the one that says the machine is fine."""
-        entries = self._with_agent({"shaker_1"})
-
-        assert entries["shaker_1"].status == FAULTED_STATUS
-        assert entries["shaker_1"].faulted is True
-
-    def test_a_healthy_device_still_reports_what_its_agent_said(self) -> None:
-        entries = self._with_agent(set())
-
-        assert entries["shaker_1"].status == "ready"
 
 
 @pytest.mark.asyncio
@@ -600,7 +533,7 @@ class TestARefusalThatMovedNothingLatchesNothing:
     async def test_the_refusal_still_reaches_the_caller_to_wait_on(
         self, controller: DeviceController,
     ) -> None:
-        # step_aside_for waits on this exception and asks again. Swallowing it
+        # The reach-in lease waits on this exception and asks again. Swallowing it
         # would send the arm in while the gantry is still over the deck.
         dispatched = _stub_preflight(controller)
         task = asyncio.create_task(
@@ -673,8 +606,7 @@ class TestTheDeviceListSaysTheDeviceIsFaulted:
     async def test_a_healthy_device_reads_the_agent_word_and_no_fault(
         self, controller: DeviceController,
     ) -> None:
-        with patch.object(adhoc, "device_controller", controller):
-            read = adhoc.with_fault(_snapshot())
+        read = operator_commands.with_fault(controller, _snapshot())
 
         assert read.status == "ready"
         assert read.fault is None
@@ -684,8 +616,7 @@ class TestTheDeviceListSaysTheDeviceIsFaulted:
     ) -> None:
         await self._faulted(controller)
 
-        with patch.object(adhoc, "device_controller", controller):
-            read = adhoc.with_fault(_snapshot())
+        read = operator_commands.with_fault(controller, _snapshot())
 
         assert read.status == FAULTED_STATUS
         assert read.fault is not None
@@ -701,29 +632,10 @@ class TestTheDeviceListSaysTheDeviceIsFaulted:
         await self._faulted(controller)
         stored = _snapshot()
 
-        with patch.object(adhoc, "device_controller", controller):
-            adhoc.with_fault(stored)
+        operator_commands.with_fault(controller, stored)
 
         assert stored.status == "ready"
         assert stored.fault is None
-
-    async def test_the_list_filters_on_what_the_reader_is_shown(
-        self, controller: DeviceController,
-    ) -> None:
-        """A status filter that ran before the fold would answer "ready" for a
-        faulted device and drop it from the faulted list."""
-        await self._faulted(controller)
-        listed = AsyncMock(return_value=[_snapshot(), _snapshot("pf400_1")])
-
-        with patch.object(adhoc, "device_controller", controller), \
-                patch.object(adhoc.device_connection_tracker, "list_devices", listed):
-            ready = await adhoc.list_devices(status="ready")
-            faulted = await adhoc.list_devices(status=FAULTED_STATUS)
-            everything = await adhoc.list_devices()
-
-        assert [d.name for d in ready] == ["pf400_1"]
-        assert [d.name for d in faulted] == ["flex_1"]
-        assert [d.name for d in everything] == ["flex_1", "pf400_1"]
 
 
 class TestEveryDeviceReadCarriesTheFault:
@@ -735,16 +647,15 @@ class TestEveryDeviceReadCarriesTheFault:
     CLI keeps its own mirror of each, which is where one of them was missed.
     """
 
-    def test_both_daemon_device_shapes_carry_it(self) -> None:
-        assert "fault" in DeviceDTO.model_fields
-        assert "fault" in DeviceRegistryEntryDTO.model_fields
+    def test_the_device_registry_shape_carries_it(self) -> None:
+        assert "fault" in DeviceRegistryEntryResponse.model_fields
 
     def test_the_cli_mirrors_match_the_daemon_shapes(self) -> None:
         """The CLI renders its own copy, so a field only the server has is a
         field the operator never sees."""
         assert "fault" in CliDeviceRegistryEntryDTO.model_fields
         assert (
-            DeviceRegistryEntryDTO.model_fields["fault"].annotation
+            DeviceRegistryEntryResponse.model_fields["fault"].annotation
             == CliDeviceRegistryEntryDTO.model_fields["fault"].annotation
         )
 
@@ -797,6 +708,66 @@ class TestTheFailureCarriesTheFaultItLeft:
 
 
 @pytest.mark.asyncio
+class TestTheFailureSaysWhetherTheDeviceMayHaveMoved:
+    """`may_have_moved` is true on a failure that came after the device took the command, unless the driver said it
+    moved nothing. It is what tells the record to flag the labware, so it is set even when an earlier fault stands."""
+
+    async def test_a_driver_failure_after_the_command_was_sent_may_have_moved(
+        self, controller: DeviceController,
+    ) -> None:
+        error = CommandExecutionError("pressure error", "STARFirmwareError")
+
+        await _run_and_fail(controller, error, command="aspirate")
+
+        assert error.may_have_moved is True
+
+    async def test_a_later_failure_on_a_faulted_device_may_have_moved_too(
+        self, controller: DeviceController,
+    ) -> None:
+        await _run_and_fail(controller, CommandExecutionError("stall", "OpentronsCommandError"), command="move_plate")
+        later = CommandExecutionError("later trouble", "OpentronsCommandError")
+
+        await _run_and_fail(controller, later, command="aspirate", execution_id=None)
+
+        assert later.device_fault is None
+        assert later.may_have_moved is True
+
+    async def test_a_command_lost_when_the_device_dropped_may_have_moved(self, controller: DeviceController) -> None:
+        """The device took the command and then went away, so nobody knows whether it ran."""
+        error = DeviceOfflineError("Command lost during reconnect")
+
+        await _run_and_fail(controller, error, command="aspirate")
+
+        assert error.may_have_moved is True
+
+    async def test_a_driver_refusal_moved_nothing(self, controller: DeviceController) -> None:
+        error = CommandExecutionError("still holds tips", "GantryBusyError", InstrumentOutcome.REFUSED)
+
+        await _run_and_fail(controller, error, command="park_gantry")
+
+        assert error.may_have_moved is False
+
+    async def test_a_command_refused_before_it_was_sent_moved_nothing(self, controller: DeviceController) -> None:
+        setattr(controller, "_validate_command", AsyncMock(return_value=_snapshot()))
+        setattr(controller, "_dispatch_command", AsyncMock(side_effect=DeviceOfflineError("no connected client")))
+
+        with pytest.raises(DeviceOfflineError) as raised:
+            await controller.execute_command(
+                device_id="flex_1", command="aspirate", params={},
+                effective_mode=WorkflowRunMode.LIVE, execution_id="exec-1",
+            )
+
+        assert raised.value.may_have_moved is False
+
+    async def test_a_deck_push_that_fails_moved_nothing(self, controller: DeviceController) -> None:
+        error = CommandExecutionError("driver refused the seed", "CommandExecutionError")
+
+        await _run_and_fail(controller, error, command="ensure_seeded", kind=CommandKind.WORLD_SYNC)
+
+        assert error.may_have_moved is False
+
+
+@pytest.mark.asyncio
 class TestTheRuntimeDeviceRowCarriesTheFault:
     """`orca device list` and a hosted deployment's `GET /api/runtime/devices` both render
     `RegistryFacade`'s row, not the per-device read. A fault only on the latter
@@ -804,12 +775,13 @@ class TestTheRuntimeDeviceRowCarriesTheFault:
     change exists to fix.
     """
 
-    def _row(self, controller: DeviceController):
+    async def _row(self, controller: DeviceController):
         from orca.runtime.facades.registry import RegistryFacade
 
         device = Mock()
         device.name = "flex_1"
-        device.mode_under.return_value = WorkflowRunMode.LIVE
+        device.mode_under = AsyncMock(return_value=WorkflowRunMode.LIVE)
+        device.setting = AsyncMock(return_value=DeviceMode.LIVE)
         device.in_use = False
         device.locations = []
         device.all_loaded_labware_ids = ()
@@ -817,9 +789,10 @@ class TestTheRuntimeDeviceRowCarriesTheFault:
         device.external_control_hold = None
 
         facade = RegistryFacade.__new__(RegistryFacade)
-        setattr(facade, "_links", Mock(is_initialized=Mock(return_value=True)))
-        with patch.object(adhoc, "device_controller", controller):
-            return facade._device_snapshot(device)
+        setattr(facade, "_links", Mock(is_initialized=AsyncMock(return_value=True)))
+        setattr(facade, "_faults", controller)
+        setattr(facade, "_base_mode", lambda: WorkflowRunMode.LIVE)
+        return await facade._device_snapshot(device)
 
     async def test_a_faulted_device_row_names_the_command(
         self, controller: DeviceController,
@@ -829,7 +802,7 @@ class TestTheRuntimeDeviceRowCarriesTheFault:
             CommandExecutionError("Stall or Collision Detected", "OpentronsCommandError"),
         )
 
-        row = self._row(controller)
+        row = await self._row(controller)
 
         assert row.fault is not None
         assert row.fault.command == "move_plate"
@@ -837,7 +810,7 @@ class TestTheRuntimeDeviceRowCarriesTheFault:
     async def test_a_healthy_device_row_carries_none(
         self, controller: DeviceController,
     ) -> None:
-        assert self._row(controller).fault is None
+        assert (await self._row(controller)).fault is None
 
 
 @pytest.mark.asyncio

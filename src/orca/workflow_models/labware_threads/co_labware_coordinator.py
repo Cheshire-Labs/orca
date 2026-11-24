@@ -8,17 +8,20 @@ from orca.async_util import drain_cancelled_waiters
 from orca.events.event_bus_interface import IEventBus
 from orca.events.execution_context import ThreadExecutionContext
 from orca.workflow_models.actions.executable_location_action import ExecutableLocationAction
+from orca.resource_models.labware import TipRackInstance
+from orca.state import projections
 
 
 class CoLabwareWaitOutcome(Enum):
     """Result of the AWAITING_CO_THREADS race. Priority is asymmetric:
-    fast path STOP > EXIT > CO_LABWARE; race STOP > PAUSE > EXIT > CO_LABWARE > TIMEOUT.
+    fast path STOP > EXIT > CO_LABWARE > CO_LABWARE_LOST; race STOP > PAUSE > EXIT > CO_LABWARE > CO_LABWARE_LOST > TIMEOUT.
     See ``CoLabwareCoordinator`` for rationale.
     """
     STOP_REQUESTED = "stop_requested"
     METHOD_EXIT = "method_exit"
     PAUSE_REQUESTED = "pause_requested"
     CO_LABWARE_PRESENT = "co_labware_present"
+    CO_LABWARE_LOST = "co_labware_lost"
     TIMEOUT = "timeout"
 
 
@@ -38,9 +41,10 @@ class CoLabwareCoordinator:
         exit_event: asyncio.Event,
         pause_event: asyncio.Event,
         co_labware_event: asyncio.Event,
+        labware_lost_event: asyncio.Event,
         timeout: float | None,
     ) -> CoLabwareWaitOutcome:
-        """Race four events with the asymmetric priority documented on
+        """Race five events with the asymmetric priority documented on
         ``CoLabwareWaitOutcome``.
         """
         if stop_event.is_set():
@@ -49,21 +53,24 @@ class CoLabwareCoordinator:
             return CoLabwareWaitOutcome.METHOD_EXIT
         if co_labware_event.is_set():
             return CoLabwareWaitOutcome.CO_LABWARE_PRESENT
+        if labware_lost_event.is_set():
+            return CoLabwareWaitOutcome.CO_LABWARE_LOST
 
         stop_task = asyncio.ensure_future(stop_event.wait())
         exit_task = asyncio.ensure_future(exit_event.wait())
         pause_task = asyncio.ensure_future(pause_event.wait())
         co_task = asyncio.ensure_future(co_labware_event.wait())
+        lost_task = asyncio.ensure_future(labware_lost_event.wait())
 
         try:
             done, _ = await asyncio.wait(
-                {stop_task, exit_task, pause_task, co_task},
+                {stop_task, exit_task, pause_task, co_task, lost_task},
                 timeout=timeout,
                 return_when=asyncio.FIRST_COMPLETED,
             )
         finally:
             await drain_cancelled_waiters(
-                stop_task, exit_task, pause_task, co_task,
+                stop_task, exit_task, pause_task, co_task, lost_task,
             )
 
         if stop_task in done:
@@ -74,6 +81,8 @@ class CoLabwareCoordinator:
             return CoLabwareWaitOutcome.METHOD_EXIT
         if co_task in done:
             return CoLabwareWaitOutcome.CO_LABWARE_PRESENT
+        if lost_task in done:
+            return CoLabwareWaitOutcome.CO_LABWARE_LOST
         return CoLabwareWaitOutcome.TIMEOUT
 
     @staticmethod
@@ -88,11 +97,6 @@ class CoLabwareCoordinator:
         the system's OpsHistory (written by ``TrackingContext.store_record``
         on the same tick).
         """
-        from orca.resource_models.labware import TipRackInstance
-        from orca.state.projections import (
-            has_tip_baseline,
-            tips_present,
-        )
 
         for labware in action.action.expected_inputs:
             if not isinstance(labware, TipRackInstance):
@@ -101,11 +105,11 @@ class CoLabwareCoordinator:
             if num_tips == 0:
                 continue
             ops = await labware.ops()
-            if not has_tip_baseline(ops, labware.name):
+            if not projections.has_tip_baseline(ops, labware.name):
                 # Nothing bound says where this rack started, so an empty fold
                 # would announce EMPTY for a rack nobody has touched.
                 continue
-            present_count = len(tips_present(ops, labware.name))
+            present_count = len(projections.tips_present(ops, labware.name))
             used_fraction = 1.0 - (present_count / num_tips)
             if present_count == 0:
                 event_bus.emit("TIP_RACK.EMPTY", context)

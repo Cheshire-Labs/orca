@@ -1,0 +1,327 @@
+{
+  "centrifuge": {
+    "access": "default_vertical",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 600.0,
+      "y": 200.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "pad_4": {
+    "access": "default_vertical",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 1500.0,
+      "y": 200.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "pad_5": {
+    "access": "default_vertical",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 1600.0,
+      "y": 200.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "pad_6": {
+    "access": "default_vertical",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 1700.0,
+      "y": 200.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "sealer": {
+    "access": "default_horizontal",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 700.0,
+      "y": 200.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "shaker_1": {
+    "access": "default_vertical",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 800.0,
+      "y": 200.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "shaker_10": {
+    "access": "default_vertical",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 1200.0,
+      "y": 400.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "shaker_2": {
+    "access": "default_vertical",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 900.0,
+      "y": 200.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "shaker_3": {
+    "access": "default_vertical",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 1000.0,
+      "y": 200.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "shaker_4": {
+    "access": "default_vertical",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 1100.0,
+      "y": 200.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "shaker_5": {
+    "access": "default_vertical",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 1200.0,
+      "y": 200.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "shaker_6": {
+    "access": "default_vertical",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 800.0,
+      "y": 400.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "shaker_7": {
+    "access": "default_vertical",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 900.0,
+      "y": 400.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "shaker_8": {
+    "access": "default_vertical",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 1000.0,
+      "y": 400.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "shaker_9": {
+    "access": "default_vertical",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 1100.0,
+      "y": 400.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "stacker_1": {
+    "access": "default_vertical",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 800.0,
+      "y": 50.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "stacker_2": {
+    "access": "default_vertical",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 900.0,
+      "y": 50.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "stacker_3": {
+    "access": "default_vertical",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 1000.0,
+      "y": 50.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "stacker_4": {
+    "access": "default_vertical",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 1100.0,
+      "y": 50.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "stacker_5": {
+    "access": "default_vertical",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 1200.0,
+      "y": 50.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "stacker_6": {
+    "access": "default_vertical",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 1300.0,
+      "y": 50.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "stacker_7": {
+    "access": "default_vertical",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 1400.0,
+      "y": 50.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "stacker_8": {
+    "access": "default_vertical",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 1450.0,
+      "y": 50.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "translator_1_end": {
+    "access": "default_horizontal",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 600.0,
+      "y": 50.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  },
+  "translator_2_start": {
+    "access": "default_horizontal",
+    "by_labware": {},
+    "cartesian": {
+      "pitch": 90.0,
+      "roll": 180.0,
+      "x": 1800.0,
+      "y": 50.0,
+      "yaw": 0.0,
+      "z": 300.0
+    },
+    "orientation": "right"
+  }
+}

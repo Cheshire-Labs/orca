@@ -9,7 +9,7 @@ from orca.resource_models.deck_site_location import DeckSiteLocation
 from orca.resource_models.location import Location
 from orca.system.reservation_manager.location_reservation import LocationReservation
 from orca.system.reservation_manager.reservation_manager import LocationReservationManager
-from orca.system.resource_registry import ResourceRegistry
+from orca.resource_models.resource_registry import ResourceRegistry
 from orca.system.system_map import SystemMap
 
 
@@ -26,7 +26,7 @@ async def _map_with_device_site() -> SystemMap:
     system_map = SystemMap(ResourceRegistry())
     mutex = Location("flex")
     system_map.register_mutex_location(mutex)
-    site = DeckSiteLocation("flex/C2-slot", _Owner("flex"), mutex_position_id="flex")
+    site = DeckSiteLocation("flex/C2-slot", _Owner("flex"), mutex_position_id="flex", site_name="C2-slot")
     await system_map.add_site_location(site)
     await system_map.add_location(Location("pad_1"))
     return system_map
@@ -108,6 +108,7 @@ async def test_loaded_bridge_site_refuses_a_second_reservation() -> None:
     site = DeckSiteLocation(
         "shaker1/slot", _Owner("shaker1"), resource=bridge,
         mutex_position_id="shaker1",
+        site_name="slot",
     )
     system_map = SystemMap(ResourceRegistry())
     await system_map.add_site_location(site)

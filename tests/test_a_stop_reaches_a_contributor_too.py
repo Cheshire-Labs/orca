@@ -11,6 +11,7 @@ the thread free to finish its journey -- an end move, on real hardware, after
 the operator called the run off.
 """
 
+from orca.config import OrcaConfig
 import asyncio
 from collections.abc import AsyncGenerator
 
@@ -19,7 +20,9 @@ import pytest
 import orca.orca as orca
 from orca.events.event_bus import EventBus
 from orca.resource_models.resource_pool import ResourcePool
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.resource_models.labware import LabwareInstance
+from orca.modes.run_modes import WorkflowRunMode
+from orca.state.records import ObservationGapCause
 from orca.runtime.system_runtime import SystemRuntime
 from orca.sdk.system import ResourceRegistry, SystemMap
 from orca.sdk.workflow import WorkflowTemplate
@@ -40,6 +43,10 @@ from tests.test_helpers import (
     create_test_transporter,
     wait_until,
 )
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 _TERMINAL = frozenset({"STOPPED", "COMPLETED", "ABORTED", "FAILED"})
 
@@ -62,8 +69,19 @@ class _FailThenGateShaker(UniversalMockDevice):
         await super().shake(duration, speed)
 
 
-async def _build() -> tuple[SystemRuntime, WorkflowTemplate, _FailThenGateShaker, ISystem]:
-    device = _FailThenGateShaker("shaker1", site_names=["site-1", "site-2"])
+class _FailsWhenLetGo(_FailThenGateShaker):
+    """Holds its first shake until the test lets go, then fails it."""
+
+    async def shake(self, duration: int, speed: int) -> None:
+        self.in_second_shake.set()
+        await self.release.wait()
+        raise RuntimeError("the shake failed after the stop")
+
+
+async def _build(
+    device_cls: type[_FailThenGateShaker] = _FailThenGateShaker,
+) -> tuple[SystemRuntime, WorkflowTemplate, _FailThenGateShaker, ISystem]:
+    device = device_cls("shaker1", site_names=["site-1", "site-2"])
     transporter = create_test_transporter("robot1", ["shaker1", "pad1", "pad2"])
     plate_main = create_test_plate_template("plate_main")
     plate_child = create_test_plate_template("plate_child")
@@ -111,11 +129,14 @@ async def _build() -> tuple[SystemRuntime, WorkflowTemplate, _FailThenGateShaker
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=event_bus,
+        event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     system = builder.get_system()
-    runtime = SystemRuntime(system, event_bus=event_bus)
+    runtime = await memory_runtime(system, event_bus=event_bus)
     return runtime, workflow, device, system
 
 
@@ -125,7 +146,7 @@ async def test_a_stop_reaches_a_contributor_paused_across_a_retry() -> None:
     await runtime.start()
     try:
         record = await runtime.submit_workflow(
-            workflow.name, mode=WorkflowRunMode.PURE_SIM
+            workflow.name, mode=WorkflowRunMode.CHECK_RUN
         )
 
         def _paused_owner() -> bool:
@@ -158,6 +179,105 @@ async def test_a_stop_reaches_a_contributor_paused_across_a_retry() -> None:
         assert statuses[contributor_id][1] == "STOPPED", (
             f"a cooperatively stopped contributor must land STOPPED; got {statuses[contributor_id][1]}"
         )
+    finally:
+        device.release.set()
+        await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_stopping_a_paused_owner_first_still_leaves_its_contributor_stopped() -> None:
+    """Stopping an error-paused owner ends its pause as ABORT_THREAD. The contributor
+    was stopped by the same call, so it lands STOPPED whichever thread the stop reached first."""
+    runtime, workflow, device, system = await _build()
+    await runtime.start()
+    try:
+        record = await runtime.submit_workflow(
+            workflow.name, mode=WorkflowRunMode.CHECK_RUN
+        )
+
+        def _both_paused() -> bool:
+            return [t.status for t in runtime.list_threads(record.id)] == ["PAUSED", "PAUSED"]
+
+        await wait_until(_both_paused, timeout=15.0)
+        contributor_id = next(
+            t.id for t in runtime.list_threads(record.id)
+            if t.name.startswith("plate_child")
+        )
+
+        system.stop_all_threads()
+
+        def _all_terminal() -> bool:
+            return all(t.status in _TERMINAL for t in runtime.list_threads(record.id))
+
+        await wait_until(_all_terminal, timeout=20.0)
+        statuses = {t.id: t.status for t in runtime.list_threads(record.id)}
+        assert statuses[contributor_id] == "STOPPED"
+    finally:
+        device.release.set()
+        await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_stop_reaches_an_owner_whose_contributor_left_before_it_began_waiting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The owner takes a stop while it is still entering its pause, and its contributor has stopped and left the
+    action before the owner waits. The owner still waits on the group the pause began with, so the stop reaches it."""
+    entering = asyncio.Event()
+    contributor_left = asyncio.Event()
+    unpatched = LabwareInstance.note_observation_gap
+
+    async def held_until_the_contributor_left(self: LabwareInstance, cause: ObservationGapCause) -> None:
+        if self.name.startswith("plate_main") and cause is ObservationGapCause.ERROR_PAUSE:
+            entering.set()
+            await contributor_left.wait()
+        await unpatched(self, cause)
+
+    monkeypatch.setattr(LabwareInstance, "note_observation_gap", held_until_the_contributor_left)
+    runtime, workflow, device, system = await _build()
+    await runtime.start()
+    try:
+        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
+        await asyncio.wait_for(entering.wait(), timeout=15.0)
+        contributor_id = next(t.id for t in runtime.list_threads(record.id) if t.name.startswith("plate_child"))
+
+        system.stop_all_threads()
+        await wait_until(
+            lambda: next(t for t in runtime.list_threads(record.id) if t.id == contributor_id).status in _TERMINAL,
+            timeout=15.0,
+        )
+        contributor_left.set()
+
+        await wait_until(lambda: all(t.status in _TERMINAL for t in runtime.list_threads(record.id)), timeout=15.0)
+        statuses = {t.id: t.status for t in runtime.list_threads(record.id)}
+        assert statuses[contributor_id] == "STOPPED"
+        assert [s for i, s in statuses.items() if i != contributor_id] == ["ABORTED"], (
+            "the stop must reach the owner as ABORT_THREAD"
+        )
+    finally:
+        contributor_left.set()
+        device.release.set()
+        await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_stop_during_a_shared_action_that_then_fails_ends_owner_and_contributor() -> None:
+    """The stop lands while the owner still runs the shared action; the action then fails and the owner pauses.
+    The pause takes the stop through the group, so the owner aborts and its contributor stops with it."""
+    runtime, workflow, device, system = await _build(_FailsWhenLetGo)
+    await runtime.start()
+    try:
+        record = await runtime.submit_workflow(workflow.name, mode=WorkflowRunMode.CHECK_RUN)
+        await asyncio.wait_for(device.in_second_shake.wait(), timeout=15.0)
+        contributor_id = next(t.id for t in runtime.list_threads(record.id) if t.name.startswith("plate_child"))
+
+        system.stop_all_threads()
+        device.release.set()
+
+        await wait_until(lambda: all(t.status in _TERMINAL for t in runtime.list_threads(record.id)), timeout=15.0)
+        statuses = {t.id: t.status for t in runtime.list_threads(record.id)}
+        assert statuses[contributor_id] == "STOPPED"
+        assert [s for i, s in statuses.items() if i != contributor_id] == ["ABORTED"]
     finally:
         device.release.set()
         await runtime.shutdown()

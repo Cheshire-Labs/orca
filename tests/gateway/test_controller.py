@@ -2,7 +2,7 @@
 
 import pytest
 import asyncio
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, patch
 from datetime import datetime
 
 from orca.gateway.controller.command_kind import CommandKind
@@ -14,15 +14,19 @@ from orca.gateway.controller import (
     InvalidCommandError,
 )
 from orca.gateway.controller.controller import _PendingCommand
+from orca.resource_models.reach_in import reaching_in
 from orca.gateway.controller.exceptions import (
     CommandExecutionError,
     instrument_outcome_of,
 )
 from cheshire_drivers.driver_errors import InstrumentOutcome
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from cheshire_drivers.gateway_protocol import ResponseMessage
 from orca.gateway.registry.snapshot import DeviceSnapshot
 from tests.test_helpers import wait_until
+from unittest.mock import MagicMock
+from orca.gateway.websocket.manager import ConnectionManager
+from tests.gateway_parts import gateway_parts, new_controller
 
 
 def _busy_pending(
@@ -40,8 +44,6 @@ def _busy_pending(
         command_id=command_id,
         device_id=device_id,
         command=command,
-        params={"speed": 500.0, "duration": 1.0},
-        effective_mode=WorkflowRunMode.LIVE,
         timeout_seconds=30.0,
         future=asyncio.Future(),
     )
@@ -73,68 +75,26 @@ def _snapshot(
 @pytest.fixture
 def controller():
     """Create a fresh controller for each test."""
-    return DeviceController()
+    return gateway_parts().controller
 
 
 @pytest.mark.asyncio
 class TestDeviceController:
     """Tests for DeviceController class."""
 
-    async def test_is_locked_returns_false_for_unlocked_device(self, controller):
-        """Test is_locked returns False for device with no active command."""
-        is_locked = await controller.is_locked("device_1")
-        assert is_locked is False
-
-    async def test_is_locked_returns_true_for_locked_device(self, controller):
-        """Test is_locked returns True for device with active command."""
-        # Manually lock device
-        async with controller._lock:
-            controller._pending["device_1"] = _busy_pending("device_1", "cmd_123")
-
-        is_locked = await controller.is_locked("device_1")
-        assert is_locked is True
-
-    @patch("orca.gateway.controller.controller.device_connection_tracker")
-    async def test_get_available_devices_filters_locked(self, mock_registry, controller):
-        """Test get_available_devices filters out locked devices."""
-        # Mock registry returns 3 devices
-        mock_registry.list_devices = AsyncMock(
-            return_value=[
-                _snapshot("device_1", interfaces=["IShaker"]),
-                _snapshot("device_2", interfaces=["IShaker"]),
-                _snapshot("device_3", interfaces=["IShaker"]),
-            ]
-        )
-
-        # Lock device_2
-        async with controller._lock:
-            controller._pending["device_2"] = _busy_pending("device_2", "cmd_456")
-
-        # Get available devices
-        available = await controller.get_available_devices(device_type="shaker")
-
-        # Should only return device_1 and device_3
-        assert len(available) == 2
-        names = [d.name for d in available]
-        assert "device_1" in names
-        assert "device_3" in names
-        assert "device_2" not in names
-
-    @patch("orca.gateway.controller.controller.device_connection_tracker")
-    async def test_execute_command_fails_if_device_offline(
-        self, mock_registry, controller
-    ):
+    async def test_execute_command_fails_if_device_offline(self):
         """Test execute_command raises DeviceOfflineError if device not found."""
+        mock_registry = MagicMock()
+        controller = new_controller(mock_registry, ConnectionManager())
         mock_registry.get_device = AsyncMock(return_value=None)
 
         with pytest.raises(DeviceOfflineError, match="not found or offline"):
             await controller.execute_command("device_1", "shake", {"speed": 500, "duration": 1.0}, effective_mode=WorkflowRunMode.LIVE)
 
-    @patch("orca.gateway.controller.controller.device_connection_tracker")
-    async def test_execute_command_fails_if_invalid_command(
-        self, mock_registry, controller
-    ):
+    async def test_execute_command_fails_if_invalid_command(self):
         """Test execute_command raises InvalidCommandError for unsupported command."""
+        mock_registry = MagicMock()
+        controller = new_controller(mock_registry, ConnectionManager())
         # Device exists
         mock_registry.get_device = AsyncMock(
             return_value=_snapshot("device_1", interfaces=["IShaker"]),
@@ -144,19 +104,34 @@ class TestDeviceController:
         with pytest.raises(InvalidCommandError, match="does not support"):
             await controller.execute_command("device_1", "centrifuge", {"g": 1000}, effective_mode=WorkflowRunMode.LIVE)
 
-    @patch("orca.gateway.controller.controller.connection_manager")
-    @patch("orca.gateway.controller.controller.device_connection_tracker")
-    async def test_execute_command_lh_preflight_rejects_unknown_field(
-        self, mock_registry, mock_conn_manager, controller
-    ):
+    async def test_a_command_that_names_no_interfaces_is_checked_against_the_runtimes_source(self):
+        """A run's command names none, as an operator's does: it gets the same declared-and-advertised check."""
+        mock_registry = MagicMock()
+        controller = new_controller(mock_registry, ConnectionManager())
+        mock_registry.get_device = AsyncMock(
+            return_value=_snapshot("device_1", interfaces=["IShaker", "ICentrifuge"]),
+        )
+
+        async def declared_shaker_only(device_id: str) -> frozenset[str] | None:
+            return frozenset({"IShaker"})
+
+        controller.check_interfaces_with(declared_shaker_only)
+
+        with pytest.raises(InvalidCommandError, match="does not support"):
+            await controller.execute_command("device_1", "centrifuge", {"g": 1000}, effective_mode=WorkflowRunMode.LIVE)
+
+    async def test_execute_command_lh_preflight_rejects_unknown_field(self):
         """LH pre-flight rejects unknown fields BEFORE WebSocket dispatch.
 
-        The whole point of the controller's pre-flight validate_lh_payload call
+        The whole point of the controller's pre-flight check against the command table
         is to fail at a hosted deployment's network boundary instead of after a round-trip
         TypeError on orca-client. If this regresses, callers see the failure
         only after the command travels the wire and the executor on the other
         side blows up.
         """
+        mock_registry = MagicMock()
+        mock_conn_manager = MagicMock()
+        controller = new_controller(mock_registry, mock_conn_manager)
         mock_registry.get_device = AsyncMock(
             return_value=_snapshot(
                 "lh_1",
@@ -178,17 +153,31 @@ class TestDeviceController:
 
         mock_conn_manager.send_to_client.assert_not_called()
 
-    @patch("orca.gateway.controller.controller.connection_manager")
-    @patch("orca.gateway.controller.controller.device_connection_tracker")
-    async def test_execute_command_lh_preflight_rejects_bad_shape(
-        self, mock_registry, mock_conn_manager, controller
-    ):
+    async def test_a_command_by_name_past_its_limit_is_refused_before_the_wire(self):
+        """The same limit a typed route answers 422 for: a shake at 2500 rpm never reaches the device."""
+        mock_registry = MagicMock()
+        mock_conn_manager = MagicMock()
+        controller = new_controller(mock_registry, mock_conn_manager)
+        mock_registry.get_device = AsyncMock(return_value=_snapshot("shaker_1", interfaces=["IShaker"]))
+        mock_conn_manager.send_to_client = AsyncMock()
+
+        with pytest.raises(InvalidCommandError, match="Invalid params for 'shake'"):
+            await controller.execute_command(
+                "shaker_1", "shake", {"speed": 2500, "duration": 10}, effective_mode=WorkflowRunMode.LIVE,
+            )
+
+        mock_conn_manager.send_to_client.assert_not_called()
+
+    async def test_execute_command_lh_preflight_rejects_bad_shape(self):
         """LH pre-flight catches Pydantic ValidationError on malformed payloads.
 
         Same boundary contract as the unknown-field test, exercised through a
         type-mismatch path so both ValueError and ValidationError mappings to
         InvalidCommandError are covered.
         """
+        mock_registry = MagicMock()
+        mock_conn_manager = MagicMock()
+        controller = new_controller(mock_registry, mock_conn_manager)
         mock_registry.get_device = AsyncMock(
             return_value=_snapshot(
                 "lh_1",
@@ -210,13 +199,12 @@ class TestDeviceController:
 
         mock_conn_manager.send_to_client.assert_not_called()
 
-    @patch("orca.gateway.controller.controller.connection_manager")
-    @patch("orca.gateway.controller.controller.device_connection_tracker")
-    async def test_execute_command_liquid_probe_preflight_rejects_a_shapeless_request(
-        self, mock_registry, mock_conn_manager, controller
-    ):
+    async def test_execute_command_liquid_probe_preflight_rejects_a_shapeless_request(self):
         """A container probe names no wells, so it has to name the channels instead
         or there is no channel count. Caught here, before the wire."""
+        mock_registry = MagicMock()
+        mock_conn_manager = MagicMock()
+        controller = new_controller(mock_registry, mock_conn_manager)
         mock_registry.get_device = AsyncMock(
             return_value=_snapshot(
                 "lh_1",
@@ -234,13 +222,12 @@ class TestDeviceController:
 
         mock_conn_manager.send_to_client.assert_not_called()
 
-    @patch("orca.gateway.controller.controller.connection_manager")
-    @patch("orca.gateway.controller.controller.device_connection_tracker")
-    async def test_execute_command_liquid_probe_reaches_a_head_that_can_sense(
-        self, mock_registry, mock_conn_manager, controller
-    ):
+    async def test_execute_command_liquid_probe_reaches_a_head_that_can_sense(self):
         """The refusals above are only half the gate: a head that does advertise
         the sensor has to get the command through, or probing works nowhere."""
+        mock_registry = MagicMock()
+        mock_conn_manager = MagicMock()
+        controller = new_controller(mock_registry, mock_conn_manager)
         mock_registry.get_device = AsyncMock(
             return_value=_snapshot(
                 "lh_1",
@@ -270,17 +257,16 @@ class TestDeviceController:
         except asyncio.CancelledError:
             pass
 
-    @patch("orca.gateway.controller.controller.connection_manager")
-    @patch("orca.gateway.controller.controller.device_connection_tracker")
-    async def test_execute_command_transporter_preflight_rejects_unknown_field(
-        self, mock_registry, mock_conn_manager, controller
-    ):
+    async def test_execute_command_transporter_preflight_rejects_unknown_field(self):
         """Transporter pre-flight rejects unknown fields BEFORE WebSocket dispatch.
 
         Regression guard mirroring the LH pre-flight test. If this
         regresses, callers see the failure only after the command travels the
         wire and the executor on the other side blows up.
         """
+        mock_registry = MagicMock()
+        mock_conn_manager = MagicMock()
+        controller = new_controller(mock_registry, mock_conn_manager)
         mock_registry.get_device = AsyncMock(
             return_value=_snapshot(
                 "arm_1", type="transporter", interfaces=["ITransporter"],
@@ -309,7 +295,7 @@ class TestDeviceController:
 
         with pytest.raises(
             InvalidCommandError, match="Invalid params for 'pick_at_coords'",
-        ):
+        ), reaching_in("arm_1"):
             await controller.execute_command(
                 "arm_1", "pick_at_coords", bad_pick_params,
                 effective_mode=WorkflowRunMode.LIVE,
@@ -317,12 +303,11 @@ class TestDeviceController:
 
         mock_conn_manager.send_to_client.assert_not_called()
 
-    @patch("orca.gateway.controller.controller.connection_manager")
-    @patch("orca.gateway.controller.controller.device_connection_tracker")
-    async def test_execute_command_fails_if_device_locked(
-        self, mock_registry, mock_conn_manager, controller
-    ):
+    async def test_execute_command_fails_if_device_locked(self):
         """Test execute_command raises DeviceLockedError if device is busy."""
+        mock_registry = MagicMock()
+        mock_conn_manager = MagicMock()
+        controller = new_controller(mock_registry, mock_conn_manager)
         # Device exists
         mock_registry.get_device = AsyncMock(
             return_value=_snapshot("device_1", interfaces=["IShaker"]),
@@ -336,12 +321,11 @@ class TestDeviceController:
         with pytest.raises(DeviceLockedError, match="is busy"):
             await controller.execute_command("device_1", "shake", {"speed": 500, "duration": 1.0}, effective_mode=WorkflowRunMode.LIVE)
 
-    @patch("orca.gateway.controller.controller.connection_manager")
-    @patch("orca.gateway.controller.controller.device_connection_tracker")
-    async def test_execute_command_sends_to_client(
-        self, mock_registry, mock_conn_manager, controller
-    ):
+    async def test_execute_command_sends_to_client(self):
         """Test execute_command sends CommandMessage to client."""
+        mock_registry = MagicMock()
+        mock_conn_manager = MagicMock()
+        controller = new_controller(mock_registry, mock_conn_manager)
         # Device exists and online
         mock_registry.get_device = AsyncMock(
             return_value=_snapshot("device_1", interfaces=["IShaker"]),
@@ -375,12 +359,11 @@ class TestDeviceController:
         except asyncio.CancelledError:
             pass
 
-    @patch("orca.gateway.controller.controller.connection_manager")
-    @patch("orca.gateway.controller.controller.device_connection_tracker")
-    async def test_execute_command_waits_for_response(
-        self, mock_registry, mock_conn_manager, controller
-    ):
+    async def test_execute_command_waits_for_response(self):
         """Test execute_command waits for and returns response."""
+        mock_registry = MagicMock()
+        mock_conn_manager = MagicMock()
+        controller = new_controller(mock_registry, mock_conn_manager)
         # Device exists and online
         mock_registry.get_device = AsyncMock(
             return_value=_snapshot("device_1", interfaces=["IShaker"]),
@@ -417,12 +400,11 @@ class TestDeviceController:
         # Verify result
         assert result == {"status": "completed"}
 
-    @patch("orca.gateway.controller.controller.connection_manager")
-    @patch("orca.gateway.controller.controller.device_connection_tracker")
-    async def test_execute_command_times_out(
-        self, mock_registry, mock_conn_manager, controller
-    ):
+    async def test_execute_command_times_out(self):
         """Test execute_command raises CommandTimeoutError if no response."""
+        mock_registry = MagicMock()
+        mock_conn_manager = MagicMock()
+        controller = new_controller(mock_registry, mock_conn_manager)
         # Device exists and online
         mock_registry.get_device = AsyncMock(
             return_value=_snapshot("device_1", interfaces=["IShaker"]),
@@ -436,15 +418,13 @@ class TestDeviceController:
             await controller.execute_command("device_1", "shake", {"speed": 500, "duration": 1.0}, timeout_seconds=0.5, effective_mode=WorkflowRunMode.LIVE)
 
         # Verify device is unlocked after timeout
-        is_locked = await controller.is_locked("device_1")
-        assert is_locked is False
+        assert "device_1" not in controller._pending
 
-    @patch("orca.gateway.controller.controller.connection_manager")
-    @patch("orca.gateway.controller.controller.device_connection_tracker")
-    async def test_execute_command_unlocks_on_exception(
-        self, mock_registry, mock_conn_manager, controller
-    ):
+    async def test_execute_command_unlocks_on_exception(self):
         """Test device is unlocked even if exception occurs."""
+        mock_registry = MagicMock()
+        mock_conn_manager = MagicMock()
+        controller = new_controller(mock_registry, mock_conn_manager)
         # Device exists but send fails
         mock_registry.get_device = AsyncMock(
             return_value=_snapshot("device_1", interfaces=["IShaker"]),
@@ -457,16 +437,14 @@ class TestDeviceController:
             await controller.execute_command("device_1", "shake", {"speed": 500, "duration": 1.0}, effective_mode=WorkflowRunMode.LIVE)
 
         # Verify device is unlocked
-        is_locked = await controller.is_locked("device_1")
-        assert is_locked is False
+        assert "device_1" not in controller._pending
 
-    @patch("orca.gateway.controller.controller.connection_manager")
-    @patch("orca.gateway.controller.controller.device_connection_tracker")
-    async def test_execute_command_includes_effective_mode_on_wire(
-        self, mock_registry, mock_conn_manager, controller
-    ):
+    async def test_execute_command_includes_effective_mode_on_wire(self):
         """The CommandMessage payload sent over the wire carries effective_mode."""
-        from orca.runtime.run_modes import WorkflowRunMode
+        mock_registry = MagicMock()
+        mock_conn_manager = MagicMock()
+        controller = new_controller(mock_registry, mock_conn_manager)
+        from orca.modes.run_modes import WorkflowRunMode
 
         mock_registry.get_device = AsyncMock(
             return_value=_snapshot("device_1", interfaces=["IShaker"]),
@@ -481,7 +459,7 @@ class TestDeviceController:
                 "shake",
                 {"speed": 500.0, "duration": 1.0},
                 timeout_seconds=1,
-                effective_mode=WorkflowRunMode.DEVICE_SIM,
+                effective_mode=WorkflowRunMode.SIM,
             )
         )
         await wait_until(lambda: mock_conn_manager.send_to_client.called)
@@ -490,7 +468,7 @@ class TestDeviceController:
         message_json = mock_conn_manager.send_to_client.call_args[0][1]
         # Wire payload is the model_dump_json of MessageEnvelope. The
         # effective_mode of the inner CommandMessage must be present.
-        assert "DEVICE_SIM" in message_json
+        assert '"effective_mode":"SIM"' in message_json
 
         task.cancel()
         try:
@@ -498,22 +476,19 @@ class TestDeviceController:
         except asyncio.CancelledError:
             pass
 
-    async def test_execute_command_pure_sim_rejected_before_send(self, controller):
-        """PURE_SIM must never reach the gateway; raise InvalidCommandError early."""
-        from orca.runtime.run_modes import WorkflowRunMode
+    async def test_a_lab_pcs_gateway_refuses_a_check_run_command_before_sending(self, controller):
+        """A check run runs on its own gateway inside Orca; the server's gateway never sends CHECK_RUN."""
+        from orca.modes.run_modes import WorkflowRunMode
 
-        with pytest.raises(InvalidCommandError, match="PURE_SIM"):
+        with pytest.raises(InvalidCommandError, match="check-run command"):
             await controller.execute_command(
                 "device_1",
                 "shake",
                 {"speed": 500.0, "duration": 1.0},
-                effective_mode=WorkflowRunMode.PURE_SIM,
+                effective_mode=WorkflowRunMode.CHECK_RUN,
             )
 
-    @patch("orca.gateway.controller.controller.device_connection_tracker")
-    async def test_effective_interfaces_blocks_capability_drift(
-        self, mock_registry, controller,
-    ):
+    async def test_effective_interfaces_blocks_capability_drift(self):
         """effective_interfaces narrows beyond what the connection tracker advertises.
 
         Connection-tracker advertises [IShaker, IReader] (driver class
@@ -522,6 +497,8 @@ class TestDeviceController:
         so an IReader method (`read`) must be rejected even though the
         connection-tracker advertised IReader.
         """
+        mock_registry = MagicMock()
+        controller = new_controller(mock_registry, ConnectionManager())
         mock_registry.get_device = AsyncMock(
             return_value=_snapshot(
                 "device_1", interfaces=["IShaker", "IReader"], capabilities=[],
@@ -537,17 +514,16 @@ class TestDeviceController:
                 effective_mode=WorkflowRunMode.LIVE,
             )
 
-    @patch("orca.gateway.controller.controller.device_connection_tracker")
-    async def test_effective_interfaces_allows_declared_methods(
-        self, mock_registry, controller,
-    ):
+    async def test_effective_interfaces_allows_declared_methods(self):
         """Methods on declared interfaces still pass with effective_interfaces.
 
         A `shake` method (on IShaker) on a [IShaker, IReader]-advertised
         device passes when topology declared IShaker. Validation runs to
         completion (we mock the wire send to not actually go out).
         """
-        from orca.gateway.controller.controller import connection_manager
+        mock_registry = MagicMock()
+        connection_manager = ConnectionManager()
+        controller = new_controller(mock_registry, connection_manager)
 
         mock_registry.get_device = AsyncMock(
             return_value=_snapshot(
@@ -577,10 +553,7 @@ class TestDeviceController:
             except asyncio.CancelledError:
                 pass
 
-    @patch("orca.gateway.controller.controller.device_connection_tracker")
-    async def test_effective_interfaces_none_falls_back_to_advertised(
-        self, mock_registry, controller,
-    ):
+    async def test_effective_interfaces_none_falls_back_to_advertised(self):
         """effective_interfaces=None falls back to the advertised set.
 
         When the gateway can't resolve the registry entry (runtime not
@@ -588,6 +561,8 @@ class TestDeviceController:
         back to the connection tracker's advertised set so paths without
         runtime context still work.
         """
+        mock_registry = MagicMock()
+        controller = new_controller(mock_registry, ConnectionManager())
         mock_registry.get_device = AsyncMock(
             return_value=_snapshot(
                 "device_1", interfaces=["IShaker"], capabilities=[],
@@ -707,46 +682,11 @@ class TestDeviceController:
         with pytest.raises(CommandTimeoutError, match="already timed out"):
             await future
 
-    async def test_emergency_unlock_removes_lock(self, controller):
-        """Test emergency_unlock forcibly releases device lock."""
-        # Lock device
-        pending = _busy_pending("device_1", "cmd_789")
-        async with controller._lock:
-            controller._pending["device_1"] = pending
-            controller._command_futures["cmd_789"] = pending.future
-
-        # Verify locked
-        is_locked = await controller.is_locked("device_1")
-        assert is_locked is True
-
-        # Emergency unlock
-        await controller.emergency_unlock("device_1")
-
-        # Verify unlocked
-        is_locked = await controller.is_locked("device_1")
-        assert is_locked is False
-
-    async def test_emergency_unlock_cancels_future(self, controller):
-        """Test emergency_unlock cancels the waiting future."""
-        # Lock device with future
-        pending = _busy_pending("device_1", "cmd_999")
-        future = pending.future
-        async with controller._lock:
-            controller._pending["device_1"] = pending
-            controller._command_futures["cmd_999"] = future
-
-        # Emergency unlock
-        await controller.emergency_unlock("device_1")
-
-        # Verify future is cancelled
-        assert future.cancelled()
-
-    @patch("orca.gateway.controller.controller.connection_manager")
-    @patch("orca.gateway.controller.controller.device_connection_tracker")
-    async def test_concurrent_commands_to_same_device_fail(
-        self, mock_registry, mock_conn_manager, controller
-    ):
+    async def test_concurrent_commands_to_same_device_fail(self):
         """Test concurrent commands to same device - second should fail."""
+        mock_registry = MagicMock()
+        mock_conn_manager = MagicMock()
+        controller = new_controller(mock_registry, mock_conn_manager)
         # Device exists and online
         mock_registry.get_device = AsyncMock(
             return_value=_snapshot("device_1", interfaces=["IShaker"]),
@@ -774,12 +714,11 @@ class TestDeviceController:
         except (asyncio.CancelledError, CommandTimeoutError):
             pass
 
-    @patch("orca.gateway.controller.controller.connection_manager")
-    @patch("orca.gateway.controller.controller.device_connection_tracker")
-    async def test_concurrent_commands_to_different_devices_succeed(
-        self, mock_registry, mock_conn_manager, controller
-    ):
+    async def test_concurrent_commands_to_different_devices_succeed(self):
         """Test concurrent commands to different devices both succeed."""
+        mock_registry = MagicMock()
+        mock_conn_manager = MagicMock()
+        controller = new_controller(mock_registry, mock_conn_manager)
         # Both devices exist
         def mock_get_device(device_id):
             return _snapshot(device_id, interfaces=["IShaker"])
@@ -828,11 +767,7 @@ class TestDeviceController:
         assert result1 == {"status": "done"}
         assert result2 == {"status": "done"}
 
-    @patch("orca.gateway.controller.controller.connection_manager")
-    @patch("orca.gateway.controller.controller.device_connection_tracker")
-    async def test_reserve_creates_pending_record_before_dispatch(
-        self, mock_registry, mock_conn_manager, controller
-    ):
+    async def test_reserve_creates_pending_record_before_dispatch(self):
         """A3 fix: the ``_pending`` record exists from reservation, before the wire send.
 
         The record must own the device the instant it's reserved so a
@@ -841,6 +776,9 @@ class TestDeviceController:
         the dispatch -- to prove the record was already there when the
         command went out.
         """
+        mock_registry = MagicMock()
+        mock_conn_manager = MagicMock()
+        controller = new_controller(mock_registry, mock_conn_manager)
         mock_registry.get_device = AsyncMock(
             return_value=_snapshot("device_1", interfaces=["IShaker"]),
         )
@@ -881,59 +819,6 @@ class TestDeviceController:
         ))
         await task
 
-    @patch("orca.gateway.controller.controller.connection_manager")
-    @patch("orca.gateway.controller.controller.device_connection_tracker")
-    async def test_emergency_unlock_clears_pending_and_cancels_timers(
-        self, mock_registry, mock_conn_manager, controller
-    ):
-        """A14 fix: emergency_unlock removes the ``_pending`` record and cancels its timers.
-
-        Before the fix, emergency_unlock popped only the busy table and
-        left the ``_pending`` entry plus its armed command_timer running
-        -- a leak. The unlock must clear the record entirely and cancel
-        any live timer.
-        """
-        mock_registry.get_device = AsyncMock(
-            return_value=_snapshot("device_1", interfaces=["IShaker"]),
-        )
-        mock_registry.is_device_online = AsyncMock(return_value=True)
-        mock_registry.get_client_for_device = AsyncMock(return_value="client_1")
-        mock_conn_manager.send_to_client = AsyncMock(return_value=True)
-
-        task = asyncio.create_task(
-            controller.execute_command(
-                "device_1", "shake", {"speed": 500, "duration": 1.0},
-                timeout_seconds=30,
-                effective_mode=WorkflowRunMode.LIVE,
-            )
-        )
-        await wait_until(
-            lambda: "device_1" in controller._pending
-            and controller._pending["device_1"].command_timer is not None
-        )
-
-        async with controller._lock:
-            assert "device_1" in controller._pending
-            pending = controller._pending["device_1"]
-        command_timer = pending.command_timer
-        assert command_timer is not None
-
-        await controller.emergency_unlock("device_1")
-
-        # The pending record is gone.
-        async with controller._lock:
-            assert "device_1" not in controller._pending
-        # Its command_timer was cancelled (no orphan task left running).
-        await asyncio.sleep(0)
-        assert command_timer.cancelled() or command_timer.done()
-
-        # The held future was cancelled by the unlock; drain the task.
-        try:
-            await asyncio.wait_for(task, timeout=0.5)
-        except (asyncio.CancelledError, CommandTimeoutError):
-            pass
-
-
 _WORLD_SYNC_PARAMS = {
     "position_id": "pos_1",
     "labware": {"labware_id": "lw_1", "labware_type": "plate_96"},
@@ -950,12 +835,11 @@ class TestWorldSyncBypass:
     controller's per-device exclusivity lock.
     """
 
-    @patch("orca.gateway.controller.controller.connection_manager")
-    @patch("orca.gateway.controller.controller.device_connection_tracker")
-    async def test_world_sync_bypasses_busy_check(
-        self, mock_registry, mock_conn_manager, controller
-    ):
+    async def test_world_sync_bypasses_busy_check(self):
         """World-sync op does NOT raise DeviceLockedError when device is busy."""
+        mock_registry = MagicMock()
+        mock_conn_manager = MagicMock()
+        controller = new_controller(mock_registry, mock_conn_manager)
         mock_registry.get_device = AsyncMock(
             return_value=_snapshot("xporter_1", type="transporter", interfaces=["ITransporter"]),
         )
@@ -999,17 +883,16 @@ class TestWorldSyncBypass:
         result = await task
         assert result == {"ok": True}
 
-    @patch("orca.gateway.controller.controller.connection_manager")
-    @patch("orca.gateway.controller.controller.device_connection_tracker")
-    async def test_world_sync_does_not_claim_device_busy(
-        self, mock_registry, mock_conn_manager, controller
-    ):
+    async def test_world_sync_does_not_claim_device_busy(self):
         """World-sync op never claims the device-busy table -- before, during, or after.
 
         ``_pending`` is the single source of truth for "device is busy /
         which command owns it". A world-sync op must never register there,
         or it would lock out concurrent workflow commands on the device.
         """
+        mock_registry = MagicMock()
+        mock_conn_manager = MagicMock()
+        controller = new_controller(mock_registry, mock_conn_manager)
         mock_registry.get_device = AsyncMock(
             return_value=_snapshot("xporter_1", type="transporter", interfaces=["ITransporter"]),
         )
@@ -1037,12 +920,11 @@ class TestWorldSyncBypass:
         async with controller._lock:
             assert "xporter_1" not in controller._pending
 
-    @patch("orca.gateway.controller.controller.connection_manager")
-    @patch("orca.gateway.controller.controller.device_connection_tracker")
-    async def test_world_sync_does_not_register_in_pending(
-        self, mock_registry, mock_conn_manager, controller
-    ):
+    async def test_world_sync_does_not_register_in_pending(self):
         """World-sync op never touches ``_pending`` -- preserves any workflow command's entry."""
+        mock_registry = MagicMock()
+        mock_conn_manager = MagicMock()
+        controller = new_controller(mock_registry, mock_conn_manager)
         mock_registry.get_device = AsyncMock(
             return_value=_snapshot("xporter_1", type="transporter", interfaces=["ITransporter"]),
         )
@@ -1068,11 +950,7 @@ class TestWorldSyncBypass:
         async with controller._lock:
             assert "xporter_1" not in controller._pending
 
-    @patch("orca.gateway.controller.controller.connection_manager")
-    @patch("orca.gateway.controller.controller.device_connection_tracker")
-    async def test_world_sync_does_not_clobber_workflow_command_pending(
-        self, mock_registry, mock_conn_manager, controller
-    ):
+    async def test_world_sync_does_not_clobber_workflow_command_pending(self):
         """A world-sync op's finally must NOT pop the workflow command's ``_pending`` entry.
 
         Regression for the bug shape: ``_pending`` is keyed
@@ -1080,6 +958,9 @@ class TestWorldSyncBypass:
         clobber the in-flight workflow command's pending entry and
         break disconnect-recovery for it.
         """
+        mock_registry = MagicMock()
+        mock_conn_manager = MagicMock()
+        controller = new_controller(mock_registry, mock_conn_manager)
         mock_registry.get_device = AsyncMock(
             return_value=_snapshot("xporter_1", type="transporter", interfaces=["ITransporter"]),
         )
@@ -1137,12 +1018,11 @@ class TestWorldSyncBypass:
         ))
         await wf_task
 
-    @patch("orca.gateway.controller.controller.connection_manager")
-    @patch("orca.gateway.controller.controller.device_connection_tracker")
-    async def test_world_sync_times_out_via_wait_for_fallback(
-        self, mock_registry, mock_conn_manager, controller
-    ):
+    async def test_world_sync_times_out_via_wait_for_fallback(self):
         """World-sync op uses bounded ``asyncio.wait_for`` since it has no command_timer."""
+        mock_registry = MagicMock()
+        mock_conn_manager = MagicMock()
+        controller = new_controller(mock_registry, mock_conn_manager)
         mock_registry.get_device = AsyncMock(
             return_value=_snapshot("xporter_1", type="transporter", interfaces=["ITransporter"]),
         )
@@ -1157,17 +1037,16 @@ class TestWorldSyncBypass:
                 effective_mode=WorkflowRunMode.LIVE,
             )
 
-    @patch("orca.gateway.controller.controller.connection_manager")
-    @patch("orca.gateway.controller.controller.device_connection_tracker")
-    async def test_world_sync_send_failure_does_not_clobber_workflow_pending(
-        self, mock_registry, mock_conn_manager, controller
-    ):
+    async def test_world_sync_send_failure_does_not_clobber_workflow_pending(self):
         """Early-failure path of world-sync (send_to_client returns False)
         raises DeviceOfflineError. The finally block must NOT pop the
         in-flight workflow command's ``_pending`` entry on the same
         device. Regression for the clobber risk on the early-exception
         path.
         """
+        mock_registry = MagicMock()
+        mock_conn_manager = MagicMock()
+        controller = new_controller(mock_registry, mock_conn_manager)
         mock_registry.get_device = AsyncMock(
             return_value=_snapshot("xporter_1", type="transporter", interfaces=["ITransporter"]),
         )
@@ -1210,14 +1089,13 @@ class TestWorldSyncBypass:
         ))
         await wf_task
 
-    @patch("orca.gateway.controller.controller.connection_manager")
-    @patch("orca.gateway.controller.controller.device_connection_tracker")
-    async def test_world_sync_cleans_up_command_futures_on_success_and_timeout(
-        self, mock_registry, mock_conn_manager, controller
-    ):
+    async def test_world_sync_cleans_up_command_futures_on_success_and_timeout(self):
         """``_command_futures`` keyed by command_id is always cleaned up
         for world-sync, on both happy-path and timeout-path.
         """
+        mock_registry = MagicMock()
+        mock_conn_manager = MagicMock()
+        controller = new_controller(mock_registry, mock_conn_manager)
         mock_registry.get_device = AsyncMock(
             return_value=_snapshot("xporter_1", type="transporter", interfaces=["ITransporter"]),
         )
@@ -1254,17 +1132,16 @@ class TestWorldSyncBypass:
         async with controller._lock:
             assert len(controller._command_futures) == 0
 
-    @patch("orca.gateway.controller.controller.connection_manager")
-    @patch("orca.gateway.controller.controller.device_connection_tracker")
-    async def test_world_sync_still_runs_payload_validation(
-        self, mock_registry, mock_conn_manager, controller
-    ):
+    async def test_world_sync_still_runs_payload_validation(self):
         """The bypass only skips the busy check, NOT payload validation.
 
         A malformed ``ensure_seeded`` params dict must still raise
         ``InvalidCommandError`` before any wire send, regardless of
         ``CommandKind.WORLD_SYNC``.
         """
+        mock_registry = MagicMock()
+        mock_conn_manager = MagicMock()
+        controller = new_controller(mock_registry, mock_conn_manager)
         mock_registry.get_device = AsyncMock(
             return_value=_snapshot("xporter_1", type="transporter", interfaces=["ITransporter"]),
         )
@@ -1319,3 +1196,16 @@ class TestArmCommandTimerGuard:
         await controller._arm_command_timer("device_1")
 
         assert pending.command_timer is None
+
+
+@pytest.mark.asyncio
+async def test_releasing_a_finished_command_leaves_a_later_commands_record_alone(controller) -> None:
+    """A command's release pops only its own record; another command now holding the device keeps its record."""
+    later = _busy_pending("device_1", "cmd_later")
+    async with controller._lock:
+        controller._pending["device_1"] = later
+
+    released = await controller._release_device("cmd_earlier", "device_1", CommandKind.ACTUATION)
+
+    assert released is None
+    assert controller._pending["device_1"] is later

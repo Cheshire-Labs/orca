@@ -1,7 +1,6 @@
 """ILabwareLocationService -- single source of truth for labware position.
 
-Replaces the previous split between thread-owned LocationHistory and
-LabwareLocationHistoryRegistry. Every position update (thread moves,
+Every position update (thread moves,
 device-internal gripper moves, ctx.move()) goes through this service.
 LocationHistory is maintained internally for oscillation detection.
 
@@ -22,14 +21,12 @@ from typing import Callable, List
 
 from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.location import Location
-from orca.resource_models.labware_directory import labware_directory
-from orca.state.current import placement_ledger
+from orca.resource_models.labware_directory import LabwarePlacements
 from orca.state.identity import PositionRef
+from orca.resource_models.labware_placeable_interface import ILabwarePlaceable
 from orca.state.placement import PlacementState
-from orca.workflow_models.labware_threads.location_history import LocationHistory
+from orca.resource_models.location_history import LocationHistory
 
-LocationUpdateListener = Callable[[LabwareInstance, Location], None]
-LocationRetireListener = Callable[[LabwareInstance], None]
 ExpectationDroppedListener = Callable[[LabwareInstance], None]
 
 
@@ -57,12 +54,16 @@ class _Entry:
     arrival: ArrivalMechanism | None
     history: LocationHistory = field(default_factory=LocationHistory)
     retired: bool = False
-    """A lifecycle end fires its listeners once. The ledger cannot answer this
-    on its own because the slot is vacated before the thread ends."""
+    """A lifecycle end is reported once. The ledger cannot answer this on its
+    own because the slot is vacated before the thread ends."""
 
 
 class ILabwareLocationService(ABC):
     """Single source of truth for labware position."""
+
+    @abstractmethod
+    def bind_placements(self, position: ILabwarePlaceable) -> None:
+        """Make `position` read and write this service's ledger."""
 
     @abstractmethod
     def expect(
@@ -73,9 +74,9 @@ class ILabwareLocationService(ABC):
     ) -> None:
         """Record that a labware belongs at a location but is not there yet.
 
-        Appends no history (nothing has been anywhere) and fires no update
-        listener, so an expectation never reaches the durable store and cannot
-        be resurrected as a real plate by a reboot. ``get`` answers with the
+        Appends no history (nothing has been anywhere) and reports no change,
+        so an expectation never reaches the durable store and cannot be
+        resurrected as a real plate by a reboot. ``get`` answers with the
         location, because the engine legitimately needs to know where a thread's
         labware is headed before it arrives.
         """
@@ -102,31 +103,22 @@ class ILabwareLocationService(ABC):
         ...
 
     @abstractmethod
-    def update(self, labware: LabwareInstance, location: Location) -> None:
+    def update(self, labware: LabwareInstance, location: Location) -> bool:
         """Record a labware position change. Appends to history.
 
         Marks the labware PRESENT: this is the arrival, whoever caused it.
+        True when the position changed, so a save is not repeated for a no-op.
         """
         ...
 
     @abstractmethod
-    def add_update_listener(self, listener: LocationUpdateListener) -> None:
-        """Observe position changes. Fired only when the position actually
-        changes, so a listener can mirror the ledger without echoing no-ops."""
-        ...
-
-    @abstractmethod
-    def retire(self, labware: LabwareInstance) -> None:
+    def retire(self, labware: LabwareInstance) -> bool:
         """Record that a labware exited the world (disposed at thread end,
         operator discharge). The last-known position stays readable, because a
-        lifecycle end is not a retraction of the record; retire listeners let
-        mirrors clear their ACTIVE position so a reboot does not resurrect the
-        labware at its end slot."""
-        ...
+        lifecycle end is not a retraction of the record.
 
-    @abstractmethod
-    def add_retire_listener(self, listener: LocationRetireListener) -> None:
-        """Observe retirements. Fired once per tracked labware retired."""
+        True once per tracked labware retired: its saved position must then be
+        cleared, so a reboot does not resurrect it at its end slot."""
         ...
 
     @abstractmethod
@@ -137,6 +129,15 @@ class ILabwareLocationService(ABC):
         Ask ``placement`` when the difference matters.
         """
         ...
+
+    def present_location(self, labware: LabwareInstance) -> Location | None:
+        """Where this labware IS, or None when it is only expected, retired, or untracked."""
+        try:
+            if self.placement(labware) is not PlacementState.PRESENT:
+                return None
+            return self.get(labware)
+        except KeyError:
+            return None
 
     @abstractmethod
     def placement(self, labware: LabwareInstance) -> PlacementState:
@@ -180,8 +181,8 @@ class ILabwareLocationService(ABC):
         ...
 
     @abstractmethod
-    def reset(self, labware: LabwareInstance, location: Location) -> None:
-        """Clear history and set a new initial position. For pre-start location changes."""
+    def reset(self, labware: LabwareInstance, location: Location) -> bool:
+        """Clear history and set a new initial position. True when the position changed."""
         ...
 
     @abstractmethod
@@ -198,19 +199,17 @@ class ILabwareLocationService(ABC):
 class InMemoryLabwareLocationService(ILabwareLocationService):
     """In-memory implementation. Future: DB-backed for power failure recovery."""
 
-    def __init__(self) -> None:
+    def __init__(self, placements: LabwarePlacements) -> None:
+        self._placements = placements
+        self._ledger = placements.ledger
+        self._directory = placements.directory
         # Insertion-ordered, which is what makes `expected_at` answer
         # longest-waiting first.
         self._entries: dict[str, _Entry] = {}
-        self._listeners: List[LocationUpdateListener] = []
-        self._retire_listeners: List[LocationRetireListener] = []
         self._expectation_dropped_listeners: List[ExpectationDroppedListener] = []
 
-    def add_update_listener(self, listener: LocationUpdateListener) -> None:
-        self._listeners.append(listener)
-
-    def add_retire_listener(self, listener: LocationRetireListener) -> None:
-        self._retire_listeners.append(listener)
+    def bind_placements(self, position: ILabwarePlaceable) -> None:
+        position.bind_placements(self._placements)
 
     def add_expectation_dropped_listener(
         self, listener: ExpectationDroppedListener,
@@ -233,40 +232,35 @@ class InMemoryLabwareLocationService(ILabwareLocationService):
             arrival=arrival,
             history=existing.history if existing is not None else LocationHistory(),
         )
-        labware_directory().remember(labware)
-        placement_ledger().expect(labware.ref, PositionRef(id=location.position_id))
+        self._directory.remember(labware)
+        self._ledger.expect(labware.ref, PositionRef(id=location.position_id))
 
     def stop_expecting(self, labware: LabwareInstance) -> None:
         if self._state_of(labware) is not PlacementState.EXPECTED:
             return
         del self._entries[labware.id]
-        placement_ledger().stop_expecting(labware.ref)
+        self._ledger.stop_expecting(labware.ref)
         for listener in self._expectation_dropped_listeners:
             listener(labware)
 
-    def retire(self, labware: LabwareInstance) -> None:
+    def retire(self, labware: LabwareInstance) -> bool:
         entry = self._entries.get(labware.id)
         if entry is None or entry.retired:
-            return
+            return False
         if self._state_of(labware) is PlacementState.EXPECTED:
             # Nothing ever arrived, so there is no lifecycle to end. A wipe
-            # fires retire and stop_expecting together; this is the no-op half.
-            return
+            # retires and stops expecting together; this is the no-op half.
+            return False
         # Position and history stay readable (snapshots of an ENDED thread
         # report its last-known location); only the active claim is dropped.
         # Not gated on PRESENT: the holder vacates the slot first, so by the
         # time the thread ends the ledger no longer has a placement to read.
-        placement_ledger().retire(labware.ref)
+        self._ledger.retire(labware.ref)
         entry.retired = True
         entry.arrival = None
-        for listener in self._retire_listeners:
-            listener(labware)
+        return True
 
-    def _notify(self, labware: LabwareInstance, location: Location) -> None:
-        for listener in self._listeners:
-            listener(labware, location)
-
-    def update(self, labware: LabwareInstance, location: Location) -> None:
+    def update(self, labware: LabwareInstance, location: Location) -> bool:
         entry = self._entries.get(labware.id)
         # Read the entry, not the ledger: the holder writes the ledger before
         # calling here, so a first arrival would already look PRESENT and the
@@ -288,8 +282,7 @@ class InMemoryLabwareLocationService(ILabwareLocationService):
         entry.retired = False
         self._arrive(labware, location)
         entry.history.add_location(location, time.time())
-        if changed:
-            self._notify(labware, location)
+        return changed
 
     def get(self, labware: LabwareInstance) -> Location:
         entry = self._entries.get(labware.id)
@@ -309,14 +302,14 @@ class InMemoryLabwareLocationService(ILabwareLocationService):
         return state
 
     def _state_of(self, labware: LabwareInstance) -> PlacementState | None:
-        held = placement_ledger().placement_of(labware.ref)
+        held = self._ledger.placement_of(labware.ref)
         return held.state if held is not None else None
 
     def _arrive(self, labware: LabwareInstance, location: Location) -> None:
         """A position may legitimately hold several (a stacker, a hotel), so
         cardinality is the holder's rule, not the ledger's, on this path."""
-        labware_directory().remember(labware)
-        placement_ledger().arrived(
+        self._directory.remember(labware)
+        self._ledger.arrived(
             labware.ref, PositionRef(id=location.position_id), single_occupant=False,
         )
 
@@ -345,7 +338,7 @@ class InMemoryLabwareLocationService(ILabwareLocationService):
             raise KeyError(f"No history for labware '{labware.name}' (id={labware.id})")
         return entry.history
 
-    def reset(self, labware: LabwareInstance, location: Location) -> None:
+    def reset(self, labware: LabwareInstance, location: Location) -> bool:
         entry = self._entries.get(labware.id)
         changed = (
             self._state_of(labware) is not PlacementState.PRESENT
@@ -362,10 +355,9 @@ class InMemoryLabwareLocationService(ILabwareLocationService):
             entry.history.clear()
         self._arrive(labware, location)
         entry.history.add_location(location, time.time())
-        if changed:
-            self._notify(labware, location)
+        return changed
 
     def clear_all(self) -> None:
         for entry in self._entries.values():
-            placement_ledger().stop_expecting(entry.labware.ref)
+            self._ledger.stop_expecting(entry.labware.ref)
         self._entries.clear()

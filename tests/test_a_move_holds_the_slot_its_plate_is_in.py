@@ -23,14 +23,14 @@ from orca.system.system_map import ILocationRegistry
 from orca.resource_models.plate_pad import PlatePad
 from orca.resource_models.transporter_base import TransporterBase
 from orca.system.reservation_manager.location_reservation import LocationReservation
-from orca.system.reservation_manager.move_handler import MoveHandler
+from orca.workflow_models.actions.move_handler import MoveHandler
 from orca.system.reservation_manager.reservation_manager import (
     ThreadReservationCoordinator,
 )
 from orca.workflow_models.actions.move_action import MoveAction
 from tests.test_helpers import (
     create_test_labware_instance,
-    make_labware_placer,
+    make_command_pipeline,
 )
 from orca.resource_models.labware_location_service import PlacementState
 from cheshire_drivers.teachpoints import Teachpoint
@@ -141,7 +141,7 @@ class _Bench:
             template_name="plate_journey",
         )
         executable = move.executable(
-            Mock(), context, service, make_labware_placer(service), self.handler,
+            Mock(), context, service, make_command_pipeline(service), self.handler,
         )
         return asyncio.create_task(executable.execute())
 

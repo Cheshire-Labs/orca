@@ -19,6 +19,7 @@ import pytest
 ENGINE_MODULES = [
     "orca.runtime.system_runtime",
     "orca.runtime.runtime_interface",
+    "orca.runtime.facade_interfaces",
     "orca.runtime.execution",
     "orca.system.system_interface",
     "orca.resource_models.labware",

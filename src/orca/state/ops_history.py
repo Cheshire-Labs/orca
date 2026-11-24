@@ -11,7 +11,7 @@ which execution the labware belongs to.
 """
 import time
 import uuid
-from typing import List
+from typing import Callable, List, Literal
 
 from typing_extensions import Self
 
@@ -29,12 +29,10 @@ from orca.state.records import (
     TrackingRecord,
     TrackingSource,
 )
-from orca.state.jsonl_store import JsonlOpsHistoryStore
 from orca.state.ops_store import (
     IOpsHistoryStore,
     SYSTEM_ID,
 )
-from orca.state.unrecorded import UnrecordedOperations
 
 
 class OpsHistory:
@@ -52,49 +50,41 @@ class OpsHistory:
 
     def __init__(
         self,
-        store: IOpsHistoryStore | None = None,
+        store: IOpsHistoryStore,
         execution_id: str = SYSTEM_ID,
-        unrecorded: UnrecordedOperations | None = None,
+        saved_listeners: list[Callable[[TrackingRecord], None]] | None = None,
     ) -> None:
-        self._store: IOpsHistoryStore = store or JsonlOpsHistoryStore.ephemeral()
+        self._store = store
         self._execution_id = execution_id
-        self._unrecorded = unrecorded if unrecorded is not None else UnrecordedOperations()
+        self._saved_listeners = saved_listeners if saved_listeners is not None else []
 
     @property
     def store(self) -> IOpsHistoryStore:
         return self._store
 
     @property
-    def unrecorded(self) -> UnrecordedOperations:
-        """Actions holding operations that have not reached the store yet.
-
-        Shared with every view of this history, so a read taken through one
-        execution's view still learns about an action running under another.
-        """
-        return self._unrecorded
-
-    @property
     def execution_id(self) -> str:
         return self._execution_id
-
-    def bind_store(self, store: IOpsHistoryStore) -> None:
-        """Replace the backing store. Used by a hosted deployment at lifecycle
-        build to swap the source-available default for its own indexed impl after
-        deployment_package.build() returned its SystemBuild. Must be called
-        before any execution writes (no record migration is performed).
-        """
-        self._store = store
 
     def for_execution(self, execution_id: str) -> Self:
         """Return a new OpsHistory view over the same store, bound to ``execution_id``."""
         return type(self)(
             store=self._store, execution_id=execution_id,
-            unrecorded=self._unrecorded,
+            saved_listeners=self._saved_listeners,
         )
+
+    def announce_saves_to(self, listener: Callable[[TrackingRecord], None]) -> None:
+        """Call ``listener`` after every record any view of this history saves."""
+        self._saved_listeners[:] = [listener]
+
+    async def _write(self, record: TrackingRecord) -> None:
+        await self._store.append(self._execution_id, record)
+        for listener in self._saved_listeners:
+            listener(record)
 
     async def append_record(self, record: TrackingRecord) -> None:
         """Append a record emitted by an observer (declared or observed mode)."""
-        await self._store.append(self._execution_id, record)
+        await self._write(record)
 
     async def append_initial_state(
         self, labware_name: str, details: InitialStateDetails,
@@ -149,7 +139,7 @@ class OpsHistory:
                 )
             ],
         )
-        await self._store.append(self._execution_id, record)
+        await self._write(record)
 
     async def append_set_volume(
         self, labware_name: str, well_volumes: dict[str, float],
@@ -185,14 +175,14 @@ class OpsHistory:
                 )
             ],
         )
-        await self._store.append(self._execution_id, record)
+        await self._write(record)
 
     async def append_set_mounted_tips(
-        self, device_name: str, by_channel: dict[int, tuple[str, str]],
+        self, device_name: str, by_channel: dict[int, tuple[str, str]], head96: dict[int, tuple[str, str]],
     ) -> None:
-        """Append an operator statement of what a head is carrying.
+        """Append an operator statement of what each head is carrying.
 
-        Absolute: an empty map says the head is carrying nothing, which is a
+        Absolute: an empty map says that head is carrying nothing, which is a
         statement rather than silence.
         """
         action_id = f"__set_mounted_tips__:{device_name}:{uuid.uuid4().hex[:8]}"
@@ -212,13 +202,13 @@ class OpsHistory:
                     affected_labware_ids=[],
                     action_id=action_id,
                     thread_id=SYSTEM_ID,
-                    details=MountedTipsAssertedDetails(by_channel=dict(by_channel)),
+                    details=MountedTipsAssertedDetails(by_channel=dict(by_channel), head96=dict(head96)),
                     timestamp=now,
                     source=TrackingSource.OPERATOR,
                 )
             ],
         )
-        await self._store.append(self._execution_id, record)
+        await self._write(record)
 
     async def append_confirm_mounted_tips(self, device_name: str) -> None:
         """Append an operator's agreement with what the record already says.
@@ -250,7 +240,7 @@ class OpsHistory:
                 )
             ],
         )
-        await self._store.append(self._execution_id, record)
+        await self._write(record)
 
     async def append_set_tip_state(
         self, labware_name: str, tip_positions_present: list[str],
@@ -288,7 +278,7 @@ class OpsHistory:
                 )
             ],
         )
-        await self._store.append(self._execution_id, record)
+        await self._write(record)
 
     async def append_observation_gap(
         self, labware_name: str, cause: ObservationGapCause,
@@ -322,10 +312,10 @@ class OpsHistory:
                 )
             ],
         )
-        await self._store.append(self._execution_id, record)
+        await self._write(record)
 
     async def append_head_observation_gap(
-        self, device_name: str, cause: ObservationGapCause,
+        self, device_name: str, cause: ObservationGapCause, head: Literal["channels", "head96"] | None = None,
     ) -> None:
         """Nobody was watching this head for a while.
 
@@ -351,13 +341,13 @@ class OpsHistory:
                     action_id=action_id,
                     thread_id=SYSTEM_ID,
                     details=HeadObservationGapDetails(
-                        device_name=device_name, cause=cause,
+                        device_name=device_name, cause=cause, head=head,
                     ),
                     timestamp=now,
                 )
             ],
         )
-        await self._store.append(self._execution_id, record)
+        await self._write(record)
 
     async def records(self) -> List[TrackingRecord]:
         """Materialize the bound execution's bucket as a list of records."""

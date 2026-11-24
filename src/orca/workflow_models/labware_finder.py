@@ -2,7 +2,7 @@
 
 from typing import Protocol
 
-from orca.resource_models.labware_state import (
+from orca.workflow_models.labware_state import (
     FindResult,
     ILabwareRegistry,
 )

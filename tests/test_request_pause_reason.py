@@ -4,12 +4,13 @@ non-error PAUSED status can report it instead of a hardcoded "manual".
 See tests/runtime/test_thread_snapshot_pause_reason.py for how the read
 side (ThreadSnapshot.pause_reason) consumes this hint.
 """
+from tests.thread_builder import build_executing_thread
 from unittest.mock import MagicMock
 
 from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.location import Location
 from orca.resource_models.plate_pad import PlatePad
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from orca.workflow_models.labware_threads.executing_labware_thread import (
     ExecutingLabwareThread,
 )
@@ -25,7 +26,7 @@ def _build_executing_thread() -> ExecutingLabwareThread:
         labware=labware,
         start_location=location,
         end_locations=[location],
-        run_mode=WorkflowRunMode.PURE_SIM,
+        run_mode=WorkflowRunMode.CHECK_RUN,
     )
     context = MagicMock()
     context.execution_id = "exec-pause-reason"
@@ -33,7 +34,7 @@ def _build_executing_thread() -> ExecutingLabwareThread:
     loc_service = MagicMock()
     loc_service.get_history.return_value = MagicMock()
 
-    et = ExecutingLabwareThread(
+    et = build_executing_thread(
         thread=thread,
         event_bus=MagicMock(),
         move_handler=MagicMock(),

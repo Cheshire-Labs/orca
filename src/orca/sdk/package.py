@@ -1,7 +1,7 @@
 """Build a system from a package that holds `topology.py` and `workflows/*.py`.
 
-`topology.py` defines `build_topology(stores)` and may define `SYSTEM_NAME`,
-`SYSTEM_DESCRIPTION` and `SIM_DRIVERS`. Each `workflows/<name>.py` defines
+`topology.py` defines `build_topology()` and may define `SYSTEM_NAME` and
+`SYSTEM_DESCRIPTION`. Each `workflows/<name>.py` defines
 `build_workflow(topology)` and may define a `reservoirs` list of deck-resident
 labware templates. The package needs no `__init__.py`.
 """
@@ -9,73 +9,54 @@ labware templates. The package needs no `__init__.py`.
 import importlib
 import os
 import pkgutil
-from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager
 from pathlib import Path
+from collections.abc import Sequence
 from types import ModuleType
 
 from orca.resource_models.labware import LabwareTemplate
-from orca.runtime.device_factory import SimDeviceFactory
-from orca.runtime.device_factory_context import is_factory_bound, use_device_factory
-from orca.runtime.device_factory_protocol import DriverPairElement
+from orca.resource_models.labware_placement import IUnsavedPositions
+from orca.resource_models.labware_service_interface import ILabwareService
+from orca.driver_management.device_factory_context import use_device_factory
+from orca.driver_management.device_factory_protocol import IDeviceDriverProvider
 from orca.runtime.store_factory import IRuntimeStoreFactory
-from orca.sdk.build import SystemBuild, Topology, add_workflow_template, build_system
+from orca.state.ops_store import IOpsHistoryStore
+from orca.events.event_bus_interface import IEventBus
+from orca.runtime.startup import in_memory_labware_service, in_memory_unsaved_positions
+from orca.sdk.build import SystemBuild, Topology, add_workflow_template, build_system_over
 from orca.workflow_models.workflow_templates import WorkflowTemplate
 
 
-SimDriverFactories = Mapping[str, Callable[[], DriverPairElement]]
+__all__ = ["build_system", "build_topology_from_module", "build_system_from_package"]
 
 
-class _DeclaredSimDriverFactory:
-    """A listed device type gets one declared driver in both slots; the rest get SimDeviceFactory's pair."""
+async def build_system(
+    name: str,
+    topology: Topology,
+    stores: IRuntimeStoreFactory,
+    workflow: WorkflowTemplate | None = None,
+    labwares: Sequence[LabwareTemplate] | None = None,
+    description: str = "",
+    *,
+    event_bus: IEventBus,
+    ops_history_store: IOpsHistoryStore,
+) -> SystemBuild:
+    """Build a system from a physical topology, and optionally one workflow, as a local run does.
 
-    def __init__(self, sim_drivers: SimDriverFactories) -> None:
-        self._sim_drivers = dict(sim_drivers)
-        self._fallback = SimDeviceFactory()
-
-    def build_drivers(
-        self, device_type: str, name: str, *, deck_modeling: bool = False,
-    ) -> tuple[DriverPairElement, DriverPairElement]:
-        make_driver = self._sim_drivers.get(device_type)
-        if make_driver is None:
-            return self._fallback.build_drivers(device_type, name, deck_modeling=deck_modeling)
-        driver = make_driver()
-        return driver, driver
-
-
-def _declared_sim_drivers(module: ModuleType) -> SimDriverFactories | None:
-    declared = getattr(module, "SIM_DRIVERS", None)
-    if declared is None:
-        return None
-    if not isinstance(declared, Mapping):
-        raise TypeError(
-            f"{module.__name__}.SIM_DRIVERS must map a device type to a zero-argument "
-            f"driver factory, got {type(declared).__name__}",
-        )
-    return declared
+    Its labware record is held in memory. A server builds through `build_system_from_package` over its own.
+    """
+    return await build_system_over(
+        name, topology, stores, workflow, labwares, description,
+        event_bus=event_bus, ops_history_store=ops_history_store,
+        labware_service=in_memory_labware_service(), unsaved_positions=in_memory_unsaved_positions(),
+    )
 
 
-@contextmanager
-def declared_sim_drivers_bound(module: ModuleType) -> Iterator[None]:
-    """Bind the module's SIM_DRIVERS for the block, unless a device factory is already bound."""
-    if is_factory_bound():
-        yield
-        return
-    sim_drivers = _declared_sim_drivers(module)
-    if sim_drivers is None:
-        yield
-        return
-    with use_device_factory(_DeclaredSimDriverFactory(sim_drivers)):
-        yield
-
-
-def build_topology_from_module(module: ModuleType, stores: IRuntimeStoreFactory) -> Topology:
-    """Call the module's `build_topology(stores)` with its SIM_DRIVERS bound when nothing else is."""
+def build_topology_from_module(module: ModuleType) -> Topology:
+    """Call the module's `build_topology()` and check it returned a Topology."""
     build_topology = getattr(module, "build_topology", None)
     if not callable(build_topology):
-        raise AttributeError(f"{module.__name__} has no build_topology(stores) function")
-    with declared_sim_drivers_bound(module):
-        topology = build_topology(stores)
+        raise AttributeError(f"{module.__name__} has no build_topology() function")
+    topology = build_topology()
     if not isinstance(topology, Topology):
         raise TypeError(
             f"{module.__name__}.build_topology returned {type(topology).__name__}; "
@@ -147,29 +128,42 @@ def _system_description(topology_module: ModuleType) -> str:
 
 
 async def build_system_from_package(
-    package_name: str | None, stores: IRuntimeStoreFactory,
+    package_name: str,
+    stores: IRuntimeStoreFactory,
+    ops_history_store: IOpsHistoryStore,
+    device_factory: IDeviceDriverProvider,
+    labware_service: ILabwareService,
+    unsaved_positions: IUnsavedPositions,
+    *,
+    event_bus: IEventBus,
 ) -> SystemBuild:
-    """Build the system a package's `topology.py` and `workflows/*.py` declare."""
-    if not package_name:
-        raise ValueError(
-            "build_system_from_package needs a package name. A module run as a script "
-            "has none; run it with python -m so __package__ is set.",
-        )
-    _import_package(package_name)
-    topology_module = importlib.import_module(f"{package_name}.topology")
-    topology = build_topology_from_module(topology_module, stores)
+    """Build the system a package's `topology.py` and `workflows/*.py` declare.
 
-    workflow_modules = _import_workflow_modules(package_name)
+    `device_factory` supplies every device's driver while the package imports and `topology.py` builds.
+    """
+    # Settings first: they are separate from the topology and may one day shape how it loads.
+    config = stores.system_config()
+    # Imports are inside the binding too: a device a module builds at import must get the server's driver.
+    with use_device_factory(device_factory):
+        _import_package(package_name)
+        topology_module = importlib.import_module(f"{package_name}.topology")
+        topology = build_topology_from_module(topology_module)
+        workflow_modules = _import_workflow_modules(package_name)
     reservoirs: list[LabwareTemplate] = []
     for module in workflow_modules:
         reservoirs.extend(getattr(module, "reservoirs", []))
 
-    build = await build_system(
+    build = await build_system_over(
         name=_system_name(topology_module, package_name),
         topology=topology,
         stores=stores,
         labwares=reservoirs,
         description=_system_description(topology_module),
+        event_bus=event_bus,
+        ops_history_store=ops_history_store,
+        labware_service=labware_service,
+        unsaved_positions=unsaved_positions,
+        config=config,
     )
     for module in workflow_modules:
         await add_workflow_template(build.system, _build_workflow(module, topology))

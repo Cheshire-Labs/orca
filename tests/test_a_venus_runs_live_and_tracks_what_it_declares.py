@@ -7,14 +7,13 @@ action's method runs with its values, a failed method stops the plate, and the
 volumes and tips the action declares land in the labware record only when the
 method succeeds.
 """
+from orca.events.event_bus import EventBus
 import os
 import pathlib
 import stat
 import sys
 import tempfile
-from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, cast
 
 import pytest
 from pydantic import BaseModel, JsonValue
@@ -22,23 +21,16 @@ from pydantic import BaseModel, JsonValue
 import orca.orca as orca
 from cheshire_drivers import CartesianCoordinates as C
 from cheshire_drivers import Teachpoint
-from cheshire_drivers.driver_errors import outcome_of
-from cheshire_drivers.protocol_runner_request_validation import wrap_protocol_runner_payload
 from cheshire_drivers.sims import SimStorageDriver, SimTransporterDriver
+from cheshire_drivers.device_setup import DeviceSetup, RealDriverSetup, VenusProtocols
 from cheshire_drivers.venus_driver import SimulationVenusProtocolDriver, VenusProtocolDriver
 from orca.devices.devices import Storage
 from orca.devices.venus import Venus
-from orca.gateway.controller.controller import DeviceController
-from orca.gateway.controller.exceptions import CommandExecutionError
-from orca.gateway.remote_device_factory import RemoteDeviceFactory
 from orca.resource_models.transporter import Transporter
-from orca.runtime.device_factory import SimDeviceFactory
-from orca.runtime.device_factory_context import use_device_factory
-from orca.runtime.device_factory_protocol import DriverPairElement
-from orca.runtime.registries import NullGatewayRegistry
-from orca.runtime.run_modes import WorkflowRunMode
+from tests.no_devices import NullGatewayRegistry
+from orca.modes.run_modes import WorkflowRunMode
 from orca.runtime.status_models import ConnectionCard
-from orca.runtime.store_factory import InMemoryRuntimeStoreFactory
+from orca.runtime.startup import PackageSetupStoreFactory
 from orca.runtime.system_runtime import SystemRuntime
 from orca.sdk.build import SystemBuild, Topology
 from orca.sdk.labware import PlateTemplate, TipRackTemplate
@@ -48,7 +40,12 @@ from orca.workflow_models.action_context import ActionContext
 from orca.workflow_models.method_context import MethodContext
 from orca.workflow_models.thread_context import ThreadContext
 from tests.runtime.registries.test_device_registry import FakeConnectionSource
-from tests.test_helpers import run_to_quiescence, wait_for_paused_thread
+from tests.test_helpers import run_to_quiescence, state_every_liquid_handler_head_empty, wait_for_paused_thread
+from tests.setup_package import package_stores, write_teachpoints
+from tests.setup_package import with_teachpoints
+from tests.memory_activity import memory_ops_store, memory_runtime
+from orca.gateway.gateway_backed_driver import GatewayBackedDriver
+from tests.real_device_path import the_real_device_path
 
 _FAKE_HXRUN = """
 import json, os, pathlib, sys
@@ -109,48 +106,16 @@ class _FakeHamiltonPc:
         return [_HxRunCall.model_validate_json(line) for line in self.log.read_text().splitlines()]
 
 
-@dataclass
-class _OrcaClient:
-    """Plays orca-client: each wire command reaches the Venus driver as orca-client delivers it."""
-
-    venus: VenusProtocolDriver
-
-    async def execute_command(
-        self,
-        device_id: str,
-        command: str,
-        params: Optional[Dict[str, Any]] = None,
-        timeout_seconds: Optional[float] = None,
-        effective_mode: WorkflowRunMode = WorkflowRunMode.LIVE,
-        resend_on_reconnect: bool = True,
-        execution_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        kwargs = wrap_protocol_runner_payload(command, params or {})
-        try:
-            await getattr(self.venus, command)(**kwargs)
-        except Exception as error:
-            raise CommandExecutionError(str(error), type(error).__name__, outcome_of(error)) from error
-        return {"success": True}
+def _set_up_ml_star_as_a_venus() -> None:
+    the_real_device_path().set_up(
+        "ml_star", DeviceSetup(client="hamilton-pc", real=RealDriverSetup(type="venus", venus=VenusProtocols())),
+    )
 
 
-class _VenusOnTheBridge:
-    """Venus over the wire; every other device a local sim."""
-
-    def __init__(self, orca_client: _OrcaClient) -> None:
-        self._remote = RemoteDeviceFactory(
-            controller=cast(DeviceController, orca_client),
-            default_timeout=30.0,
-            mode_resolver=lambda _name: WorkflowRunMode.LIVE,
-            profile_source=lambda name: VenusProtocolDriver.interfaces if name == "ml_star" else None,
-        )
-        self._sim = SimDeviceFactory()
-
-    def build_drivers(
-        self, device_type: str, name: str, *, deck_modeling: bool = False,
-    ) -> tuple[DriverPairElement, DriverPairElement]:
-        if name == "ml_star":
-            return self._remote.build_drivers(device_type, name)
-        return self._sim.build_drivers(device_type, name, deck_modeling=deck_modeling)
+def _venus_on_the_hamilton_pc(hamilton_pc: _FakeHamiltonPc, stores: PackageSetupStoreFactory) -> None:
+    """ml_star is a Venus on the Hamilton PC; its orca-client runs each command on the real Venus driver."""
+    _set_up_ml_star_as_a_venus()
+    the_real_device_path().simulate_with("ml_star", hamilton_pc.orca_client_driver())
 
 
 def _connected() -> FakeConnectionSource:
@@ -175,25 +140,24 @@ def hamilton_pc(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> _Fak
     return _FakeHamiltonPc(tmp_path, monkeypatch)
 
 
-def _devices(hamilton_pc: _FakeHamiltonPc, stores: InMemoryRuntimeStoreFactory) -> tuple[Venus, Storage, Storage, Transporter]:
+def _devices(hamilton_pc: _FakeHamiltonPc, stores: PackageSetupStoreFactory) -> tuple[Venus, Storage, Storage, Transporter]:
     def build() -> tuple[Venus, Storage, Storage, Transporter]:
         venus = Venus("ml_star", site_names=["sample_site", "reservoir_site", "tips_site"])
-        arm = Transporter(
+        arm = with_teachpoints(Transporter(
             "arm",
-            teachpoint_store=stores.teachpoints("arm", seed=[
+        ), write_teachpoints(stores, "arm", [
                 Teachpoint("stacker", C(0, 200, 300, 0, 90, 180), orientation="right"),
                 Teachpoint("ml_star/sample_site", C(200, 200, 300, 0, 90, 180), orientation="right"),
                 Teachpoint("waste", C(400, 200, 300, 0, 90, 180), orientation="right"),
-            ]),
-        )
+            ]))
         return venus, Storage("stacker"), Storage("waste"), arm
 
-    with use_device_factory(_VenusOnTheBridge(_OrcaClient(hamilton_pc.orca_client_driver()))):
-        return build()
+    _venus_on_the_hamilton_pc(hamilton_pc, stores)
+    return build()
 
 
 async def _build(hamilton_pc: _FakeHamiltonPc) -> SystemBuild:
-    stores = InMemoryRuntimeStoreFactory()
+    stores = package_stores()
     sample_plate = PlateTemplate(
         "sample_plate", labware_type="Cor_Falcon_96_wellplate_340ul_Fb_Black",
         initial_state=LabwareInitialState(uniform_volume=0.0),
@@ -256,16 +220,21 @@ async def _build(hamilton_pc: _FakeHamiltonPc) -> SystemBuild:
         locations={"stacker": stacker, "ml_star": ml_star, "waste": waste},
         transporters=[arm],
     )
-    return await orca.build_system(name="Venus Buffer", workflow=workflow, topology=topology, stores=stores)
+    return await orca.build_system(name="Venus Buffer", workflow=workflow, topology=topology, stores=stores, event_bus=EventBus(), ops_history_store=memory_ops_store())
 
 
 async def _submit(build: SystemBuild, mode: WorkflowRunMode) -> tuple[SystemRuntime, str]:
     """The way a hosted deployment and the daemon submit."""
-    runtime = SystemRuntime(
+    runtime = await memory_runtime(
         build.system, event_bus=build.event_bus,
         gateway_registry=NullGatewayRegistry(), connection_source=_connected(),
     )
     await runtime.start()
+    await state_every_liquid_handler_head_empty(runtime)
+    if mode is WorkflowRunMode.LIVE:
+        # A live run binds what is on the deck and never creates a resident itself.
+        await runtime.labware.register("reservoir", location="ml_star/reservoir_site", confirm=True)
+        await runtime.labware.register("tips", location="ml_star/tips_site", confirm=True)
     return runtime, (await runtime.submit_workflow("venus_buffer_wf", mode=mode)).id
 
 
@@ -303,7 +272,7 @@ async def test_the_hooks_and_the_method_run_on_the_hamilton_pc_with_the_plate_an
 
 @pytest.mark.slow
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", [WorkflowRunMode.LIVE, WorkflowRunMode.PURE_SIM])
+@pytest.mark.parametrize("mode", [WorkflowRunMode.LIVE, WorkflowRunMode.CHECK_RUN])
 async def test_the_declared_volumes_and_tips_land_in_the_labware_record(
     hamilton_pc: _FakeHamiltonPc, mode: WorkflowRunMode,
 ) -> None:
@@ -340,8 +309,12 @@ async def test_a_failed_venus_method_pauses_the_plate_and_records_nothing(
     await runtime.shutdown()
 
 
-def test_a_venus_with_no_device_bridge_only_simulates() -> None:
-    """Orca never runs HxRun itself: with no factory bound, Venus methods are simulated."""
+async def test_a_venus_in_a_check_run_only_simulates() -> None:
+    """Orca never runs HxRun itself: it forwards Venus commands, and a check run's orca-client simulates them."""
+    path = the_real_device_path()
+    _set_up_ml_star_as_a_venus()
     venus = Venus("ml_star")
+    await path.connect_devices(venus)
 
-    assert isinstance(venus.live_driver, SimulationVenusProtocolDriver)
+    assert isinstance(venus.driver, GatewayBackedDriver)
+    assert isinstance(path.simulator("ml_star"), SimulationVenusProtocolDriver)

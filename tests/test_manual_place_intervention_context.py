@@ -9,6 +9,7 @@ target_location, and that ordinary statuses stay a plain
 ThreadExecutionContext (no enrichment, no behavior change).
 """
 
+from tests.thread_builder import build_executing_thread
 from unittest.mock import MagicMock
 
 from orca.events.execution_context import (
@@ -16,12 +17,12 @@ from orca.events.execution_context import (
     ManualInterventionContext,
     ThreadExecutionContext,
 )
-from orca.events.intervention import InterventionKind, classify_intervention
+from orca.runtime.intervention import InterventionKind, classify_intervention
 from orca.events.runtime_event import RuntimeEvent
 from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.location import Location
 from orca.resource_models.plate_pad import PlatePad
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from orca.workflow_models.labware_threads.executing_labware_thread import (
     ExecutingLabwareThread,
 )
@@ -62,7 +63,7 @@ def _build_thread() -> tuple[ExecutingLabwareThread, Captured]:
     # AWAITING_MANUAL_REMOVE reports the slot the labware rests at.
     loc_service.get.return_value = end
 
-    et = ExecutingLabwareThread(
+    et = build_executing_thread(
         thread=thread,
         event_bus=MagicMock(),
         move_handler=MagicMock(),

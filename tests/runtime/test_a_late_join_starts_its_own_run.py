@@ -11,16 +11,16 @@ own run, which is what `submit` already documents for a JOIN_EXISTING with no
 live execution to join.
 """
 
+from orca.events.event_bus import EventBus
 import orca.orca as orca
 from cheshire_drivers import DeckLayoutConfig, DeckResourceConfig, Teachpoint
 from cheshire_drivers import CartesianCoordinates as C
 from orca.devices.devices import LiquidHandler, Storage
 from orca.resource_models.transporter import Transporter
-from orca.runtime.labware_group import LabwareGroup, LabwareGroupMember
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.store_factory import InMemoryRuntimeStoreFactory
-from orca.runtime.submission import BatchMode
-from orca.runtime.system_runtime import SystemRuntime
+from orca.workflow_models.labware_group import LabwareGroup, LabwareGroupMember
+from orca.modes.run_modes import WorkflowRunMode
+from orca.runtime.sinks import CollectorSink
+from orca.workflow_models.submission import BatchMode
 from orca.sdk.build import Topology
 from orca.sdk.labware import PlateTemplate
 from orca.spawn import DISPENSE
@@ -28,6 +28,9 @@ from orca.workflow_models.action_context import ActionContext
 from orca.workflow_models.method_context import MethodContext
 from orca.workflow_models.thread_context import ThreadContext
 from tests.test_helpers import run_to_quiescence
+from tests.setup_package import package_stores, write_deck_layouts, write_teachpoints
+from tests.setup_package import with_teachpoints, with_deck_layouts
+from tests.memory_activity import memory_ops_store, memory_runtime
 
 
 _DECK_CONFIG = DeckLayoutConfig(
@@ -37,24 +40,22 @@ _DECK_CONFIG = DeckLayoutConfig(
 
 
 async def _build_one_plate_system():
-    stores = InMemoryRuntimeStoreFactory()
+    stores = package_stores()
     sample = PlateTemplate("sample", labware_type="Cor_Falcon_96_wellplate_340ul_Fb_Black")
 
-    lh = LiquidHandler(
+    lh = with_deck_layouts(LiquidHandler(
         "lh",
-        deck_layout_store=stores.deck_layouts("lh", seed={"default": _DECK_CONFIG}),
         deck_layout="default",
-    )
+    ), write_deck_layouts(stores, "lh", {"default": _DECK_CONFIG}))
     stacker = Storage("stacker")
     waste = Storage("waste")
-    arm = Transporter(
+    arm = with_teachpoints(Transporter(
         "arm",
-        teachpoint_store=stores.teachpoints("arm", seed=[
+    ), write_teachpoints(stores, "arm", [
             Teachpoint("stacker", C(0, 200, 300, 0, 90, 180), orientation="right"),
             Teachpoint("lh/carrier-7-2", C(400, 200, 300, 0, 90, 180), orientation="right"),
             Teachpoint("waste", C(600, 200, 300, 0, 90, 180), orientation="right"),
-        ]),
-    )
+        ]))
 
     @orca.action(device=lh, inputs=[sample], deck_positions={sample: "carrier-7-0"})
     async def touch(ctx: ActionContext) -> None:
@@ -75,7 +76,7 @@ async def _build_one_plate_system():
     topology = Topology(
         locations={"stacker": stacker, "lh": lh, "waste": waste}, transporters=[arm])
     return await orca.build_system(
-        name="Late Join", workflow=workflow, topology=topology, stores=stores)
+        name="Late Join", workflow=workflow, topology=topology, stores=stores, event_bus=EventBus(), ops_history_store=memory_ops_store())
 
 
 def _group(group_id: str) -> LabwareGroup:
@@ -87,12 +88,14 @@ def _group(group_id: str) -> LabwareGroup:
 
 async def test_a_join_arriving_after_its_host_finished_starts_its_own_run() -> None:
     build = await _build_one_plate_system()
-    runtime = SystemRuntime(build.system, event_bus=build.event_bus)
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
+    sink = CollectorSink()
+    runtime.register_sink(sink)
     template = build.system.get_workflow_template("late_join_wf")
     await runtime.start()
     try:
         first = await runtime.submit(
-            template, groups=[_group("g1")], mode=WorkflowRunMode.PURE_SIM)
+            template, groups=[_group("g1")], mode=WorkflowRunMode.CHECK_RUN)
         first_statuses = await run_to_quiescence(runtime, first.execution_id, timeout=60.0)
         assert first_statuses and all(s == "COMPLETED" for s in first_statuses.values()), (
             f"the host run must finish before the late join; got {first_statuses}"
@@ -102,7 +105,7 @@ async def test_a_join_arriving_after_its_host_finished_starts_its_own_run() -> N
             template,
             groups=[_group("g2")],
             batch_mode=BatchMode.JOIN_EXISTING,
-            mode=WorkflowRunMode.PURE_SIM,
+            mode=WorkflowRunMode.CHECK_RUN,
         )
         assert second.execution_id != first.execution_id, (
             "a finished run is not a host: the late join must start its own"
@@ -115,8 +118,8 @@ async def test_a_join_arriving_after_its_host_finished_starts_its_own_run() -> N
         f"the late join's plate must run to completion; got {second_statuses}"
     )
     thread_events = [
-        event for event in runtime.get_events_for_execution(second.execution_id)
-        if event.event_name.startswith("THREAD.")
+        event for event in sink.events
+        if event.execution_id == second.execution_id and event.event_name.startswith("THREAD.")
     ]
     assert thread_events, (
         "the late join's plate moved without a single thread event reaching the "

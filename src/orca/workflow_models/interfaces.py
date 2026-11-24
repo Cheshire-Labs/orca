@@ -42,6 +42,11 @@ class IMethod(ABC):
     ) -> None:
         raise NotImplementedError
 
+    @abstractmethod
+    def note_labware_lost(self, labware_name: str) -> None:
+        """A thread bound to bring labware to this method ended before it arrived."""
+        raise NotImplementedError
+
 
 class ILabwareThread(ABC):
     @property

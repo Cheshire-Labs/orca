@@ -1,12 +1,15 @@
 import asyncio
 import logging
 from types import MappingProxyType
-from typing import Awaitable, Callable, List, Sequence
+from typing import Awaitable, Callable, List, Mapping, Sequence
+from orca.devices.deck_gripper_transporter import DeckGripperTransporter
 from orca.devices.devices import DeckLabwareIdentityError, LiquidHandler
 from orca.resource_models.devices import Device
 from orca.resource_models.device_deck_site import DeviceDeckSite
 from orca.resource_models.labware_staging_bridge import LabwareStagingBridge
 from orca.resource_models.location import Location
+from orca.state.records import ObservationGapCause
+from orca.resource_models.device_error import SlotOccupiedError
 from orca.resource_models.resource_pool import ResourcePool
 from orca.resource_models.resources import IInitializable, IModeAware, IResource
 
@@ -16,9 +19,14 @@ from orca.resource_models.adhoc_labware import (
 )
 from orca.resource_models.labware import LabwareInstance, LabwareTemplate
 from orca.state.contents import LabwareContentsLedger
-from orca.resource_models.labware_directory import reset_labware_directory
-from orca.state.current import reset_placement_ledger
-from orca.state.mounted import MountedTipsLedger
+from orca.resource_models.command_effects import Carried, LabwareMotion, SystemCommandPipeline
+from orca.gateway.controller.exceptions import CommandNotSavedError, DeviceFaultedError
+from orca.gateway.device_fault import DeviceFault
+from orca.state.command_operations import save_command_by_name
+from orca.state.mounted import MountedTipsLedger, head_a_failed_command_leaves_unknown
+from orca.resource_models.vendor_protocol_head import VendorProtocolHeadCheck
+from orca.devices.device_interfaces import ILiquidHandler
+from orca.state.records import TrackingSource
 from cheshire_drivers import DeckLayoutConfig, DeckResourceConfig
 from cheshire_drivers.liquid_handler_models import (
     DeckResourceState,
@@ -26,58 +34,82 @@ from cheshire_drivers.liquid_handler_models import (
     InterruptedMove,
     ReconcileDeckOccupancyRequest,
 )
-from orca.runtime.interfaces import ILabwareStore
+from orca.resource_models.labware_service_interface import ILabwareService
 from orca.system.deck_sites import enumerate_deck_sites
 from orca.system.reservation_manager.errors import IThreadIncidentDeclarer
-from orca.runtime.labware_catalog_protocol import ILabwareCatalog
-from orca.runtime.labware_group import LabwareGroup
-from orca.runtime.run_modes import WorkflowRunMode, current_run_mode
-from orca.runtime.submission import ResolvedAcquisition
-from orca.runtime.submission_modes import BatchMode
+from orca.workflow_models.thread_status_recorder import IThreadStatusRecorder
+from orca.resource_models.labware_catalog_protocol import ILabwareCatalog
+from orca.workflow_models.labware_group import LabwareGroup
+from orca.modes.run_modes import WorkflowRunMode, current_execution_id, current_run_mode
+from orca.workflow_models.submission import ResolvedAcquisition
+from orca.workflow_models.submission_modes import BatchMode
 from orca.events.execution_context import WorkflowExecutionContext
 from orca.workflow_models.action_template import ActionTemplate
 from orca.resource_models.transporter import Transporter
+from orca.system.device_worlds import DeviceWorlds
 from orca.resource_models.transporter_base import TransporterBase
 from orca.system.system_info import SystemInfo
-from orca.system.errors import DeviceInitializationError
+from orca.system.errors import DeviceInitializationError, DevicesNotReadyError
 from orca.system.system_interface import (
     DeckComparison,
     DeckConflictReason,
     DeckReconcileConflict,
     DeckReconcileConflictListener,
-    LedgerContradiction,
-    LedgerContradictionListener,
+    NOTHING_ON_RECORD_WAS_MOVED,
     ISystem,
 )
-from orca.system.interfaces import IMethodRegistry
-from orca.system.interfaces import IWorkflowRegistry
-from orca.system.resource_registry import IResourceRegistry, IResourceRegistryObserver
+from orca.workflow_models.workflows.registry_interfaces import IMethodRegistry
+from orca.workflow_models.workflows.registry_interfaces import IWorkflowRegistry
+from orca.resource_models.resource_registry import IResourceRegistry, IResourceRegistryObserver
 from orca.system.system_map import SystemMap
 from orca.system.registries import LabwareRegistry, TemplateRegistry
 from orca.workflow_models.interfaces import IMethod
 from orca.workflow_models.labware_threads.executing_labware_thread import ExecutingLabwareThread, IExecutingThreadRegistry
 from orca.workflow_models.workflows.executing_workflow import ExecutingWorkflow, IExecutingWorkflowRegistry
 from orca.workflow_models.workflows.workflow_factories import ThreadFactory
-from orca.system.thread_registry_interface import IThreadRegistry
+from orca.system.reservation_manager.thread_registry_interface import IThreadRegistry
 from orca.state.ops_history import OpsHistory
 from orca.resource_models.tracking_context import TrackingContext
-from orca.workflow_models.method import ExecutingMethod, MethodInstance
+from orca.workflow_models.method import ExecutingMethod
 from orca.workflow_models.method_template import MethodTemplate
 from orca.workflow_models.thread_template import ThreadTemplate
 from orca.workflow_models.labware_threads.labware_thread import LabwareThreadInstance
 from orca.workflow_models.workflows.workflow import WorkflowInstance
 from orca.workflow_models.workflow_templates import WorkflowTemplate
-from orca.system.thread_manager_interface import IThreadManager
+from orca.workflow_models.labware_threads.thread_manager_interface import IThreadManager
 from orca.workflow_models.workflows.workflow_registry import IExecutingMethodRegistry
 from orca.system.mutation.coordinator import MutationCoordinator
 from orca.variables.deployment_profile import DeploymentProfile
 from orca.variables.errors import OptionValue
 from orca.resource_models.labware_location_service import ILabwareLocationService
-from orca.resource_models.labware_placement import LabwarePlacer
-from orca.variables.variable_store import VariableService, VariableStore
+from orca.resource_models.labware_placement import IUnsavedPositions, LabwarePlacer
+from orca.variables.variable_store import IVariableService
 from orca.workflow_models.mutation_position import InsertPosition
 
 orca_logger = logging.getLogger("orca")
+
+
+class _StatementLookup:
+    """Finds what a stored command statement names, in this system."""
+
+    def __init__(self, system: ISystem) -> None:
+        self._system = system
+
+    def labware_with_id(self, labware_id: str) -> LabwareInstance | None:
+        return next((labware for labware in self._system.labwares if labware.id == labware_id), None)
+
+    def location_at(self, position_id: str) -> Location | None:
+        """A site, or a mover's jaws, which are not on the system map."""
+        for mover in self._system.movers:
+            if mover.gripper_location.position_id == position_id:
+                return mover.gripper_location
+        try:
+            return self._system.system_map.get_location(position_id)
+        except KeyError:
+            return None
+
+    def mover_named(self, name: str) -> TransporterBase | None:
+        return next((mover for mover in self._system.movers if mover.name == name), None)
 
 
 class System(ISystem):
@@ -99,14 +131,13 @@ class System(ISystem):
                  ops_history: OpsHistory,
                  labware_location_service: ILabwareLocationService,
                  labware_catalog: ILabwareCatalog,
-                 variable_store: VariableService | None = None) -> None:
+                 variable_store: IVariableService,
+                 labware_contents: LabwareContentsLedger,
+                 mounted_tips: MountedTipsLedger,
+                 labware_service: ILabwareService,
+                 unsaved_positions: IUnsavedPositions) -> None:
         self._info = info
         self._resources = resource_registry
-        # A build owns its world. Without this a rebuilt runtime inherits the
-        # dead build's occupancy and refuses the first plate onto a pad,
-        # naming a labware that no longer exists.
-        reset_placement_ledger()
-        reset_labware_directory()
         self._system_map = system_map
         self._templates = template_registry
         self._labwares = labware_registry
@@ -120,35 +151,43 @@ class System(ISystem):
         self._executing_workflow_registry = executing_workflow_registry
         self._tracking_context = tracking_context
         self._ops_history = ops_history
-        self._labware_contents = LabwareContentsLedger(ops_history)
-        self._mounted_tips = MountedTipsLedger(ops_history)
+        self._labware_contents = labware_contents
+        self._mounted_tips = mounted_tips
         self._labware_location_service = labware_location_service
+        self._labware_service = labware_service
+        self._device_worlds = DeviceWorlds(resource_registry, self._rebuild_world)
         self._labware_placer = LabwarePlacer(
-            labware_location_service, self.project_labware_on_lh_decks,
+            labware_location_service, labware_service, unsaved_positions, self.project_labware_on_lh_decks,
+            self._device_worlds.mark_other_worlds, self._every_world_goes_stale,
+            self.reconcile_lh_deck_occupancy, self._forget_labware,
         )
+        self._command_pipeline = SystemCommandPipeline(
+            self._labware_placer, self._save_engine_command, self._report_target_occupied, self.labware_at_device,
+            _StatementLookup(self), VendorProtocolHeadCheck(mounted_tips, self._is_liquid_handler),
+        )
+        self._command_pipeline.keep_worlds_with(self._device_worlds)
         # The thread factory needs the same one. Pushing it from the caller
         # left every entry point but SystemRuntime with threads that had
         # nowhere to record a move.
-        executing_thread_registry.set_labware_placer(self._labware_placer)
+        executing_thread_registry.set_command_pipeline(self._command_pipeline)
+        executing_workflow_registry.set_runtime_refs(labware_service, self)
+        for resource in resource_registry.resources:
+            if isinstance(resource, IModeAware):
+                resource.engine_commands.save_with(self._engine_command_saver(resource.name), self._command_pipeline)
         self._labware_catalog = labware_catalog
-        self._variable_store: VariableService = variable_store or VariableService(VariableStore())
+        self._variable_store = variable_store
         self._mutation_coordinator = MutationCoordinator(
             method_registry=method_registry,
             executing_method_registry=executing_method_registry,
             thread_template_registry=template_registry,
             thread_manager=thread_manager,
         )
-        # Lazy first-thread-touch device init: see `ensure_runtime_initialized`.
-        # Keyed by (mode, scope): a workflow declaring only the liquid handler
-        # must not mark the arm's bring-up done for the next one.
-        self._lazy_init_done: set[
-            tuple[WorkflowRunMode, frozenset[str] | None]
-        ] = set()
-        self._worlds_pending_reconcile: set[tuple[str, WorkflowRunMode]] = set()
+        # Lazy first-thread-touch device init, per run mode: see `ensure_runtime_initialized`.
+        self._lazy_init_done: set[WorkflowRunMode] = set()
         self._deck_reconcile_conflict_listeners: list[DeckReconcileConflictListener] = []
-        self._ledger_contradiction_listeners: list[LedgerContradictionListener] = []
         self._initialized_worlds: set[tuple[str, WorkflowRunMode]] = set()
         self._lazy_init_lock = asyncio.Lock()
+        self._fault_of: Callable[[str], DeviceFault | None] = lambda _name: None
 
     @property
     def id(self) -> str:
@@ -192,6 +231,20 @@ class System(ISystem):
     @property
     def labware_location_service(self) -> ILabwareLocationService:
         return self._labware_location_service
+
+    @property
+    def device_worlds(self) -> DeviceWorlds:
+        """Which driver worlds may not match the record; the next command to each rebuilds it first."""
+        return self._device_worlds
+
+    @property
+    def command_pipeline(self) -> SystemCommandPipeline:
+        """The one pipeline every device command in this system goes through."""
+        return self._command_pipeline
+
+    @property
+    def labware_service(self) -> ILabwareService:
+        return self._labware_service
 
     @property
     def labware_placer(self) -> LabwarePlacer:
@@ -245,6 +298,13 @@ class System(ISystem):
     def threads(self) -> List[LabwareThreadInstance]:
         return self._thread_registry.threads
 
+    def handlers_with_a_head(self) -> list[str]:
+        """Every liquid handler, with a modelled deck or not: each carries a head the record keeps."""
+        return [resource.name for resource in self._resources.resources if isinstance(resource, ILiquidHandler)]
+
+    def _is_liquid_handler(self, name: str) -> bool:
+        return name in self.handlers_with_a_head()
+
     def get_resource(self, name: str) -> IResource:
         return self._resources.get_resource(name)
 
@@ -272,6 +332,7 @@ class System(ISystem):
         self._resources.add_resource(resource)
 
     async def add_location(self, location: Location) -> None:
+        self._labware_location_service.bind_placements(location)
         await self._system_map.add_location(location)
 
     def add_resource_pool(self, resource_pool: ResourcePool) -> None:
@@ -282,6 +343,9 @@ class System(ISystem):
         # that skipped it stays mute and raises on the first read instead of
         # answering from the driver's own defaults.
         self._labwares.add_labware(labware)
+
+    def _forget_labware(self, labware: LabwareInstance) -> None:
+        self._labwares.remove_labware(labware.id)
 
     def remove_labware(self, labware_id: str) -> LabwareInstance | None:
         """Remove a labware instance from the system registry by id.
@@ -376,19 +440,6 @@ class System(ISystem):
     def add_workflow_template(self, workflow: WorkflowTemplate) -> None:
         self._templates.add_workflow_template(workflow)
 
-    def set_executing_workflow_factory_refs(
-        self, labware_store: ILabwareStore,
-    ) -> None:
-        """Inject the runtime's labware_store into the executing-workflow
-        factory so reuse-bind threads can register fresh labware into both
-        stores. Called by SystemRuntime.__init__ post-construction; the
-        factory's `system` ref is filled with `self`.
-        """
-        if hasattr(self._executing_workflow_registry, "set_runtime_refs"):
-            self._executing_workflow_registry.set_runtime_refs(
-                labware_store, self,
-            )
-
     def set_thread_incident_declarer(self, declarer: IThreadIncidentDeclarer) -> None:
         """Inject the runtime's thread-incident-declarer back-reference into
         the executing-thread factory.
@@ -406,11 +457,14 @@ class System(ISystem):
         """
         self._executing_thread_registry.set_thread_incident_declarer(declarer)
 
-    def set_labware_placer(self, placer: LabwarePlacer) -> None:
+    def set_thread_status_recorder(self, recorder: IThreadStatusRecorder) -> None:
+        self._executing_thread_registry.set_thread_status_recorder(recorder)
+
+    def set_command_pipeline(self, pipeline: SystemCommandPipeline) -> None:
         """Forward to the executing-thread factory. Part of
         IExecutingThreadRegistry; the constructor already pushes the system's
-        own placer, so this is for a caller substituting a different one."""
-        self._executing_thread_registry.set_labware_placer(placer)
+        own pipeline, so this is for a caller substituting a different one."""
+        self._executing_thread_registry.set_command_pipeline(pipeline)
 
     def remove_workflow_template(self, name: str) -> WorkflowTemplate | None:
         return self._templates.remove_workflow_template(name)
@@ -535,186 +589,289 @@ class System(ISystem):
     def stop_all_threads(self) -> None:
         return self._thread_manager.stop_all_threads()
     
-    async def initialize_all(self) -> None:
-        """ Initializes all resources in the system. This is typically called at the start of a workflow or method execution."""
-        return await self._resources.initialize_all()
+    async def ensure_runtime_initialized(self) -> None:
+        """Bring up every device and transporter once per run mode, for an entrypoint that seeded `current_run_mode`.
 
-    async def ensure_runtime_initialized(
-        self, workflow: WorkflowTemplate | None = None,
-    ) -> None:
-        """Lazy first-execution-entry device init, once per run mode and scope.
+        A sim or live run is brought up at submit by `bring_up_for_a_run`, so this is usually a no-op by the time
+        `SystemRuntime._run_workflow` calls it. The first call under a mode lays out each liquid handler's deck and
+        initializes each fresh device world; later calls under that mode return at once.
 
-        Called from each execution entrypoint (`SystemRuntime._run_workflow`,
-        `WorkflowExecutor.start`, `StandaloneMethodExecutor.start`) after
-        `current_run_mode` is seeded; the first call under a given mode walks
-        every LiquidHandler to push its deck config and reconcile occupancy,
-        then initializes the fresh non-sim device worlds in play. Later
-        calls under the same mode and scope observe `_lazy_init_done` and
-        return.
+        Done-ness is per world, not per process: orca-client swaps backends per stamped effective mode, so a SIM run
+        must not satisfy a later LIVE run. The walk survives partial failure: the mode is marked done only when the
+        whole walk succeeds, a freshly configured world keeps its reconcile obligation until a reconcile completes,
+        and each device world is marked initialized on its own, so a retry re-initializes only what failed.
 
-        `workflow` narrows the device init to what that workflow declares
-        (see `_resources_in_play`); the deck walk is not narrowed, because
-        laying a deck out moves nothing. Bringing an arm up takes its session
-        and resets
-        what it was tracking, and a workflow that never moves labware between
-        devices has no business doing that to one: on the bench an unscoped
-        walk drove a transporter into a neighbouring instrument during a run
-        that only used the liquid handler, back when bring-up homed. Passing
-        None keeps the old whole-topology walk, which is what a caller holding
-        no workflow has to do.
-
-        Done-ness is per WORLD, not per process: the mode picks which world
-        a dispatch reaches (PURE_SIM the local sim driver; DEVICE_SIM and
-        LIVE the wire, whose backend the on-prem device bridge swaps per
-        stamped effective mode). A PURE_SIM dry run therefore must not satisfy a
-        later LIVE run -- the live instrument would start with no deck and
-        no device init. The per-device gates key on the resolved per-device
-        mode (see `deck_world_layout` and `_initialize_fresh_worlds`),
-        so a `sim_override`-pinned device is neither reconfigured, nor
-        re-reconciled, nor re-initialized by a second submission mode that
-        resolves it to the same world.
-
-        The walk also survives partial failure: the (mode, scope) is marked
-        done only when the whole walk succeeds, a freshly configured world keeps
-        a pending-reconcile obligation until a reconcile completes (a
-        failed reconcile is retried on the next entry, even though the
-        configure itself is not repeated), and each device world is marked
-        initialized individually so a retry only re-initializes the
-        devices that failed.
-
-        Lock-guarded because concurrent task entry can interleave between
-        the flag check and the configure await: under asyncio one coroutine
-        yields during the `configure_deck` / initialize await, so a
-        sibling task could re-enter before the mode is recorded. The lock
-        serializes the check + walk so exactly one caller does the work.
-
-        Caller must seed `current_run_mode` before invoking; reads outside
-        a seeded context raise LookupError.
+        Lock-guarded, so two tasks entering together walk once. Reads outside a seeded context raise LookupError.
         """
-        mode = current_run_mode.get()
-        in_play = self._resources_in_play(workflow)
-        key = (mode, in_play)
-        if key in self._lazy_init_done:
-            return
-        async with self._lazy_init_lock:
-            if key in self._lazy_init_done:
-                return
-            for resource in self._resources.resources:
-                if isinstance(resource, LiquidHandler):
-                    if await self._deck_world_layout(resource) is None:
-                        continue
-                    world = (resource.name, resource.effective_mode)
-                    if self._deck_world_owes_a_reconcile(resource):
-                        await self.reconcile_lh_deck_occupancy(
-                            self._system_map.get_resource_location(resource.name)
-                        )
-                        self._worlds_pending_reconcile.discard(world)
-            await self._initialize_fresh_worlds(in_play)
-            self._lazy_init_done.add(key)
+        await self._bring_up({})
 
-    def _resources_in_play(
-        self, workflow: WorkflowTemplate | None,
-    ) -> frozenset[str] | None:
-        """Resource names this workflow can reach from what it declares, or
-        None when that cannot be narrowed and everything has to come up.
+    def read_faults_from(self, fault_of: Callable[[str], DeviceFault | None]) -> None:
+        self._fault_of = fault_of
 
-        A thread body is arbitrary Python, so which locations it visits is not
-        knowable before it runs. What every thread does declare is where it
-        starts and ends, and a route between two declared positions names the
-        movers that carry it. Anything outside that is brought up on first use
-        (see `Transporter.ensure_initialized`) rather than brought up at submit
-        time: bringing a device up takes its session and resets what it was
-        tracking, and a workflow that never touches the arm has no business
-        doing that to it.
+    async def bring_up_for_a_run(self, unreachable: Mapping[str, str]) -> list[DeviceInitializationError]:
+        """Bring up every device and every transporter before a fresh run is accepted.
+
+        A transporter on no route the workflow declares comes up too (owner, 2026-11-13), so an arm with no
+        orca-client refuses the run at its start, not at its first pick. `unreachable` names devices whose
+        orca-client is not connected, and why; they count as not coming up. Each reachable device's world that owes
+        a rebuild is rebuilt here, so a world that cannot be rebuilt refuses the run like a device that did not
+        come up. Offline pool members are tried again,
+        so one that came back is used. A device with a fault standing is not brought up: a clean initialize would
+        clear the fault, and only an operator who looked or a recovery decision may. It counts as not coming up.
+        Raises DevicesNotReadyError; returns the failures it tolerated because another device in the pool came up.
         """
-        if workflow is None:
-            return None
-        declared: set[str] = set()
-        # Auto-spawn templates are declared at build time like any other thread
-        # but live in their own registry, not in `thread_templates`.
-        for thread in [
-            *workflow.thread_templates,
-            *workflow.auto_spawn_registry.values(),
-        ]:
-            declared.add(thread.start_position_id)
-            declared.update(thread.end_position_ids)
-        if not declared:
-            return None
-        # A thread may name a device rather than a site, and a device is not a
-        # routing node; the journey resolver is what turns either into one.
-        names: set[str] = set()
-        positions: set[str] = set()
-        for declared_id in declared:
+        held = {f.device_name for f in self._faulted_failures()}
+        if held or any(d.is_offline for d in self._resources.devices):
+            self._lazy_init_done.clear()
+        tolerated = await self._bring_up(unreachable)
+        failures: list[DeviceInitializationError] = []
+        for device in self._device_worlds.devices():
+            if device.name in unreachable or device.name in held or (isinstance(device, Device) and device.is_offline):
+                continue
             try:
-                location = self._system_map.resolve_journey_location(declared_id)
-            except KeyError:
-                # A position the map cannot resolve: refuse to narrow rather
-                # than leave something the run needs uninitialized.
-                return None
-            # A deck site's `resource` is its own bridge, not the instrument;
-            # the mutex key is what names the device that owns it.
-            names.add(location.owner_mutex_id or location.resource.name)
-            positions.add(location.position_id)
-        for source in positions:
-            for target in positions:
-                if source == target:
-                    continue
-                names.update(self._system_map.movers_between(source, target))
-        return frozenset(names)
+                await self._device_worlds.bring_up_to_date(device.name)
+            except CommandNotSavedError:
+                raise
+            except Exception as exc:
+                failures.append(DeviceInitializationError(device.name, exc))
+        # The pool check marks every device online or offline from the failures it is given, so it gets them all.
+        return self._refuse_unless_each_device_or_pool_came_up(tolerated + failures) if failures else tolerated
 
-    async def _initialize_fresh_worlds(
-        self, in_play: frozenset[str] | None = None,
-    ) -> None:
+    def _faulted_failures(self) -> list[DeviceInitializationError]:
+        return [
+            DeviceInitializationError(resource.name, DeviceFaultedError(fault.describe(), fault))
+            for resource in self._resources.resources
+            if isinstance(resource, IInitializable) and (fault := self._fault_of(resource.name)) is not None
+        ]
+
+    async def _bring_up(self, unreachable: Mapping[str, str]) -> list[DeviceInitializationError]:
+        mode = current_run_mode.get()
+        if mode in self._lazy_init_done:
+            return []
+        async with self._lazy_init_lock:
+            if mode in self._lazy_init_done:
+                return []
+            failures = [
+                DeviceInitializationError(name, ConnectionError(why))
+                for name, why in unreachable.items()
+                if self._brought_up_by_the_walk(name)
+            ]
+            faulted = [f for f in self._faulted_failures() if f.device_name not in unreachable]
+            held = {f.device_name for f in faulted}
+            for resource in self._resources.resources:
+                if isinstance(resource, LiquidHandler) and resource.name not in unreachable and resource.name not in held:
+                    try:
+                        await self._lay_out_deck_world(resource)
+                    except CommandNotSavedError:
+                        raise
+                    except Exception as exc:
+                        failures.append(DeviceInitializationError(resource.name, exc))
+            failed = {f.device_name for f in failures} | held
+            failures += await self._initialize_fresh_worlds(skip=failed)
+            tolerated = self._refuse_unless_each_device_or_pool_came_up(failures + faulted)
+            if not held:
+                # A held device still owes its bring-up, so the next walk tries it again once its fault is cleared.
+                self._lazy_init_done.add(mode)
+            return tolerated
+
+    def _brought_up_by_the_walk(self, name: str) -> bool:
+        """Every device and every transporter comes up."""
+        return self._resources.has_resource(name) and isinstance(self._resources.get_resource(name), IInitializable)
+
+    async def _lay_out_deck_world(self, device: LiquidHandler) -> None:
+        if await self._deck_world_layout(device) is None:
+            return
+        await self._device_worlds.bring_up_to_date(device.name)
+
+    def _refuse_unless_each_device_or_pool_came_up(
+        self, failures: list[DeviceInitializationError],
+    ) -> list[DeviceInitializationError]:
+        """A failed device is tolerated only in pools of several devices, each with a member that came up.
+
+        Tolerated devices are marked offline, so a running pool waits for its other members instead of using them.
+        Returns the tolerated failures; raises DevicesNotReadyError for the rest.
+        """
+        failed = {f.device_name for f in failures}
+        refused = self._refused_unless_a_pool_covers(failed)
+        for device in self._resources.devices:
+            device.mark_offline(device.name in failed - refused)
+        if refused:
+            raise DevicesNotReadyError([f for f in failures if f.device_name in refused])
+        return failures
+
+    def _refused_unless_a_pool_covers(self, failed: set[str]) -> set[str]:
+        """The failed devices not covered by a pool of several devices with a member that did not fail."""
+        pooled: set[str] = set()
+        refused: set[str] = set()
+        for pool in self._resources.resource_pools:
+            members = {r.name for r in pool.resources}
+            if len(members) < 2:
+                continue
+            pooled |= members
+            if members <= failed:
+                refused |= members
+        return refused | (failed - pooled)
+
+    def refuse_a_join_unless_its_devices_are_reachable(self, unreachable: Mapping[str, str]) -> None:
+        failures = [
+            DeviceInitializationError(name, ConnectionError(why))
+            for name, why in unreachable.items()
+            if self._brought_up_by_the_walk(name)
+        ]
+        refused = self._refused_unless_a_pool_covers({f.device_name for f in failures})
+        if refused:
+            raise DevicesNotReadyError([f for f in failures if f.device_name in refused])
+
+    async def _initialize_fresh_worlds(self, skip: set[str] | None = None) -> list[DeviceInitializationError]:
         """Initialize each device's resolved world exactly once.
 
-        PURE_SIM-resolved worlds are never initialized: sim drivers need no
-        bring-up (pure-sim deployments have always run without one), and
-        under a PURE_SIM submission every device resolves sim because
-        overrides only ratchet toward sim. A wire world is keyed by mode
-        because the device bridge swaps backends per stamped mode: DEVICE_SIM
-        and LIVE are different instruments even though both dispatch through
-        the local live driver. Successes are marked per world, so a retry
-        after a partial failure only re-initializes the devices that failed
-        (initialize takes the device's session and resets its tracking).
-
-        `in_play` holds back MOVERS the workflow does not declare, and only
-        movers. A transporter is only ever reached through a pick, so
-        `Transporter.ensure_initialized` can bring one up on demand if a thread
-        body routes somewhere undeclared, which leaves an arm the run never
-        touches holding its own session and its own tracking. Neither holds for
-        a device: a thread body can put labware on a liquid handler's
-        deck without declaring it, and there is no equivalent chokepoint, so
-        devices keep coming up whatever the scope.
+        A world is keyed by mode because orca-client swaps backends per stamped mode: SIM and LIVE are different
+        instruments behind the one driver. Successes are marked per world, so a retry after a partial failure only
+        re-initializes the devices that failed (initialize takes the device's session and resets its tracking).
         """
         pending: list[tuple[tuple[str, WorkflowRunMode], IInitializable]] = []
         for resource in self._resources.resources:
             if not isinstance(resource, IInitializable):
                 continue
-            if (
-                in_play is not None
-                and isinstance(resource, TransporterBase)
-                and resource.name not in in_play
-            ):
+            if skip is not None and resource.name in skip:
                 continue
-            resolved = (
-                resource.effective_mode if isinstance(resource, IModeAware)
-                else current_run_mode.get()
-            )
-            if resolved is WorkflowRunMode.PURE_SIM:
-                continue
-            world = (resource.name, resolved)
-            if world not in self._initialized_worlds:
+            world = await self._uninitialized_world(resource.name, resource)
+            if world is not None:
                 pending.append((world, resource))
+        return await self._initialize_worlds(pending)
+
+    async def _uninitialized_world(
+        self, name: str, resource: IInitializable,
+    ) -> tuple[str, WorkflowRunMode] | None:
+        """The world this resource resolves to, or None when it needs no bring-up there."""
+        resolved = (
+            await resource.effective_mode() if isinstance(resource, IModeAware)
+            else current_run_mode.get()
+        )
+        world = (name, resolved)
+        return None if world in self._initialized_worlds else world
+
+    async def _initialize_worlds(
+        self, pending: list[tuple[tuple[str, WorkflowRunMode], IInitializable]],
+    ) -> list[DeviceInitializationError]:
         results = await asyncio.gather(
-            *(resource.initialize() for _, resource in pending),
+            *(self._initialize_and_save(world[0], resource) for world, resource in pending),
             return_exceptions=True,
         )
         failures: list[DeviceInitializationError] = []
+        not_saved: list[CommandNotSavedError] = []
         for (world, _), result in zip(pending, results):
-            if isinstance(result, BaseException):
+            if isinstance(result, CommandNotSavedError):
+                # It came up; only the record of it is missing, so it is not brought up again.
+                self._initialized_worlds.add(world)
+                not_saved.append(result)
+            elif isinstance(result, BaseException):
                 failures.append(DeviceInitializationError(world[0], result))
             else:
                 self._initialized_worlds.add(world)
+        if not_saved:
+            raise not_saved[0]
+        return failures
+
+    async def _initialize_and_save(self, device_name: str, resource: IInitializable) -> None:
+        """A bring-up is saved like every engine command: under the run that brought the device up, if one did."""
+        await self._command_pipeline.run_engine_command(
+            device_name, "initialize", resource.initialize,
+            lambda: self._save_engine_command(device_name, "initialize", "()"), carries_out=None,
+        )
+
+    def _engine_command_saver(self, device_name: str) -> Callable[[str], Awaitable[None]]:
+        async def save(command: str) -> None:
+            await self._save_engine_command(device_name, command, "()")
+        return save
+
+    def labware_at_device(self, device_name: str) -> list[LabwareInstance]:
+        """The labware standing at a device and its sites: what a command that names none of its own is about."""
+        try:
+            location = self._system_map.get_resource_location(device_name)
+        except ValueError:
+            return []
+        sites = self._system_map.sites_of(location.owner_mutex_id or location.position_id)
+        standing = [site.labware for site in [location, *sites] if site.labware is not None]
+        return list(dict.fromkeys(standing))
+
+    async def note_no_answer(
+        self, device_name: str, execution_id: str | None, named: Sequence[str], command: str,
+    ) -> None:
+        """What a command did at this device is unknown: the labware it names is unobserved until stated.
+
+        A command that names no labware (`named` is empty) is about everything standing at the device. Only a tip
+        command also leaves its head unobserved.
+        """
+        for labware in self._labware_named(named) if named else self.labware_at_device(device_name):
+            await labware.note_observation_gap(ObservationGapCause.OPERATIONS_DROPPED)
+        head = head_a_failed_command_leaves_unknown(command)
+        if head is None:
+            return
+        await self._mounted_tips.note_observation_gap(
+            device_name, ObservationGapCause.OPERATIONS_DROPPED, head.value, execution_id,
+        )
+
+    def _labware_named(self, names: Sequence[str]) -> list[LabwareInstance]:
+        """The labware the record knows by these names, once each. A name it does not know is skipped."""
+        known: list[LabwareInstance] = []
+        for name in dict.fromkeys(names):
+            try:
+                known.append(self.get_labware(name))
+            except KeyError:
+                continue
+        return known
+
+    def _report_target_occupied(self, device_name: str, motion: LabwareMotion, occupied: SlotOccupiedError) -> None:
+        name = motion.labware.name
+        if motion.carried is Carried.SET_DOWN:
+            kept = f"it still has '{name}' in the jaws of '{device_name}'."
+        elif motion.source is not None:
+            kept = f"it still has '{name}' at '{motion.source.position_id}', where the move started."
+        else:
+            kept = f"it still has '{name}' at no position."
+        self.notify_deck_reconcile_conflict(DeckReconcileConflict(
+            device_name=device_name,
+            labware_id=motion.labware.id,
+            labware_name=name,
+            position_id=motion.target.position_id,
+            reason=DeckConflictReason.LEDGER_TARGET_OCCUPIED,
+            blocking_labware_name=occupied.existing_labware_name,
+            detail=kept,
+        ))
+
+    async def _save_engine_command(self, device_name: str, command: str, args_repr: str) -> None:
+        # A command a run caused belongs to that run's history.
+        execution_id = current_execution_id.get()
+        history = self._ops_history if execution_id is None else self._ops_history.for_execution(execution_id)
+        await save_command_by_name(history, device_name, command, TrackingSource.OBSERVED, args_repr)
+
+    def device_in_use_by(self, device_name: str) -> str | None:
+        resource = self._resources.get_resource(device_name)
+        if not isinstance(resource, Device | TransporterBase):
+            return None
+        if resource.lock.locked():
+            return resource.lock.wait_subject
+        if resource.under_external_control:
+            return f"{device_name} is under external control"
+        return None
+
+    async def bring_up_device(self, device_name: str) -> None:
+        resource = self._resources.get_resource(device_name)
+        async with self._lazy_init_lock:
+            if isinstance(resource, LiquidHandler):
+                await resource.invalidate_deck_world_in_force()
+                await self._lay_out_deck_world(resource)
+            if not isinstance(resource, IInitializable):
+                return
+            world = await self._uninitialized_world(device_name, resource)
+            if world is None:
+                return
+            if isinstance(resource, Device | TransporterBase):
+                async with resource.lock.held_for("bring-up after a mode switch"):
+                    failures = await self._initialize_worlds([(world, resource)])
+            else:
+                failures = await self._initialize_worlds([(world, resource)])
         if failures:
             raise failures[0]
 
@@ -740,10 +897,12 @@ class System(ISystem):
     ) -> DeckComparison | None:
         """Ask the driver what its deck holds and set it beside the ledger.
 
-        Reads only. The ledger stays authoritative whatever comes back; this
-        exists so a disagreement can be SEEN before the reconcile writes the
-        ledger's answer over the driver's. Returns None when the location is
-        not a configured liquid handler, so there is nothing to compare.
+        Changes neither side, except to rebuild a world that is only behind
+        the record, as its next command would. The ledger stays authoritative
+        whatever comes back; this exists so a disagreement can be SEEN before
+        the reconcile writes the ledger's answer over the driver's. Returns
+        None when the location is not a configured liquid handler, so there is
+        nothing to compare.
         """
         device = self._lh_device_for(device_location)
         if device is None:
@@ -754,7 +913,12 @@ class System(ISystem):
         # walking the ledger either side of a move in flight invents a
         # disagreement that was never there.
         async with device.lock.held_for("get_deck_state"):
-            state = await device.driver.get_deck_state(GetDeckStateRequest())
+            # A world only behind the record would show its changes as disagreements. A world in doubt is read as it
+            # stands: after a no-answer it shows where the driver left a plate.
+            await self._device_worlds.bring_up_to_date_unless_in_doubt(device.name)
+            state = await device.engine_commands.keep_world(
+                "get_deck_state", lambda: device.driver.get_deck_state(GetDeckStateRequest()),
+            )
             driver_site_by_name = {
                 item.name: item.site
                 for item in state.labware
@@ -769,12 +933,19 @@ class System(ISystem):
         return DeckComparison(
             device_name=device.name,
             driver_deck_empty=not driver_site_by_name,
+            record_deck_empty=not self._record_has_labware_on(device, mutex_key),
             disagreements=tuple(disagreements),
             interrupted_move_labware=(
                 state.interrupted_move.labware
                 if state.interrupted_move is not None else None
             ),
         )
+
+    def _record_has_labware_on(self, device: LiquidHandler, mutex_key: str) -> bool:
+        gripper = device.gripper
+        if gripper is not None and gripper.labware is not None:
+            return True
+        return any(site.labware is not None for site in self._system_map.sites_of(mutex_key))
 
     def _deck_disagreements(
         self,
@@ -833,13 +1004,15 @@ class System(ISystem):
 
         if interrupted is not None:
             began_at = interrupted.from_site or interrupted.to_site
+            named = interrupted.labware
             disagreements.append(DeckReconcileConflict(
                 device_name=device_name,
-                labware_id=self._labware_id_or_name(interrupted.labware),
-                labware_name=interrupted.labware,
+                labware_id=None if named is None else self._labware_id_or_name(named),
+                labware_name=named,
                 position_id=f"{prefix}{began_at}",
                 reason=DeckConflictReason.INTERRUPTED_MOVE,
                 driver_site=interrupted.to_site,
+                detail=None if named is not None else NOTHING_ON_RECORD_WAS_MOVED,
             ))
         return disagreements
 
@@ -866,15 +1039,87 @@ class System(ISystem):
                 return labware.id
         return name
 
+    async def lh_deck_projection(
+        self, device_location: Location,
+    ) -> tuple[DeckLayoutConfig, list[DeckResourceConfig]] | None:
+        """The layout of a liquid handler's deck and where the ledger places each labware on it.
+
+        Reads only, reports nothing and takes no lock, so a watcher can ask on every command. It leaves out what
+        each labware holds: that is a fold of the labware's whole record. None when the location is not a liquid
+        handler with a layout.
+        """
+        device = self._lh_device_for(device_location)
+        if device is None:
+            return None
+        deck_config = await device.resolve_deck_config_async()
+        if deck_config is None:
+            return None
+        return deck_config, await self._ledger_deck_occupancy(device, device_location, deck_config, for_the_driver=False)
+
+    async def _ledger_deck_occupancy(
+        self, device: LiquidHandler, device_location: Location, deck_config: DeckLayoutConfig, *, for_the_driver: bool,
+    ) -> list[DeckResourceConfig]:
+        """Every labware the ledger places on this device's deck sites.
+
+        `for_the_driver` adds what each labware holds and reports what it finds wrong, as a reconcile needs.
+        """
+        placement_by_site: dict[str, tuple[str, int]] = {
+            site_name: (carrier_name, site_index)
+            for site_name, carrier_name, site_index in enumerate_deck_sites(deck_config)
+        }
+        mutex_key = device_location.owner_mutex_id or device_location.position_id
+        prefix = f"{mutex_key}/"
+        occupancy: list[DeckResourceConfig] = []
+        placed_by_name: dict[str, str] = {}
+        for site_loc in self._system_map.sites_of(mutex_key):
+            placement = placement_by_site.get(site_loc.position_id[len(prefix):])
+            labware = site_loc.labware
+            if placement is None:
+                if labware is not None and for_the_driver:
+                    self._report_vanished_site(
+                        device, labware, site_loc.position_id,
+                    )
+                continue
+            if labware is None:
+                continue
+            prior_site = placed_by_name.get(labware.name)
+            if prior_site is not None:
+                # Instance names are unique by mint; one name at two sites
+                # means a corrupted ledger, not an operator layout choice.
+                raise DeckLabwareIdentityError(
+                    f"reconcile_lh_deck_occupancy: device {device.name} holds "
+                    f"labware {labware.name!r} at two sites ({prior_site} and "
+                    f"{site_loc.position_id}); the ledger is corrupt."
+                )
+            catalog_ref = self._deck_catalog_ref(labware, site_loc.position_id)
+            if catalog_ref is None:
+                continue
+            carrier_name, site_index = placement
+            occupancy.append(DeckResourceConfig(
+                name=labware.name, catalog_ref=catalog_ref,
+                parent_id=carrier_name, site_index=site_index,
+                well_state=await labware.driver_well_state() if for_the_driver else None,
+            ))
+            placed_by_name[labware.name] = site_loc.position_id
+            if for_the_driver:
+                await self._report_contents_divergence(
+                    device, labware, site_loc.position_id,
+                )
+        held = await self._held_plate_occupancy(
+            device, prefix, placement_by_site, occupancy, for_the_driver=for_the_driver,
+        )
+        if held is not None:
+            occupancy.append(held)
+        return occupancy
+
     async def reconcile_lh_deck_occupancy(self, device_location: Location) -> None:
         """Reconcile a liquid handler's driver deck occupancy to the engine ledger.
 
         The driver deck is a projection: carriers come from the deck config;
         occupancy is whatever the ledger says sits on this device's deck sites
         (residents and transient, keyed by ``template_name`` exactly as
-        ``move_plate`` names them). This replaces the declaration-derived augment
-        so a cleared resident is NOT resurrected on reboot -- occupancy follows the
-        ledger, not the workflow's REUSE_EXISTING declarations.
+        ``move_plate`` names them). A cleared resident is NOT resurrected on reboot:
+        occupancy follows the ledger, not the workflow's REUSE_EXISTING declarations.
 
         Invariant relied on (covered by the resident-reagent pipetting tests): the
         engine ledger mirrors the driver deck, so a full reconcile reconstructs the
@@ -889,66 +1134,19 @@ class System(ISystem):
         device = self._lh_device_for(device_location)
         if device is None:
             return
-        deck_config = await self._deck_world_layout(device)
-        if deck_config is None:
+        # Not `_deck_world_layout`: a layout made here is filled right below, so it owes nothing.
+        laid_out = await device.deck_world_layout()
+        if laid_out is None:
             return
-        world = (device.name, device.effective_mode)
-        placement_by_site: dict[str, tuple[str, int]] = {
-            site_name: (carrier_name, site_index)
-            for site_name, carrier_name, site_index in enumerate_deck_sites(deck_config)
-        }
-
-        mutex_key = device_location.owner_mutex_id or device_location.position_id
-        prefix = f"{mutex_key}/"
+        deck_config, _just_configured = laid_out
         # Hold the device lock so the snapshot-then-replace is atomic against
         # move/place/pick and other reconciles (else a stale snapshot drops a plate).
         async with device.lock.held_for("deck reconcile"):
-            occupancy: list[DeckResourceConfig] = []
-            placed_by_name: dict[str, str] = {}
-            for site_loc in self._system_map.sites_of(mutex_key):
-                placement = placement_by_site.get(site_loc.position_id[len(prefix):])
-                labware = site_loc.labware
-                if placement is None:
-                    if labware is not None:
-                        self._report_vanished_site(
-                            device, labware, site_loc.position_id,
-                        )
-                    continue
-                if labware is None:
-                    continue
-                prior_site = placed_by_name.get(labware.name)
-                if prior_site is not None:
-                    # Instance names are unique by mint; one name at two sites
-                    # means a corrupted ledger, not an operator layout choice.
-                    raise DeckLabwareIdentityError(
-                        f"reconcile_lh_deck_occupancy: device {device.name} holds "
-                        f"labware {labware.name!r} at two sites ({prior_site} and "
-                        f"{site_loc.position_id}); the ledger is corrupt."
-                    )
-                catalog_ref = self._deck_catalog_ref(labware, site_loc.position_id)
-                if catalog_ref is None:
-                    continue
-                carrier_name, site_index = placement
-                occupancy.append(DeckResourceConfig(
-                    name=labware.name, catalog_ref=catalog_ref,
-                    parent_id=carrier_name, site_index=site_index,
-                    well_state=await labware.driver_well_state(),
-                ))
-                placed_by_name[labware.name] = site_loc.position_id
-                await self._report_contents_divergence(
-                    device, labware, site_loc.position_id,
-                )
-            held = await self._held_plate_occupancy(
-                device, prefix, placement_by_site, occupancy,
+            occupancy = await self._ledger_deck_occupancy(device, device_location, deck_config, for_the_driver=True)
+            request = ReconcileDeckOccupancyRequest(resources=occupancy)
+            await device.engine_commands.keep_world(
+                "reconcile_deck_occupancy", lambda: device.driver.reconcile_deck_occupancy(request),
             )
-            if held is not None:
-                occupancy.append(held)
-            await device.driver.reconcile_deck_occupancy(
-                ReconcileDeckOccupancyRequest(resources=occupancy)
-            )
-        # A completed reconcile discharges the world's obligation, whoever
-        # created it (this call, an earlier failed one, or the lazy walk).
-        self._worlds_pending_reconcile.discard(world)
 
     async def _held_plate_occupancy(
         self,
@@ -956,6 +1154,8 @@ class System(ISystem):
         prefix: str,
         placement_by_site: dict[str, tuple[str, int]],
         declared: list[DeckResourceConfig],
+        *,
+        for_the_driver: bool,
     ) -> DeckResourceConfig | None:
         """How to declare a plate this device's own gripper is holding, if at all.
 
@@ -989,6 +1189,8 @@ class System(ISystem):
             or placement in taken
             or in_flight.name in {entry.name for entry in declared}
         ):
+            if not for_the_driver:
+                return None
             orca_logger.warning(
                 "reconcile_lh_deck_occupancy: %s gripper is holding %s, and there is "
                 "no deck site to declare it at, so the driver no longer has it. Put "
@@ -1007,7 +1209,7 @@ class System(ISystem):
         return DeckResourceConfig(
             name=in_flight.name, catalog_ref=catalog_ref,
             parent_id=carrier_name, site_index=site_index,
-            well_state=await in_flight.driver_well_state(),
+            well_state=await in_flight.driver_well_state() if for_the_driver else None,
         )
 
     async def _report_contents_divergence(
@@ -1043,17 +1245,6 @@ class System(ISystem):
         for listener in self._deck_reconcile_conflict_listeners:
             listener(conflict)
 
-    def add_ledger_contradiction_listener(
-        self, listener: LedgerContradictionListener,
-    ) -> None:
-        self._ledger_contradiction_listeners.append(listener)
-
-    def notify_ledger_contradiction(
-        self, contradiction: LedgerContradiction,
-    ) -> None:
-        for listener in self._ledger_contradiction_listeners:
-            listener(contradiction)
-
     async def project_labware_on_lh_decks(
         self, labware: LabwareInstance, *locations: Location,
     ) -> None:
@@ -1062,7 +1253,7 @@ class System(ISystem):
 
         The narrow counterpart to `reconcile_lh_decks`. Whoever calls this knows
         which labware changed, so the driver hears about that one: correcting a
-        tip count on one rack no longer destroys and re-creates every neighbour,
+        tip count on one rack does not destroy and re-create every neighbour,
         which on a live instrument is a burst of wire commands about labware
         nobody asked to touch, and which on a partial failure leaves the deck
         half-projected with nothing to roll back to.
@@ -1080,78 +1271,19 @@ class System(ISystem):
             projected.add(device.name)
             await self._agree_about_one_labware(labware, device, location)
 
-    async def retract_labware_from_lh_decks(self, labware: LabwareInstance) -> None:
-        """Take one labware off every liquid-handler deck, in every deck world
-        that has been laid out.
-
-        The removal counterpart to `project_labware_on_lh_decks`, and it is not
-        told where the labware is on purpose. The projection resolves ONE world
-        and an operator write resolves to LIVE, so a plate a PURE_SIM run put
-        down was never reached. The engine's own answer to "where is it" is no
-        better: a thread that ends retires its labware and frees the slot, so by
-        the time an operator discharges it, nothing points at the deck it is
-        still standing on.
-
-        Removal is by instance name and only touches a deck that already holds
-        that name, so asking every handler costs a read and cannot disturb a
-        neighbour.
-
-        Best-effort per handler. A discharge is what an operator reaches for
-        WHEN a handler is down, so one that refuses because the read did leaves
-        them with the row, the slot and no way out but a restart. What the
-        engine knows is corrected either way, and the deck that could not be
-        reached is named in the log.
-        """
-        for device in self.devices:
-            if isinstance(device, LiquidHandler):
-                await self._retract_best_effort(
-                    device, labware, device.retract_deck_labware_from_every_world)
-
-    async def retract_labware_from_other_lh_worlds(
-        self, labware: LabwareInstance,
-    ) -> None:
-        """Take one labware off every liquid-handler deck world EXCEPT the
-        caller's, which the caller is projecting into itself.
-
-        What a move needs. An operator stating a new position writes it in their
-        own world, and the worlds they are not in are left holding the plate at
-        the site it has left -- which then refuses the next run that site.
-        """
-        for device in self.devices:
-            if isinstance(device, LiquidHandler):
-                await self._retract_best_effort(
-                    device, labware, device.retract_deck_labware_from_other_worlds)
-
-    async def _retract_best_effort(
-        self,
-        device: LiquidHandler,
-        labware: LabwareInstance,
-        retract: Callable[[LabwareInstance], Awaitable[None]],
-    ) -> None:
-        try:
-            await retract(labware)
-        except Exception as exc:
-            orca_logger.warning(
-                "%s could not be told that %s is gone (%s); its deck may still "
-                "hold it. Reconcile that deck once the device answers again.",
-                device.name, labware.name, exc,
-            )
-
     async def _agree_about_one_labware(
         self, labware: LabwareInstance, device: LiquidHandler, device_location: Location,
     ) -> None:
         """Push one labware's presence or absence onto one liquid handler's deck.
 
-        Falls back to the deck-wide reconcile when there is no single delta to
-        apply: a driver world whose occupancy is still unknown has nothing for a
-        delta to land on, and a labware sitting on the device endpoint rather
-        than a named deck site has no site to project it at.
+        A world that owes a rebuild has nothing for a delta to land on, so it is rebuilt whole now. A labware on the
+        device endpoint rather than a named deck site has no site to project it at, so the deck is rebuilt.
         """
         deck_config = await self._deck_world_layout(device)
         if deck_config is None:
             return
-        if self._deck_world_owes_a_reconcile(device):
-            await self.reconcile_lh_deck_occupancy(device_location)
+        if await self._device_worlds.owes_a_rebuild(device):
+            await self._device_worlds.bring_up_to_date(device.name)
             return
         site_loc = self._deck_site_holding(device_location, labware)
         if site_loc is None:
@@ -1159,7 +1291,7 @@ class System(ISystem):
             return
         site = site_loc.resource
         if not isinstance(site, DeviceDeckSite):
-            await self.reconcile_lh_deck_occupancy(device_location)
+            await self._labware_placer.deck_rebuilt(device_location)
             return
         if site.driver_site not in {name for name, _, _ in enumerate_deck_sites(deck_config)}:
             self._report_vanished_site(device, labware, site_loc.position_id)
@@ -1182,21 +1314,15 @@ class System(ISystem):
         from the layout the driver world actually has, so it can never land at
         carriers the driver does not hold.
 
-        A world configured from scratch holds no occupancy, so it owes a
-        reconcile; only a completed one discharges that.
+        A world configured from scratch holds no occupancy, so it owes a rebuild.
         """
         laid_out = await device.deck_world_layout()
         if laid_out is None:
             return None
         deck_config, just_configured = laid_out
         if just_configured:
-            self._worlds_pending_reconcile.add((device.name, device.effective_mode))
+            self._device_worlds.mark(device.name, await device.effective_mode())
         return deck_config
-
-    def _deck_world_owes_a_reconcile(self, device: LiquidHandler) -> bool:
-        """True while this driver world still owes the occupancy push that
-        configuring it created, so a single-labware delta has nothing to land on."""
-        return (device.name, device.effective_mode) in self._worlds_pending_reconcile
 
     def _deck_site_holding(
         self, device_location: Location, labware: LabwareInstance,
@@ -1251,6 +1377,16 @@ class System(ISystem):
             reason=DeckConflictReason.SITE_NOT_IN_LAYOUT,
         ))
 
+    async def _rebuild_world(self, device: LiquidHandler | Transporter) -> bool:
+        """Make a device's world in the mode in force match the record: a handler's deck, an arm's seeds."""
+        if isinstance(device, LiquidHandler):
+            await self._labware_placer.deck_rebuilt(self._system_map.get_resource_location(device.name))
+            return True
+        return await device.rebuild_world_from(self._system_map.locations)
+
+    async def _every_world_goes_stale(self) -> None:
+        await self._device_worlds.mark_every_deck_and_other_world()
+
     async def reconcile_lh_decks(self, *locations: Location) -> None:
         """Reconcile each distinct liquid-handler deck these locations sit on.
 
@@ -1264,13 +1400,13 @@ class System(ISystem):
             if device is None or device.name in reconciled:
                 continue
             reconciled.add(device.name)
-            await self.reconcile_lh_deck_occupancy(location)
+            await self._labware_placer.deck_rebuilt(location)
 
     def _lh_device_for(self, location: Location) -> LiquidHandler | None:
         """Resolve the LiquidHandler behind a flat site, a bridge-backed
-        single-slot site, or the device's mutex Location; None otherwise."""
+        single-slot site, its own gripper's jaws, or the device's mutex Location; None otherwise."""
         resource = location.resource
-        if isinstance(resource, (DeviceDeckSite, LabwareStagingBridge)):
+        if isinstance(resource, (DeviceDeckSite, LabwareStagingBridge, DeckGripperTransporter)):
             device = resource.device
         else:
             sites = self._system_map.sites_of(location.position_id)
@@ -1292,17 +1428,11 @@ class System(ISystem):
 
     # --- Skip + insert API (delegates to MutationCoordinator) ---
 
-    def skip_pending_method(
-        self, thread_id: str,
-        method_id: str | None = None, method_name: str | None = None,
-    ) -> None:
-        self._mutation_coordinator.skip_method(thread_id, method_id, method_name)
+    def skip_pending_method(self, thread_id: str, method_name: str) -> None:
+        self._mutation_coordinator.skip_method(thread_id, method_name)
 
-    async def abort_method(
-        self, thread_id: str,
-        method_id: str | None = None, method_name: str | None = None,
-    ) -> None:
-        await self._mutation_coordinator.abort_method(thread_id, method_id, method_name)
+    async def abort_method(self, thread_id: str, method_name: str) -> None:
+        await self._mutation_coordinator.abort_method(thread_id, method_name)
 
     def insert_method(
         self, thread_id: str, template: MethodTemplate,
@@ -1341,7 +1471,7 @@ class System(ISystem):
     # --- Variable access ---
 
     @property
-    def variable_store(self) -> VariableService:
+    def variable_store(self) -> IVariableService:
         return self._variable_store
 
     def set_variable(self, name: str, value: OptionValue, execution_id: str) -> None:
@@ -1366,8 +1496,8 @@ class System(ISystem):
 def _is_deck_furniture(item: DeckResourceState) -> bool:
     """True for a fixture the machine was built with, not labware anyone moved.
 
-    ``get_deck_state().labware`` is an occupancy list, so a Flex reports its
-    trash and a Hamilton its carriers. The ledger never holds those, and
+    ``get_deck_state().labware`` is an occupancy list, so a driver reports
+    fixed fixtures such as a trash or carriers. The ledger never holds those, and
     without this every compare on such a machine invents a conflict per
     fixture. ``category`` is what tells them apart.
     """

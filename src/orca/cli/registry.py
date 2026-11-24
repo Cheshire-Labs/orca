@@ -3,8 +3,8 @@
 Inventory: ``list`` verbs are reads against either backend.
 
 Verbs:
-    orca workflow load         -- register a workflow (local daemon: factory
-                                  spec; cloud: source file).
+    orca workflow load         -- submit a workflow source file (cloud only;
+                                  the local daemon builds workflows/ on mount).
     orca method execute        -- POST /api/method-executions (both backends)
 """
 
@@ -16,7 +16,7 @@ import typer
 
 from orca.cli import output
 from orca.cli.backend import (
-    active_backend, cloud_backend_installed, cloud_client, cloud_help, get_client, local_client,
+    cloud_backend_installed, cloud_client, cloud_help, get_client,
 )
 
 
@@ -39,10 +39,21 @@ class ThreadRow(NamedTuple):
     labware: str
     start: str
     end: str
+    put_down_before_run: str
 
 
 app = typer.Typer(help="Registry inspection (shared entry point).", hidden=True)
 workflow_app = typer.Typer(help="Workflow-template inventory.", no_args_is_help=True)
+
+_WORKFLOW_LOAD_HELP = (
+    "Load a workflow: validate + register on the runtime. Does NOT run it.\n\n"
+    + cloud_help("Cloud only. ")
+    + "The local daemon builds every `workflows/<name>.py` in its package folder when it mounts; "
+    "add the file there, then `orca unload` and `orca topology mount`.\n\n"
+    "Refused while any execution is active (paused included): re-importing would swap definitions "
+    "out from under live threads. To add a single method or action to a running workflow instead, "
+    "use `orca execution thread insert-method` / `orca execution thread insert-action`."
+)
 method_app = typer.Typer(help="Method-template inventory.", no_args_is_help=True)
 thread_app = typer.Typer(help="Thread-template inventory.", no_args_is_help=True)
 location_app = typer.Typer(help="Location inventory.", no_args_is_help=True)
@@ -54,10 +65,7 @@ location_app = typer.Typer(help="Location inventory.", no_args_is_help=True)
 @workflow_app.command("list")
 def workflow_list() -> None:
     """List all workflow templates. Works against both backends."""
-    if active_backend() == "cloud":
-        items = cloud_client().list_workflows()
-    else:
-        items = local_client().list_workflows()
+    items = get_client().list_workflows()
     if output.get_mode().value == "json":
         output.emit_json([w.model_dump(mode="json") for w in items])
         return
@@ -84,13 +92,11 @@ def workflow_get(
     )
 
 
-@workflow_app.command("load")
+@workflow_app.command("load", help=_WORKFLOW_LOAD_HELP)
 def workflow_load(
     target: str = typer.Argument(
         ...,
-        help="A 'module:build_workflow' factory spec, which the daemon "
-             "imports from the directory `orca start` ran in."
-             + cloud_help(" On the cloud backend, a workflow source file, submitted to the deployment."),
+        help="A workflow source file, submitted to the deployment.",
     ),
     name: str = typer.Option(
         "", "--name",
@@ -107,23 +113,13 @@ def workflow_load(
         help="Why, for the audit trail.",
     ),
 ) -> None:
-    """Load a workflow: validate + register on the runtime. Does NOT run it.
-
-    The daemon registers a `module:build_workflow` spec against the mounted
-    topology.
-
-    Refused while any execution is active (paused included): re-importing
-    would swap definitions out from under live threads. To add a single
-    method or action to a running workflow instead, use
-    `orca thread insert-method` / `orca thread insert-action`.
-    """
     from orca.cli.backend import active_backend
     if active_backend() == "local":
-        from orca.cli.client import LocalDaemonClient
-        client = LocalDaemonClient()
-        registered = client.load_workflow(target, reason=reason)
-        output.info(f"loaded workflow {registered!r}")
-        return
+        output.fail(
+            "the local daemon builds every workflows/<name>.py in its package folder when it "
+            "mounts; add the file there, then run `orca unload` and `orca topology mount`",
+            code=output.EXIT_USAGE,
+        )
 
     source = Path(target)
     if not source.is_file():
@@ -160,11 +156,7 @@ def workflow_load(
 
 @method_app.command("list")
 def method_list() -> None:
-    """List all method templates. Works against both backends.
-
-    Both backends return the Protocol's ``MethodSummaryDTO`` with
-    ``failure_policy`` as its name string.
-    """
+    """List all method templates. Works against both backends."""
     items = get_client().methods_list()
     if output.get_mode().value == "json":
         output.emit_json([m.model_dump(mode="json") for m in items])
@@ -176,7 +168,7 @@ def method_list() -> None:
             MethodRow(
                 workflow_name=m.workflow_name,
                 name=m.name,
-                failure_policy=m.failure_policy,
+                failure_policy=m.failure_policy.value,
             )
             for m in items
         ],
@@ -225,21 +217,24 @@ def method_execute(
     ),
     run_mode: str = typer.Option(
         "", "--run-mode",
-        help="PURE_SIM | DEVICE_SIM | LIVE. REQUIRED per submission.",
+        help="CHECK_RUN | SIM | LIVE. REQUIRED per submission.",
     ),
-    confirm: bool = typer.Option(
-        False, "--confirm",
-        help="Acknowledge a LIVE submission against devices whose topology "
-             "declares a sim-direction sim_override.",
+    profile: str | None = typer.Option(
+        None, "--profile", help="Name of a saved deployment profile to apply.",
     ),
+    hook: list[str] | None = typer.Option(
+        None, "--hook",
+        help="Fire only the workflow's wf.on handlers for this event. Repeat for more. Default: every handler.",
+    ),
+    no_hooks: bool = typer.Option(False, "--no-hooks", help="Fire none of the workflow's wf.on handlers."),
 ) -> None:
     """Execute a method standalone. Works against both backends."""
     from orca.cli.backend import get_client
-    from orca.daemon.schemas import RunModeStr, is_run_mode_str
+    from orca.operations.wire_models import RunModeStr, is_run_mode_str
     if not run_mode or not is_run_mode_str(run_mode):
         output.fail(
             "--run-mode is required; pass one of "
-            "PURE_SIM, DEVICE_SIM, or LIVE.",
+            "CHECK_RUN, SIM, or LIVE.",
             code=output.EXIT_USAGE,
         )
         return  # unreachable
@@ -255,6 +250,9 @@ def method_execute(
             "--labware-start and --labware-end must be JSON objects",
             code=output.EXIT_USAGE,
         )
+    if no_hooks and hook:
+        output.fail("--hook and --no-hooks cannot be used together", code=output.EXIT_USAGE)
+    event_hooks: list[str] | None = [] if no_hooks else (hook or None)
     client = get_client()
     record = client.submit_method(
         workflow_name=workflow_name,
@@ -263,12 +261,13 @@ def method_execute(
         labware_end=end_map,
         variables=var_map,
         run_mode=run_mode_value,
-        acknowledge_warnings=confirm,
+        deployment_profile=profile,
+        event_hooks=event_hooks,
     )
     if output.get_mode().value == "json":
         output.emit_json(record.model_dump(mode="json"))
         return
-    typer.echo(f"started {workflow_name}.{method_name} as {record.id[:8]}")
+    typer.echo(f"started {workflow_name}.{method_name} as {record.execution_id[:8]}")
 
 
 # ---------------- thread ----------------
@@ -292,6 +291,7 @@ def thread_list() -> None:
                 labware=t.labware_template_name,
                 start=t.start_position_id,
                 end=", ".join(t.end_position_ids),
+                put_down_before_run="yes" if t.placed_before_run else "no",
             )
             for t in items
         ],
@@ -309,7 +309,7 @@ def location_list() -> None:
     locations (e.g. "mlstar_1/carrier-9-0"), which a thread `start=`/`end=`
     or an action `deck_positions` can target. Deck sites are not routing
     nodes, so they appear only here, hanging off their device; their full
-    geometry lives in the device's deck layout (`orca deck-layouts get`).
+    geometry lives in the device's deck layout (`orca deck-layouts show`).
     """
     client = get_client()
     items = client.list_locations()

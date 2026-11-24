@@ -17,17 +17,18 @@ from cheshire_drivers.plr import (
 from orca.devices.centrifuge import Centrifuge
 from orca.devices.devices import Reader, Storage
 from orca.devices.shaker import Shaker
-from orca.runtime.device_factory_context import use_device_factory
-from orca.runtime.device_factory_protocol import DriverPairElement
+from orca.driver_management.device_factory_context import use_device_factory
+from orca.driver_management.device_factory_protocol import DeviceDriver
+from tests.mock import outside_any_system
 
 
 class _ChatterboxFactory:
     """Builds one Chatterbox driver per device, used for both the live and sim slot."""
 
-    def build_drivers(
+    def build_driver(
         self, device_type: str, name: str, *, deck_modeling: bool = False,
-    ) -> tuple[DriverPairElement, DriverPairElement]:
-        driver: DriverPairElement
+    ) -> DeviceDriver:
+        driver: DeviceDriver
         if device_type == "centrifuge":
             driver = ChatterboxCentrifugeDriver()
         elif device_type == "reader":
@@ -38,7 +39,7 @@ class _ChatterboxFactory:
             driver = ChatterboxStorageDriver()
         else:
             raise AssertionError(f"no Chatterbox driver for {device_type!r}")
-        return driver, driver
+        return driver
 
 
 async def test_a_centrifuge_spins_on_its_chatterbox_driver() -> None:
@@ -70,7 +71,7 @@ async def test_a_shaker_shakes_on_its_chatterbox_driver() -> None:
 
 async def test_a_storage_dispenses_on_its_chatterbox_driver() -> None:
     with use_device_factory(_ChatterboxFactory()):
-        storage = Storage("stacker_1")
+        storage = outside_any_system(Storage("stacker_1"))
     assert isinstance(storage.driver, ChatterboxStorageDriver)
 
     await storage.initialize()

@@ -3,8 +3,8 @@
 ``ClearSubmissionLabwareOperation``, ``DischargeLabwareOperation``, and
 ``ClearAllLabwareOperation`` refuse a non-force clear when an active
 execution holds a reference. The refusal surfaces as
-``OperationError.typed(...)`` with ``wire_code="active_execution_refused"``
-and ``status_code=409`` so envelope-aware callers (CLI, a hosted deployment's wire
+``OperationError`` with code ``active_executions_exist``
+and status 409 so envelope-aware callers (CLI, a hosted deployment's wire
 layer) see the canon-pinned wire shape.
 """
 
@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from orca.operations._protocol import OperationError, OperationErrorCode
+from orca.operations.protocol import OperationError
 from orca.operations.labware import (
     ClearAllLabwareOperation,
     ClearSubmissionLabwareOperation,
@@ -24,10 +24,12 @@ from orca.operations.labware_models import (
     ClearSubmissionLabwareRequest,
     DischargeLabwareRequest,
 )
-from orca.runtime.runtime_interface import (
+from orca.runtime.errors import (
     ActiveExecutionRefusedError,
-    ClearSubmissionResult,
     LabwareNotFoundError,
+)
+from orca.runtime.facade_interfaces import (
+    ClearSubmissionResult,
 )
 
 
@@ -62,7 +64,7 @@ async def test_clear_submission_answers_with_both_lists() -> None:
 
 
 @pytest.mark.asyncio
-async def test_clear_submission_active_execution_refused_surfaces_typed_409() -> None:
+async def test_clear_submission_refused_during_a_run_answers_active_executions_exist_409() -> None:
     refusal = ActiveExecutionRefusedError(
         scope="submission",
         submission_id="sub-42",
@@ -75,14 +77,27 @@ async def test_clear_submission_active_execution_refused_surfaces_typed_409() ->
         await op.run(ClearSubmissionLabwareRequest(submission_id="sub-42"))
 
     raised = exc_info.value
-    assert raised.code is OperationErrorCode.CONFLICT
-    assert raised.wire_code == "active_execution_refused"
-    assert raised.status_code == 409
+    assert raised.http_status == 409
+    assert raised.surface_code() == "active_executions_exist"
+    assert raised.http_status == 409
     assert raised.extras == {"scope": "submission", "submission_id": "sub-42"}
 
 
 @pytest.mark.asyncio
-async def test_discharge_labware_active_execution_refused_surfaces_typed_409() -> None:
+async def test_clear_submission_refused_for_one_plate_names_that_plate() -> None:
+    refusal = ActiveExecutionRefusedError(scope="labware", labware_id="lab-7")
+    op = ClearSubmissionLabwareOperation(
+        runtime=_runtime_with_refusal("clear_submission_labware", refusal),
+    )
+
+    with pytest.raises(OperationError) as exc_info:
+        await op.run(ClearSubmissionLabwareRequest(submission_id="sub-42"))
+
+    assert exc_info.value.extras == {"scope": "labware", "labware_id": "lab-7"}
+
+
+@pytest.mark.asyncio
+async def test_discharge_labware_refused_during_a_run_answers_active_executions_exist_409() -> None:
     refusal = ActiveExecutionRefusedError(
         scope="labware",
         labware_id="lab-7",
@@ -95,14 +110,14 @@ async def test_discharge_labware_active_execution_refused_surfaces_typed_409() -
         await op.run(DischargeLabwareRequest(labware_id="lab-7"))
 
     raised = exc_info.value
-    assert raised.code is OperationErrorCode.CONFLICT
-    assert raised.wire_code == "active_execution_refused"
-    assert raised.status_code == 409
+    assert raised.http_status == 409
+    assert raised.surface_code() == "active_executions_exist"
+    assert raised.http_status == 409
     assert raised.extras == {"scope": "labware", "labware_id": "lab-7"}
 
 
 @pytest.mark.asyncio
-async def test_clear_all_active_execution_refused_surfaces_typed_409() -> None:
+async def test_clear_all_refused_during_a_run_answers_active_executions_exist_409() -> None:
     scope: Literal["all"] = "all"
     refusal = ActiveExecutionRefusedError(scope=scope)
     op = ClearAllLabwareOperation(
@@ -113,9 +128,9 @@ async def test_clear_all_active_execution_refused_surfaces_typed_409() -> None:
         await op.run(ClearAllLabwareRequest())
 
     raised = exc_info.value
-    assert raised.code is OperationErrorCode.CONFLICT
-    assert raised.wire_code == "active_execution_refused"
-    assert raised.status_code == 409
+    assert raised.http_status == 409
+    assert raised.surface_code() == "active_executions_exist"
+    assert raised.http_status == 409
     assert raised.extras == {"scope": "all"}
 
 
@@ -134,6 +149,6 @@ async def test_discharging_a_labware_nobody_knows_reads_as_a_sentence() -> None:
         await op.run(DischargeLabwareRequest(labware_id="lab-404"))
 
     raised = exc_info.value
-    assert raised.code is OperationErrorCode.NOT_FOUND
+    assert raised.http_status == 404
     assert raised.message == "No labware with id 'lab-404'", raised.message
     assert raised.extras == {"labware_id": "lab-404"}

@@ -2,7 +2,7 @@
 
 Drives a real dispatch through the runtime's coordinator until it times out and
 declares an incident, then resolves it via the REST routes (extend / abort /
-mark_complete). Parity with a hosted deployment's /api/incidents/{id}/recoverable_timeout/*.
+mark_complete). Parity with a hosted deployment's /api/incidents/{id}/recoverable-timeout/*.
 """
 
 import asyncio
@@ -13,22 +13,24 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from orca.daemon.app import create_app
-from orca.events.intervention import INCIDENT_ENTITY
+from orca.runtime.intervention import INCIDENT_ENTITY
 from orca.events.runtime_event import RuntimeEvent
 from orca.resource_models.device_error import CommandTimeoutAbortedError
-from orca.runtime.danger import clear_audit_trail, list_audit_entries
 from orca.runtime.incident_store import IncidentCategory
 from orca.runtime.system_runtime import SystemRuntime
 
+from tests.audit_capture import AuditCapture
 from tests.test_system_runtime import _build_simple_system
+from tests.memory_activity import memory_daemon_system
 
 
 @pytest_asyncio.fixture
 async def rt_client() -> AsyncIterator[tuple[SystemRuntime, AsyncClient]]:
     system, _ = await _build_simple_system()
-    rt = SystemRuntime(system)
+    injected = await memory_daemon_system(system)
+    rt = injected.runtime
     await rt.start()
-    app = create_app(initial_system_runtime=rt)
+    app = create_app(injected=injected)
     try:
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://daemon.test",
@@ -88,9 +90,10 @@ async def _park_dispatch(rt: SystemRuntime, coro_factory) -> tuple[asyncio.Task,
     return task, sink.incident_id
 
 
-async def test_extend_route_lets_the_call_complete_and_records_the_reason(rt_client) -> None:
+async def test_extend_route_lets_the_call_complete_and_records_the_reason(
+    audit: AuditCapture, rt_client,
+) -> None:
     rt, client = rt_client
-    clear_audit_trail()
 
     async def slow() -> str:
         # Stay in-flight until the recoverable-timeout incident is declared,
@@ -102,14 +105,14 @@ async def test_extend_route_lets_the_call_complete_and_records_the_reason(rt_cli
 
     task, incident_id = await _park_dispatch(rt, slow)
     resp = await client.post(
-        f"/incidents/{incident_id}/recoverable_timeout/extend",
+        f"/api/incidents/{incident_id}/recoverable-timeout/extend",
         json={"additional_seconds": 5.0, "reason": "device is slow today"},
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["decision"] == "extend"
     assert await task == "done"
     [row] = [
-        r for r in list_audit_entries()
+        r for r in audit.rows()
         if r.action_name == "recoverable_timeout.extend"
     ]
     assert row.reason == "device is slow today"
@@ -128,12 +131,12 @@ async def test_extend_route_rejects_non_positive_seconds(
     task, incident_id = await _park_dispatch(rt, stuck)
     try:
         resp = await client.post(
-            f"/incidents/{incident_id}/recoverable_timeout/extend",
+            f"/api/incidents/{incident_id}/recoverable-timeout/extend",
             json={"additional_seconds": additional_seconds},
         )
         assert resp.status_code == 422, resp.text
     finally:
-        rt.incidents.recoverable_timeout_abort(
+        await rt.incidents.recoverable_timeout_abort(
             incident_id, "cleanup", reason="test teardown", confirm=True,
         )
         with pytest.raises(CommandTimeoutAbortedError):
@@ -149,7 +152,7 @@ async def test_abort_route_fails_the_call(rt_client) -> None:
 
     task, incident_id = await _park_dispatch(rt, stuck)
     resp = await client.post(
-        f"/incidents/{incident_id}/recoverable_timeout/abort",
+        f"/api/incidents/{incident_id}/recoverable-timeout/abort",
         json={"operator_name": "alice", "reason": "hung"},
     )
     assert resp.status_code == 200, resp.text
@@ -167,7 +170,7 @@ async def test_mark_complete_route_synthesizes_success(rt_client) -> None:
 
     task, incident_id = await _park_dispatch(rt, stuck)
     resp = await client.post(
-        f"/incidents/{incident_id}/recoverable_timeout/mark_complete",
+        f"/api/incidents/{incident_id}/recoverable-timeout/mark-complete",
         json={"operator_name": "bob", "reason": "did it manually"},
     )
     assert resp.status_code == 200, resp.text
@@ -178,7 +181,7 @@ async def test_mark_complete_route_synthesizes_success(rt_client) -> None:
 async def test_unknown_incident_is_404(rt_client) -> None:
     _, client = rt_client
     resp = await client.post(
-        "/incidents/does-not-exist/recoverable_timeout/extend",
+        "/api/incidents/does-not-exist/recoverable-timeout/extend",
         json={"additional_seconds": 1.0},
     )
     assert resp.status_code == 404, resp.text

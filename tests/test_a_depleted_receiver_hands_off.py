@@ -18,6 +18,7 @@ These run an assembled ``SystemRuntime``. The seam that broke sits BETWEEN
 the two predicates, so a mocked test of either one passes.
 """
 
+from orca.config import OrcaConfig
 from collections.abc import AsyncGenerator
 
 import pytest
@@ -28,9 +29,9 @@ from orca.resource_models.labware import LabwareInstance, PlateTemplate
 from orca.resource_models.resource_pool import ResourcePool
 from orca.resource_models.sharing import GroupSharing, SubmissionBatching
 from orca.state.records import DeclaredTracking
-from orca.runtime.labware_group import LabwareGroup, LabwareGroupMember
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.submission import BatchMode
+from orca.workflow_models.labware_group import LabwareGroup, LabwareGroupMember
+from orca.modes.run_modes import WorkflowRunMode
+from orca.workflow_models.submission import BatchMode
 from orca.runtime.system_runtime import SystemRuntime
 from orca.sdk.events import EventBus
 from orca.sdk.system import ResourceRegistry, SystemMap
@@ -44,7 +45,7 @@ from orca.workflow_models.method_template import ActionTemplate, IMethodTemplate
 from orca.workflow_models.thread_context import ThreadContext
 from orca.workflow_models.thread_template import EndArg, StartArg
 
-from orca.resource_models.labware_state import LabwareSlot
+from orca.workflow_models.labware_state import LabwareSlot
 
 from tests.closure_e2e_scaffold import TERMINAL_STATUSES
 from tests.test_helpers import (
@@ -53,6 +54,10 @@ from tests.test_helpers import (
     wait_until,
     wire_system_map,
 )
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 _LABWARE_TYPE = "Cor_Falcon_96_wellplate_340ul_Fb_Black"
 
@@ -170,7 +175,10 @@ async def _build_system(
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=event_bus,
+        event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     return builder.get_system(), workflow, event_bus
@@ -202,7 +210,7 @@ async def _run_two_contributions(
     system, workflow, event_bus = await _build_system(
         depletion, deck_resident=deck_resident,
     )
-    runtime = SystemRuntime(system, event_bus=event_bus)
+    runtime = await memory_runtime(system, event_bus=event_bus)
     await runtime.start()
     statuses: dict[str, str] = {}
     try:
@@ -210,7 +218,7 @@ async def _run_two_contributions(
             workflow,
             groups=[_sample_group("grp-1"), _sample_group("grp-2")],
             batch_mode=BatchMode.STANDALONE,
-            mode=WorkflowRunMode.PURE_SIM,
+            mode=WorkflowRunMode.CHECK_RUN,
         )
 
         def _all_terminal() -> bool:
@@ -301,7 +309,7 @@ async def test_a_depletion_landing_while_the_receiver_waits_still_hands_off() ->
     depletion = _Depletion(capacity=1)
 
     system, workflow, event_bus = await _build_system(depletion)
-    runtime = SystemRuntime(system, event_bus=event_bus)
+    runtime = await memory_runtime(system, event_bus=event_bus)
     await runtime.start()
     statuses: dict[str, str] = {}
     try:
@@ -309,7 +317,7 @@ async def test_a_depletion_landing_while_the_receiver_waits_still_hands_off() ->
             workflow,
             groups=[_sample_group("grp-1")],
             batch_mode=BatchMode.STANDALONE,
-            mode=WorkflowRunMode.PURE_SIM,
+            mode=WorkflowRunMode.CHECK_RUN,
         )
         # Wait for the receiver to be parked in its join again, which is the
         # state this test is about: it records itself in awaiting_threads on
@@ -334,7 +342,7 @@ async def test_a_depletion_landing_while_the_receiver_waits_still_hands_off() ->
             workflow,
             groups=[_sample_group("grp-2")],
             batch_mode=BatchMode.JOIN_EXISTING,
-            mode=WorkflowRunMode.PURE_SIM,
+            mode=WorkflowRunMode.CHECK_RUN,
         )
 
         def _all_terminal() -> bool:

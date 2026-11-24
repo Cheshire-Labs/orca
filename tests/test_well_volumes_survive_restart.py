@@ -22,11 +22,12 @@ from orca.state.records import (
     TrackingRecord,
     TrackingSource,
 )
-from orca.state.jsonl_store import JsonlOpsHistoryStore
+from orca.runtime.labware_service import LabwareService
 from orca.runtime.labware_store import InMemoryLabwareStore
-from orca.runtime.system_runtime import SystemRuntime
 from tests.test_helpers import bind_ledger
 from tests.test_system_runtime import _build_simple_system
+from tests.memory_activity import memory_runtime
+from tests.ephemeral_ops_store import EphemeralOpsHistoryStore
 
 
 class DbShapedLabwareStore(InMemoryLabwareStore):
@@ -77,11 +78,10 @@ class TestVolumesSurviveRestart:
         """Run A: register + operator-set volumes. Run B: fresh system, same
         stores. Returns (system_b, runtime_b, labware_id)."""
         labware_store = DbShapedLabwareStore()
-        ops_store = JsonlOpsHistoryStore.ephemeral()
+        ops_store = EphemeralOpsHistoryStore()
 
-        system_a, _ = await _build_simple_system()
-        system_a.ops_history.bind_store(ops_store)
-        runtime_a = SystemRuntime(system_a, labware_store=labware_store)
+        system_a, _ = await _build_simple_system(ops_store, labware_service=LabwareService(labware_store))
+        runtime_a = await memory_runtime(system_a)
         await runtime_a.start()
         snap = await runtime_a.labware.register(
             "plate_96", location="pad1", confirm=True,
@@ -91,9 +91,8 @@ class TestVolumesSurviveRestart:
         )
         await runtime_a.shutdown()
 
-        system_b, _ = await _build_simple_system()
-        system_b.ops_history.bind_store(ops_store)
-        runtime_b = SystemRuntime(system_b, labware_store=labware_store)
+        system_b, _ = await _build_simple_system(ops_store, labware_service=LabwareService(labware_store))
+        runtime_b = await memory_runtime(system_b)
         await runtime_b.start()
         return system_b, runtime_b, snap.id
 
@@ -122,15 +121,14 @@ class TestSuccessorDoesNotInheritNamesakeVolumes:
     successor must not inherit the dead labware's volumes."""
 
     async def _boot(self, labware_store, ops_store):
-        system, _ = await _build_simple_system()
-        system.ops_history.bind_store(ops_store)
-        runtime = SystemRuntime(system, labware_store=labware_store)
+        system, _ = await _build_simple_system(ops_store, labware_service=LabwareService(labware_store))
+        runtime = await memory_runtime(system)
         await runtime.start()
         return system, runtime
 
     async def test_fresh_same_named_instance_reads_empty_volumes(self) -> None:
         labware_store = DbShapedLabwareStore()
-        ops_store = JsonlOpsHistoryStore.ephemeral()
+        ops_store = EphemeralOpsHistoryStore()
 
         system_a, runtime_a = await self._boot(labware_store, ops_store)
         dead = LabwareInstance("plate_96", "96_well", name="resident_trough")
@@ -153,7 +151,7 @@ class TestSuccessorDoesNotInheritNamesakeVolumes:
 
     async def test_rehydrated_successor_driver_seed_ignores_namesake_history(self) -> None:
         labware_store = DbShapedLabwareStore()
-        ops_store = JsonlOpsHistoryStore.ephemeral()
+        ops_store = EphemeralOpsHistoryStore()
 
         system_a, runtime_a = await self._boot(labware_store, ops_store)
         dead = LabwareInstance("plate_96", "96_well", name="resident_trough")
@@ -183,7 +181,7 @@ class TestPipettedHistorySeeds:
         volumes; requiring an operator SET_VOLUME made every reconcile of a
         merely-pipetted plate reset it to the declared initial state."""
         system, _ = await _build_simple_system()
-        runtime = SystemRuntime(system, labware_store=InMemoryLabwareStore())
+        runtime = await memory_runtime(system)
         await runtime.start()
         try:
             snap = await runtime.labware.register("plate_96", confirm=True)
@@ -212,7 +210,7 @@ class TestVolumesSurviveDischarge:
         record must stay readable by the plate's id after the plate leaves the
         deck, in the same session, with no restart in between."""
         system, _ = await _build_simple_system()
-        runtime = SystemRuntime(system, labware_store=InMemoryLabwareStore())
+        runtime = await memory_runtime(system)
         await runtime.start()
         try:
             snap = await runtime.labware.register(

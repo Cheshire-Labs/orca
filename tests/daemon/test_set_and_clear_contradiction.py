@@ -12,7 +12,7 @@ import pytest
 from cheshire_drivers.move_parameters import MoveParameterPatch
 from httpx import AsyncClient
 
-from orca.runtime.move_parameters import (
+from orca.resource_models.move_parameters import (
     MoveParameterEditRefused,
     contested_fields,
     reject_contradiction,
@@ -65,16 +65,16 @@ class TestTheWiderLayers:
 
     @pytest.mark.asyncio
     async def test_an_arm_refuses_it(self, empty_client: AsyncClient) -> None:
-        resp = await empty_client.patch("/move-defaults/pf400", json=CONTRADICTION)
+        resp = await empty_client.patch("/api/move-defaults/pf400", json=CONTRADICTION)
 
-        assert resp.status_code == 400
+        assert resp.status_code == 422
         assert "z_offset" in resp.text
 
     @pytest.mark.asyncio
     async def test_a_grip_profile_refuses_it(self, empty_client: AsyncClient) -> None:
-        resp = await empty_client.patch("/grip-profiles/costar_96", json=CONTRADICTION)
+        resp = await empty_client.patch("/api/grip-profiles/costar_96", json=CONTRADICTION)
 
-        assert resp.status_code == 400
+        assert resp.status_code == 422
         assert "z_offset" in resp.text
 
     @pytest.mark.asyncio
@@ -85,11 +85,11 @@ class TestTheWiderLayers:
         stored at this layer at all: answering the collision would send the
         caller back to be refused a second time for the real reason."""
         resp = await empty_client.patch(
-            "/move-defaults/pf400",
+            "/api/move-defaults/pf400",
             json={"set": {"clearance": 3.0}, "clear": ["clearance"]},
         )
 
-        assert resp.status_code == 400
+        assert resp.status_code == 422
         assert "position" in resp.text, resp.text
 
     @pytest.mark.asyncio
@@ -99,11 +99,11 @@ class TestTheWiderLayers:
         """Both wider layers order the two rules the same way. Pinning it on
         one leaves the other free to answer the less useful reason."""
         resp = await empty_client.patch(
-            "/grip-profiles/costar_96",
+            "/api/grip-profiles/costar_96",
             json={"set": {"clearance": 3.0}, "clear": ["clearance"]},
         )
 
-        assert resp.status_code == 400
+        assert resp.status_code == 422
         assert "position" in resp.text, resp.text
 
     @pytest.mark.asyncio
@@ -113,7 +113,7 @@ class TestTheWiderLayers:
         """The refusal is about one field named twice, not about using both
         halves: that pairing is the reason they travel together."""
         resp = await empty_client.patch(
-            "/move-defaults/pf400",
+            "/api/move-defaults/pf400",
             json={"set": {"z_offset": 3.0}, "clear": ["speed"]},
         )
 
@@ -128,21 +128,21 @@ class TestTheNarrowestLayerThatTakesAPair:
     async def test_one_labware_at_one_position_refuses_it(
         self, client: AsyncClient,
     ) -> None:
-        await client.post("/access-configs", json={
+        await client.post("/api/access-configs", json={
             "name": "vert_a", "access_type": "vertical", "gripper_offset": 20.0,
             "vertical_clearance": 20.0, "horizontal_clearance": 100.0,
         })
-        await client.post("/teachpoints", json={
-            "device_id": "robot1", "position_id": "hotel_3",
+        await client.post("/api/teachpoints/robot1", json={"teachpoints": [{
+            "position_id": "hotel_3",
             "coord_type": "cartesian", "coords": dict(_COORDS),
             "access_config_name": "vert_a", "orientation": "right",
-        })
+        }]})
 
         resp = await client.patch(
-            "/teachpoints/robot1/hotel_3/labware/costar_96", json=CONTRADICTION,
+            "/api/teachpoint-overrides/robot1/costar_96/hotel_3", json=CONTRADICTION,
         )
 
-        assert resp.status_code == 400
+        assert resp.status_code == 422
         assert "z_offset" in resp.text
 
 
@@ -153,7 +153,7 @@ class TestAFieldOnlyTheLabwareCanAnswerFor:
     """
 
     def test_setting_it_arm_wide_is_refused(self) -> None:
-        from orca.runtime.move_parameters import reject_labware_owned
+        from orca.resource_models.move_parameters import reject_labware_owned
 
         with pytest.raises(MoveParameterEditRefused) as refused:
             reject_labware_owned(
@@ -164,7 +164,7 @@ class TestAFieldOnlyTheLabwareCanAnswerFor:
         assert "grip-profiles set" in str(refused.value)
 
     def test_clearing_it_arm_wide_is_refused_too(self) -> None:
-        from orca.runtime.move_parameters import reject_labware_owned
+        from orca.resource_models.move_parameters import reject_labware_owned
 
         with pytest.raises(MoveParameterEditRefused):
             reject_labware_owned(
@@ -174,6 +174,6 @@ class TestAFieldOnlyTheLabwareCanAnswerFor:
     def test_the_grip_profile_layer_still_takes_it(self) -> None:
         """The refusal is about the arm-wide layer only. `reject_site_owned` is
         what a grip profile is checked against, and it says nothing here."""
-        from orca.runtime.move_parameters import reject_site_owned
+        from orca.resource_models.move_parameters import reject_site_owned
 
         reject_site_owned(MoveParameterPatch(grip_distance_from_top=6.0))

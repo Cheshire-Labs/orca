@@ -1,6 +1,6 @@
 from typing import Optional
 
-from orca.workflow_models.error_policy_overrides import OverrideWithPauseError
+from orca.resource_models.error_policy_overrides import OverrideWithPauseError
 
 
 class DeviceError(Exception):
@@ -9,6 +9,14 @@ class DeviceError(Exception):
         self.device_name = device_name
         self.message = message if device_name is None else f"[{device_name}] {message}"
         super().__init__(self.message)
+
+
+class TeachpointNotFoundError(ValueError):
+    """No teachpoint by that name on the device. Names the ones it has."""
+
+    def __init__(self, message: str, available_teachpoints: list[str]) -> None:
+        super().__init__(message)
+        self.available_teachpoints = available_teachpoints
 
 
 class DeviceBusyError(DeviceError):
@@ -50,7 +58,9 @@ class MoverAlreadyHoldingError(SlotOccupiedError, OverrideWithPauseError):
     because the operator's next move is to say where the plate really is.
     """
 
-    def __init__(self, mover_name: str, held_labware_name: str, held_template_name: str) -> None:
+    def __init__(
+        self, mover_name: str, held_labware_id: str, held_labware_name: str, held_template_name: str,
+    ) -> None:
         self.mover_name = mover_name
         super().__init__(
             position_id=f"{mover_name}/gripper",
@@ -61,8 +71,28 @@ class MoverAlreadyHoldingError(SlotOccupiedError, OverrideWithPauseError):
             f"{mover_name} is already holding {held_labware_name} "
             f"(template {held_template_name}), so it cannot pick. If the jaws are "
             f"really empty, or the plate is somewhere else, say so with "
-            f"`orca labware edit-location {held_labware_name} <position>`.",
+            f"`orca labware edit-location {held_labware_id} <position> --reason <reason>`.",
         )
+
+
+class PlateDispenseError(DeviceError):
+    """A plate source could not hand out a plate. An empty stacker reaches the operator this way."""
+
+    def __init__(self, source_name: str, cause: Exception) -> None:
+        super().__init__(f"{source_name} could not dispense a plate: {cause}")
+        self.source_name = source_name
+        self.cause = cause
+
+
+class LabwareDischargedError(DeviceError, OverrideWithPauseError):
+    """An operator forced a thread's labware off the record while the thread still needed it."""
+
+    def __init__(self, labware_name: str) -> None:
+        super().__init__(
+            f"{labware_name} was discharged while this thread still needs it. "
+            f"Abort this thread, or register the labware again and start a new run."
+        )
+        self.labware_name = labware_name
 
 
 class CommandTimeoutAbortedError(DeviceError):
@@ -120,6 +150,19 @@ class DeviceStateDivergenceError(DeviceError, OverrideWithPauseError):
     pass
 
 
+class ReagentRanOutError(DeviceError):
+    """The record says a trough cannot supply an aspirate, checked before the device call runs."""
+
+    def __init__(self, labware_name: str, labware_id: str, short_by: float) -> None:
+        super().__init__(
+            f"{labware_name} is {short_by:g} uL short for this aspirate. "
+            f"Refill it, state its volume (orca labware set-volume, or PUT /api/labware-instances/{labware_id}/well-volumes), then RETRY."
+        )
+        self.labware_name = labware_name
+        self.labware_id = labware_id
+        self.short_by = short_by
+
+
 class TipsNotPresentError(DeviceError):
     """Raised when a pick's requested positions read empty in the ledger,
     checked before the device call runs.
@@ -129,10 +172,10 @@ class TipsNotPresentError(DeviceError):
     it -- this reports the same way a driver's own "no tip detected" failure
     already does, through the normal operation-recovery seam, so the
     operator's fix is identical either way: load tips, correct the ledger
-    with ``orca labware set-tips``, then RETRY_OP. Deliberately NOT an
+    with ``orca labware set-tips``, then RETRY. Deliberately NOT an
     ``OverrideWithPauseError``: that marker skips the retry seam entirely
     (caught and re-raised before the recovery handler ever sees it), which
-    would make RETRY_OP unavailable here.
+    would make RETRY of the call unavailable here.
     """
 
     def __init__(
@@ -149,4 +192,19 @@ class TipsNotPresentError(DeviceError):
             f"({remaining_count} {tip_word} remain). Load tips and correct it "
             f"with `orca labware set-tips {rack_id} --position ... "
             f"--reason ...`, then retry."
+        )
+
+
+class TipsOnTheHeadError(DeviceError):
+    """A vendor protocol was stopped before it was sent: the record does not know the head is empty.
+
+    Orca cannot see the tips a vendor protocol takes on or off, so it runs one only on a head known to be empty.
+    A DeviceError, so RETRY is on offer once the head is stated empty.
+    """
+
+    def __init__(self, device_name: str, why: str) -> None:
+        super().__init__(
+            f"a vendor protocol runs only on an empty head, and {why}. Take any tips off, state the head "
+            f"empty with `orca device set-mounted-tips {device_name}`, then retry.",
+            device_name,
         )

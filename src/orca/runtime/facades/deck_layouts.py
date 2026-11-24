@@ -1,7 +1,7 @@
 """DeckLayoutFacade: external CRUD over per-liquid-handler
 `IDeckLayoutStore` instances.
 
-REST/MCP routes through `runtime.deck_layouts.<method>(device_id, ...)`.
+REST routes through `runtime.deck_layouts.<method>(device_id, ...)`.
 The facade looks up the liquid handler on the System graph and
 delegates to its bound `deck_layout_store`. There is exactly one
 deck-layout registry per (device, deployment) at any moment.
@@ -10,13 +10,13 @@ Deck-layout edits are **rebuild-required**: a running LiquidHandler
 has its deck configured once at SystemRuntime.start and cannot safely
 reconfigure mid-run because physical labware can't reposition while
 motion is in flight. The facade writes the registry; the next
-`RuntimeLifecycle.rebuild()` picks up the new layout. REST/MCP
+system rebuild picks up the new layout. REST
 response bodies should communicate this contract -- the facade itself
 does not raise on rebuild-required edits since the store is writable.
 
 `KeyError` from `get_resource` (unknown device_id) and
 `KeyError` from "resource exists but is not a LiquidHandler" both
-propagate so REST/MCP can translate to 404.
+propagate so REST can translate to 404.
 """
 
 from typing import List, Protocol, Sequence, Tuple, runtime_checkable
@@ -26,8 +26,8 @@ from cheshire_drivers.liquid_handler_models import DeckLayoutConfig
 from orca.devices.devices import LiquidHandler
 from orca.resource_models.resources import IResource
 from orca.runtime.danger import DangerLevel, dangerous
-from orca.runtime.interfaces import IDeckLayoutStore
-from orca.runtime.runtime_interface import IDeckLayoutFacade
+from orca.resource_models.store_interfaces import IDeckLayoutStore
+from orca.runtime.facade_interfaces import IDeckLayoutFacade
 
 
 @runtime_checkable
@@ -96,7 +96,7 @@ class DeckLayoutFacade(IDeckLayoutFacade):
         message="Update deck layout '{name}' for liquid handler "
                 "'{device_id}'. Rebuild-required: a running LiquidHandler "
                 "keeps the previous layout until the next "
-                "RuntimeLifecycle.rebuild() picks up the change.",
+                "system rebuild picks up the change.",
     )
     async def update(
         self, device_id: str, name: str, config: DeckLayoutConfig,

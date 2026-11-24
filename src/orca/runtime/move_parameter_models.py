@@ -44,6 +44,8 @@ class TransporterMoveDefaults(BaseModel):
     one nobody has ever set.
     """
 
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
     transporter_name: str
     parameters: MoveParameters
     sources: dict[str, str]
@@ -88,6 +90,8 @@ class LabwareGripProfile(BaseModel):
     needs to see is which fields this type actually claims.
     """
 
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
     labware_type: str
     patch: MoveParameterPatch
 
@@ -112,6 +116,14 @@ class GripProfilePatchRequest(BaseModel):
     body so a type being re-measured never sits on a half-applied mixture.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     set: MoveParameterPatch = MoveParameterPatch()
     clear: list[MoveParameterField] = []
     reason: str | None = None
+
+    @model_validator(mode="after")
+    def _names_something(self) -> Self:
+        if not self.set.model_dump(exclude_none=True) and not self.clear:
+            raise ValueError("name at least one field to set, or one to clear")
+        return self

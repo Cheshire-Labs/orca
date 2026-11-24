@@ -29,7 +29,7 @@ import asyncio
 from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.location import Location
 from orca.resource_models.transporter import Transporter
-from orca.runtime.runtime_interface import LocationReservedError
+from orca.runtime.errors import LocationReservedError
 from orca.system.reservation_manager.location_reservation import (
     LocationReservation,
     ReservationPriority,
@@ -46,9 +46,9 @@ from tests.test_a_pending_placement_claims_its_spot import (
 )
 from tests.test_helpers import (
     create_test_teachpoints,
-    seeded_teachpoint_service,
     wait_until,
 )
+from tests.setup_package import teachpoint_file
 
 
 class ArmHeldOverThePad(Transporter):
@@ -62,12 +62,10 @@ class ArmHeldOverThePad(Transporter):
     def __init__(
         self, name: str, position_ids: list[str], hold_at: str,
     ) -> None:
-        super().__init__(
-            name,
-            teachpoint_store=seeded_teachpoint_service(
+        super().__init__(name)
+        self.bind_teachpoints(teachpoint_file(
                 create_test_teachpoints(position_ids),
-            ),
-        )
+            ))
         self._hold_at = hold_at
         self.let_go = asyncio.Event()
 
@@ -360,7 +358,7 @@ class TestNothingOutranksAPlateThatIsAlreadyThere:
         from orca.system.reservation_manager.reservation_manager import (
             LocationReservationManager,
         )
-        from orca.system.resource_registry import ResourceRegistry
+        from orca.resource_models.resource_registry import ResourceRegistry
         from orca.system.system_map import SystemMap
 
         system_map = SystemMap(ResourceRegistry())
@@ -442,7 +440,7 @@ class TestNothingOutranksAPlateThatIsAlreadyThere:
         from orca.system.reservation_manager.reservation_manager import (
             LocationReservationManager,
         )
-        from orca.system.resource_registry import ResourceRegistry
+        from orca.resource_models.resource_registry import ResourceRegistry
         from orca.system.system_map import SystemMap
 
         system_map = SystemMap(ResourceRegistry())
@@ -477,7 +475,7 @@ class TestNothingOutranksAPlateThatIsAlreadyThere:
         from orca.system.reservation_manager.reservation_manager import (
             LocationReservationManager,
         )
-        from orca.system.resource_registry import ResourceRegistry
+        from orca.resource_models.resource_registry import ResourceRegistry
         from orca.system.system_map import SystemMap
 
         system_map = SystemMap(ResourceRegistry())

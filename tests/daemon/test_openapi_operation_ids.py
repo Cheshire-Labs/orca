@@ -1,10 +1,10 @@
-"""OpenAPI operationId + summary derivation for ``bind_orca_rest`` routes.
+"""OpenAPI operationId + summary derivation for ``mount_api`` routes.
 
 Without explicit derivation, FastAPI falls back to the inner handler
 function's ``__name__`` (literally "handler") for both the operationId
 and the summary of every binding. operationId drives generated-doc
 filenames; summary drives page titles AND sidebar labels. Both must be
-derived from the path or the REST docs render "Handler" everywhere.
+derived from the Operation or the REST docs render "Handler" everywhere.
 """
 
 import pytest
@@ -14,14 +14,13 @@ from orca.daemon.app import create_app
 
 @pytest.fixture
 def schema() -> dict[str, object]:
-    return create_app(initial_system_runtime=None).openapi()
+    return create_app().openapi()
 
 
 def _operation_ids_by_path(schema: dict[str, object]) -> dict[str, str]:
     """Collapse ``paths`` -> first-method-found operationId, per path.
 
-    Every ``bind_orca_rest`` call wires exactly one method per path, so
-    the first-method-found shortcut is unambiguous for those paths.
+    The specific cases below use paths that serve one method only.
     """
     out: dict[str, str] = {}
     paths = schema["paths"]
@@ -53,32 +52,32 @@ def _summaries_by_path(schema: dict[str, object]) -> dict[str, str]:
     return out
 
 
-def test_bind_orca_rest_routes_have_per_path_operation_ids(
+def test_mount_api_routes_have_per_path_operation_ids(
     schema: dict[str, object],
 ) -> None:
     ids = _operation_ids_by_path(schema)
-    bound_paths = {p for p in ids if p.startswith("/operations/")}
-    assert bound_paths, "expected /operations/* routes to be registered"
+    bound_paths = {p for p in ids if p.startswith("/api/")}
+    assert bound_paths, "expected /api routes to be registered"
 
     handler_paths = [p for p in bound_paths if ids[p].startswith("handler")]
     assert not handler_paths, (
-        "bind_orca_rest routes fell back to operationId='handler' "
+        "mount_api routes fell back to operationId='handler' "
         f"(or handler_N): {handler_paths}"
     )
 
 
-def test_specific_operation_ids_derived_from_path(
+def test_specific_operation_ids_derived_from_the_operation(
     schema: dict[str, object],
 ) -> None:
-    """Lock the derivation rule (last path segment, dashes -> underscores)."""
+    """Lock the derivation rule: the Operation class name in snake case."""
     ids = _operation_ids_by_path(schema)
 
     cases = {
-        "/operations/edit-labware-barcode": "edit_labware_barcode",
-        "/operations/submit-execution": "submit_execution",
-        "/operations/list-executions": "list_executions",
-        "/operations/get-method": "get_method",
-        "/operations/system-info": "system_info",
+        "/api/labware-instances/{labware_id}/barcode": "edit_labware_barcode",
+        "/api/labware-instances/{labware_id}/discharge": "discharge_labware",
+        "/api/workflows": "list_workflows",
+        "/api/methods/{name}": "get_method",
+        "/api/system": "get_system_info",
     }
     for path, expected in cases.items():
         assert path in ids, f"{path} not registered"
@@ -87,32 +86,32 @@ def test_specific_operation_ids_derived_from_path(
         )
 
 
-def test_bind_orca_rest_routes_have_non_handler_summaries(
+def test_mount_api_routes_have_non_handler_summaries(
     schema: dict[str, object],
 ) -> None:
     summaries = _summaries_by_path(schema)
-    bound_paths = {p for p in summaries if p.startswith("/operations/")}
-    assert bound_paths, "expected /operations/* routes to be registered"
+    bound_paths = {p for p in summaries if p.startswith("/api/")}
+    assert bound_paths, "expected /api routes to be registered"
 
     handler_paths = [p for p in bound_paths if summaries[p] == "Handler"]
     assert not handler_paths, (
-        "bind_orca_rest routes fell back to summary='Handler' "
+        "mount_api routes fell back to summary='Handler' "
         f"(renders as 'Handler' page titles + sidebar labels): {handler_paths}"
     )
 
 
-def test_specific_summaries_derived_from_path(
+def test_specific_summaries_derived_from_the_operation(
     schema: dict[str, object],
 ) -> None:
-    """Lock the derivation rule (last path segment, dashes -> spaces, title-cased)."""
+    """Lock the derivation rule: the Operation class name in words, title-cased."""
     summaries = _summaries_by_path(schema)
 
     cases = {
-        "/operations/edit-labware-barcode": "Edit Labware Barcode",
-        "/operations/submit-execution": "Submit Execution",
-        "/operations/list-executions": "List Executions",
-        "/operations/get-method": "Get Method",
-        "/operations/system-info": "System Info",
+        "/api/labware-instances/{labware_id}/barcode": "Edit Labware Barcode",
+        "/api/labware-instances/{labware_id}/discharge": "Discharge Labware",
+        "/api/workflows": "List Workflows",
+        "/api/methods/{name}": "Get Method",
+        "/api/system": "Get System Info",
     }
     for path, expected in cases.items():
         assert path in summaries, f"{path} not registered"
@@ -126,12 +125,8 @@ def test_all_operation_ids_globally_unique(
 ) -> None:
     """operationId must be unique across the whole OpenAPI document.
 
-    Bound ``/operations/*`` routes get an explicit per-path
-    operation_id (bare last segment); direct routes keep FastAPI's
-    default ``{name}_{path}_{method}`` form, so the two families do not
-    overlap. A collision would make downstream doc generators merge or
-    overwrite pages, so guard the entire surface -- not just
-    ``/operations/*``.
+    A collision would make downstream doc generators merge or
+    overwrite pages, so guard the entire surface.
     """
     seen: dict[str, str] = {}
     collisions: list[str] = []

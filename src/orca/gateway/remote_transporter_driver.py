@@ -1,10 +1,7 @@
 """Wire-forwarding `ITransporterDriver` for remote transporters.
 
 Sibling of `Remote*Driver` in `remote_drivers.py` for the device side.
-Constructed by `RemoteDeviceFactory._drivers_for_transporter` and
-wrapped inside an orca-core `Transporter` with a paired
-`SimTransporterDriver` so the `SimulationManager` can toggle between
-sim + live per dispatch.
+Built by `RemoteDeviceFactory`, one per orca-core `Transporter`.
 
 The driver is a pure wire-forwarder. orca-core's `Transporter.pick` /
 `.place` resolve the destination teachpoint name + walk the gateway
@@ -53,10 +50,10 @@ from cheshire_drivers.transporter_models import (
     UnseedPositionRequest,
 )
 
-from orca.runtime.run_modes import current_execution_id
+from orca.modes.run_modes import current_execution_id
 
 from orca.gateway.controller.command_kind import CommandKind
-from orca.gateway.controller.controller import DeviceController
+from orca.gateway.controller.controller import IDeviceController
 from orca.gateway.remote_drivers import ModeResolver
 
 logger = logging.getLogger(__name__)
@@ -68,32 +65,22 @@ class RemoteTransporterDriver(GatewayBackedDriver, ITransporterDriver):
     Each dispatch builds a flat-dict payload and calls
     `DeviceController.execute_command(device_id=name, command=...,
     params=..., effective_mode=resolver(name))`. The `effective_mode`
-    is resolved per dispatch so the driver picks up topology
-    `sim_override` changes without rebuilding.
+    is resolved per dispatch so the driver picks up a change to the
+    device's sim or live setting without rebuilding.
 
     For pick / place / move_to_coords the driver expects a
     fully-resolved `Teachpoint` (and optional `gateway_path`) on the
     request -- the orca-core `Transporter` does the server-side
     resolution before dispatching.
-
-    ``resend_on_reconnect``: transporter commands are safe to
-    resend after a transient WS drop. A pick or place that didn't
-    reach the device leaves the robot idle; an in-flight motion that
-    dropped mid-execution is interruptible (gripper state survives
-    safely). Default ``True`` preserves the gateway's transparent
-    resend behavior. Liquid handlers override to ``False`` because
-    aspirate / dispense cannot be safely re-executed.
     """
 
     interfaces: ClassVar[frozenset[str]] = frozenset({"ITransporter", "IHomeable"})
-    resend_on_reconnect: ClassVar[bool] = True
 
     def __init__(
         self,
         name: str,
-        controller: DeviceController,
+        controller: IDeviceController,
         mode_resolver: ModeResolver,
-        timeout: float = 30.0,
         *,
         declared_interfaces: frozenset[str] | None = None,
     ) -> None:
@@ -101,7 +88,6 @@ class RemoteTransporterDriver(GatewayBackedDriver, ITransporterDriver):
         self._name = name
         self._controller = controller
         self._mode_resolver = mode_resolver
-        self._timeout = timeout
         # Cached link flags, and their expiry, exactly as
         # `_RemoteDriverBase` in remote_drivers.py describes them.
         self._initialized = False
@@ -138,14 +124,14 @@ class RemoteTransporterDriver(GatewayBackedDriver, ITransporterDriver):
         params: Dict[str, JsonValue] | None = None,
         kind: CommandKind = CommandKind.ACTUATION,
     ) -> JsonValue:
-        effective_mode = self._mode_resolver(self._name)
+        effective_mode = await self._mode_resolver(self._name)
         return await self._controller.execute_command(
             device_id=self._name,
             command=command,
             params=dict(params) if params is not None else {},
-            timeout_seconds=self._timeout,
+            # The controller uses the command's declared limit (initialize, a pick): a fixed one cut motion off.
+            timeout_seconds=None,
             effective_mode=effective_mode,
-            resend_on_reconnect=type(self).resend_on_reconnect,
             kind=kind,
             execution_id=current_execution_id.get(),
         )
@@ -163,8 +149,8 @@ class RemoteTransporterDriver(GatewayBackedDriver, ITransporterDriver):
         `gateway_path`, or `expected_labware` (its `_StrictModel` base would
         reject them).
 
-        The device bridge's `wrap_transporter_payload` runs the dict through
-        `PickAtCoordsRequest.model_validate`; the field validators on
+        The device bridge reads the dict through the command table's request
+        model, `PickAtCoordsRequest`; the field validators on
         the Request materialize each `Teachpoint` back from its flat
         `to_dict()` form and the `expected_labware` LabwareIdentity from
         its dict form.

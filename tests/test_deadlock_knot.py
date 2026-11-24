@@ -21,6 +21,7 @@ from orca.state.identity import LabwareRef
 
 from orca.resource_models.deck_site_location import DeckSiteLocation
 from orca.resource_models.deck_site import DeckSite
+from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.location import Location
 from orca.system.reservation_manager.deadlock_manager import (
     DeadlockStarvationRegistry,
@@ -29,7 +30,7 @@ from orca.system.reservation_manager.deadlock_manager import (
 from orca.system.reservation_manager.errors import UnresolvableDeadlockContext
 from orca.system.reservation_manager.interfaces import IReservationCollection
 from orca.system.reservation_manager.location_reservation import LocationReservation
-from orca.system.thread_registry_interface import IThreadRegistry
+from orca.system.reservation_manager.thread_registry_interface import IThreadRegistry
 from orca.workflow_models.labware_threads.labware_thread import LabwareThreadInstance
 
 
@@ -49,7 +50,7 @@ class _ThreadRegistry(IThreadRegistry):
             thread.labware = None
             self._threads[thread_id] = thread
 
-    def add_holder(self, thread_id: str, labware: Mock) -> None:
+    def add_holder(self, thread_id: str, labware: LabwareInstance | Mock) -> None:
         thread = Mock()
         thread.labware = labware
         self._threads[thread_id] = thread
@@ -123,6 +124,7 @@ def _site(node_id: str, mutex_id: str) -> DeckSiteLocation:
         owner=_Owner(mutex_id),
         resource=DeckSite(node_id),
         mutex_position_id=mutex_id,
+        site_name=node_id,
     )
 
 

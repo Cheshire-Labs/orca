@@ -3,14 +3,18 @@
 `DispenseSpawn` is the start-side strategy for `@orca.thread(start=("loc",
 DISPENSE))` -- an IPlateSource-backed location (stacker / hotel) that
 physically advances its queue via `device.dispense()` before the engine
-writes the slot. Run-mode-agnostic: sim drivers handle PURE_SIM /
-DEVICE_SIM internally; the strategy always calls dispense().
+writes the slot. Run-mode-agnostic: sim drivers handle CHECK_RUN /
+SIM internally; the strategy always calls dispense().
 
 `acquire` takes the whole thread rather than its labware, which is what
 lets every strategy read `run_mode` and the rest off one object.
 """
+from tests.test_helpers import make_labware_placer
+from orca.resource_models.labware_directory import LabwarePlacements
 from orca.resource_models.labware_placeable_interface import IPlateMover
 
+import asyncio
+from contextlib import AbstractAsyncContextManager, nullcontext
 from unittest.mock import AsyncMock
 
 import pytest
@@ -21,10 +25,11 @@ from orca.resource_models.labware_placeable_interface import ILabwarePlaceable
 from orca.resource_models.labware_staging_bridge import LabwareStagingBridge
 from orca.resource_models.location import ILabwareLocationObserver, LabwareLocationEvent, Location
 from orca.resource_models.plate_pad import PlatePad
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from orca.workflow_models.labware_threads.labware_thread import (
     LabwareThreadInstance,
 )
+from tests.placements_for_tests import this_tests_placements
 from orca.resource_models.labware_location_service import (
     InMemoryLabwareLocationService,
 )
@@ -52,7 +57,7 @@ def _make_thread(
     labware: LabwareInstance,
     start_location: Location,
     *,
-    run_mode: WorkflowRunMode = WorkflowRunMode.PURE_SIM,
+    run_mode: WorkflowRunMode = WorkflowRunMode.CHECK_RUN,
 ) -> LabwareThreadInstance:
     return LabwareThreadInstance(
         labware=labware,
@@ -86,7 +91,7 @@ class TestDispenseSpawn:
         location.add_observer(_OrderObserver())
 
         thread = _make_thread(labware, location)
-        spawn = DispenseSpawn(location, InMemoryLabwareLocationService())
+        spawn = DispenseSpawn(location, make_labware_placer(InMemoryLabwareLocationService(this_tests_placements())))
         await spawn.acquire(thread)
 
         assert call_order == ["dispense", "notify:initialized"]
@@ -99,15 +104,41 @@ class TestDispenseSpawn:
 
         labware = _fresh_labware("a")
         thread = _make_thread(labware, location)
-        spawn = DispenseSpawn(location, InMemoryLabwareLocationService())
+        spawn = DispenseSpawn(location, make_labware_placer(InMemoryLabwareLocationService(this_tests_placements())))
         await spawn.acquire(thread)
 
         dispense_mock.assert_awaited_once_with()
 
+    async def test_two_spawns_at_once_dispense_one_plate_until_it_is_picked(self) -> None:
+        """Dispensing onto an occupied output jams a stacker, so a second spawn waits for the pick."""
+        location, storage = _make_storage_location()
+        dispensed = 0
+        stacker_moving = asyncio.Event()
+
+        async def dispense_that_takes_a_while() -> None:
+            nonlocal dispensed
+            dispensed += 1
+            await stacker_moving.wait()
+
+        setattr(storage, "dispense", dispense_that_takes_a_while)
+        service = InMemoryLabwareLocationService(this_tests_placements())
+        first, second = _fresh_labware("a"), _fresh_labware("b")
+
+        both = asyncio.gather(
+            DispenseSpawn(location, make_labware_placer(service)).acquire(_make_thread(first, location)),
+            DispenseSpawn(location, make_labware_placer(service)).acquire(_make_thread(second, location)),
+        )
+        for _ in range(20):
+            await asyncio.sleep(0)
+
+        assert dispensed == 1
+        both.cancel()
+        await asyncio.gather(both, return_exceptions=True)
+
     async def test_raises_if_location_is_not_plate_source(self) -> None:
         location = _make_platepad_location()
         with pytest.raises(TypeError, match="IPlateSource"):
-            DispenseSpawn(location, InMemoryLabwareLocationService())
+            DispenseSpawn(location, make_labware_placer(InMemoryLabwareLocationService(this_tests_placements())))
 
     async def test_direct_iplate_source_resource_accepted(self) -> None:
         """A Location whose `_resource` is itself an IPlateSource (no
@@ -125,6 +156,9 @@ class TestDispenseSpawn:
             def name(self) -> str:
                 return "src"
 
+            def bind_placements(self, placements: LabwarePlacements) -> None:
+                """This stand-in keeps its own occupant, so it reads no ledger."""
+
             @property
             def labware(self) -> LabwareInstance | None:
                 return self._labware
@@ -140,20 +174,23 @@ class TestDispenseSpawn:
             def initialize_labware(self, labware: LabwareInstance) -> None:
                 self._labware = labware
 
-            async def prepare_for_place(self, labware: LabwareInstance, mover: IPlateMover) -> None:
+            async def prepare_for_place(self, labware: LabwareInstance | None, mover: IPlateMover) -> None:
                 pass
 
-            async def prepare_for_pick(self, labware: LabwareInstance, mover: IPlateMover) -> None:
+            async def prepare_for_pick(self, labware: LabwareInstance | None, mover: IPlateMover) -> None:
                 pass
 
-            async def notify_placed(self, labware: LabwareInstance, mover: IPlateMover) -> None:
+            async def notify_placed(self, labware: LabwareInstance | None, mover: IPlateMover) -> None:
                 pass
 
-            async def notify_picked(self, labware: LabwareInstance, mover: IPlateMover) -> None:
+            async def notify_picked(self, labware: LabwareInstance | None, mover: IPlateMover) -> None:
                 self._labware = None
 
             async def dispose_labware(self, labware: LabwareInstance) -> None:
                 self._labware = None
+
+            def dispensing(self) -> AbstractAsyncContextManager[None]:
+                return nullcontext()
 
             async def dispense(self) -> None:
                 self.dispense_calls += 1
@@ -162,7 +199,7 @@ class TestDispenseSpawn:
         location = Location("src")
         location._resource = resource
 
-        spawn = DispenseSpawn(location, InMemoryLabwareLocationService())
+        spawn = DispenseSpawn(location, make_labware_placer(InMemoryLabwareLocationService(this_tests_placements())))
         assert spawn._source is resource
 
         labware = _fresh_labware()

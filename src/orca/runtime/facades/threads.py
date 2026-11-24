@@ -6,10 +6,9 @@ and to `MutationCoordinator` for skip/insert. The facade's job is to
 consistent confirm gating, (c) build `ThreadSnapshot`s for read methods,
 (d) serialize concurrent mutations on the same thread via a per-thread lock.
 
-The `spawn_thread` recovery helper is used when an AUTO_SPAWN_FAILED
-incident leaves the engine without a matching thread template to wake:
-operator names the template explicitly and the facade composes thread
-creation, registration, and start on the running `ExecutingWorkflow`.
+`spawn_thread` adds a thread from a named template to a running execution:
+the facade composes thread creation, registration, and start on the running
+`ExecutingWorkflow`.
 """
 
 import asyncio
@@ -17,7 +16,7 @@ from typing import Callable, List
 
 from orca.events.runtime_event import RuntimeEvent
 from orca.runtime.danger import DangerLevel, dangerous
-from orca.runtime.runtime_interface import (
+from orca.runtime.facade_interfaces import (
     IThreadFacade,
     IThreadMutationContext,
     IThreadRuntimeAccess,
@@ -37,7 +36,7 @@ _TERMINAL_THREAD_STATUSES: frozenset[str] = frozenset(
 
 _DECISIONS_THAT_SAY_THE_DEVICE_IS_FIT: frozenset[RecoveryDecision] = frozenset({
     RecoveryDecision.RETRY,
-    RecoveryDecision.RETRY_OP,
+    RecoveryDecision.RETRY_ACTION,
     RecoveryDecision.CONTINUE,
 })
 
@@ -59,11 +58,8 @@ class _SystemMutationContext(IThreadMutationContext):
     def get_variable(self, name: str, execution_id: str) -> OptionValue:
         return self._system.variable_store.resolve(name, execution_id)
 
-    def skip_method(
-        self, thread_id: str, *,
-        method_id: str | None = None, method_name: str | None = None,
-    ) -> None:
-        self._system.skip_pending_method(thread_id, method_id, method_name)
+    def skip_method(self, thread_id: str, *, method_name: str) -> None:
+        self._system.skip_pending_method(thread_id, method_name)
 
     def insert_method(
         self, thread_id: str, template: MethodTemplate,
@@ -199,17 +195,18 @@ class ThreadFacade(IThreadFacade):
         name="thread.recover",
         level=DangerLevel.CRITICAL,
         message="Recover error-paused thread '{thread_id}' with decision '{decision}'. "
-                "RETRY re-runs the failed action (fix the root cause first). "
-                "RETRY_OP re-runs only the failed device call, leaving the rest of "
-                "the action body suspended (valid only while a device op is paused); "
-                "on a device that supports it the engine re-reads hardware state first "
-                "and refuses the retry if only a human can resolve what it finds. "
+                "RETRY repeats only the step that failed (fix the root cause first). "
+                "Inside an action that is the failed device call, with the rest of "
+                "the action body left suspended; on a device that supports it the "
+                "engine re-reads hardware state first and refuses the retry if only "
+                "a human can resolve what it finds. RETRY_ACTION re-runs the whole "
+                "action, and applies only where the action's own code failed. "
                 "CONTINUE carries on to the next action, recording this one as "
                 "operator-confirmed rather than executed -- it promises nothing "
                 "about what the failed action actually did. ABORT_ACTION discards "
                 "the action and continues. ABORT_METHOD skips the rest of the "
                 "method. ABORT_THREAD stops the thread entirely. "
-                "RETRY, RETRY_OP and CONTINUE also say the device has been "
+                "RETRY, RETRY_ACTION and CONTINUE also say the device has been "
                 "looked at, so they clear the fault this pause is about and "
                 "no separate clear-device-fault is needed. The three aborts "
                 "say nothing about the machine and leave the fault standing, "
@@ -217,7 +214,9 @@ class ThreadFacade(IThreadFacade):
     )
     async def recover(
         self, execution_id: str, thread_id: str, decision: RecoveryDecision,
+        *, reason: str | None = None,
     ) -> None:
+        del reason  # consumed by @dangerous audit trail
         # Validate membership BEFORE allocating the lock (as every other
         # mutation method does): _lock_for would otherwise cache an entry for a
         # mistyped id that no terminal event will ever evict, leaking the dict.
@@ -238,7 +237,7 @@ class ThreadFacade(IThreadFacade):
     ) -> None:
         """Drop the device's fault when the decision says the machine was dealt with.
 
-        RETRY, RETRY_OP and CONTINUE all say the same thing about the
+        RETRY, RETRY_ACTION and CONTINUE all say the same thing about the
         instrument: it has been looked at and is fit to drive. The aborts say
         nothing about it, and giving up on the work is exactly when a plate can
         still be in the jaws.
@@ -267,30 +266,17 @@ class ThreadFacade(IThreadFacade):
     )
     async def skip_method(
         self, execution_id: str, thread_id: str, *,
-        method_id: str | None = None,
-        method_name: str | None = None,
+        method_name: str,
         reason: str | None = None,
     ) -> None:
-        """Skip a pending method on a paused thread.
+        """Skip the FIRST pending method on the lane named `method_name`.
 
-        method_name selects the FIRST pending method on the lane that
-        matches; method names are not unique, so a single call skips
-        only one match and re-issuing the call targets the next.
-
-        method_id is accepted for backward compatibility with internal
-        callers that already track ids (e.g. mutate_on_next_pause). The
-        lane has NO id index -- under the hood, skip_pending_method
-        falls back to `method_name or method_id`, so passing method_id
-        alone is treated as a NAME lookup that matches a method whose
-        name happens to equal that id (a legacy quirk, not a real id
-        dispatch). Wire callers should pass method_name; the wire
-        surface (REST schema + Protocol + CLI) no longer exposes
-        method_id.
+        Method names are not unique, so re-issuing the call targets the next match.
         """
         del reason  # consumed by @dangerous audit trail
         self._validate_thread_in_execution(execution_id, thread_id)
         async with self._lock_for(thread_id):
-            self._system.skip_pending_method(thread_id, method_id, method_name)
+            self._system.skip_pending_method(thread_id, method_name)
 
     @dangerous(
         name="thread.abort_method",
@@ -302,26 +288,14 @@ class ThreadFacade(IThreadFacade):
     )
     async def abort_method(
         self, execution_id: str, thread_id: str, *,
-        method_id: str | None = None,
-        method_name: str | None = None,
+        method_name: str,
         reason: str | None = None,
     ) -> None:
-        """Abort the IN_PROGRESS method on a paused thread.
-
-        method_name selects the IN_PROGRESS method to abort. Names are
-        not unique on the lane, but at most one method is IN_PROGRESS
-        at a time so the first-match resolution is unambiguous here.
-
-        method_id is accepted for backward compatibility (see
-        skip_method docstring); the lane has no id index, so passing
-        method_id alone falls back to a name lookup. Wire callers
-        should pass method_name. The wire surface no longer exposes
-        method_id.
-        """
+        """Abort the IN_PROGRESS method on a paused thread; at most one is IN_PROGRESS, so its name is unambiguous."""
         del reason  # consumed by @dangerous audit trail
         self._validate_thread_in_execution(execution_id, thread_id)
         async with self._lock_for(thread_id):
-            await self._system.abort_method(thread_id, method_id, method_name)
+            await self._system.abort_method(thread_id, method_name)
 
     @dangerous(
         name="thread.insert_method",
@@ -458,9 +432,7 @@ class ThreadFacade(IThreadFacade):
         name="thread.spawn_thread",
         level=DangerLevel.OPERATOR,
         message="Manually create and start a thread from template '{template_name}' "
-                "in execution '{execution_id}'. Used to recover from AUTO_SPAWN_FAILED "
-                "incidents when the automatic spawn path could not find a matching "
-                "thread template.",
+                "in execution '{execution_id}'.",
     )
     async def spawn_thread(
         self, execution_id: str, template_name: str, *,
@@ -478,7 +450,7 @@ class ThreadFacade(IThreadFacade):
         """Raise KeyError if `thread_id` is not in `execution_id`'s threads.
 
         Prevents cross-execution mutation accidents. Daemon routes map
-        KeyError to 404 so the CLI/MCP surface a clean "thread not found"
+        KeyError to 404 so the CLI shows a clean "thread not found"
         instead of conflating it with a 400 precondition violation.
         Cheap because we already call this on every mutation and the
         executions dict is in-memory.

@@ -3,7 +3,7 @@ be imported by both `system_runtime.py` and `runtime_interface.py` without
 forming a cycle.
 
 `system_runtime.py` defines the runtime behavior and transitively imports
-the sub-facades, which in turn import `runtime_interface.py` for the ABC
+the sub-facades, which in turn import `facade_interfaces.py` for the ABC
 contracts. Moving the data types here breaks the cycle: both ends now import
 from this leaf module.
 """
@@ -21,6 +21,7 @@ class ExecutionState(Enum):
     """
     RUNNING = "running"
     COMPLETED = "completed"
+    PARTIAL_COMPLETED = "partial_completed"
     FAILED = "failed"
     ABORTED = "aborted"
 
@@ -34,6 +35,7 @@ class ExecutionState(Enum):
         """
         return self in (
             ExecutionState.COMPLETED,
+            ExecutionState.PARTIAL_COMPLETED,
             ExecutionState.FAILED,
             ExecutionState.ABORTED,
         )
@@ -43,7 +45,7 @@ class ExecutionState(Enum):
 class ExecutionRecord:
     """Snapshot of an execution's current state (mutable; updated by the runtime).
 
-    Canonical identity is `id`. CLI / REST / MCP clients always key on it.
+    Canonical identity is `id`. CLI / REST clients always key on it.
     """
     id: str
     workflow_name: str
@@ -58,6 +60,11 @@ class ExecutionRecord:
     runtime paused itself."""
     abort_armed: bool = False
     """Whether a second confirmed stop would abort."""
-    sim_time_scale: float | None = None
-    """The simulated time scale: 1 is real time, 0 is no pacing. None for a
-    LIVE run, and for a finished run read back from the store, which does not keep it."""
+    simulated: bool = False
+    """Whether the run is a sim run, so its speed-up can be set.
+    False for a LIVE run, a check run and a finished run read back from the store."""
+    sim_speedup: float | None = None
+    """The sim speed-up in force: 1 is real time. None when a sim run does not wait at all,
+    for a LIVE run or a check run, and for a finished run read back from the store, which does not keep it."""
+    check_run: bool = False
+    """Whether this was a check run, which worked on a copy of the record. The run list sets it."""

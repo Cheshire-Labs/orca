@@ -5,7 +5,7 @@ from cheshire_drivers.move_parameters import SEED_MOVE_PARAMETERS, MoveParameter
 from cheshire_drivers.teachpoints import AccessConfig, CartesianCoordinates, Teachpoint
 from pydantic import ValidationError
 
-from orca.runtime.move_parameters import resolve_move_parameters
+from orca.resource_models.move_parameters import resolve_move_parameters
 from orca.runtime.move_parameter_models import MoveDefaultsPatchRequest
 
 

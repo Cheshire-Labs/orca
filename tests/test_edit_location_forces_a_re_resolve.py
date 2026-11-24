@@ -17,6 +17,8 @@ the target could not hold the plate anyway: another plate is already there, or
 another thread has reserved it and is on its way.
 """
 
+from orca.resource_models.labware_placement import Arrival
+from orca.config import OrcaConfig
 import asyncio
 import contextlib
 from collections.abc import AsyncGenerator
@@ -29,8 +31,8 @@ from orca.resource_models.device_error import SlotOccupiedError
 from orca.resource_models.location import Location
 from orca.resource_models.resource_pool import ResourcePool
 from orca.resource_models.transporter import Transporter
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.runtime_interface import LocationReservedError
+from orca.modes.run_modes import WorkflowRunMode
+from orca.runtime.errors import LocationReservedError
 from orca.runtime.status_models import LabwareSnapshot
 from orca.runtime.system_runtime import ExecutionState, SystemRuntime
 from orca.sdk.events import EventBus
@@ -50,11 +52,15 @@ from tests.mock import UniversalMockDevice
 from tests.test_helpers import (
     create_test_plate_template,
     create_test_teachpoints,
-    seeded_teachpoint_service,
     wait_for_paused_thread,
     wait_until,
     wire_system_map,
 )
+from tests.setup_package import teachpoint_file
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 PADS = ["pad1", "pad2", "pad3"]
 # The shaker owns a deck site; a place lands on the site, not the device.
@@ -80,9 +86,8 @@ class _ArmThatJams(Transporter):
 
     def __init__(self, name: str, position_ids: list[str]) -> None:
         teachpoints = create_test_teachpoints(position_ids)
-        super().__init__(
-            name, teachpoint_store=seeded_teachpoint_service(teachpoints),
-        )
+        super().__init__(name)
+        self.bind_teachpoints(teachpoint_file(teachpoints))
         self.pick_sources: list[str] = []
         self.place_targets: list[str] = []
         self.jam_at: str | None = None
@@ -158,12 +163,15 @@ async def _build_bench(*, end_pads: list[str] | None = None) -> Bench:
     builder = SdkToSystemBuilder(
         name="test_system", description="", labwares=[plate],
         resources_registry=registry, system_map=system_map,
-        workflows=[workflow], event_bus=event_bus,
+        workflows=[workflow], event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     system = builder.get_system()
     return Bench(
-        runtime=SystemRuntime(system, event_bus=event_bus),
+        runtime=await memory_runtime(system, event_bus=event_bus),
         workflow=workflow,
         arm=arm,
         device=device,
@@ -184,8 +192,8 @@ async def _plate_lands_at(bench: Bench, position_id: str) -> LabwareSnapshot:
     instance = next(
         lw for lw in bench.system.labwares if lw.id == snapshot.id
     )
-    await bench.system.labware_placer.place(
-        instance, bench.system.system_map.get_location(position_id),
+    await bench.system.labware_placer.arrived(
+        instance, bench.system.system_map.get_location(position_id), Arrival.PLACED,
     )
     return snapshot
 
@@ -216,7 +224,7 @@ class TestTheMoveIsPlannedAgainFromWhereTheLabwareNowIs:
         await bench.runtime.start()
         try:
             record = await bench.runtime.submit_workflow(
-                bench.workflow.name, mode=WorkflowRunMode.PURE_SIM,
+                bench.workflow.name, mode=WorkflowRunMode.CHECK_RUN,
             )
             paused = await wait_for_paused_thread(bench.runtime, record.id)
             assert paused.labware_id is not None
@@ -263,7 +271,7 @@ class TestTheMoveIsPlannedAgainFromWhereTheLabwareNowIs:
                 "plate_96", location="pad2", confirm=True,
             )
             record = await bench.runtime.submit_workflow(
-                bench.workflow.name, mode=WorkflowRunMode.PURE_SIM,
+                bench.workflow.name, mode=WorkflowRunMode.CHECK_RUN,
             )
             await wait_until(
                 lambda: bool(bench.device.shakes) and any(
@@ -309,7 +317,7 @@ class TestTheMoveIsPlannedAgainFromWhereTheLabwareNowIs:
         await bench.runtime.start()
         try:
             record = await bench.runtime.submit_workflow(
-                bench.workflow.name, mode=WorkflowRunMode.PURE_SIM,
+                bench.workflow.name, mode=WorkflowRunMode.CHECK_RUN,
             )
             paused = await wait_for_paused_thread(bench.runtime, record.id)
             assert paused.labware_id is not None
@@ -349,7 +357,7 @@ class TestTheMoveIsPlannedAgainFromWhereTheLabwareNowIs:
         await bench.runtime.start()
         try:
             record = await bench.runtime.submit_workflow(
-                bench.workflow.name, mode=WorkflowRunMode.PURE_SIM,
+                bench.workflow.name, mode=WorkflowRunMode.CHECK_RUN,
             )
             paused = await wait_for_paused_thread(bench.runtime, record.id)
             assert paused.labware_id is not None
@@ -399,7 +407,7 @@ class TestTheMoveIsPlannedAgainFromWhereTheLabwareNowIs:
         await bench.runtime.start()
         try:
             record = await bench.runtime.submit_workflow(
-                bench.workflow.name, mode=WorkflowRunMode.PURE_SIM,
+                bench.workflow.name, mode=WorkflowRunMode.CHECK_RUN,
             )
             paused = await wait_for_paused_thread(bench.runtime, record.id)
             assert paused.labware_id is not None
@@ -416,7 +424,7 @@ class TestTheMoveIsPlannedAgainFromWhereTheLabwareNowIs:
             await wait_until(
                 lambda: any(
                     t.status == "PAUSED"
-                    and "re-plan" in (t.pause_message or "")
+                    and "no move could be planned" in (t.pause_message or "")
                     for t in bench.runtime.list_threads(record.id)
                 ),
                 timeout=20.0,
@@ -453,7 +461,7 @@ class TestTheMoveIsPlannedAgainFromWhereTheLabwareNowIs:
         await bench.runtime.start()
         try:
             record = await bench.runtime.submit_workflow(
-                bench.workflow.name, mode=WorkflowRunMode.PURE_SIM,
+                bench.workflow.name, mode=WorkflowRunMode.CHECK_RUN,
             )
             paused = await wait_for_paused_thread(bench.runtime, record.id)
             assert paused.labware_id is not None
@@ -490,7 +498,7 @@ class TestTheMoveIsPlannedAgainFromWhereTheLabwareNowIs:
         await bench.runtime.start()
         try:
             record = await bench.runtime.submit_workflow(
-                bench.workflow.name, mode=WorkflowRunMode.PURE_SIM,
+                bench.workflow.name, mode=WorkflowRunMode.CHECK_RUN,
             )
             paused = await wait_for_paused_thread(bench.runtime, record.id)
             assert paused.labware_id is not None
@@ -529,7 +537,7 @@ class TestWhatTheOperatorIsAndIsNotRefused:
         await bench.runtime.start()
         try:
             record = await bench.runtime.submit_workflow(
-                bench.workflow.name, mode=WorkflowRunMode.PURE_SIM,
+                bench.workflow.name, mode=WorkflowRunMode.CHECK_RUN,
             )
             paused = await wait_for_paused_thread(bench.runtime, record.id)
             assert paused.labware_id is not None
@@ -553,7 +561,7 @@ class TestWhatTheOperatorIsAndIsNotRefused:
         await bench.runtime.start()
         try:
             record = await bench.runtime.submit_workflow(
-                bench.workflow.name, mode=WorkflowRunMode.PURE_SIM,
+                bench.workflow.name, mode=WorkflowRunMode.CHECK_RUN,
             )
             paused = await wait_for_paused_thread(bench.runtime, record.id)
             assert paused.labware_id is not None
@@ -588,7 +596,7 @@ class TestWhatTheOperatorIsAndIsNotRefused:
         await bench.runtime.start()
         try:
             record = await bench.runtime.submit_workflow(
-                bench.workflow.name, mode=WorkflowRunMode.PURE_SIM,
+                bench.workflow.name, mode=WorkflowRunMode.CHECK_RUN,
             )
             paused = await wait_for_paused_thread(bench.runtime, record.id)
             stranger = await bench.runtime.labware.register(
@@ -631,7 +639,7 @@ class TestWhatTheOperatorIsAndIsNotRefused:
         await bench.runtime.start()
         try:
             record = await bench.runtime.submit_workflow(
-                bench.workflow.name, mode=WorkflowRunMode.PURE_SIM,
+                bench.workflow.name, mode=WorkflowRunMode.CHECK_RUN,
             )
             paused = await wait_for_paused_thread(bench.runtime, record.id)
             assert bench.reservations.get_reservation_at("pad2") is not None
@@ -662,7 +670,7 @@ class TestWhatTheOperatorIsAndIsNotRefused:
         await bench.runtime.start()
         try:
             record = await bench.runtime.submit_workflow(
-                bench.workflow.name, mode=WorkflowRunMode.PURE_SIM,
+                bench.workflow.name, mode=WorkflowRunMode.CHECK_RUN,
             )
             paused = await wait_for_paused_thread(bench.runtime, record.id)
             assert paused.labware_id is not None
@@ -688,7 +696,7 @@ class TestWhatTheOperatorIsAndIsNotRefused:
         await bench.runtime.start()
         try:
             record = await bench.runtime.submit_workflow(
-                bench.workflow.name, mode=WorkflowRunMode.PURE_SIM,
+                bench.workflow.name, mode=WorkflowRunMode.CHECK_RUN,
             )
             paused = await wait_for_paused_thread(bench.runtime, record.id)
             held = bench.reservations.get_reservation_at(SHAKER_SITE)
@@ -722,7 +730,7 @@ class TestWhatTheOperatorIsAndIsNotRefused:
         await bench.runtime.start()
         try:
             record = await bench.runtime.submit_workflow(
-                bench.workflow.name, mode=WorkflowRunMode.PURE_SIM,
+                bench.workflow.name, mode=WorkflowRunMode.CHECK_RUN,
             )
             paused = await wait_for_paused_thread(bench.runtime, record.id)
             assert paused.labware_id is not None

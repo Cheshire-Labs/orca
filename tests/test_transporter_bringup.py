@@ -22,13 +22,12 @@ from cheshire_drivers.transporter_models import (
 )
 
 from orca.resource_models.transporter import Transporter
-from orca.runtime.device_factory_context import use_device_factory
 
 from tests.test_helpers import (
-    _SingleDriverFactory,
     create_test_teachpoints,
-    seeded_teachpoint_service,
 )
+from tests.setup_package import teachpoint_file, with_teachpoints
+from tests.real_device_path import connected, the_real_device_path
 
 pytestmark = pytest.mark.asyncio
 
@@ -62,16 +61,24 @@ class RecordingArmDriver(SimTransporterDriver):
         await super().move_to_safe(request)
 
 
-def _arm_with(driver: RecordingArmDriver) -> Transporter:
-    store = seeded_teachpoint_service(create_test_teachpoints(["pad1"]))
-    with use_device_factory(_SingleDriverFactory(driver)):
-        return Transporter("robot1", teachpoint_store=store)
+async def _arm_with(driver: RecordingArmDriver) -> Transporter:
+    store = teachpoint_file(create_test_teachpoints(["pad1"]))
+    the_real_device_path().simulate_with("robot1", driver)
+    return await connected(with_teachpoints(Transporter("robot1"), store))
+
+
+async def _arm_linked_through_orca(driver: RecordingArmDriver) -> Transporter:
+    """An arm whose link orca opened this session: the forwarding driver knows only what went through it."""
+    arm = await _arm_with(driver)
+    await arm.connect()
+    driver.calls.clear()
+    return arm
 
 
 class TestTransporterBringUp:
     async def test_bring_up_moves_the_arm_nowhere(self) -> None:
         driver = RecordingArmDriver("robot1", connected=True)
-        await _arm_with(driver).initialize()
+        await (await _arm_with(driver)).initialize()
         moves = [c for c in driver.calls if c in ("home", "move_to_safe")]
         assert moves == [], (
             "bring-up moved the arm; on the bench this faulted the controller "
@@ -82,12 +89,12 @@ class TestTransporterBringUp:
         """`initialize` readies the arm; `home` moves it. Keeping them apart is
         what lets an operator bring an arm up with a hand on the deck."""
         driver = RecordingArmDriver("robot1", connected=True)
-        await _arm_with(driver).initialize()
+        await (await _arm_linked_through_orca(driver)).initialize()
         assert driver.calls == ["initialize"]
 
     async def test_bring_up_opens_the_link_first_when_it_is_down(self) -> None:
         driver = RecordingArmDriver("robot1", connected=False)
-        await _arm_with(driver).initialize()
+        await (await _arm_with(driver)).initialize()
         assert driver.calls == ["connect", "initialize"], (
             "an arm whose link is down must be connected before it is told to "
             f"initialize. Calls: {driver.calls}"
@@ -95,7 +102,7 @@ class TestTransporterBringUp:
 
     async def test_bring_up_leaves_an_open_link_alone(self) -> None:
         driver = RecordingArmDriver("robot1", connected=True)
-        await _arm_with(driver).initialize()
+        await (await _arm_linked_through_orca(driver)).initialize()
         assert "connect" not in driver.calls, (
             "re-connecting a live PreciseFlex orphans the attached session; "
             f"calls: {driver.calls}"
@@ -105,9 +112,15 @@ class TestTransporterBringUp:
         """Granular does not mean unreachable: the verb bring-up stopped calling
         is the same one an operator asks for when the arm needs to move."""
         driver = RecordingArmDriver("robot1", connected=True)
-        arm = _arm_with(driver)
+        arm = await _arm_linked_through_orca(driver)
         await arm.initialize()
 
         await arm.driver.home(HomeRequest())
 
         assert driver.calls == ["initialize", "home"]
+
+    async def test_a_fresh_server_session_connects_and_initializes_an_arm_whose_link_is_already_open(self) -> None:
+        """Orca answers for what it sent this session. A link its orca-client already holds open is connected again."""
+        driver = RecordingArmDriver("robot1", connected=True)
+        await (await _arm_with(driver)).initialize()
+        assert driver.calls == ["connect", "initialize"]

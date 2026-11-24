@@ -1,17 +1,19 @@
 import asyncio
 import logging
 import time
-from typing import List
+from typing import Callable, List
 
 from orca.events.event_channel import EventChannelRegistry
 from orca.events.execution_context import LocationActionExecutionContext, MethodExecutionContext
 from orca.resource_models.devices import Device
+from orca.resource_models.error_policy_overrides import WrongPartnerPlateError
 from orca.resource_models.labware import LabwareInstance, LabwareTemplate
 from orca.resource_models.location import Location
+from orca.state.mounted import name_the_rack_a_96_return_went_to
 from orca.state.records import (
     ActionContinuedDetails,
+    DeclaredTracking,
     DeviceOperation,
-    ObservationGapCause,
     OperationRecord,
     TrackingRecord,
     TrackingSource,
@@ -22,11 +24,13 @@ from orca.system.reservation_manager.location_reservation import LocationReserva
 from orca.variables.variable_ref import NamedRef
 from orca.variables.variable_store import IVariableResolver, NullVariableResolver
 from orca.workflow_models.action_state_machine import ActionEvent, ActionStateMachine
+from orca.workflow_models.actions.device_call_dispatcher import CommandRecorder
 from orca.workflow_models.actions.location_action import ActionBodyLocationAction
 from orca.workflow_models.actions.operation_recovery import OperationDecisionSignal
 from orca.workflow_models.pause_checkpoint import IPauseCheckpoint
 from orca.workflow_models.status_enums import ActionStatus
 from orca.workflow_models.status_manager import StatusManager
+from orca.devices.interpreter_resolution import resolve_operation_interpreter
 
 orca_logger = logging.getLogger("orca")
 
@@ -52,7 +56,7 @@ class ExecutableLocationAction:
     signals its narrowed role as a lifecycle stage rather than just a status
     routing wrapper: it owns the execution dependencies (status_manager,
     context, lls, event channel registry) plus the per-execute setup. Status
-    routing now lives in ``_fire(event)`` via the ``ActionStateMachine``.
+    routing lives in ``_fire(event)`` via the ``ActionStateMachine``.
     """
 
     def __init__(self,
@@ -64,8 +68,13 @@ class ExecutableLocationAction:
                  tracking_context: TrackingContext | None = None,
                  pool_indices: dict[str, int] | None = None,
                  submission_id: str | None = None,
+                 *,
+                 tag: str | None = None,
+                 group_served: Callable[[], str | None] | None = None,
                  ) -> None:
         super().__init__()
+        self._tag = tag
+        self._group_served: Callable[[], str | None] = group_served or (lambda: None)
         self._status_manager = status_manager
         self._context = context
         self._submission_id = submission_id
@@ -78,6 +87,7 @@ class ExecutableLocationAction:
         self._pool_indices = pool_indices if pool_indices is not None else {}
         self._state_machine = ActionStateMachine()
         self._pause_checkpoint: IPauseCheckpoint | None = None
+        self._named_partner_barcodes: Callable[[], dict[str, str]] = dict
         self._publish_status(self._state_machine.current)
         self._is_executing = asyncio.Lock()
         # What ended this action, so a later CONTINUE can name what it carried
@@ -87,6 +97,22 @@ class ExecutableLocationAction:
     @property
     def action(self) -> ActionBodyLocationAction:
         return self._action
+
+    def require_partner_barcodes(self, named: Callable[[], dict[str, str]]) -> None:
+        """Before the body runs, each input of a named template must carry the barcode named for it."""
+        self._named_partner_barcodes = named
+
+    def _refuse_a_partner_nobody_named(self) -> None:
+        named = self._named_partner_barcodes()
+        for labware in self._action.expected_inputs:
+            wanted = named.get(labware.template_name)
+            if wanted is not None and labware.barcode != wanted:
+                raise WrongPartnerPlateError(
+                    f"{self._action.command!r} at {self._action.location.name} needs the "
+                    f"{labware.template_name!r} with barcode {wanted!r}, and {labware.name!r} "
+                    f"(barcode {labware.barcode!r}) is the one bound to it. The step did not run. "
+                    f"Put the named labware in its place, or correct the barcode, then retry."
+                )
 
     def set_pause_checkpoint(self, checkpoint: IPauseCheckpoint) -> None:
         """Register the thread driving this action body as its pause checkpoint."""
@@ -143,115 +169,45 @@ class ExecutableLocationAction:
         await self.all_labware_is_present.wait()
         self._fire(ActionEvent.ACTION_STARTED)
         self._ensure_all_labware_present()
+        self._refuse_a_partner_nobody_named()
         self._resolve_variables()
         self._wire_action_body_context()
-        self._watch_operations()
 
         await self._action.execute()
 
+        await self._save_declared_tracking()
+
+    async def _save_operations(self, operations: list[OperationRecord]) -> None:
         if self._tracking_context is not None:
-            await self._process_tracking()
-
-    def _watch_operations(self) -> None:
-        """Say that this action is about to do things the ledger cannot see yet.
-
-        A read of what a head or a labware holds folds the store, and the store
-        only learns about an action's operations when the action ends. Until
-        then the read is behind, and this is how it finds that out. Re-watched
-        on every attempt so a retry's fresh log is the one being followed.
-        """
-        if self._tracking_context is None:
-            return
-        self._tracking_context.ops_history.unrecorded.watch(
-            self._action.id, self._action,
-        )
-
-    def _stop_watching_operations(self) -> None:
-        """Called wherever the operations leave the action: folded into a
-        record, or dropped with the action itself."""
-        if self._tracking_context is None:
-            return
-        self._tracking_context.ops_history.unrecorded.forget(self._action.id)
-
-    async def record_operations_dropped(self) -> None:
-        """This action is being abandoned holding operations it really performed.
-
-        RETRY carries them into the next attempt's record and CONTINUE writes
-        them; an abort does neither, so the pick-up and the aspirate that
-        happened are lost and the record is now wrong by an amount nothing can
-        say. That is exactly an observation gap, so one is written for each
-        labware the dropped operations touched and each head that performed
-        them: the reads go on answering with the best number there is, and they
-        say a person has to look rather than going back to reading `known`.
-
-        The labware gaps follow the operations rather than the action's whole
-        labware list, because a rack the action was configured with but never
-        reached has nothing to be wrong about. The head gap does not need the
-        same care: an action commands one device.
-
-        Silent when the action performed nothing -- there is nothing to have
-        lost, and a gap nobody needs would be one more thing to settle.
-        """
-        if self._tracking_context is None:
-            return
-        dropped = self._action.drain_operation_log()
-        self._stop_watching_operations()
-        if not dropped:
-            return
-        history = self._tracking_context.ops_history.for_execution(
-            self._context.execution_id
-        )
-        touched = {name for op in dropped for name in op.affected_labware}
-        for instance in self._action.build_template_to_instance_map().values():
-            if instance.name in touched:
-                await instance.note_observation_gap(
-                    ObservationGapCause.OPERATIONS_DROPPED
-                )
-        await history.append_head_observation_gap(
-            self._action.device.name, ObservationGapCause.OPERATIONS_DROPPED,
-        )
-
-    async def _process_tracking(self) -> None:
-        """Process operation log synchronously after action completes.
-
-        Runs BEFORE the action is marked COMPLETED so that TipState is
-        current and TIP_RACK events are emitted before the next action starts.
-        """
-        operations = self._action.drain_operation_log()
-        self._stop_watching_operations()
-        thread_id = self._resolve_thread_id_for_action()
-        assert self._tracking_context is not None
-        template_to_instance = self._action.build_template_to_instance_map()
-        try:
-            record = self._tracking_context.observer.process_operations(
-                operations, self._context, self._action.id, thread_id,
-                declares=self._action.declares,
-                template_to_instance=template_to_instance,
+            ids = {labware.name: labware.id for labware in self._action.build_template_to_instance_map().values()}
+            operations = await name_the_rack_a_96_return_went_to(
+                operations, self._tracking_context.ops_history, ids.get,
             )
-            if record is not None:
-                await self._tracking_context.store_record(
-                    record, execution_id=self._context.execution_id,
-                )
-        except Exception:
-            # One record carries the whole action, so a single bad entry costs
-            # every operation this action performed. The run still finishes,
-            # because refusing to continue over a bookkeeping failure would
-            # strand a plate mid-move, but nobody may call this a detail.
-            orca_logger.error(
-                "None of the %d operations from action %s reached the record; "
-                "everything this action did is missing from the history and "
-                "any read of what the labware holds will be stale",
-                len(operations), self._action.command, exc_info=True,
-            )
+        await self._write_record(operations, declares=None)
+
+    async def _save_declared_tracking(self) -> None:
+        """What the action declared it would do, written once it has finished."""
+        await self._write_record([], declares=self._action.declares)
+
+    async def _write_record(
+        self, operations: list[OperationRecord], declares: DeclaredTracking | None,
+    ) -> None:
+        if self._tracking_context is None:
+            raise RuntimeError(f"action '{self._action.command}' has nowhere to save its operations")
+        record = self._tracking_context.observer.process_operations(
+            operations, self._context, self._action.id, self._resolve_thread_id_for_action(),
+            declares=declares,
+            template_to_instance=self._action.build_template_to_instance_map(),
+        )
+        if record is not None:
+            record = record.model_copy(update={
+                "tag": self._tag,
+                "operations": [op.model_copy(update={"group_id": self._group_served()}) for op in record.operations],
+            })
+            await self._tracking_context.store_record(record, execution_id=self._context.execution_id)
 
     async def record_operator_continued(self) -> None:
         """Ledger this errored action as operator-confirmed, not as executed.
-
-        Writes the operations the action really performed before it failed, plus
-        one marker op naming the failure carried on past. Dropping the action
-        drops its operation log with it, and the run continues, so a plate whose
-        ledger is missing a real aspirate stays wrong to the end of the run. (A
-        RETRY needs none of this: the log rides into the next attempt's record.)
 
         Deliberately does NOT run the declared-tracking fold: what the action
         declared it would do is not evidence of what happened.
@@ -276,6 +232,7 @@ class ExecutableLocationAction:
             ),
             timestamp=now,
             source=TrackingSource.OPERATOR,
+            group_id=self._group_served(),
         )
         record = TrackingRecord(
             execution_id=self._context.execution_id,
@@ -284,9 +241,9 @@ class ExecutableLocationAction:
             method_id=self._context.method_id,
             source=TrackingSource.OPERATOR,
             timestamp=now,
-            operations=[*self._action.drain_operation_log(), marker],
+            operations=[marker],
+            tag=self._tag,
         )
-        self._stop_watching_operations()
         try:
             await self._tracking_context.store_record(
                 record, execution_id=self._context.execution_id,
@@ -323,7 +280,7 @@ class ExecutableLocationAction:
             pause_checkpoint=self._pause_checkpoint,
         )
         if self._tracking_context is not None:
-            self._wire_interpreter()
+            self._wire_recorder()
 
     def _resolve_thread_id_for_action(self) -> str:
         """Resolve the thread_id to stamp on this action's operation records.
@@ -347,10 +304,12 @@ class ExecutableLocationAction:
             )
         return next(iter(self._context.participating_thread_ids))
 
-    def _wire_interpreter(self) -> None:
+    def _wire_recorder(self) -> None:
         device = self._action.device
-        interpreter = self._resolve_interpreter(device)
-        self._action.set_interpreter(interpreter)
+        self._action.set_recorder(CommandRecorder(
+            self._resolve_interpreter(device), self._save_operations,
+            device.name, self._action.id, self._resolve_thread_id_for_action(),
+        ))
 
     def _resolve_interpreter(self, device: Device) -> IOperationInterpreter:
         """Select interpreter for ``device`` by walking its MRO for ITrackedDevice.
@@ -360,7 +319,6 @@ class ExecutableLocationAction:
         tracked interface (ITrackedDevice) declare their interpreter via a
         classmethod; concrete classes do not need to override it.
         """
-        from orca.resource_models.tracking_interpreter import resolve_operation_interpreter
         return resolve_operation_interpreter(device)
 
     async def execute(self) -> None:
@@ -377,7 +335,6 @@ class ExecutableLocationAction:
                 # re-raise so the caller's cancel-and-await completes.
                 if not self._is_terminal():
                     self._fire(ActionEvent.ACTION_CANCELLED)
-                await self.record_operations_dropped()
                 raise
             except Exception as e:
                 self._terminal_error = _underlying_error(e)

@@ -7,9 +7,9 @@ from typing import Protocol
 class IPauseCheckpoint(Protocol):
     """The thread's pause machinery, as seen from inside an action body.
 
-    ``ExecutingLabwareThread`` satisfies this structurally. An action body
-    holds the device reservation and is normally the wrong place to stop, so
-    only a point where nothing is in motion offers the checkpoint.
+    ``ExecutingLabwareThread`` satisfies this structurally. Only a point where
+    nothing is in motion offers the checkpoint: between two instrument commands,
+    or at a confirmed manual step.
     """
 
     @property

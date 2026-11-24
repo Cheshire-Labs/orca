@@ -13,7 +13,7 @@ from typer.testing import CliRunner
 
 from orca.cli import output
 from orca.cli.app import app
-from orca.daemon.schemas import GripProfileDTO, GripProfilePatchRequest
+from orca.operations.wire_models import GripProfileDTO, GripProfilePatchRequest
 
 
 runner = CliRunner()
@@ -150,7 +150,7 @@ def test_set_offers_every_field_the_grip_profile_layer_can_hold() -> None:
 
     from cheshire_drivers.move_parameters import MoveParameterPatch
     from orca.cli.grip_profiles import set_grip_profile
-    from orca.runtime.move_parameters import SITE_OWNED_FIELDS
+    from orca.resource_models.move_parameters import SITE_OWNED_FIELDS
 
     offered = set(inspect.signature(set_grip_profile).parameters) - {
         "labware_type", "clear", "reason",

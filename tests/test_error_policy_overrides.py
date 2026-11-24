@@ -4,13 +4,14 @@ Proves that ``OverrideWithPauseError`` subclasses force PAUSE regardless
 of the method's declared ``FailurePolicy``.
 
 The marker base lives in
-``src/orca/workflow_models/error_policy_overrides.py``. The action-error
+``src/orca/resource_models/error_policy_overrides.py``. The action-error
 handler in ``ExecutingLabwareThread`` checks ``_should_force_pause`` at
 every policy-ABORT branch site. These tests drive the production
 workflow loop (no inline raises in test bodies) so a regression that
 deletes either the marker inheritance OR the override check fails loud.
 """
 
+from orca.config import OrcaConfig
 import asyncio
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
@@ -30,7 +31,7 @@ from orca.sdk.workflow import ThreadTemplate, WorkflowTemplate
 import orca.orca as orca
 from orca.workflow_models.action_context import ActionContext
 from orca.workflow_models.action_template import ActionTemplate
-from orca.workflow_models.error_policy_overrides import OverrideWithPauseError
+from orca.resource_models.error_policy_overrides import OverrideWithPauseError
 from orca.workflow_models.labware_threads.executing_labware_thread import (
     ExecutingLabwareThread,
 )
@@ -38,7 +39,7 @@ from orca.workflow_models.method_context import MethodContext
 from orca.workflow_models.method_template import IMethodTemplate, MethodTemplate
 from orca.workflow_models.thread_context import ThreadContext
 from orca.workflow_models.status_enums import FailurePolicy, RecoveryDecision
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 
 from tests.mock import UniversalMockDevice
 from tests.test_helpers import (
@@ -47,6 +48,10 @@ from tests.test_helpers import (
     wait_for_paused_thread,
     wire_system_map,
 )
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 
 # ---------------------------------------------------------------------------
@@ -156,10 +161,13 @@ async def _build_external_control_system(policy: FailurePolicy) -> OverrideFixtu
     builder = SdkToSystemBuilder(
         name="override_pause_test", description="",
         labwares=[plate], resources_registry=registry,
-        system_map=system_map, workflows=[workflow], event_bus=event_bus,
+        system_map=system_map, workflows=[workflow], event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
-    runtime = SystemRuntime(builder.get_system(), event_bus=event_bus)
+    runtime = await memory_runtime(builder.get_system(), event_bus=event_bus)
     return OverrideFixture(runtime, workflow, device)
 
 
@@ -178,7 +186,7 @@ async def test_abort_policy_pauses_on_device_under_external_control() -> None:
     await f.runtime.start()
 
     record = await f.runtime.submit_workflow(
-        f.workflow.name, mode=WorkflowRunMode.PURE_SIM,
+        f.workflow.name, mode=WorkflowRunMode.CHECK_RUN,
     )
     paused_thread = await wait_for_paused_thread(f.runtime, record.id)
 
@@ -210,7 +218,7 @@ async def test_pause_policy_pauses_on_device_under_external_control() -> None:
     await f.runtime.start()
 
     record = await f.runtime.submit_workflow(
-        f.workflow.name, mode=WorkflowRunMode.PURE_SIM,
+        f.workflow.name, mode=WorkflowRunMode.CHECK_RUN,
     )
     paused_thread = await wait_for_paused_thread(f.runtime, record.id)
     assert paused_thread.status == "PAUSED"
@@ -288,10 +296,13 @@ async def _build_method_failure_system() -> OverrideFixture:
     builder = SdkToSystemBuilder(
         name="override_non_marker_test", description="",
         labwares=[plate], resources_registry=registry,
-        system_map=system_map, workflows=[workflow], event_bus=event_bus,
+        system_map=system_map, workflows=[workflow], event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
-    runtime = SystemRuntime(builder.get_system(), event_bus=event_bus)
+    runtime = await memory_runtime(builder.get_system(), event_bus=event_bus)
     return OverrideFixture(runtime, workflow, device)
 
 
@@ -309,7 +320,7 @@ async def test_abort_policy_still_aborts_on_non_marker_exception() -> None:
     await f.runtime.start()
 
     record = await f.runtime.submit_workflow(
-        f.workflow.name, mode=WorkflowRunMode.PURE_SIM,
+        f.workflow.name, mode=WorkflowRunMode.CHECK_RUN,
     )
     status = await asyncio.wait_for(f.runtime.wait(record.id), timeout=10.0)
 

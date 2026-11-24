@@ -9,6 +9,7 @@ Covers moderate and low confidence items:
 6. Action tag field
 """
 
+from orca.config import OrcaConfig
 import asyncio
 from collections.abc import AsyncGenerator
 
@@ -18,20 +19,19 @@ import orca.orca as orca
 from orca.events.event_bus import EventBus
 from orca.events.event_channel import EventChannelRegistry
 from orca.resource_models.resource_pool import ResourcePool
-from orca.runtime.system_runtime import SystemRuntime
 from orca.system.SdkToSystemBuilder import SdkToSystemBuilder
 from orca.sdk.system import SystemMap
-from orca.system.resource_registry import ResourceRegistry
+from orca.resource_models.resource_registry import ResourceRegistry
 from orca.variables.variable_store import NullVariableResolver
 from orca.workflow_models.action_context import ActionContext
-from orca.workflow_models.workflows.workflow_factories import MethodActionFactory
+from orca.workflow_models.actions.method_action_factory import MethodActionFactory
 from orca.workflow_models.action_template import ActionTemplate
 from orca.workflow_models.method_context import MethodContext
 from orca.workflow_models.method_template import IMethodTemplate
 from orca.workflow_models.thread_context import ThreadContext
 from orca.workflow_models.workflow_context import WorkflowContext
 from orca.workflow_models.status_enums import FailurePolicy, RecoveryDecision
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
 from tests.mock import UniversalMockDevice
 from tests.test_helpers import (
     execution_outcome,
@@ -40,6 +40,10 @@ from tests.test_helpers import (
     create_test_transporter,
     wait_for_paused_threads,
 )
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 
 # ---------------------------------------------------------------------------
@@ -111,11 +115,14 @@ async def _build_auto_spawn_system(
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=event_bus,
+        event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     system = builder.get_system()
-    runtime = SystemRuntime(system, event_bus=event_bus)
+    runtime = await memory_runtime(system, event_bus=event_bus)
     return runtime, workflow, dev, event_bus
 
 
@@ -133,7 +140,7 @@ class TestAutoSpawnErrorRecovery:
         runtime, workflow, device, _ = await _build_auto_spawn_system()
         await runtime.start()
 
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
         await wait_for_paused_threads(runtime, submission.execution_id, count=2)
 
         threads_before = runtime.list_threads(submission.execution_id)
@@ -160,7 +167,7 @@ class TestAutoSpawnErrorRecovery:
         runtime, workflow, device, _ = await _build_auto_spawn_system()
         await runtime.start()
 
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
         await wait_for_paused_threads(runtime, submission.execution_id, count=2)
 
         threads_before = runtime.list_threads(submission.execution_id)
@@ -251,14 +258,17 @@ class TestRecursiveAutoSpawn:
             resources_registry=registry,
             system_map=system_map,
             workflows=[workflow],
-            event_bus=event_bus,
+            event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+            labware_catalog=bundled_labware_catalog(),
+            labware_service=memory_labware_service(),
+            unsaved_positions=memory_unsaved_positions(),
         )
         await builder.bind_labwares()
         system = builder.get_system()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
 
         await runtime.start()
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
         status = await execution_outcome(runtime, submission, timeout=15.0)
 
         threads = runtime.list_threads(submission.execution_id)
@@ -353,7 +363,7 @@ class TestActionContextWaitFor:
             event_channel_registry=reg,
         )
 
-        with pytest.raises(asyncio.TimeoutError):
+        with pytest.raises(TimeoutError):
             await ctx.wait_for("never", timeout=0.1)
 
 
@@ -454,11 +464,14 @@ class TestMethodAutoRegistration:
             resources_registry=registry,
             system_map=system_map,
             workflows=[workflow],
-            event_bus=event_bus,
+            event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+            labware_catalog=bundled_labware_catalog(),
+            labware_service=memory_labware_service(),
+            unsaved_positions=memory_unsaved_positions(),
         )
         await builder.bind_labwares()
         system = builder.get_system()
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
 
         # @orca.method decorator registers the template via the pending-list
         # drain in SdkToSystemBuilder.get_system(); no generator introspection.
@@ -470,7 +483,7 @@ class TestMethodAutoRegistration:
         assert len(templates) == 1
 
         await runtime.start()
-        submission = await runtime.submit(workflow, mode=WorkflowRunMode.PURE_SIM)
+        submission = await runtime.submit(workflow, mode=WorkflowRunMode.CHECK_RUN)
         await execution_outcome(runtime, submission, timeout=10.0)
 
         # Still registered after execution (idempotent).

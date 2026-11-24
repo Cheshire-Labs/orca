@@ -53,9 +53,8 @@ from collections.abc import AsyncGenerator
 import pytest
 
 import orca.orca as orca
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.submission import BatchMode
-from orca.runtime.system_runtime import SystemRuntime
+from orca.modes.run_modes import WorkflowRunMode
+from orca.workflow_models.submission import BatchMode
 from orca.sdk.events import EventBus
 from orca.sdk.workflow import MethodTemplate, ThreadTemplate, WorkflowTemplate
 from orca.system.system_interface import ISystem
@@ -73,6 +72,7 @@ from tests.closure_e2e_scaffold import (
     wait_for_boot,
 )
 from tests.test_helpers import wait_until
+from tests.memory_activity import memory_runtime
 
 
 class _Recorder:
@@ -211,7 +211,7 @@ async def test_no_premature_close_while_live_owner_owes() -> None:
     mid_gate = _SecondMidGate()
     feeder_gate = _FeederGate()
     system, workflow, event_bus = await _build_system(recorder, mid_gate, feeder_gate)
-    runtime = SystemRuntime(system, event_bus=event_bus)
+    runtime = await memory_runtime(system, event_bus=event_bus)
     await runtime.start()
     try:
         sub = await runtime.submit(
@@ -221,7 +221,7 @@ async def test_no_premature_close_while_live_owner_owes() -> None:
                 feeder_group("grp-2"),
             ],
             batch_mode=BatchMode.STANDALONE,
-            mode=WorkflowRunMode.PURE_SIM,
+            mode=WorkflowRunMode.CHECK_RUN,
         )
         eid = sub.execution_id
         await wait_for_boot(runtime, eid)

@@ -1,38 +1,61 @@
+from orca.operations.labware_models import (
+    CLEAR_ALL_LABWARE_ROUTE,
+    CLEAR_LABWARE_CARRY_OVERRIDE_ROUTE,
+    CLEAR_SUBMISSION_LABWARE_ROUTE,
+    CONFIRM_TIP_STATE_ROUTE,
+    CONFIRM_WELL_VOLUMES_ROUTE,
+    DISCHARGE_LABWARE_ROUTE,
+    EDIT_LABWARE_BARCODE_ROUTE,
+    EDIT_LABWARE_LOCATION_ROUTE,
+    GET_LABWARE_BY_BARCODE_ROUTE,
+    GET_LABWARE_BY_ID_ROUTE,
+    GET_LABWARE_JOURNEY_ROUTE,
+    LIST_LABWARE_ROUTE,
+    MARK_TIPS_USED_ROUTE,
+    REGISTER_LABWARE_ROUTE,
+    RELEASE_MOVER_HOLD_ROUTE,
+    RESET_LABWARE_LOCATION_ROUTE,
+    RESOLVE_CONTENTS_ROUTE,
+    SET_LABWARE_CARRY_OVERRIDE_ROUTE,
+    SET_TIP_STATE_ROUTE,
+    SET_WELL_VOLUMES_ROUTE,
+)
 """Labware Operations.
-
-Covers the 7 methods on `ILabwareFacade`:
-- GetLabwareById / GetLabwareByBarcode
-- ListLabware
-- GetLabwareHistory
-- EditLabwareLocation / EditLabwareBarcode / ResetLabwareLocation
-- RegisterLabware
 
 Single-target Operations; no Scope dispatch needed (labware identity
 is a primary key, not a position in a runtime tree).
 """
 
+from orca.operations.binding import RestBinding
 from typing import ClassVar
 from cheshire_drivers.move_parameters import MoveParameterPatch
 from pydantic import BaseModel
-from orca.operations._protocol import (
-    OperationError, OperationErrorCode, confirm_refused, message_of,
+from orca.operations.error_codes import ErrorCode
+from orca.operations.protocol import (
+    OperationError, confirm_refused, message_of,
 )
 from orca.operations._spawn_incompatible import spawn_incompatible
 from orca.state.confirm_refusals import ConfirmRefusedError
 from orca.resource_models.device_error import SlotOccupiedError
 from orca.state.records import TrackingSource
 from orca.state.ops_store import OpsHistorySearchQuery
-from orca.runtime.move_parameters import MoveParameterEditRefused
-from orca.runtime.runtime_interface import (
+from orca.resource_models.move_parameters import MoveParameterEditRefused
+from orca.runtime.facade_interfaces import (
     ClearSubmissionResult,
+)
+from orca.runtime.runtime_interface import (
     ISystemRuntime,
+)
+from orca.runtime.errors import (
     ActiveExecutionRefusedError,
     BarcodeInUseError,
+    LabwareInUseByThreadError,
     LabwareNotFoundError,
     LocationReservedError,
+    UnknownLocationError,
     MoverHoldsNothingError,
-    SpawnIncompatibleError,
 )
+from orca.workflow_models.errors import SpawnIncompatibleError
 from orca.operations.labware_models import (
     CarryOverrideResponse,
     ClearAllLabwareRequest,
@@ -49,21 +72,14 @@ from orca.operations.labware_models import (
     EditLabwareLocationRequest,
     GetLabwareByBarcodeRequest,
     GetLabwareByIdRequest,
-    GetLabwareHistoryRequest,
-    GetLabwareHistoryResponse,
     GetLabwareJourneyRequest,
     GetLabwareJourneyResponse,
     GetLabwareResponse,
-    GetTipStateRequest,
-    GetTipStateResponse,
-    GetWellVolumesRequest,
-    GetWellVolumesResponse,
     JourneyAction,
     JourneyMove,
     LabwareSnapshotModel,
     ListLabwareRequest,
     ListLabwareResponse,
-    LocationEventModel,
     MarkTipsUsedRequest,
     MarkTipsUsedResponse,
     RegisterLabwareRequest,
@@ -76,7 +92,7 @@ from orca.operations.labware_models import (
     SetLabwareCarryOverrideRequest,
     SetTipStateRequest,
     SetWellVolumesRequest,
-    _MutationResponse,
+    LabwareMutationResponse,
 )
 
 
@@ -94,11 +110,9 @@ def _location_reserved(exc: LocationReservedError) -> OperationError:
     means a person is being asked to place it, so making that placement is what
     frees the position. Read the flag before the name.
     """
-    return OperationError.typed(
-        OperationErrorCode.CONFLICT,
+    return OperationError.of(
+        ErrorCode.LOCATION_RESERVED,
         str(exc),
-        wire_code="location_reserved",
-        status_code=409,
         position_id=exc.position_id,
         reservation_id=exc.reservation_id,
         holder_thread_id=exc.holder_thread_id,
@@ -110,28 +124,24 @@ def _location_reserved(exc: LocationReservedError) -> OperationError:
 
 
 def _barcode_in_use(exc: BarcodeInUseError) -> OperationError:
-    return OperationError.typed(
-        OperationErrorCode.CONFLICT,
+    return OperationError.of(
+        ErrorCode.BARCODE_IN_USE,
         str(exc),
-        wire_code="barcode_in_use",
-        status_code=409,
         barcode=exc.barcode,
         existing_labware_id=exc.existing_labware_id,
     )
 
 
-def _slot_occupied(exc: SlotOccupiedError) -> OperationError:
+def slot_occupied(exc: SlotOccupiedError) -> OperationError:
     """Placing into a slot that already holds something else.
 
     409 because the operator unblocks it by clearing the named slot. The
     occupant travels in extras so a surface can say what is in the way
     rather than only that the placement was refused.
     """
-    return OperationError.typed(
-        OperationErrorCode.CONFLICT,
+    return OperationError.of(
+        ErrorCode.SLOT_OCCUPIED,
         str(exc),
-        wire_code="slot_occupied",
-        status_code=409,
         position_id=exc.position_id,
         existing_labware_name=exc.existing_labware_name,
         existing_template_name=exc.existing_template_name,
@@ -142,8 +152,9 @@ def _slot_occupied(exc: SlotOccupiedError) -> OperationError:
 
 
 class GetLabwareByIdOperation:
-    Request: ClassVar[type[BaseModel]] = GetLabwareByIdRequest
-    Response: ClassVar[type[BaseModel]] = GetLabwareResponse
+    Request: ClassVar[type[BaseModel]] = GET_LABWARE_BY_ID_ROUTE.request
+    Response: ClassVar[type[BaseModel]] = GET_LABWARE_BY_ID_ROUTE.response
+    binding: ClassVar[RestBinding] = GET_LABWARE_BY_ID_ROUTE.binding
 
     def __init__(self, runtime: ISystemRuntime):
         self._runtime = runtime
@@ -152,7 +163,8 @@ class GetLabwareByIdOperation:
         try:
             snap = await self._runtime.labware.get_by_id(req.labware_id)
         except KeyError as exc:
-            raise OperationError.not_found(
+            raise OperationError.of(
+                ErrorCode.LABWARE_NOT_FOUND,
                 f"labware id {req.labware_id!r} not found",
                 labware_id=req.labware_id,
             ) from exc
@@ -160,8 +172,9 @@ class GetLabwareByIdOperation:
 
 
 class GetLabwareByBarcodeOperation:
-    Request: ClassVar[type[BaseModel]] = GetLabwareByBarcodeRequest
-    Response: ClassVar[type[BaseModel]] = GetLabwareResponse
+    Request: ClassVar[type[BaseModel]] = GET_LABWARE_BY_BARCODE_ROUTE.request
+    Response: ClassVar[type[BaseModel]] = GET_LABWARE_BY_BARCODE_ROUTE.response
+    binding: ClassVar[RestBinding] = GET_LABWARE_BY_BARCODE_ROUTE.binding
 
     def __init__(self, runtime: ISystemRuntime):
         self._runtime = runtime
@@ -170,7 +183,8 @@ class GetLabwareByBarcodeOperation:
         try:
             snap = await self._runtime.labware.get_by_barcode(req.barcode)
         except KeyError as exc:
-            raise OperationError.not_found(
+            raise OperationError.of(
+                ErrorCode.LABWARE_NOT_FOUND,
                 f"labware with barcode {req.barcode!r} not found",
                 barcode=req.barcode,
             ) from exc
@@ -181,8 +195,9 @@ class GetLabwareByBarcodeOperation:
 
 
 class ListLabwareOperation:
-    Request: ClassVar[type[BaseModel]] = ListLabwareRequest
-    Response: ClassVar[type[BaseModel]] = ListLabwareResponse
+    Request: ClassVar[type[BaseModel]] = LIST_LABWARE_ROUTE.request
+    Response: ClassVar[type[BaseModel]] = LIST_LABWARE_ROUTE.response
+    binding: ClassVar[RestBinding] = LIST_LABWARE_ROUTE.binding
 
     def __init__(self, runtime: ISystemRuntime):
         self._runtime = runtime
@@ -195,41 +210,18 @@ class ListLabwareOperation:
         )
 
 
-# -- GetLabwareHistory -------------------------------------------------------
-
-
-class GetLabwareHistoryOperation:
-    Request: ClassVar[type[BaseModel]] = GetLabwareHistoryRequest
-    Response: ClassVar[type[BaseModel]] = GetLabwareHistoryResponse
-
-    def __init__(self, runtime: ISystemRuntime):
-        self._runtime = runtime
-
-    async def run(self, req: GetLabwareHistoryRequest) -> GetLabwareHistoryResponse:
-        try:
-            history = await self._runtime.labware.get_history(req.labware_id)
-        except KeyError as exc:
-            raise OperationError.not_found(
-                f"labware id {req.labware_id!r} not found",
-                labware_id=req.labware_id,
-            ) from exc
-        return GetLabwareHistoryResponse(
-            labware_id=req.labware_id,
-            history=[LocationEventModel.from_dc(e) for e in history],
-        )
-
-
 # -- EditLabwareLocation ----------------------------------------------------
 
 
 class EditLabwareLocationOperation:
-    Request: ClassVar[type[BaseModel]] = EditLabwareLocationRequest
-    Response: ClassVar[type[BaseModel]] = _MutationResponse
+    Request: ClassVar[type[BaseModel]] = EDIT_LABWARE_LOCATION_ROUTE.request
+    Response: ClassVar[type[BaseModel]] = EDIT_LABWARE_LOCATION_ROUTE.response
+    binding: ClassVar[RestBinding] = EDIT_LABWARE_LOCATION_ROUTE.binding
 
     def __init__(self, runtime: ISystemRuntime):
         self._runtime = runtime
 
-    async def run(self, req: EditLabwareLocationRequest) -> _MutationResponse:
+    async def run(self, req: EditLabwareLocationRequest) -> LabwareMutationResponse:
         try:
             await self._runtime.labware.edit_location(
                 req.labware_id, req.location,
@@ -238,30 +230,34 @@ class EditLabwareLocationOperation:
         except LocationReservedError as exc:
             raise _location_reserved(exc) from exc
         except SlotOccupiedError as exc:
-            raise _slot_occupied(exc) from exc
-        except KeyError as exc:
-            raise OperationError.not_found(
-                f"labware or location not found",
-                labware_id=req.labware_id, location=req.location,
+            raise slot_occupied(exc) from exc
+        except LabwareNotFoundError as exc:
+            raise OperationError.of(
+                ErrorCode.LABWARE_NOT_FOUND, message_of(exc), labware_id=req.labware_id,
+            ) from exc
+        except UnknownLocationError as exc:
+            raise OperationError.of(
+                ErrorCode.LOCATION_NOT_FOUND, message_of(exc), location=req.location,
             ) from exc
         except ValueError as exc:
-            raise OperationError.invalid_input(str(exc)) from exc
+            raise OperationError.validation_error(str(exc)) from exc
         except RuntimeError as exc:
-            raise OperationError.conflict(str(exc)) from exc
-        return _MutationResponse(labware_id=req.labware_id)
+            raise OperationError.of(ErrorCode.CONFLICT, str(exc)) from exc
+        return LabwareMutationResponse(labware_id=req.labware_id)
 
 
 # -- EditLabwareBarcode -----------------------------------------------------
 
 
 class EditLabwareBarcodeOperation:
-    Request: ClassVar[type[BaseModel]] = EditLabwareBarcodeRequest
-    Response: ClassVar[type[BaseModel]] = _MutationResponse
+    Request: ClassVar[type[BaseModel]] = EDIT_LABWARE_BARCODE_ROUTE.request
+    Response: ClassVar[type[BaseModel]] = EDIT_LABWARE_BARCODE_ROUTE.response
+    binding: ClassVar[RestBinding] = EDIT_LABWARE_BARCODE_ROUTE.binding
 
     def __init__(self, runtime: ISystemRuntime):
         self._runtime = runtime
 
-    async def run(self, req: EditLabwareBarcodeRequest) -> _MutationResponse:
+    async def run(self, req: EditLabwareBarcodeRequest) -> LabwareMutationResponse:
         try:
             await self._runtime.labware.edit_barcode(
                 req.labware_id, req.new_barcode,
@@ -270,21 +266,23 @@ class EditLabwareBarcodeOperation:
         except BarcodeInUseError as exc:
             raise _barcode_in_use(exc) from exc
         except KeyError as exc:
-            raise OperationError.not_found(
+            raise OperationError.of(
+                ErrorCode.LABWARE_NOT_FOUND,
                 f"labware id {req.labware_id!r} not found",
                 labware_id=req.labware_id,
             ) from exc
         except ValueError as exc:
-            raise OperationError.invalid_input(str(exc)) from exc
-        return _MutationResponse(labware_id=req.labware_id)
+            raise OperationError.validation_error(str(exc)) from exc
+        return LabwareMutationResponse(labware_id=req.labware_id)
 
 
 # -- Carry override (layer four) --------------------------------------------
 
 
 class SetLabwareCarryOverrideOperation:
-    Request: ClassVar[type[BaseModel]] = SetLabwareCarryOverrideRequest
-    Response: ClassVar[type[BaseModel]] = CarryOverrideResponse
+    Request: ClassVar[type[BaseModel]] = SET_LABWARE_CARRY_OVERRIDE_ROUTE.request
+    Response: ClassVar[type[BaseModel]] = SET_LABWARE_CARRY_OVERRIDE_ROUTE.response
+    binding: ClassVar[RestBinding] = SET_LABWARE_CARRY_OVERRIDE_ROUTE.binding
 
     def __init__(self, runtime: ISystemRuntime):
         self._runtime = runtime
@@ -294,7 +292,7 @@ class SetLabwareCarryOverrideOperation:
     ) -> CarryOverrideResponse:
         named = req.set.model_dump(exclude_none=True)
         if not named and not req.clear:
-            raise OperationError.invalid_input(
+            raise OperationError.validation_error(
                 "name at least one field to set, or one to clear",
             )
         try:
@@ -302,14 +300,15 @@ class SetLabwareCarryOverrideOperation:
                 req.labware_id, req.set, req.clear, reason=req.reason, confirm=True,
             )
         except KeyError as exc:
-            raise OperationError.not_found(
+            raise OperationError.of(
+                ErrorCode.LABWARE_NOT_FOUND,
                 f"labware id {req.labware_id!r} not found",
                 labware_id=req.labware_id,
             ) from exc
         except MoveParameterEditRefused as exc:
             # The facade owns the wording; what the wire adds is the field
             # names, so a caller fixes the request in one go.
-            raise OperationError.invalid_input(
+            raise OperationError.validation_error(
                 str(exc), fields=list(exc.fields),
             ) from exc
         return CarryOverrideResponse(
@@ -318,8 +317,9 @@ class SetLabwareCarryOverrideOperation:
 
 
 class ClearLabwareCarryOverrideOperation:
-    Request: ClassVar[type[BaseModel]] = ClearLabwareCarryOverrideRequest
-    Response: ClassVar[type[BaseModel]] = CarryOverrideResponse
+    Request: ClassVar[type[BaseModel]] = CLEAR_LABWARE_CARRY_OVERRIDE_ROUTE.request
+    Response: ClassVar[type[BaseModel]] = CLEAR_LABWARE_CARRY_OVERRIDE_ROUTE.response
+    binding: ClassVar[RestBinding] = CLEAR_LABWARE_CARRY_OVERRIDE_ROUTE.binding
 
     def __init__(self, runtime: ISystemRuntime):
         self._runtime = runtime
@@ -332,7 +332,8 @@ class ClearLabwareCarryOverrideOperation:
                 req.labware_id, reason=req.reason, confirm=True,
             )
         except KeyError as exc:
-            raise OperationError.not_found(
+            raise OperationError.of(
+                ErrorCode.LABWARE_NOT_FOUND,
                 f"labware id {req.labware_id!r} not found",
                 labware_id=req.labware_id,
             ) from exc
@@ -345,13 +346,14 @@ class ClearLabwareCarryOverrideOperation:
 
 
 class ResetLabwareLocationOperation:
-    Request: ClassVar[type[BaseModel]] = ResetLabwareLocationRequest
-    Response: ClassVar[type[BaseModel]] = _MutationResponse
+    Request: ClassVar[type[BaseModel]] = RESET_LABWARE_LOCATION_ROUTE.request
+    Response: ClassVar[type[BaseModel]] = RESET_LABWARE_LOCATION_ROUTE.response
+    binding: ClassVar[RestBinding] = RESET_LABWARE_LOCATION_ROUTE.binding
 
     def __init__(self, runtime: ISystemRuntime):
         self._runtime = runtime
 
-    async def run(self, req: ResetLabwareLocationRequest) -> _MutationResponse:
+    async def run(self, req: ResetLabwareLocationRequest) -> LabwareMutationResponse:
         try:
             await self._runtime.labware.reset_location(
                 req.labware_id, req.location,
@@ -360,23 +362,29 @@ class ResetLabwareLocationOperation:
         except LocationReservedError as exc:
             raise _location_reserved(exc) from exc
         except SlotOccupiedError as exc:
-            raise _slot_occupied(exc) from exc
-        except KeyError as exc:
-            raise OperationError.not_found(
-                f"labware or location not found",
-                labware_id=req.labware_id, location=req.location,
+            raise slot_occupied(exc) from exc
+        except LabwareNotFoundError as exc:
+            raise OperationError.of(
+                ErrorCode.LABWARE_NOT_FOUND, message_of(exc), labware_id=req.labware_id,
+            ) from exc
+        except UnknownLocationError as exc:
+            raise OperationError.of(
+                ErrorCode.LOCATION_NOT_FOUND, message_of(exc), location=req.location,
             ) from exc
         except ValueError as exc:
-            raise OperationError.invalid_input(str(exc)) from exc
-        return _MutationResponse(labware_id=req.labware_id)
+            raise OperationError.validation_error(str(exc)) from exc
+        except LabwareInUseByThreadError as exc:
+            raise OperationError.of(ErrorCode.CONFLICT, str(exc)) from exc
+        return LabwareMutationResponse(labware_id=req.labware_id)
 
 
 # -- RegisterLabware --------------------------------------------------------
 
 
 class RegisterLabwareOperation:
-    Request: ClassVar[type[BaseModel]] = RegisterLabwareRequest
-    Response: ClassVar[type[BaseModel]] = RegisterLabwareResponse
+    Request: ClassVar[type[BaseModel]] = REGISTER_LABWARE_ROUTE.request
+    Response: ClassVar[type[BaseModel]] = REGISTER_LABWARE_ROUTE.response
+    binding: ClassVar[RestBinding] = REGISTER_LABWARE_ROUTE.binding
 
     def __init__(self, runtime: ISystemRuntime):
         self._runtime = runtime
@@ -391,22 +399,25 @@ class RegisterLabwareOperation:
         except LocationReservedError as exc:
             raise _location_reserved(exc) from exc
         except SlotOccupiedError as exc:
-            raise _slot_occupied(exc) from exc
+            raise slot_occupied(exc) from exc
         except BarcodeInUseError as exc:
             raise _barcode_in_use(exc) from exc
         except SpawnIncompatibleError as exc:
             raise spawn_incompatible(exc) from exc
+        except UnknownLocationError as exc:
+            raise OperationError.of(ErrorCode.LOCATION_NOT_FOUND, message_of(exc), location=exc.location) from exc
         except KeyError as exc:
-            missing = (
-                f"template {req.template_name!r}" if req.template_name is not None
-                else f"catalog labware type {req.labware_type!r}"
+            code, missing = (
+                (ErrorCode.LABWARE_TEMPLATE_NOT_FOUND, f"template {req.template_name!r}")
+                if req.template_name is not None
+                else (ErrorCode.LABWARE_TYPE_NOT_FOUND, f"catalog labware type {req.labware_type!r}")
             )
-            raise OperationError.not_found(
-                f"{missing} not found",
+            raise OperationError.of(
+                code, f"{missing} not found",
                 template_name=req.template_name, labware_type=req.labware_type,
             ) from exc
         except ValueError as exc:
-            raise OperationError.invalid_input(str(exc)) from exc
+            raise OperationError.validation_error(str(exc)) from exc
         return RegisterLabwareResponse(
             labware=LabwareSnapshotModel.from_dc(snap),
             adopted_thread_id=self._thread_carrying(snap.id),
@@ -432,57 +443,38 @@ class RegisterLabwareOperation:
 # -- Get/SetWellVolumes (operator volume CRUD) ------------------------------
 
 
-class GetWellVolumesOperation:
-    Request: ClassVar[type[BaseModel]] = GetWellVolumesRequest
-    Response: ClassVar[type[BaseModel]] = GetWellVolumesResponse
-
-    def __init__(self, runtime: ISystemRuntime):
-        self._runtime = runtime
-
-    async def run(self, req: GetWellVolumesRequest) -> GetWellVolumesResponse:
-        try:
-            vols = await self._runtime.labware.get_well_volumes(req.labware_id)
-        except KeyError as exc:
-            raise OperationError.not_found(
-                f"labware id {req.labware_id!r} not found",
-                labware_id=req.labware_id,
-            ) from exc
-        return GetWellVolumesResponse(
-            labware_id=req.labware_id,
-            well_volumes=vols.volumes,
-            provenance=vols.provenance,
-        )
-
-
 class SetWellVolumesOperation:
-    Request: ClassVar[type[BaseModel]] = SetWellVolumesRequest
-    Response: ClassVar[type[BaseModel]] = _MutationResponse
+    Request: ClassVar[type[BaseModel]] = SET_WELL_VOLUMES_ROUTE.request
+    Response: ClassVar[type[BaseModel]] = SET_WELL_VOLUMES_ROUTE.response
+    binding: ClassVar[RestBinding] = SET_WELL_VOLUMES_ROUTE.binding
 
     def __init__(self, runtime: ISystemRuntime):
         self._runtime = runtime
 
-    async def run(self, req: SetWellVolumesRequest) -> _MutationResponse:
+    async def run(self, req: SetWellVolumesRequest) -> LabwareMutationResponse:
         try:
             await self._runtime.labware.set_well_volumes(
                 req.labware_id, dict(req.well_volumes),
                 reason=req.reason, confirm=True,
             )
         except KeyError as exc:
-            raise OperationError.not_found(
+            raise OperationError.of(
+                ErrorCode.LABWARE_NOT_FOUND,
                 f"labware id {req.labware_id!r} not found",
                 labware_id=req.labware_id,
             ) from exc
         except ValueError as exc:
-            raise OperationError.invalid_input(str(exc)) from exc
-        return _MutationResponse(labware_id=req.labware_id)
+            raise OperationError.validation_error(str(exc)) from exc
+        return LabwareMutationResponse(labware_id=req.labware_id)
 
 
 # -- ResolveContents (the canonical "what does it hold" read) ---------------
 
 
 class ResolveContentsOperation:
-    Request: ClassVar[type[BaseModel]] = ResolveContentsRequest
-    Response: ClassVar[type[BaseModel]] = ResolveContentsResponse
+    Request: ClassVar[type[BaseModel]] = RESOLVE_CONTENTS_ROUTE.request
+    Response: ClassVar[type[BaseModel]] = RESOLVE_CONTENTS_ROUTE.response
+    binding: ClassVar[RestBinding] = RESOLVE_CONTENTS_ROUTE.binding
 
     def __init__(self, runtime: ISystemRuntime):
         self._runtime = runtime
@@ -491,7 +483,8 @@ class ResolveContentsOperation:
         try:
             resolved = await self._runtime.labware.resolve_contents(req.labware_id)
         except KeyError as exc:
-            raise OperationError.not_found(
+            raise OperationError.of(
+                ErrorCode.LABWARE_NOT_FOUND,
                 f"labware id {req.labware_id!r} not found",
                 labware_id=req.labware_id,
             ) from exc
@@ -517,8 +510,9 @@ class ResolveContentsOperation:
 
 
 class MarkTipsUsedOperation:
-    Request: ClassVar[type[BaseModel]] = MarkTipsUsedRequest
-    Response: ClassVar[type[BaseModel]] = MarkTipsUsedResponse
+    Request: ClassVar[type[BaseModel]] = MARK_TIPS_USED_ROUTE.request
+    Response: ClassVar[type[BaseModel]] = MARK_TIPS_USED_ROUTE.response
+    binding: ClassVar[RestBinding] = MARK_TIPS_USED_ROUTE.binding
 
     def __init__(self, runtime: ISystemRuntime):
         self._runtime = runtime
@@ -529,12 +523,13 @@ class MarkTipsUsedOperation:
                 req.labware_id, req.positions, reason=req.reason, confirm=True,
             )
         except KeyError as exc:
-            raise OperationError.not_found(
+            raise OperationError.of(
+                ErrorCode.LABWARE_NOT_FOUND,
                 f"labware id {req.labware_id!r} not found",
                 labware_id=req.labware_id,
             ) from exc
         except (ValueError, RuntimeError) as exc:
-            raise OperationError.invalid_input(str(exc)) from exc
+            raise OperationError.validation_error(str(exc)) from exc
         return MarkTipsUsedResponse(
             labware_id=req.labware_id, tip_positions_present=remaining,
         )
@@ -543,114 +538,96 @@ class MarkTipsUsedOperation:
 # -- Get/Set/ConfirmTipState (operator tip CRUD) ----------------------------
 
 
-class GetTipStateOperation:
-    Request: ClassVar[type[BaseModel]] = GetTipStateRequest
-    Response: ClassVar[type[BaseModel]] = GetTipStateResponse
-
-    def __init__(self, runtime: ISystemRuntime):
-        self._runtime = runtime
-
-    async def run(self, req: GetTipStateRequest) -> GetTipStateResponse:
-        try:
-            state = await self._runtime.labware.get_tip_state(req.labware_id)
-        except KeyError as exc:
-            raise OperationError.not_found(
-                f"labware id {req.labware_id!r} not found",
-                labware_id=req.labware_id,
-            ) from exc
-        except ValueError as exc:
-            raise OperationError.invalid_input(str(exc)) from exc
-        return GetTipStateResponse(
-            labware_id=req.labware_id,
-            tip_positions_present=state.positions_present,
-            provenance=state.provenance,
-        )
-
-
 class SetTipStateOperation:
-    Request: ClassVar[type[BaseModel]] = SetTipStateRequest
-    Response: ClassVar[type[BaseModel]] = _MutationResponse
+    Request: ClassVar[type[BaseModel]] = SET_TIP_STATE_ROUTE.request
+    Response: ClassVar[type[BaseModel]] = SET_TIP_STATE_ROUTE.response
+    binding: ClassVar[RestBinding] = SET_TIP_STATE_ROUTE.binding
 
     def __init__(self, runtime: ISystemRuntime):
         self._runtime = runtime
 
-    async def run(self, req: SetTipStateRequest) -> _MutationResponse:
+    async def run(self, req: SetTipStateRequest) -> LabwareMutationResponse:
         try:
             await self._runtime.labware.set_tip_state(
                 req.labware_id, list(req.tip_positions_present),
                 reason=req.reason, confirm=True,
             )
         except KeyError as exc:
-            raise OperationError.not_found(
+            raise OperationError.of(
+                ErrorCode.LABWARE_NOT_FOUND,
                 f"labware id {req.labware_id!r} not found",
                 labware_id=req.labware_id,
             ) from exc
         except ValueError as exc:
-            raise OperationError.invalid_input(str(exc)) from exc
-        return _MutationResponse(labware_id=req.labware_id)
+            raise OperationError.validation_error(str(exc)) from exc
+        return LabwareMutationResponse(labware_id=req.labware_id)
 
 
 class ConfirmWellVolumesOperation:
-    Request: ClassVar[type[BaseModel]] = ConfirmWellVolumesRequest
-    Response: ClassVar[type[BaseModel]] = _MutationResponse
+    Request: ClassVar[type[BaseModel]] = CONFIRM_WELL_VOLUMES_ROUTE.request
+    Response: ClassVar[type[BaseModel]] = CONFIRM_WELL_VOLUMES_ROUTE.response
+    binding: ClassVar[RestBinding] = CONFIRM_WELL_VOLUMES_ROUTE.binding
 
     def __init__(self, runtime: ISystemRuntime):
         self._runtime = runtime
 
-    async def run(self, req: ConfirmWellVolumesRequest) -> _MutationResponse:
+    async def run(self, req: ConfirmWellVolumesRequest) -> LabwareMutationResponse:
         try:
             await self._runtime.labware.confirm_well_volumes(
                 req.labware_id, reason=req.reason, confirm=True,
             )
         except KeyError as exc:
-            raise OperationError.not_found(
+            raise OperationError.of(
+                ErrorCode.LABWARE_NOT_FOUND,
                 f"labware id {req.labware_id!r} not found",
                 labware_id=req.labware_id,
             ) from exc
         except ConfirmRefusedError as exc:
             raise confirm_refused(exc, labware_id=req.labware_id) from exc
         except ValueError as exc:
-            raise OperationError.invalid_input(str(exc)) from exc
-        return _MutationResponse(labware_id=req.labware_id)
+            raise OperationError.validation_error(str(exc)) from exc
+        return LabwareMutationResponse(labware_id=req.labware_id)
 
 
 class ConfirmTipStateOperation:
-    Request: ClassVar[type[BaseModel]] = ConfirmTipStateRequest
-    Response: ClassVar[type[BaseModel]] = _MutationResponse
+    Request: ClassVar[type[BaseModel]] = CONFIRM_TIP_STATE_ROUTE.request
+    Response: ClassVar[type[BaseModel]] = CONFIRM_TIP_STATE_ROUTE.response
+    binding: ClassVar[RestBinding] = CONFIRM_TIP_STATE_ROUTE.binding
 
     def __init__(self, runtime: ISystemRuntime):
         self._runtime = runtime
 
-    async def run(self, req: ConfirmTipStateRequest) -> _MutationResponse:
+    async def run(self, req: ConfirmTipStateRequest) -> LabwareMutationResponse:
         try:
             await self._runtime.labware.confirm_tip_state(
                 req.labware_id, reason=req.reason, confirm=True,
             )
         except KeyError as exc:
-            raise OperationError.not_found(
+            raise OperationError.of(
+                ErrorCode.LABWARE_NOT_FOUND,
                 f"labware id {req.labware_id!r} not found",
                 labware_id=req.labware_id,
             ) from exc
         except ConfirmRefusedError as exc:
             raise confirm_refused(exc, labware_id=req.labware_id) from exc
         except ValueError as exc:
-            raise OperationError.invalid_input(str(exc)) from exc
-        return _MutationResponse(labware_id=req.labware_id)
+            raise OperationError.validation_error(str(exc)) from exc
+        return LabwareMutationResponse(labware_id=req.labware_id)
 
 
 # -- GetLabwareJourneyOperation ---------------------------------------------
 #
-# Returns a chronologically-merged moves + actions journey for one
-# labware -- the unified server-side join that replaces the legacy
-# two-call client-side join (get_history + ops_history.search).
+# One labware's moves and the operations done to it, oldest first. `kinds`
+# ["move"] is its location history alone.
 
 
 _VALID_JOURNEY_KINDS: frozenset[str] = frozenset({"move", "action"})
 
 
 class GetLabwareJourneyOperation:
-    Request: ClassVar[type[BaseModel]] = GetLabwareJourneyRequest
-    Response: ClassVar[type[BaseModel]] = GetLabwareJourneyResponse
+    Request: ClassVar[type[BaseModel]] = GET_LABWARE_JOURNEY_ROUTE.request
+    Response: ClassVar[type[BaseModel]] = GET_LABWARE_JOURNEY_ROUTE.response
+    binding: ClassVar[RestBinding] = GET_LABWARE_JOURNEY_ROUTE.binding
 
     def __init__(self, runtime: ISystemRuntime):
         self._runtime = runtime
@@ -664,7 +641,8 @@ class GetLabwareJourneyOperation:
         try:
             snap = await self._runtime.labware.get_by_id(req.labware_id)
         except KeyError as exc:
-            raise OperationError.not_found(
+            raise OperationError.of(
+                ErrorCode.LABWARE_NOT_FOUND,
                 f"labware {req.labware_id!r} not found",
                 labware_id=req.labware_id,
             ) from exc
@@ -689,7 +667,7 @@ class GetLabwareJourneyOperation:
                 hits = await self._runtime.ops_history.search(query)
             except Exception as exc:
                 raise OperationError(
-                    code=OperationErrorCode.INTERNAL_ERROR,
+                    code=ErrorCode.INTERNAL_ERROR,
                     message=f"ops_history.search failed: {exc!r}",
                 ) from exc
             for eid, record in hits:
@@ -737,11 +715,6 @@ class GetLabwareJourneyOperation:
 
 # -- Operator clear Operations -------------------------------------------
 #
-# Silent-stall recovery added three operator-facing clear surfaces to
-# ``ILabwareFacade``. The legacy ``/api/labware/runtime/*`` namespace is gone;
-# they are served as ``operations_clear_submission_labware`` /
-# ``operations_discharge_labware`` / ``operations_clear_all_labware``.
-#
 # All three Operations refuse when an active execution would conflict (raised
 # as ``ActiveExecutionRefusedError`` -> 409 ``conflict`` with extras naming
 # the offender). Operator passes ``force=True`` to override.
@@ -750,8 +723,9 @@ class GetLabwareJourneyOperation:
 class ClearSubmissionLabwareOperation:
     """Clear non-reuse-bound labware tied to a submission."""
 
-    Request: ClassVar[type[BaseModel]] = ClearSubmissionLabwareRequest
-    Response: ClassVar[type[BaseModel]] = ClearSubmissionLabwareResponse
+    Request: ClassVar[type[BaseModel]] = CLEAR_SUBMISSION_LABWARE_ROUTE.request
+    Response: ClassVar[type[BaseModel]] = CLEAR_SUBMISSION_LABWARE_ROUTE.response
+    binding: ClassVar[RestBinding] = CLEAR_SUBMISSION_LABWARE_ROUTE.binding
 
     def __init__(self, runtime: ISystemRuntime):
         self._runtime = runtime
@@ -766,16 +740,19 @@ class ClearSubmissionLabwareOperation:
                 )
             )
         except ActiveExecutionRefusedError as exc:
-            raise OperationError.typed(
-                OperationErrorCode.CONFLICT,
+            raise OperationError.of(
+                ErrorCode.ACTIVE_EXECUTIONS_EXIST,
                 str(exc),
-                wire_code="active_execution_refused",
-                status_code=409,
                 scope=exc.scope,
-                submission_id=exc.submission_id,
+                **(
+                    {"labware_id": exc.labware_id}
+                    if exc.scope == "labware"
+                    else {"submission_id": exc.submission_id}
+                ),
             ) from exc
         except KeyError as exc:
-            raise OperationError.not_found(
+            raise OperationError.of(
+                ErrorCode.SUBMISSION_NOT_FOUND,
                 f"submission {req.submission_id!r} not found",
                 submission_id=req.submission_id,
             ) from exc
@@ -788,8 +765,9 @@ class ClearSubmissionLabwareOperation:
 class ReleaseMoverHoldOperation:
     """Free one mover the record says is holding a labware."""
 
-    Request: ClassVar[type[BaseModel]] = ReleaseMoverHoldRequest
-    Response: ClassVar[type[BaseModel]] = ReleaseMoverHoldResponse
+    Request: ClassVar[type[BaseModel]] = RELEASE_MOVER_HOLD_ROUTE.request
+    Response: ClassVar[type[BaseModel]] = RELEASE_MOVER_HOLD_ROUTE.response
+    binding: ClassVar[RestBinding] = RELEASE_MOVER_HOLD_ROUTE.binding
 
     def __init__(self, runtime: ISystemRuntime):
         self._runtime = runtime
@@ -799,34 +777,36 @@ class ReleaseMoverHoldOperation:
     ) -> ReleaseMoverHoldResponse:
         try:
             result = await self._runtime.labware.release_mover_hold(
-                req.mover_name, req.to_location,
+                req.device_id, req.to_location,
                 force=req.force, reason=req.reason, confirm=True,
             )
         except MoverHoldsNothingError as exc:
-            raise OperationError.typed(
-                OperationErrorCode.CONFLICT,
+            raise OperationError.of(
+                ErrorCode.MOVER_HOLDS_NOTHING,
                 str(exc),
-                wire_code="mover_holds_nothing",
-                status_code=409,
                 mover_name=exc.mover_name,
             ) from exc
         except ActiveExecutionRefusedError as exc:
-            raise OperationError.typed(
-                OperationErrorCode.CONFLICT,
+            raise OperationError.of(
+                ErrorCode.ACTIVE_EXECUTIONS_EXIST,
                 str(exc),
-                wire_code="active_execution_refused",
-                status_code=409,
                 scope=exc.scope,
                 labware_id=exc.labware_id,
             ) from exc
+        except LabwareInUseByThreadError as exc:
+            raise OperationError.of(ErrorCode.CONFLICT, str(exc)) from exc
         except LocationReservedError as exc:
             raise _location_reserved(exc) from exc
         except SlotOccupiedError as exc:
-            raise _slot_occupied(exc) from exc
+            raise slot_occupied(exc) from exc
         except ValueError as exc:
-            raise OperationError.invalid_input(str(exc)) from exc
+            raise OperationError.validation_error(str(exc)) from exc
+        except UnknownLocationError as exc:
+            raise OperationError.of(ErrorCode.LOCATION_NOT_FOUND, message_of(exc), location=exc.location) from exc
+        except LabwareNotFoundError as exc:
+            raise OperationError.of(ErrorCode.LABWARE_NOT_FOUND, message_of(exc), labware_id=exc.labware_id) from exc
         except KeyError as exc:
-            raise OperationError.not_found(message_of(exc)) from exc
+            raise OperationError.of(ErrorCode.MOVER_NOT_FOUND, message_of(exc)) from exc
         return ReleaseMoverHoldResponse(
             mover_name=result.mover_name,
             labware_id=result.labware_id,
@@ -839,8 +819,9 @@ class ReleaseMoverHoldOperation:
 class DischargeLabwareOperation:
     """Remove a single labware instance from runtime state."""
 
-    Request: ClassVar[type[BaseModel]] = DischargeLabwareRequest
-    Response: ClassVar[type[BaseModel]] = DischargeLabwareResponse
+    Request: ClassVar[type[BaseModel]] = DISCHARGE_LABWARE_ROUTE.request
+    Response: ClassVar[type[BaseModel]] = DISCHARGE_LABWARE_ROUTE.response
+    binding: ClassVar[RestBinding] = DISCHARGE_LABWARE_ROUTE.binding
 
     def __init__(self, runtime: ISystemRuntime):
         self._runtime = runtime
@@ -853,20 +834,20 @@ class DischargeLabwareOperation:
                 req.labware_id, force=req.force, reason=req.reason, confirm=True,
             )
         except ActiveExecutionRefusedError as exc:
-            raise OperationError.typed(
-                OperationErrorCode.CONFLICT,
+            raise OperationError.of(
+                ErrorCode.ACTIVE_EXECUTIONS_EXIST,
                 str(exc),
-                wire_code="active_execution_refused",
-                status_code=409,
                 scope=exc.scope,
                 labware_id=exc.labware_id,
             ) from exc
         except LabwareNotFoundError as exc:
-            raise OperationError.not_found(
+            raise OperationError.of(
+                ErrorCode.LABWARE_NOT_FOUND,
                 message_of(exc), labware_id=exc.labware_id,
             ) from exc
         except KeyError as exc:
-            raise OperationError.not_found(
+            raise OperationError.of(
+                ErrorCode.LABWARE_NOT_FOUND,
                 f"labware {req.labware_id!r} not found",
                 labware_id=req.labware_id,
             ) from exc
@@ -876,8 +857,9 @@ class DischargeLabwareOperation:
 class ClearAllLabwareOperation:
     """Clear every Location + remove every labware in the runtime."""
 
-    Request: ClassVar[type[BaseModel]] = ClearAllLabwareRequest
-    Response: ClassVar[type[BaseModel]] = ClearAllLabwareResponse
+    Request: ClassVar[type[BaseModel]] = CLEAR_ALL_LABWARE_ROUTE.request
+    Response: ClassVar[type[BaseModel]] = CLEAR_ALL_LABWARE_ROUTE.response
+    binding: ClassVar[RestBinding] = CLEAR_ALL_LABWARE_ROUTE.binding
 
     def __init__(self, runtime: ISystemRuntime):
         self._runtime = runtime
@@ -890,11 +872,33 @@ class ClearAllLabwareOperation:
                 force=req.force, reason=req.reason, confirm=True,
             )
         except ActiveExecutionRefusedError as exc:
-            raise OperationError.typed(
-                OperationErrorCode.CONFLICT,
+            raise OperationError.of(
+                ErrorCode.ACTIVE_EXECUTIONS_EXIST,
                 str(exc),
-                wire_code="active_execution_refused",
-                status_code=409,
                 scope=exc.scope,
             ) from exc
         return ClearAllLabwareResponse(cleared=list(cleared))
+
+
+LABWARE_OPERATIONS = (
+    GetLabwareByIdOperation,
+    GetLabwareByBarcodeOperation,
+    ListLabwareOperation,
+    EditLabwareLocationOperation,
+    EditLabwareBarcodeOperation,
+    SetLabwareCarryOverrideOperation,
+    ClearLabwareCarryOverrideOperation,
+    ResetLabwareLocationOperation,
+    RegisterLabwareOperation,
+    SetWellVolumesOperation,
+    ResolveContentsOperation,
+    MarkTipsUsedOperation,
+    SetTipStateOperation,
+    ConfirmWellVolumesOperation,
+    ConfirmTipStateOperation,
+    GetLabwareJourneyOperation,
+    ClearSubmissionLabwareOperation,
+    ReleaseMoverHoldOperation,
+    DischargeLabwareOperation,
+    ClearAllLabwareOperation,
+)

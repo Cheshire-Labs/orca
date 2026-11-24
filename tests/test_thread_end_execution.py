@@ -12,6 +12,7 @@ runtime guards a deck-site end without LEAVE_IN_PLACE, because completion routes
 to the device handoff, not the site, so a site dispose would no-op.
 """
 
+from orca.events.event_bus import EventBus
 import pytest
 
 import orca.orca as orca
@@ -20,23 +21,24 @@ from cheshire_drivers import (
     CartesianCoordinates as C,
     DeckLayoutConfig,
     DeckResourceConfig,
-    RecordingLiquidHandlerDriver,
     Teachpoint,
 )
-from cheshire_drivers.plr import ChatterboxLiquidHandlerDriver
 from orca.devices.devices import LiquidHandler, Storage
 from orca.resource_models.plate_pad import PlatePad
 from orca.resource_models.transporter import Transporter
-from orca.runtime.device_factory_context import use_device_factory
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.store_factory import InMemoryRuntimeStoreFactory
+from orca.modes.run_modes import WorkflowRunMode
 from orca.runtime.system_runtime import SystemRuntime
 from orca.sdk.build import Topology
 from orca.sdk.labware import PlateTemplate
 from orca.workflow_models.action_context import ActionContext
 from orca.workflow_models.method_context import MethodContext
 from orca.workflow_models.thread_context import ThreadContext
-from tests.test_helpers import RecordingLhDeckFactory, run_to_quiescence
+from tests.test_helpers import run_to_quiescence
+from tests.setup_package import package_stores, write_deck_layouts, write_teachpoints
+from tests.setup_package import with_teachpoints, with_deck_layouts
+from tests.memory_activity import memory_ops_store, memory_runtime
+from tests.real_device_path import the_real_device_path
+from tests.recording_handler import RecordingHandler
 
 
 DECK_CONFIG = DeckLayoutConfig(
@@ -54,32 +56,30 @@ async def _build_end(*, reservoir_end, plate_end):
     """A transit plate consumes a deck-resident reagent once. `reservoir_end`
     sets the resident reagent receiver's `end=`; `plate_end` sets the transit
     plate thread's `end=`."""
-    stores = InMemoryRuntimeStoreFactory()
+    stores = package_stores()
 
     sample_plate = PlateTemplate(
         "sample_plate", labware_type="Cor_Falcon_96_wellplate_340ul_Fb_Black")
     reservoir = PlateTemplate(
         "reservoir", labware_type="AGenBio_1_troughplate_190000uL_Fl")
 
-    recorder = RecordingLiquidHandlerDriver(ChatterboxLiquidHandlerDriver(num_channels=8))
-    with use_device_factory(RecordingLhDeckFactory(recorder)):
-        lh = LiquidHandler(
-            "lh",
-            deck_layout_store=stores.deck_layouts("lh", seed={"default": DECK_CONFIG}),
-            deck_layout="default",
-        )
-        stacker = Storage("stacker")
-        waste = Storage("waste")
-        pad = PlatePad("pad")
-        arm = Transporter(
-            "arm",
-            teachpoint_store=stores.teachpoints("arm", seed=[
-                Teachpoint("stacker", C(0, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("pad", C(200, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("lh/carrier-7-2", C(400, 200, 300, 0, 90, 180), orientation="right"),
-                Teachpoint("waste", C(600, 200, 300, 0, 90, 180), orientation="right"),
-            ]),
-        )
+    recorder = RecordingHandler()
+    the_real_device_path().simulate_with("lh", recorder)
+    lh = with_deck_layouts(LiquidHandler(
+        "lh",
+        deck_layout="default",
+    ), write_deck_layouts(stores, "lh", {"default": DECK_CONFIG}))
+    stacker = Storage("stacker")
+    waste = Storage("waste")
+    pad = PlatePad("pad")
+    arm = with_teachpoints(Transporter(
+        "arm",
+    ), write_teachpoints(stores, "arm", [
+            Teachpoint("stacker", C(0, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("pad", C(200, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("lh/carrier-7-2", C(400, 200, 300, 0, 90, 180), orientation="right"),
+            Teachpoint("waste", C(600, 200, 300, 0, 90, 180), orientation="right"),
+        ]))
 
     @orca.action(
         device=lh,
@@ -116,15 +116,15 @@ async def _build_end(*, reservoir_end, plate_end):
         transporters=[arm],
     )
     return await orca.build_system(
-        name="End Exec", workflow=workflow, topology=topology, stores=stores)
+        name="End Exec", workflow=workflow, topology=topology, stores=stores, event_bus=EventBus(), ops_history_store=memory_ops_store())
 
 
 async def _start_and_run(build) -> tuple[SystemRuntime, dict[str, str]]:
     """Start the runtime, submit, and poll to quiescence. The caller owns
     shutdown in a finally so a failing assertion never leaks a live runtime."""
-    runtime = SystemRuntime(build.system, event_bus=build.event_bus)
+    runtime = await memory_runtime(build.system, event_bus=build.event_bus)
     await runtime.start()
-    record = await runtime.submit_workflow("end_exec_wf", mode=WorkflowRunMode.PURE_SIM)
+    record = await runtime.submit_workflow("end_exec_wf", mode=WorkflowRunMode.CHECK_RUN)
     statuses = await run_to_quiescence(runtime, record.id)
     return runtime, statuses
 
@@ -180,7 +180,7 @@ async def test_transit_thread_executes_end_move() -> None:
 @pytest.mark.timeout(120)
 async def test_transit_thread_end_dispose_executes() -> None:
     """The DISPOSE half: the same transit plate ends at the same top-level
-    location with the bare-string / MANUAL_REMOVE default (PURE_SIM disposes
+    location with the bare-string / MANUAL_REMOVE default (CHECK_RUN disposes
     without waiting for an operator), so after completion the end location is
     cleared. Identical flow to the move test, opposite outcome, proving the end
     strategy drives the behavior, and that dispose means 'execute the end', not

@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator
 from orca.workflow_models.action_template import ActionTemplate
 from orca.workflow_models.labware_threads.i_thread_context import IThreadContext
 from orca.workflow_models.method import ExecutingMethod, MethodInstance
-from orca.workflow_models.workflows.workflow_factories import MethodActionFactory
+from orca.workflow_models.actions.method_action_factory import MethodActionFactory
 
 
 async def schedule_action_template(

@@ -19,7 +19,7 @@ from collections.abc import AsyncGenerator
 
 import pytest
 
-from orca.runtime.runtime_interface import (
+from orca.workflow_models.errors import (
     ImmovableThreadCannotBeEntryError,
     ReuseThreadCannotBeEntryError,
 )

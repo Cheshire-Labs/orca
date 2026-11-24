@@ -1,6 +1,5 @@
-from typing import Any, ClassVar, Dict, List, Optional
+from typing import Any, ClassVar, Dict, Optional, TypeVar
 import logging
-from unittest.mock import MagicMock
 from cheshire_drivers import (
     BaseSimDriver,
     ShakerSimMixin, SealerSimMixin, TempSettableSimMixin, TempGettableSimMixin,
@@ -12,13 +11,13 @@ from cheshire_drivers.protocol_runner_models import RunProtocolRequest
 from cheshire_drivers.reader_models import ReadRequest
 from cheshire_drivers.sealer_models import SealRequest
 from cheshire_drivers.shaker_models import ShakeRequest
+from orca.gateway.controller.command_pipeline import DeviceCommandPipeline
 from orca.resource_models.devices import Device
-from orca.resource_models.location import Location
+from orca.resource_models.resources import IModeAware
 from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.labware_placeable_interface import IPlateMover
-from orca.runtime.run_modes import WorkflowRunMode
 from orca.devices.device_interfaces import (
-    IGenericExecutable, IProtocolRunner, ISealer,
+    IProtocolRunner, ISealer,
     IShaker, ICentrifuge, IReader, IDelidder
 )
 
@@ -98,7 +97,20 @@ class UniversalSimDriver(
         await BaseSimDriver.close(self)
 
 
-class UniversalMockDevice(Device, IGenericExecutable, IProtocolRunner, ISealer, IShaker, ICentrifuge, IReader, IDelidder):
+TModeAware = TypeVar("TModeAware", bound=IModeAware)
+
+
+async def _save_nowhere(command: str) -> None:
+    return None
+
+
+def outside_any_system(resource: TModeAware) -> TModeAware:
+    """A resource no system holds: the commands the engine sends it are saved nowhere."""
+    resource.engine_commands.save_with(_save_nowhere, DeviceCommandPipeline(()))
+    return resource
+
+
+class UniversalMockDevice(Device, IProtocolRunner, ISealer, IShaker, ICentrifuge, IReader, IDelidder):
     """Universal mock device for testing - supports ALL action types"""
 
     KIND: ClassVar[str] = "mock"
@@ -106,19 +118,12 @@ class UniversalMockDevice(Device, IGenericExecutable, IProtocolRunner, ISealer, 
     def __init__(
         self,
         name: str,
-        sim_override: WorkflowRunMode | None = None,
         site_names: list[str] | None = None,
         driver: UniversalSimDriver | None = None,
-        sim_driver: UniversalSimDriver | None = None,
     ) -> None:
-        driver = driver or UniversalSimDriver(name)
-        super().__init__(
-            name, driver, sim_driver or driver,
-            sim_override=sim_override, site_names=site_names,
-        )
-
-    async def execute(self, command: str, options: Dict[str, Any]) -> None:
-        await self.driver.execute(command, options)
+        super().__init__(name, driver or UniversalSimDriver(name), site_names=site_names)
+        # A System that takes this double wires its own save over this one.
+        outside_any_system(self)
 
     async def run_protocol(self, protocol_filepath: str, params: Dict[str, Any]) -> None:
         await self.driver.run_protocol(

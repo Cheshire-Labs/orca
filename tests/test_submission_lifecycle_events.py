@@ -19,12 +19,12 @@ from tests.test_helpers import execution_outcome
 
 from orca.events.event_bus import EventBus
 from orca.events.execution_context import ExecutionContext
-from orca.runtime.labware_group import LabwareGroup, LabwareGroupMember
-from orca.runtime.submission import BatchMode
-from orca.runtime.system_runtime import SystemRuntime
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.workflow_models.labware_group import LabwareGroup, LabwareGroupMember
+from orca.workflow_models.submission import BatchMode
+from orca.modes.run_modes import WorkflowRunMode
 
 from tests.test_multi_lineage_demo import _build_multi_lineage_system
+from tests.memory_activity import memory_runtime
 
 
 def _group() -> LabwareGroup:
@@ -48,10 +48,10 @@ class TestSubmissionLifecycleEvents:
     async def test_submission_accepted_and_completed_fire(self) -> None:
         system, workflow, event_bus = await _build_multi_lineage_system()
         captured = _capture_events(event_bus)
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
         await runtime.start()
         try:
-            submission = await runtime.submit(workflow, groups=[_group()], mode=WorkflowRunMode.PURE_SIM)
+            submission = await runtime.submit(workflow, groups=[_group()], mode=WorkflowRunMode.CHECK_RUN)
             status = await execution_outcome(runtime, submission, timeout=30.0)
             assert status.status == "completed"
         finally:
@@ -69,10 +69,10 @@ class TestSubmissionLifecycleEvents:
     async def test_execution_completed_fires(self) -> None:
         system, workflow, event_bus = await _build_multi_lineage_system()
         captured = _capture_events(event_bus)
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
         await runtime.start()
         try:
-            submission = await runtime.submit(workflow, groups=[_group()], mode=WorkflowRunMode.PURE_SIM)
+            submission = await runtime.submit(workflow, groups=[_group()], mode=WorkflowRunMode.CHECK_RUN)
             await execution_outcome(runtime, submission, timeout=30.0)
         finally:
             await runtime.shutdown()
@@ -90,14 +90,14 @@ class TestSubmissionLifecycleEvents:
     async def test_group_completed_fires_once_per_group(self) -> None:
         system, workflow, event_bus = await _build_multi_lineage_system()
         captured = _capture_events(event_bus)
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
         await runtime.start()
         try:
             group_a = _group()
             group_b = _group()
             submission = await runtime.submit(
                 workflow, groups=[group_a, group_b],
-                mode=WorkflowRunMode.PURE_SIM,
+                mode=WorkflowRunMode.CHECK_RUN,
             )
             await execution_outcome(runtime, submission, timeout=60.0)
         finally:
@@ -130,10 +130,10 @@ class TestMultipleSubmissionsShareExecutionEvents:
     async def test_two_submissions_share_one_execution_event(self) -> None:
         system, workflow, event_bus = await _build_multi_lineage_system()
         captured = _capture_events(event_bus)
-        runtime = SystemRuntime(system, event_bus=event_bus)
+        runtime = await memory_runtime(system, event_bus=event_bus)
         await runtime.start()
         try:
-            sub1 = await runtime.submit(workflow, groups=[_group()], mode=WorkflowRunMode.PURE_SIM)
+            sub1 = await runtime.submit(workflow, groups=[_group()], mode=WorkflowRunMode.CHECK_RUN)
             # JOIN_EXISTING: the second submission attaches to sub1's
             # live ACCEPTING execution rather than booting a fresh one.
             # The post-Bug-OOO STANDALONE contract (the default) always
@@ -142,7 +142,7 @@ class TestMultipleSubmissionsShareExecutionEvents:
             sub2 = await runtime.submit(
                 workflow, groups=[_group()],
                 batch_mode=BatchMode.JOIN_EXISTING,
-                mode=WorkflowRunMode.PURE_SIM,
+                mode=WorkflowRunMode.CHECK_RUN,
             )
             assert sub1.execution_id == sub2.execution_id
             await execution_outcome(runtime, sub1, timeout=150.0)

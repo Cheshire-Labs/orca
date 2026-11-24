@@ -11,10 +11,7 @@ import pytest
 
 from orca.runtime.danger import ConfirmationRequired
 from orca.runtime.facades.profiles import DeploymentProfileFacade
-from orca.runtime.profile_store import (
-    FileDeploymentProfileStore,
-    NullDeploymentProfileStore,
-)
+from orca.runtime.profile_store import FileDeploymentProfileStore
 from orca.variables.deployment_profile import DeploymentProfile
 
 
@@ -97,11 +94,3 @@ async def test_delete_with_confirm_returns_true(tmp_path) -> None:
 async def test_delete_unknown_returns_false(tmp_path) -> None:
     facade = DeploymentProfileFacade(FileDeploymentProfileStore(tmp_path))
     assert await facade.delete("missing", confirm=True) is False
-
-
-async def test_facade_works_with_null_store() -> None:
-    facade = DeploymentProfileFacade(NullDeploymentProfileStore())
-    assert await facade.list() == []
-    # Mutations on the null store are no-ops but still need confirm.
-    await facade.add(_profile("p"), confirm=True)
-    assert await facade.get("p") is None

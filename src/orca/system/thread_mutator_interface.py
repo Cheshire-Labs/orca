@@ -22,17 +22,11 @@ class IThreadMutator(ABC):
     # --- Method mutation: skip + insert + abort ---
 
     @abstractmethod
-    def skip_pending_method(
-        self, thread_id: str,
-        method_id: str | None = None, method_name: str | None = None,
-    ) -> None:
+    def skip_pending_method(self, thread_id: str, method_name: str) -> None:
         raise NotImplementedError
 
     @abstractmethod
-    async def abort_method(
-        self, thread_id: str,
-        method_id: str | None = None, method_name: str | None = None,
-    ) -> None:
+    async def abort_method(self, thread_id: str, method_name: str) -> None:
         raise NotImplementedError
 
     @abstractmethod
@@ -56,7 +50,7 @@ class IThreadMutator(ABC):
         """Async insert. Iterates the template generator with native
         `async for` on the caller's event loop, so the caller does not
         block for up to 10s on the thread-pool fallback. Used by
-        `ThreadFacade.insert_method` (REST/CLI/MCP wire path).
+        `ThreadFacade.insert_method` (REST/CLI wire path).
         """
         raise NotImplementedError
 

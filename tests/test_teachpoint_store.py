@@ -1,4 +1,4 @@
-"""Tests for the SQLite teachpoint store + service and the Transporter
+"""Tests for the teachpoint file store + service and the Transporter
 store-ownership contract.
 
 Post-Path-2 contract: the Transporter owns the teachpoint store and
@@ -9,13 +9,14 @@ paths) and never consult any store. `Transporter.get_teachpoints()`
 reads from the store via async `list()` for the System graph builder.
 
 Per-dispatch resolution behavior is exercised in
-`tests/test_transporter_resolution.py`; this file covers the SQLite store
-implementation, the lazy-seeded service used at sync construction sites,
+`tests/test_transporter_resolution.py`; this file covers the file store
 and the constructor-time ownership wiring."""
 
 from typing import List, Optional
 
 import pytest
+
+from tests.real_device_path import the_real_device_path
 from cheshire_drivers import SimTransporterDriver
 from cheshire_drivers.teachpoints import AccessConfig, CartesianCoordinates, Teachpoint
 from cheshire_drivers.transporter_models import PickAtCoordsRequest, PlaceAtCoordsRequest
@@ -23,14 +24,11 @@ from cheshire_drivers.transporter_models import PickAtCoordsRequest, PlaceAtCoor
 from orca.resource_models.location import Location
 from orca.resource_models.plate_pad import PlatePad
 from orca.resource_models.transporter import Transporter
-from orca.runtime.db import create_memory_engine
-from orca.runtime.sim_labware import SimPlateTemplate
-from orca.runtime.sqlite_teachpoint_store import SqliteTeachpointStore
-from orca.runtime.teachpoint_service import (
-    TeachpointService,
-    seeded_teachpoint_service,
-)
+from orca.resource_models.sim_labware import SimPlateTemplate
+from orca.runtime.setup_file_stores import TeachpointFileStore
+from orca.runtime.teachpoint_service import TeachpointService
 from tests.test_helpers import make_transporter_with_driver
+from tests.setup_package import fresh_teachpoints, teachpoint_file, with_teachpoints
 
 
 class _RecordingDriver(SimTransporterDriver):
@@ -56,6 +54,15 @@ async def _location_with_labware(name: str) -> Location:
     return location
 
 
+_ACCESS_CONFIGS = [AccessConfig(
+    name="default_vertical",
+    access_type="vertical",
+    gripper_offset=20.0,
+    vertical_clearance=20.0,
+    horizontal_clearance=100.0,
+)]
+
+
 def _tp(name: str, x: float = 0.0) -> Teachpoint:
     return Teachpoint(
         position_id=name,
@@ -63,23 +70,34 @@ def _tp(name: str, x: float = 0.0) -> Teachpoint:
         orientation="right",
         # A position reached by pick or place has to say which way the arm comes in;
         # these are open nests.
-        access=AccessConfig(
-            name="default_vertical",
-            access_type="vertical",
-            gripper_offset=20.0,
-            vertical_clearance=20.0,
-            horizontal_clearance=100.0,
-        ),
+        access=_ACCESS_CONFIGS[0],
     )
 
 
-def _store() -> SqliteTeachpointStore:
-    return SqliteTeachpointStore(create_memory_engine())
+def _store() -> TeachpointFileStore:
+    return fresh_teachpoints(_ACCESS_CONFIGS)
 
 
-class TestSqliteTeachpointStoreCrud:
-    """Raw CRUD on the SQLite store: the DB is the source of truth and no
-    in-memory copy is kept, so every read goes back to the rows on disk."""
+class TestTeachpointFileStoreCrud:
+    """Raw CRUD on the file store: no copy is kept, so every read goes back to the file."""
+
+    async def test_add_rejects_inline_access_without_named_config(self) -> None:
+        service = TeachpointService(_store())
+        inline = Teachpoint(
+            position_id="bad",
+            coordinates=CartesianCoordinates(x=0, y=0, z=0, yaw=0, pitch=90, roll=180),
+            orientation="right",
+            access_type="vertical",
+        )
+        with pytest.raises(ValueError, match="named AccessConfig"):
+            await service.add(inline)
+
+    async def test_add_accepts_named_access_config(self) -> None:
+        service = TeachpointService(_store())
+        await service.add(_tp("ok"))
+        loaded = await service.get("ok")
+        assert loaded is not None
+        assert loaded.access_config_name == _ACCESS_CONFIGS[0].name
 
     async def test_get_returns_none_for_unknown(self) -> None:
         assert await _store().get("missing") is None
@@ -140,47 +158,6 @@ class TestSqliteTeachpointStoreCrud:
         assert await _store().delete("ghost") is False
 
 
-class TestTeachpointServiceSeeding:
-    """The service is the authoring + lifecycle layer over a raw store."""
-
-    async def test_seeded_service_lists_seed_on_first_access(self) -> None:
-        service = seeded_teachpoint_service([_tp("a"), _tp("b")])
-        assert {tp.position_id for tp in await service.list()} == {"a", "b"}
-
-    async def test_seed_never_overwrites_existing(self) -> None:
-        service = seeded_teachpoint_service([_tp("a", x=1.0)])
-        await service.list()
-        await service.seed_if_missing([_tp("a", x=999.0)])
-        loaded = await service.get("a")
-        assert loaded is not None
-        assert isinstance(loaded.coordinates, CartesianCoordinates)
-        assert loaded.coordinates.x == 1.0
-
-    async def test_add_rejects_inline_access_without_named_config(self) -> None:
-        service = TeachpointService(_store())
-        inline = Teachpoint(
-            position_id="bad",
-            coordinates=CartesianCoordinates(x=0, y=0, z=0, yaw=0, pitch=90, roll=180),
-            orientation="right",
-            access_type="vertical",
-        )
-        with pytest.raises(ValueError, match="named AccessConfig"):
-            await service.add(inline)
-
-    async def test_add_accepts_named_access_config(self) -> None:
-        service = TeachpointService(_store())
-        named = Teachpoint(
-            position_id="ok",
-            coordinates=CartesianCoordinates(x=0, y=0, z=0, yaw=0, pitch=90, roll=180),
-            orientation="right",
-            access=AccessConfig(name="cfg", access_type="vertical"),
-        )
-        await service.add(named)
-        loaded = await service.get("ok")
-        assert loaded is not None
-        assert loaded.access_config_name == "cfg"
-
-
 class TestTransporterStoreWiring:
     """Path 2 runtime contract: the Transporter owns the teachpoint store
     and resolves names against it on every `pick`/`place` dispatch. Drivers
@@ -199,8 +176,8 @@ class TestTransporterStoreWiring:
     async def test_get_teachpoints_returns_store_contents(self) -> None:
         """`Transporter.get_teachpoints()` is the System graph builder's view;
         it reads from the store, not the driver."""
-        store = seeded_teachpoint_service([_tp("home"), _tp("waste")])
-        transporter = Transporter("arm", teachpoint_store=store)
+        store = teachpoint_file([_tp("home"), _tp("waste")])
+        transporter = with_teachpoints(Transporter("arm"), store)
         names = {tp.position_id for tp in await transporter.get_teachpoints()}
         assert names == {"home", "waste"}
 
@@ -214,15 +191,16 @@ class TestTransporterStoreWiring:
         succeeds and the resolved coordinates reach the driver. Picking at a
         name that is still unknown raises, proving the resolution is real
         (not a cached snapshot from construction time)."""
-        store = seeded_teachpoint_service([_tp("home")])
+        store = teachpoint_file([_tp("home")])
         driver = _RecordingDriver("arm")
-        transporter = make_transporter_with_driver(
-            "arm", driver=driver, teachpoint_store=store,
-        )
+        transporter = with_teachpoints(make_transporter_with_driver(
+            "arm", driver=driver, 
+        ), store)
 
         # The freshly-added teachpoint did not exist when the transporter was
         # built; a dispatch must still resolve it.
         await store.add(_tp("waste", x=77.0))
+        await the_real_device_path().connect_built()
         await transporter.pick(await _location_with_labware("waste"))
 
         assert len(driver.pick_calls) == 1
@@ -233,35 +211,15 @@ class TestTransporterStoreWiring:
 
         # A still-unknown name fails resolution at dispatch, proving the lookup
         # is live. Fresh transporter sidesteps the gripper-occupied guard above.
-        fresh = make_transporter_with_driver(
-            "arm2", driver=_RecordingDriver("arm2"), teachpoint_store=store,
-        )
-        with pytest.raises(ValueError, match="no teachpoint registered"):
+        fresh = with_teachpoints(make_transporter_with_driver(
+            "arm2", driver=_RecordingDriver("arm2"), 
+        ), store)
+        await the_real_device_path().connect_built()
+        with pytest.raises(ValueError, match="No teachpoint registered"):
             await fresh.pick(await _location_with_labware("never_added"))
 
-    async def test_default_store_yields_empty_get_teachpoints(self) -> None:
+    async def test_a_transporter_outside_a_build_has_no_teachpoints_attached(self) -> None:
         transporter = Transporter("arm")
-        assert await transporter.get_teachpoints() == []
-
-    async def test_store_not_read_at_construction(self) -> None:
-        """Construction does not read the store, so the read is deferred to the
-        System graph builder walking `transporter.get_teachpoints()`. A store
-        whose async `list` raises surfaces the failure loudly at that walk, not
-        at construction time."""
-
-        class FailingListStore:
-            async def get(self, position_id: str) -> Optional[Teachpoint]:
-                return None
-            async def resolve(self, position_id: str) -> Optional[Teachpoint]:
-                return None
-            async def list(self) -> List[Teachpoint]:
-                raise NotImplementedError(
-                    "FailingListStore cannot serve list; prime via async path"
-                )
-            async def add(self, teachpoint: Teachpoint) -> None: ...
-            async def update(self, teachpoint: Teachpoint) -> None: ...
-            async def delete(self, position_id: str) -> bool: return False
-
-        transporter = Transporter("arm", teachpoint_store=FailingListStore())
-        with pytest.raises(NotImplementedError, match="cannot serve list"):
+        with pytest.raises(RuntimeError, match="teachpoints/<name>.json"):
             await transporter.get_teachpoints()
+

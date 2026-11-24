@@ -22,8 +22,8 @@ from orca.plugins.liquid_handler_interpreter import LiquidHandlerInterpreter
 from orca.resource_models.tracking_interpreter import (
     DefaultInterpreter,
     IOperationInterpreter,
-    resolve_operation_interpreter,
 )
+from orca.devices.interpreter_resolution import resolve_operation_interpreter
 from orca.sdk.build import (
     TrackedDeviceInterpreterError,
     _validate_tracked_device_interpreters,

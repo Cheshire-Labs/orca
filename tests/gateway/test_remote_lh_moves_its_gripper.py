@@ -2,7 +2,7 @@
 
 The verb existed everywhere except here: on the driver interface, in the
 on-prem executor's request registry, and on the Opentrons Flex driver. The
-remote driver never forwarded it, so orca's step-aside probe found no
+remote driver never forwarded it, so orca's park probe found no
 ``move_gripper_to`` on the bound driver, skipped, and left the Flex gantry
 sitting over the slot the PF400 was about to reach into.
 """
@@ -20,7 +20,8 @@ from orca.gateway.remote_drivers import (
     GripperMotionNotSupportedError,
     RemoteLiquidHandlerDriver,
 )
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.modes.run_modes import WorkflowRunMode
+from tests.gateway.mode_doubles import fixed_mode
 
 pytestmark = pytest.mark.asyncio
 
@@ -46,7 +47,7 @@ def _driver(
     driver = RemoteLiquidHandlerDriver(
         "flex_1",
         cast(DeviceController, controller),
-        lambda _name: WorkflowRunMode.LIVE,
+        fixed_mode(WorkflowRunMode.LIVE),
         declared_interfaces=declared,
     )
     return driver, controller
@@ -84,7 +85,7 @@ async def test_a_cold_start_driver_still_forwards() -> None:
 
 
 async def test_a_park_reaches_the_wire() -> None:
-    """The default step-aside: the handler is told to move clear and picks where."""
+    """The default park: the handler is told to move clear and picks where."""
     driver, controller = _driver(FLEX)
 
     await driver.park_gantry(ParkGantryRequest())

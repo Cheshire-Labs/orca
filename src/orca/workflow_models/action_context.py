@@ -12,6 +12,7 @@ from typing import Callable, TypeVar, cast, overload
 from cheshire_drivers.labware_interfaces import IPlate, ITipRack, ITipSpot, ITrough
 from pydantic import JsonValue
 
+from orca.events.event_name import checked_event_name
 from orca.events.custom_emit import emit_custom_event
 from orca.events.event_channel import EventChannelRegistry
 from orca.events.execution_context import (
@@ -28,7 +29,9 @@ from orca.resource_models.well_selector import WellSelector, all_wells
 from orca.variables.errors import OptionValue
 from orca.variables.variable_store import IVariableResolver
 from orca.workflow_models.device_handle import ActionRequest, DeviceHandle
+from orca.workflow_models.actions.operation_recovery import OperationDecisionSignal, device_op_recovery_handler
 from orca.workflow_models.pause_checkpoint import IPauseCheckpoint
+from orca.workflow_models.status_enums import PauseSite, RecoveryDecision
 
 T = TypeVar("T")
 LI = TypeVar("LI", bound=LabwareInstance)
@@ -205,7 +208,17 @@ class ActionContext:
     async def wait_for(self, event_name: str, timeout: float | None = None) -> tuple[str | None, dict[str, JsonValue]]:
         """Wait for a named event. Returns (value, data).
 
-        Uses latch semantics: sees the latest publish regardless of timing.
+        Uses latch semantics: sees the latest publish regardless of timing. A timeout inside a run pauses the
+        thread at ACTION_WAIT; RETRY waits again.
+        """
+        return await self._wait_on_channel(checked_event_name(event_name), timeout, f"wait for '{event_name}'")
+
+    async def _wait_on_channel(
+        self, event_name: str, timeout: float | None, waiting_for: str,
+    ) -> tuple[str | None, dict[str, JsonValue]]:
+        """The wait itself, for any channel name: the engine's own, such as a manual step's confirm, have dots.
+
+        `waiting_for` is what a timeout pause tells the operator.
         """
         if self._event_channel_registry is None:
             raise RuntimeError(
@@ -214,9 +227,19 @@ class ActionContext:
             )
         channel = self._event_channel_registry.get_or_create(event_name)
         seen = self._seen_counters.get(event_name, 0)
-        counter, value, data = await channel.wait(seen_counter=seen, timeout=timeout)
-        self._seen_counters[event_name] = counter
-        return value, data or {}
+        while True:
+            try:
+                counter, value, data = await channel.wait(seen_counter=seen, timeout=timeout)
+            except TimeoutError as error:
+                handler = device_op_recovery_handler.get()
+                if handler is None:
+                    raise
+                decision = await handler(error, waiting_for, PauseSite.ACTION_WAIT)
+                if decision == RecoveryDecision.RETRY:
+                    continue
+                raise OperationDecisionSignal(decision, error) from error
+            self._seen_counters[event_name] = counter
+            return value, data or {}
 
     async def emit(self, event_name: str, value: str | None = None, data: dict[str, JsonValue] | None = None) -> None:
         """Publish an event visible to all threads in this workflow, and to
@@ -226,7 +249,7 @@ class ActionContext:
                 "Event channels not available. ctx.emit() requires an "
                 "EventChannelRegistry wired through the execution pipeline."
             )
-        channel = self._event_channel_registry.get_or_create(event_name)
+        channel = self._event_channel_registry.get_or_create(checked_event_name(event_name))
         await channel.publish(value=value, data=data)
         emit_custom_event(
             self._event_emitter,
@@ -259,7 +282,9 @@ class ActionContext:
         Args:
             instruction: Human-readable instruction for the operator.
             timeout_hours: Maximum wait time in hours. 0 means no timeout
-                (wait indefinitely). Raises TimeoutError if exceeded. It bounds
+                (wait indefinitely). Inside a run, running out pauses the thread at
+                ACTION_WAIT and RETRY waits for the confirm again; outside one it
+                raises TimeoutError. It bounds
                 the wait for the operator's confirm only: a hold for a pause
                 the operator asked for themselves is not operator latency, and
                 ends on their resume.
@@ -283,7 +308,10 @@ class ActionContext:
             self._event_channel_registry.record_manual_step(step_id, instruction)
         timeout = timeout_hours * 3600 if timeout_hours > 0 else None
         try:
-            await self.wait_for(f"OPERATOR.CONFIRM.{step_id}", timeout=timeout)
+            await self._wait_on_channel(
+                f"OPERATOR.CONFIRM.{step_id}", timeout,
+                f"wait for the confirm of manual step: {instruction}",
+            )
         finally:
             if self._event_channel_registry is not None:
                 self._event_channel_registry.clear_manual_step(step_id)

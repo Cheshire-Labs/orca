@@ -18,21 +18,26 @@ from typing import List, cast
 
 import orca.orca as orca
 
-from orca.spawn import DISPENSE, LEAVE_IN_PLACE, REUSE_EXISTING
-from orca.devices.device_interfaces import ILiquidHandler
-from orca.devices.devices import LiquidHandler, Reader, Waste
-from orca.devices.sealer import Sealer
-from orca.events.execution_context import LocationActionExecutionContext
+from orca.sdk.workflow import (
+    ActionContext,
+    DISPENSE,
+    FailurePolicy,
+    LEAVE_IN_PLACE,
+    MethodContext,
+    REUSE_EXISTING,
+    ThreadContext,
+    VariableDefinition,
+    WorkflowContext,
+    WorkflowTemplate,
+)
+from orca.sdk.devices import ILiquidHandler, LiquidHandler, Reader, Sealer, Waste
+from orca.sdk.events import (
+    ExecutionContext,
+    LocationActionExecutionContext,
+    SystemBoundEventHandler,
+)
 from orca.sdk.build import Topology
-from orca.sdk.events import ExecutionContext, SystemBoundEventHandler
 from orca.sdk.labware import AnyLabwareTemplate, PlateTemplate, TipRackTemplate, TroughTemplate
-from orca.variables.variable_definition import VariableDefinition
-from orca.workflow_models.action_context import ActionContext
-from orca.workflow_models.method_context import MethodContext
-from orca.workflow_models.status_enums import FailurePolicy
-from orca.workflow_models.thread_context import ThreadContext
-from orca.workflow_models.workflow_context import WorkflowContext
-from orca.workflow_models.workflow_templates import WorkflowTemplate
 
 orca_logger = logging.getLogger("orca")
 

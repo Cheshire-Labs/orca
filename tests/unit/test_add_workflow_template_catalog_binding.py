@@ -21,7 +21,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from orca.resource_models.labware import LabwareInstance, LabwareTemplate
-from orca.runtime.labware_catalog_protocol import ILabwareCatalog
+from orca.resource_models.labware_catalog_protocol import ILabwareCatalog
 from orca.sdk.build import add_workflow_template
 from orca.variables.errors import VariableValidationError
 from orca.variables.variable_definition import VariableDefinition

@@ -1,57 +1,74 @@
+from orca.operations.submission_models import (
+    GET_SUBMISSION_ROUTE,
+    LIST_SUBMISSIONS_ROUTE,
+    SUBMIT_EXECUTION_ROUTE,
+    SUBMIT_METHOD_EXECUTION_ROUTE,
+)
 """Submission Operations.
 
-`SubmitExecutionOperation` owns the full 3-path submission
-dispatch that previously lived duplicated across the orca-core daemon REST,
-a hosted REST `POST /api/executions`, and a hosted MCP `submissions_submit`.
+`SubmitExecutionOperation` owns the three-path submission dispatch.
 
-`ListSubmissionsOperation` + `GetSubmissionOperation`
-surface the `ISubmissionFacade` read methods so MCP + REST + CLI
-callers query through the unified `/operations/*` surface instead of
-legacy `GET /submissions[/...]` URLs.
+`ListSubmissionsOperation` and `GetSubmissionOperation` serve the
+`ISubmissionFacade` read methods.
 
 The orchestration lives in `run()`: variable
 coercion, run-mode + batch-mode parsing, LabwareGroup tuple
-construction, legacy-vs-multi-group routing, error mapping.
+construction, one-shot-vs-multi-group routing, error mapping.
 
-The Pydantic Request IS the wire shape — binders
+The Pydantic Request IS the wire shape -- binders
 deserialize directly into the Request type, no per-surface
 wire model in between.
 """
 
+from orca.runtime.registries.device_registry import NOT_CONNECTED
+from orca.system.errors import DevicesNotReadyError
+from orca.operations.binding import RestBinding
 import dataclasses
 import logging
+from functools import singledispatch
 from typing import ClassVar, Mapping, Protocol, runtime_checkable
 from pydantic import BaseModel
-from orca.operations._protocol import OperationError, OperationErrorCode
+from orca.operations.error_codes import ErrorCode
+from orca.operations.protocol import OperationError, message_of
 from orca.operations._spawn_incompatible import spawn_incompatible
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.runtime_interface import (
-    ConcurrentLiveSimRefusedError,
-    LiveSubmissionWithSimOverridesUnacknowledgedError,
-    ReuseThreadCannotBeEntryError,
+from orca.operations._interface_mismatch import interface_mismatch
+from orca.modes.run_modes import WorkflowRunMode
+from orca.runtime.runtime_interface import ISystemRuntime
+from orca.runtime.errors import (
+    EventHooksNotInTheWorkflowError,
+    NoLabwareCanOwnTheMethodError,
+    OtherRunModeActiveError,
+    DeploymentProfileNotFoundError,
+    LabwareTemplateNotFoundError,
+    MethodNotFoundError,
     RunModeMismatchError,
-    SimTimeScaleNotApplicableError,
-    SpawnIncompatibleError,
+    RunModeRequiredError,
+    SimSpeedupNotApplicableError,
     StartLocationsOccupiedError,
     SubmissionBlockedByOrphanedBacklogError,
     SubmissionToPausedExecutionError,
+    TopologyCollisionError,
+    UnknownLocationError,
 )
+from orca.workflow_models.errors import ReuseThreadCannotBeEntryError, SpawnIncompatibleError
 from orca.operations.state_models import UnsettledSubjectDTO
 from orca.runtime.status_models import SubmissionSnapshot
-from orca.runtime.submission_modes import BatchMode
+from orca.workflow_models.submission_modes import BatchMode
 from orca.operations.submission_models import (
     GetSubmissionRequest,
     GetSubmissionResponse,
     ListSubmissionsRequest,
     ListSubmissionsResponse,
+    MethodExecutionRequest,
+    MethodExecutionResponse,
     SubmitExecutionRequest,
     SubmitExecutionResponse,
-    _LiveSimOverrideDeviceExtra,
     _OccupiedSlotExtra,
 )
-from orca.daemon.schemas import AcquisitionDTO, LabwareGroupDTO, SubmissionDTO
+from orca.operations.wire_models import AcquisitionDTO, LabwareGroupDTO, SubmissionDTO
 from orca.runtime.execution_record import ExecutionRecord
-from orca.runtime.labware_group import (
+from orca.workflow_models.labware_group import (
+    AcquisitionValidationError,
     Acquisition,
     BarcodeAcquisition,
     LabwareGroup,
@@ -60,7 +77,7 @@ from orca.runtime.labware_group import (
     PoolAcquisition,
 )
 from orca.state.unsettled import UnsettledSubject
-from orca.variables.errors import OptionValue
+from orca.variables.errors import OptionValue, SubmissionInputsRefusedError, VariableValidationError
 
 
 logger = logging.getLogger("orca")
@@ -76,9 +93,7 @@ class _SubmissionFacadeProtocol(Protocol):
         operator_id: str | None = None,
         deployment_profile: str | None = None,
         mode: WorkflowRunMode | None = None,
-        acknowledge_warnings: bool = False,
-        sim_time_scale: float | None = None,
-        reason: str | None = None,
+        sim_speedup: float | None = None,
         confirm: bool = False,
     ) -> SubmissionSnapshot: ...
 
@@ -87,18 +102,6 @@ class _SubmissionFacadeProtocol(Protocol):
     ) -> list[SubmissionSnapshot]: ...
 
     def get_submission(self, submission_id: str) -> SubmissionSnapshot: ...
-
-    async def submit_workflow(
-        self,
-        workflow_name: str,
-        variables: Mapping[str, OptionValue] | None = None,
-        *,
-        mode: WorkflowRunMode | None = None,
-        acknowledge_warnings: bool = False,
-        sim_time_scale: float | None = None,
-        reason: str | None = None,
-        confirm: bool = False,
-    ) -> ExecutionRecord: ...
 
 
 @runtime_checkable
@@ -109,34 +112,31 @@ class _RuntimeWithSubmission(Protocol):
     the Operation declares only what it touches.
     """
 
-    async def submit_workflow(
-        self,
-        workflow_name: str,
-        variables: dict[str, OptionValue] | None = None,
-        *,
-        mode: WorkflowRunMode | None = None,
-    ) -> ExecutionRecord: ...
-
     @property
     def submissions(self) -> _SubmissionFacadeProtocol: ...
 
     async def unsettled_state(self) -> list[UnsettledSubject]: ...
+
+    def get_execution(self, execution_id: str) -> ExecutionRecord: ...
+
+
+class _SubmissionReadsProtocol(Protocol):
+    def list_submissions(
+        self, *, execution_id: str | None = None,
+    ) -> list[SubmissionSnapshot]: ...
+
+    def get_submission(self, submission_id: str) -> SubmissionSnapshot: ...
 
 
 @runtime_checkable
 class _RuntimeWithSubmissionReads(Protocol):
     """Narrow capability surface for ``ListSubmissions`` / ``GetSubmission``.
 
-    Both the daemon (``SystemRuntime``) and a hosted deployment (``ISystemRuntime``)
-    callers satisfy this structurally; declaring the parameter type at
-    this width sidesteps the pyright variance error that fires when a
-    concrete ``SystemRuntime`` is passed to an ``ISystemRuntime``-
-    typed parameter, the same friction ``_RuntimeWithSubmission`` handles
-    for ``SubmitExecutionOperation``.
+    A runtime satisfies it, and so do the check runs, whose submissions outlive their runtimes.
     """
 
     @property
-    def submissions(self) -> _SubmissionFacadeProtocol: ...
+    def submissions(self) -> _SubmissionReadsProtocol: ...
 
 
 def _acquisition_from_dto(dto: AcquisitionDTO) -> Acquisition:
@@ -153,10 +153,12 @@ def _acquisition_from_dto(dto: AcquisitionDTO) -> Acquisition:
             raise ValueError(
                 "location acquisition requires a 'source_location' field",
             )
-        return LocationAcquisition(
-            source_location=dto.source_location,
-            verify_barcode=dto.verify_barcode,
-        )
+        if dto.verify_barcode is not None:
+            raise ValueError(
+                "verify_barcode is not supported: nothing reads a barcode when the labware is picked up, "
+                "so it cannot be checked. To take a labware by its barcode, use kind 'barcode'.",
+            )
+        return LocationAcquisition(source_location=dto.source_location)
     raise ValueError(f"unknown acquisition kind: {kind!r}")
 
 
@@ -180,50 +182,32 @@ def _build_runtime_groups(
     )
 
 
-def _raise_sim_time_scale_not_applicable(
-    exc: SimTimeScaleNotApplicableError,
+
+@singledispatch
+def submit_refusal(exc: Exception) -> OperationError:
+    """The error every submit path answers an engine refusal with. `SUBMIT_REFUSALS` lists what it maps."""
+    raise TypeError(f"no submit refusal for {type(exc).__name__}") from exc
+
+
+submit_refusal.register(TopologyCollisionError, interface_mismatch)
+
+
+@submit_refusal.register
+def _sim_speedup_not_applicable(
+    exc: SimSpeedupNotApplicableError,
 ) -> OperationError:
-    """A time scale where none can apply: a LIVE run, or a joining submission.
+    """A sim speed-up where none can apply: a LIVE run, or a joining submission.
     A shape refusal, 422, like the LIVE-override gate."""
-    return OperationError.typed(
-        OperationErrorCode.INVALID_INPUT,
+    return OperationError.of(
+        ErrorCode.SIM_SPEEDUP_NOT_APPLICABLE,
         str(exc),
-        wire_code="SIM_TIME_SCALE_NOT_APPLICABLE",
-        status_code=422,
         reason=exc.reason,
         execution_id=exc.execution_id,
     )
 
 
-def _raise_live_sim_overrides_unacknowledged(
-    exc: LiveSubmissionWithSimOverridesUnacknowledgedError,
-) -> OperationError:
-    """LIVE submission referenced devices with topology ``sim_override`` and
-    the operator did not pass ``acknowledge_warnings=True``.
-
-    Wire shape: 422 with
-    ``extras.devices[].{name, sim_override, resolved_mode}`` so a UI
-    can render the offenders. Status is 422 (not 409) because the
-    submission shape itself is the issue: the operator must add
-    ``acknowledge_warnings=True`` to proceed.
-    """
-    return OperationError.typed(
-        OperationErrorCode.INVALID_INPUT,
-        str(exc),
-        wire_code="LIVE_SUBMISSION_WITH_SIM_OVERRIDES_UNACKNOWLEDGED",
-        status_code=422,
-        devices=[
-            _LiveSimOverrideDeviceExtra(
-                name=name,
-                sim_override=override.value,
-                resolved_mode=resolved.value,
-            ).model_dump()
-            for name, override, resolved in exc.devices
-        ],
-    )
-
-
-def _raise_run_mode_mismatch(exc: RunModeMismatchError) -> OperationError:
+@submit_refusal.register
+def _run_mode_mismatch(exc: RunModeMismatchError) -> OperationError:
     """JOIN_EXISTING submission's run_mode differs from the live execution's.
 
     Status 409 because the engine state (the existing execution's mode)
@@ -231,11 +215,9 @@ def _raise_run_mode_mismatch(exc: RunModeMismatchError) -> OperationError:
     the blocking execution + mode pair so callers can render an
     actionable error.
     """
-    return OperationError.typed(
-        OperationErrorCode.CONFLICT,
+    return OperationError.of(
+        ErrorCode.RUN_MODE_MISMATCH,
         str(exc),
-        wire_code="RUN_MODE_MISMATCH",
-        status_code=409,
         blocking_execution_id=exc.blocking_execution_id,
         blocking_workflow_name=exc.blocking_workflow_name,
         existing_run_mode=exc.existing_run_mode.value,
@@ -243,7 +225,8 @@ def _raise_run_mode_mismatch(exc: RunModeMismatchError) -> OperationError:
     )
 
 
-def _raise_submission_to_paused_execution(
+@submit_refusal.register
+def _submission_to_paused_execution(
     exc: SubmissionToPausedExecutionError,
 ) -> OperationError:
     """JOIN_EXISTING submission targeting a paused execution.
@@ -253,17 +236,16 @@ def _raise_submission_to_paused_execution(
     execution + workflow so callers can resume it or resubmit STANDALONE,
     mirroring the run-mode-mismatch precedent.
     """
-    return OperationError.typed(
-        OperationErrorCode.CONFLICT,
+    return OperationError.of(
+        ErrorCode.SUBMISSION_TO_PAUSED_EXECUTION,
         str(exc),
-        wire_code="submission_to_paused_execution",
-        status_code=409,
         blocking_execution_id=exc.blocking_execution_id,
         blocking_workflow_name=exc.blocking_workflow_name,
     )
 
 
-def _raise_submission_blocked_by_orphaned_backlog(
+@submit_refusal.register
+def _submission_blocked_by_orphaned_backlog(
     exc: SubmissionBlockedByOrphanedBacklogError,
 ) -> OperationError:
     """JOIN_EXISTING submission targeting an execution with a quarantined slot.
@@ -273,30 +255,20 @@ def _raise_submission_blocked_by_orphaned_backlog(
     Carries the blocking execution + workflow so callers can resume it
     first or resubmit STANDALONE.
     """
-    return OperationError.typed(
-        OperationErrorCode.CONFLICT,
+    return OperationError.of(
+        ErrorCode.SUBMISSION_BLOCKED_BY_ORPHANED_BACKLOG,
         str(exc),
-        wire_code="submission_blocked_by_orphaned_backlog",
-        status_code=409,
         blocking_execution_id=exc.blocking_execution_id,
         blocking_workflow_name=exc.blocking_workflow_name,
     )
 
 
-def _raise_concurrent_live_sim_refused(
-    exc: ConcurrentLiveSimRefusedError,
-) -> OperationError:
-    """A live execution and a sim execution cannot run at the same time.
-
-    Engine-state refusal -> 409. Carries the blocking execution + the two
-    run modes so the operator knows which world is running and which run to
-    wait on.
-    """
-    return OperationError.typed(
-        OperationErrorCode.CONFLICT,
+@submit_refusal.register
+def other_run_mode_active(exc: OtherRunModeActiveError) -> OperationError:
+    """A system runs in one run mode at a time: 409, naming the running execution and both modes."""
+    return OperationError.of(
+        ErrorCode.OTHER_RUN_MODE_ACTIVE,
         str(exc),
-        wire_code="CONCURRENT_LIVE_SIM_REFUSED",
-        status_code=409,
         blocking_execution_id=exc.blocking_execution_id,
         blocking_workflow_name=exc.blocking_workflow_name,
         existing_run_mode=exc.existing_run_mode.value,
@@ -304,7 +276,25 @@ def _raise_concurrent_live_sim_refused(
     )
 
 
-def _raise_start_locations_occupied(
+_START_THE_CLIENT = (
+    ". Start the orca-client that runs them, on its computer: `python -m orca_client --config <its config file>`."
+    " The orca-client README shows the config file."
+)
+
+
+@submit_refusal.register
+def devices_not_ready(exc: DevicesNotReadyError) -> OperationError:
+    """A run refused at its start: 409, naming each device that did not come up and why."""
+    waits_on_a_client = any(why.startswith(NOT_CONNECTED) for why in exc.devices.values())
+    return OperationError.of(
+        ErrorCode.DEVICES_NOT_READY,
+        str(exc) + (_START_THE_CLIENT if waits_on_a_client else ""),
+        devices=dict(exc.devices),
+    )
+
+
+@submit_refusal.register
+def _start_locations_occupied(
     exc: StartLocationsOccupiedError,
 ) -> OperationError:
     """The pre-submit start-location check found one or more occupied slots.
@@ -312,14 +302,13 @@ def _raise_start_locations_occupied(
     Status 409 because operator action (clear the location) unblocks
     the submission. Extras list each occupied slot for an actionable UI.
     """
-    return OperationError.typed(
-        OperationErrorCode.CONFLICT,
+    return OperationError.of(
+        ErrorCode.START_LOCATION_OCCUPIED,
         str(exc),
-        wire_code="start_location_occupied",
-        status_code=409,
         occupied=[
             _OccupiedSlotExtra(
                 position_id=slot.position_id,
+                existing_labware_id=slot.existing_labware_id,
                 existing_labware_name=slot.existing_labware_name,
                 existing_template_name=slot.existing_template_name,
                 source=slot.source,
@@ -329,7 +318,8 @@ def _raise_start_locations_occupied(
     )
 
 
-def _raise_reuse_thread_cannot_be_entry(
+@submit_refusal.register
+def _reuse_thread_cannot_be_entry(
     exc: ReuseThreadCannotBeEntryError,
 ) -> OperationError:
     """A ``start_reuse_existing=True`` thread was registered as an entry.
@@ -339,49 +329,82 @@ def _raise_reuse_thread_cannot_be_entry(
     refused on engine-state grounds (workflow shape is incompatible
     with the submit path).
     """
-    return OperationError.typed(
-        OperationErrorCode.CONFLICT,
+    return OperationError.of(
+        ErrorCode.REUSE_THREAD_CANNOT_BE_ENTRY,
         str(exc),
-        wire_code="reuse_thread_cannot_be_entry",
-        status_code=409,
         thread_name=exc.thread_name,
     )
 
 
-def _is_legacy_shape(req: SubmitExecutionRequest) -> bool:
-    """Legacy = no groups, STANDALONE, no operator or profile, no ``acknowledge_warnings``."""
-    return (
-        req.groups is None
-        and req.batch_mode == "STANDALONE"
-        and req.operator_id is None
-        and req.deployment_profile is None
-        and req.acknowledge_warnings is False
-    )
 
+@submit_refusal.register
+def _run_mode_required(exc: RunModeRequiredError) -> OperationError:
+    return OperationError.of(ErrorCode.RUN_MODE_REQUIRED, str(exc))
+
+
+@submit_refusal.register
+def _spawn_incompatible(exc: SpawnIncompatibleError) -> OperationError:
+    return spawn_incompatible(exc)
+
+
+@submit_refusal.register
+def _profile_not_found(exc: DeploymentProfileNotFoundError) -> OperationError:
+    return OperationError.of(ErrorCode.PROFILE_NOT_FOUND, message_of(exc))
+
+
+@submit_refusal.register
+def _variables_refused(exc: VariableValidationError) -> OperationError:
+    return OperationError.validation_error(str(exc))
+
+
+@submit_refusal.register
+def _inputs_refused(exc: SubmissionInputsRefusedError) -> OperationError:
+    return OperationError.validation_error(str(exc))
+
+
+@submit_refusal.register
+def _acquisition_refused(exc: AcquisitionValidationError) -> OperationError:
+    return OperationError.validation_error(str(exc))
+
+
+@submit_refusal.register
+def _event_hooks_refused(exc: EventHooksNotInTheWorkflowError) -> OperationError:
+    return OperationError.validation_error(str(exc))
+
+
+@submit_refusal.register
+def _no_labware_owns_the_method(exc: NoLabwareCanOwnTheMethodError) -> OperationError:
+    return OperationError.validation_error(str(exc))
+
+
+@submit_refusal.register
+def _method_not_found(exc: MethodNotFoundError) -> OperationError:
+    return OperationError.of(ErrorCode.METHOD_NOT_FOUND, message_of(exc))
+
+
+@submit_refusal.register
+def _labware_template_not_found(exc: LabwareTemplateNotFoundError) -> OperationError:
+    return OperationError.of(ErrorCode.LABWARE_TEMPLATE_NOT_FOUND, message_of(exc))
+
+
+@submit_refusal.register
+def _location_not_found(exc: UnknownLocationError) -> OperationError:
+    return OperationError.of(ErrorCode.LOCATION_NOT_FOUND, message_of(exc), location=exc.location)
+
+
+SUBMIT_REFUSALS: tuple[type[Exception], ...] = tuple(t for t in submit_refusal.registry if t is not object)
 
 class SubmitExecutionOperation:
-    """The worst-case spike Operation.
+    """Submit a workflow through `submissions.submit_group`. No groups is one default group.
 
-    Eight orchestration steps in `run()`:
-    1. Parse `run_mode` (optional `WorkflowRunMode` override).
-    2. Validate `batch_mode` (Literal already constrains; map to enum).
-    3. Decide legacy vs multi-group dispatch.
-    4. Legacy: call `runtime.submit_workflow`, then fetch the auto-
-       created submission via `runtime.submissions.list_submissions`
-       so the wire response shape matches multi-group exactly.
-    5. Multi-group: build `LabwareGroup` tuples from the DTOs.
-    6. Multi-group: call `runtime.submissions.submit_group`.
-    7. Map `KeyError → not_found`, `ValueError → invalid_input`,
-       `RuntimeError → conflict`.
-    8. Convert `SubmissionSnapshot` → `SubmitExecutionResponse`.
-
-    Variable coercion (the Operation only accepts OptionValue) lives in
-    the Pydantic schema, not in `run()` — Pydantic rejects non-
-    primitive values at deserialization with a 422 from the binder.
+    An engine refusal maps through `submit_refusal`, `KeyError` to
+    `workflow_not_found`, `ValueError` to `validation_error` and
+    `RuntimeError` to `conflict`.
     """
 
-    Request: ClassVar[type[BaseModel]] = SubmitExecutionRequest
-    Response: ClassVar[type[BaseModel]] = SubmitExecutionResponse
+    Request: ClassVar[type[BaseModel]] = SUBMIT_EXECUTION_ROUTE.request
+    Response: ClassVar[type[BaseModel]] = SUBMIT_EXECUTION_ROUTE.response
+    binding: ClassVar[RestBinding] = SUBMIT_EXECUTION_ROUTE.binding
 
     def __init__(self, runtime: _RuntimeWithSubmission):
         self._runtime = runtime
@@ -406,72 +429,11 @@ class SubmitExecutionOperation:
             )
             return []
 
-    async def run(
-        self, req: SubmitExecutionRequest,
-    ) -> SubmitExecutionResponse:
-        run_mode = (
-            WorkflowRunMode[req.run_mode] if req.run_mode is not None else None
-        )
-
-        if _is_legacy_shape(req):
-            return await self._run_legacy(req, run_mode)
-
-        return await self._run_multi_group(req, run_mode)
-
-    async def _run_legacy(
-        self,
-        req: SubmitExecutionRequest,
-        run_mode: WorkflowRunMode | None,
-    ) -> SubmitExecutionResponse:
-        try:
-            record = await self._runtime.submissions.submit_workflow(
-                req.workflow_name,
-                req.variables or {},
-                mode=run_mode,
-                sim_time_scale=req.sim_time_scale,
-                reason=req.reason,
-                confirm=True,
-            )
-        except SimTimeScaleNotApplicableError as exc:
-            raise _raise_sim_time_scale_not_applicable(exc) from exc
-        except LiveSubmissionWithSimOverridesUnacknowledgedError as exc:
-            raise _raise_live_sim_overrides_unacknowledged(exc) from exc
-        except StartLocationsOccupiedError as exc:
-            raise _raise_start_locations_occupied(exc) from exc
-        except SpawnIncompatibleError as exc:
-            raise spawn_incompatible(exc) from exc
-        except ReuseThreadCannotBeEntryError as exc:
-            raise _raise_reuse_thread_cannot_be_entry(exc) from exc
-        except RunModeMismatchError as exc:
-            raise _raise_run_mode_mismatch(exc) from exc
-        except ConcurrentLiveSimRefusedError as exc:
-            raise _raise_concurrent_live_sim_refused(exc) from exc
-        except SubmissionToPausedExecutionError as exc:
-            raise _raise_submission_to_paused_execution(exc) from exc
-        except SubmissionBlockedByOrphanedBacklogError as exc:
-            raise _raise_submission_blocked_by_orphaned_backlog(exc) from exc
-        except KeyError as exc:
-            raise OperationError.not_found(
-                f"workflow not found: {req.workflow_name}",
-                workflow_name=req.workflow_name,
-            ) from exc
-        except RuntimeError as exc:
-            raise OperationError.conflict(str(exc)) from exc
-
-        snap = self._fetch_submission_for_execution(record.id)
-        return SubmitExecutionResponse.from_snapshot(
-            snap, await self._unsettled_now(),
-        )
-
-    async def _run_multi_group(
-        self,
-        req: SubmitExecutionRequest,
-        run_mode: WorkflowRunMode | None,
-    ) -> SubmitExecutionResponse:
+    async def run(self, req: SubmitExecutionRequest) -> SubmitExecutionResponse:
         try:
             runtime_groups = _build_runtime_groups(req.groups or [])
         except ValueError as exc:
-            raise OperationError.invalid_input(str(exc)) from exc
+            raise OperationError.validation_error(str(exc)) from exc
 
         try:
             snap = await self._runtime.submissions.submit_group(
@@ -481,71 +443,28 @@ class SubmitExecutionOperation:
                 batch_mode=BatchMode[req.batch_mode],
                 operator_id=req.operator_id,
                 deployment_profile=req.deployment_profile,
-                mode=run_mode,
-                acknowledge_warnings=req.acknowledge_warnings,
-                sim_time_scale=req.sim_time_scale,
-                reason=req.reason,
+                mode=WorkflowRunMode[req.run_mode],
+                sim_speedup=req.sim_speedup,
                 confirm=True,
             )
-        except SimTimeScaleNotApplicableError as exc:
-            raise _raise_sim_time_scale_not_applicable(exc) from exc
-        except LiveSubmissionWithSimOverridesUnacknowledgedError as exc:
-            raise _raise_live_sim_overrides_unacknowledged(exc) from exc
-        except StartLocationsOccupiedError as exc:
-            raise _raise_start_locations_occupied(exc) from exc
-        except SpawnIncompatibleError as exc:
-            raise spawn_incompatible(exc) from exc
-        except ReuseThreadCannotBeEntryError as exc:
-            raise _raise_reuse_thread_cannot_be_entry(exc) from exc
-        except RunModeMismatchError as exc:
-            raise _raise_run_mode_mismatch(exc) from exc
-        except ConcurrentLiveSimRefusedError as exc:
-            raise _raise_concurrent_live_sim_refused(exc) from exc
-        except SubmissionToPausedExecutionError as exc:
-            raise _raise_submission_to_paused_execution(exc) from exc
-        except SubmissionBlockedByOrphanedBacklogError as exc:
-            raise _raise_submission_blocked_by_orphaned_backlog(exc) from exc
+        except SUBMIT_REFUSALS as exc:
+            raise submit_refusal(exc) from exc
         except KeyError as exc:
             missing = exc.args[0] if exc.args else req.workflow_name
-            raise OperationError.not_found(
+            raise OperationError.of(
+                ErrorCode.WORKFLOW_NOT_FOUND,
                 f"workflow or labware template not found: {missing!s}",
                 workflow_name=req.workflow_name,
             ) from exc
         except ValueError as exc:
-            raise OperationError.invalid_input(str(exc)) from exc
+            raise OperationError.validation_error(str(exc)) from exc
         except RuntimeError as exc:
-            raise OperationError.conflict(str(exc)) from exc
+            raise OperationError.of(ErrorCode.CONFLICT, str(exc)) from exc
 
         return SubmitExecutionResponse.from_snapshot(
             snap, await self._unsettled_now(),
+            self._runtime.get_execution(snap.execution_id).sim_speedup,
         )
-
-    def _fetch_submission_for_execution(
-        self, execution_id: str,
-    ) -> SubmissionSnapshot:
-        """Look up the submission `submit_workflow` auto-creates.
-
-        The legacy path returns an `ExecutionRecord`, not a
-        `SubmissionSnapshot`. Surfacing the snapshot keeps the wire
-        response uniform with the multi-group path so MCP / REST
-        callers see one shape regardless of dispatch.
-        """
-        try:
-            snaps = self._runtime.submissions.list_submissions(
-                execution_id=execution_id,
-            )
-        except KeyError as exc:
-            raise OperationError.conflict(
-                f"execution {execution_id} has no submission row",
-                execution_id=execution_id,
-            ) from exc
-        if not snaps:
-            raise OperationError.conflict(
-                f"execution {execution_id} has no submission row",
-                execution_id=execution_id,
-            )
-        return snaps[0]
-
 
 # -- ListSubmissionsOperation -----------------------------------------------
 
@@ -555,8 +474,9 @@ def _submission_to_dto(snap: SubmissionSnapshot) -> SubmissionDTO:
 
 
 class ListSubmissionsOperation:
-    Request: ClassVar[type[BaseModel]] = ListSubmissionsRequest
-    Response: ClassVar[type[BaseModel]] = ListSubmissionsResponse
+    Request: ClassVar[type[BaseModel]] = LIST_SUBMISSIONS_ROUTE.request
+    Response: ClassVar[type[BaseModel]] = LIST_SUBMISSIONS_ROUTE.response
+    binding: ClassVar[RestBinding] = LIST_SUBMISSIONS_ROUTE.binding
 
     def __init__(self, runtime: _RuntimeWithSubmissionReads):
         self._runtime = runtime
@@ -569,7 +489,8 @@ class ListSubmissionsOperation:
                 execution_id=req.execution_id,
             )
         except KeyError as exc:
-            raise OperationError.not_found(
+            raise OperationError.of(
+                ErrorCode.EXECUTION_NOT_FOUND,
                 (
                     f"execution {req.execution_id!r} not found"
                     if req.execution_id is not None
@@ -586,8 +507,9 @@ class ListSubmissionsOperation:
 
 
 class GetSubmissionOperation:
-    Request: ClassVar[type[BaseModel]] = GetSubmissionRequest
-    Response: ClassVar[type[BaseModel]] = GetSubmissionResponse
+    Request: ClassVar[type[BaseModel]] = GET_SUBMISSION_ROUTE.request
+    Response: ClassVar[type[BaseModel]] = GET_SUBMISSION_ROUTE.response
+    binding: ClassVar[RestBinding] = GET_SUBMISSION_ROUTE.binding
 
     def __init__(self, runtime: _RuntimeWithSubmissionReads):
         self._runtime = runtime
@@ -598,8 +520,49 @@ class GetSubmissionOperation:
         try:
             snap = self._runtime.submissions.get_submission(req.submission_id)
         except KeyError as exc:
-            raise OperationError.not_found(
+            raise OperationError.of(
+                ErrorCode.SUBMISSION_NOT_FOUND,
                 f"submission {req.submission_id!r} not found",
                 submission_id=req.submission_id,
             ) from exc
         return GetSubmissionResponse(submission=_submission_to_dto(snap))
+
+
+class SubmitMethodExecutionOperation:
+    """Run one method standalone, as a synthesized one-method workflow."""
+
+    Request: ClassVar[type[BaseModel]] = SUBMIT_METHOD_EXECUTION_ROUTE.request
+    Response: ClassVar[type[BaseModel]] = SUBMIT_METHOD_EXECUTION_ROUTE.response
+    binding: ClassVar[RestBinding] = SUBMIT_METHOD_EXECUTION_ROUTE.binding
+
+    def __init__(self, runtime: ISystemRuntime) -> None:
+        self._runtime = runtime
+
+    async def run(self, req: MethodExecutionRequest) -> MethodExecutionResponse:
+        try:
+            record = await self._runtime.submissions.submit_method(
+                workflow_name=req.workflow_name,
+                method_name=req.method_name,
+                labware_start=req.labware_start,
+                labware_end=req.labware_end,
+                variables=req.variables,
+                deployment_profile=req.deployment_profile,
+                mode=WorkflowRunMode[req.run_mode],
+                event_hooks=req.event_hooks,
+                sim_speedup=req.sim_speedup,
+                confirm=True,
+            )
+        except SUBMIT_REFUSALS as exc:
+            raise submit_refusal(exc) from exc
+        except KeyError as exc:
+            raise OperationError.of(ErrorCode.WORKFLOW_NOT_FOUND, message_of(exc)) from exc
+        except (ValueError, TypeError) as exc:
+            raise OperationError.validation_error(str(exc)) from exc
+        except RuntimeError as exc:
+            raise OperationError.of(ErrorCode.CONFLICT, str(exc)) from exc
+        return MethodExecutionResponse(
+            execution_id=record.id,
+            workflow_name=record.workflow_name,
+            status=record.status.value,
+        )
+

@@ -21,7 +21,7 @@ from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.location import Location
 from orca.resource_models.plate_pad import PlatePad
 from orca.system.reservation_manager.location_reservation import LocationReservation
-from orca.system.reservation_manager.move_handler import (
+from orca.workflow_models.actions.move_handler import (
     MoveActionCollectionReservationRequest,
 )
 from orca.system.reservation_manager.reservation_manager import (
@@ -29,7 +29,7 @@ from orca.system.reservation_manager.reservation_manager import (
     ThreadReservationCoordinator,
 )
 from orca.system.system_map import ILocationRegistry
-from orca.system.thread_registry_interface import IThreadRegistry
+from orca.system.reservation_manager.thread_registry_interface import IThreadRegistry
 from orca.workflow_models.actions.move_action import MoveAction
 
 

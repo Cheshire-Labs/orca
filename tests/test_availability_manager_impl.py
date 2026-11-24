@@ -24,7 +24,7 @@ import pytest
 
 from orca.resource_models.labware import PlateInstance
 from orca.resource_models.location import Location
-from orca.runtime.sim_labware import SimPlate
+from orca.resource_models.sim_labware import SimPlate
 from orca.resource_models.plate_pad import PlatePad
 from orca.system.reservation_manager.reservation_manager import LocationReservationManager
 

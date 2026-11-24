@@ -15,6 +15,7 @@ from orca.state.records import (
     TrackingRecord,
     TrackingSource,
 )
+from tests.memory_activity import memory_ops_store
 
 
 def _record(ops: list[OperationRecord], execution_id: str = "_system") -> TrackingRecord:
@@ -37,7 +38,7 @@ def _op(op_type: DeviceOperation, affected: list[str], details) -> OperationReco
 class TestOpsHistory:
     @pytest.mark.asyncio
     async def test_append_record_makes_ops_visible(self) -> None:
-        h = OpsHistory()
+        h = OpsHistory(store=memory_ops_store())
         await h.append_record(_record([
             _op(DeviceOperation.ASPIRATE, ["plate1"], AspirateDetails(labware="plate1", positions=["A1"], volumes=[50.0])),
         ]))
@@ -47,7 +48,7 @@ class TestOpsHistory:
 
     @pytest.mark.asyncio
     async def test_ops_for_filters_by_affected_labware(self) -> None:
-        h = OpsHistory()
+        h = OpsHistory(store=memory_ops_store())
         await h.append_record(_record([
             _op(DeviceOperation.ASPIRATE, ["source"], AspirateDetails(labware="source", positions=["A1"], volumes=[50.0])),
             _op(DeviceOperation.DISPENSE, ["target"], DispenseDetails(labware="target", positions=["B1"], volumes=[50.0])),
@@ -58,7 +59,7 @@ class TestOpsHistory:
 
     @pytest.mark.asyncio
     async def test_ops_preserve_append_order_across_records(self) -> None:
-        h = OpsHistory()
+        h = OpsHistory(store=memory_ops_store())
         await h.append_record(_record([_op(DeviceOperation.ASPIRATE, ["p"], AspirateDetails(labware="p", positions=["A1"], volumes=[10.0]))]))
         await h.append_record(_record([_op(DeviceOperation.DISPENSE, ["p"], DispenseDetails(labware="p", positions=["A1"], volumes=[20.0]))]))
         ops = await h.ops_for("p")
@@ -67,7 +68,7 @@ class TestOpsHistory:
 
     @pytest.mark.asyncio
     async def test_append_initial_state_is_queryable(self) -> None:
-        h = OpsHistory()
+        h = OpsHistory(store=memory_ops_store())
         await h.append_initial_state("plate1", InitialStateDetails(labware="plate1", well_volumes={"A1": 100.0}))
         ops = await h.ops_for("plate1")
         assert len(ops) == 1
@@ -77,7 +78,7 @@ class TestOpsHistory:
     @pytest.mark.asyncio
     async def test_multi_affected_labware_in_one_op(self) -> None:
         # An aspirate-then-dispense with tips involved touches three labware.
-        h = OpsHistory()
+        h = OpsHistory(store=memory_ops_store())
         await h.append_record(_record([
             _op(
                 DeviceOperation.ASPIRATE,
@@ -90,7 +91,7 @@ class TestOpsHistory:
 
     @pytest.mark.asyncio
     async def test_empty_history(self) -> None:
-        h = OpsHistory()
+        h = OpsHistory(store=memory_ops_store())
         assert await h.all_operations() == []
         assert await h.ops_for("anything") == []
 

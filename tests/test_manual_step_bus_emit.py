@@ -17,7 +17,7 @@ from orca.events.execution_context import (
     ExecutionContext,
     OperatorInstructionContext,
 )
-from orca.events.intervention import InterventionKind, classify_intervention
+from orca.runtime.intervention import InterventionKind, classify_intervention
 from orca.events.runtime_event import RuntimeEvent
 from orca.variables.variable_store import NullVariableResolver
 from orca.workflow_models.action_context import ActionContext

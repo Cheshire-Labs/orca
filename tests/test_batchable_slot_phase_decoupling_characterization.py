@@ -27,6 +27,7 @@ BATCHABLE+JOIN_EXISTING pooling + overflow in ``test_hamilton_smc_batch.py``
 ``test_scoped_slot_closure.py``.
 """
 
+from orca.config import OrcaConfig
 import asyncio
 from collections.abc import AsyncGenerator
 from uuid import uuid4
@@ -38,9 +39,9 @@ from orca.resource_models.labware import PlateTemplate
 from orca.resource_models.resource_pool import ResourcePool
 from orca.resource_models.sharing import GroupSharing, SubmissionBatching
 from orca.runtime.execution import ExecutionPhase
-from orca.runtime.labware_group import LabwareGroup, LabwareGroupMember
-from orca.runtime.run_modes import WorkflowRunMode
-from orca.runtime.submission import BatchMode
+from orca.workflow_models.labware_group import LabwareGroup, LabwareGroupMember
+from orca.modes.run_modes import WorkflowRunMode
+from orca.workflow_models.submission import BatchMode
 from orca.runtime.system_runtime import SystemRuntime
 from orca.sdk.events import EventBus
 from orca.sdk.system import ResourceRegistry, SystemMap
@@ -58,6 +59,10 @@ from tests.test_helpers import (
     wire_system_map,
 )
 from tests.test_multi_lineage_demo import _build_multi_lineage_system, _sample_group
+from tests.memory_activity import memory_ops_store, memory_runtime, memory_variable_store
+from tests.memory_activity import memory_unsaved_positions
+from tests.labware_catalog import bundled_labware_catalog
+from tests.memory_activity import memory_labware_service
 
 
 async def _build_orphan_system(
@@ -162,7 +167,10 @@ async def _build_orphan_system(
         resources_registry=registry,
         system_map=system_map,
         workflows=[workflow],
-        event_bus=event_bus,
+        event_bus=event_bus, config=OrcaConfig(), ops_history_store=memory_ops_store(), variable_store=memory_variable_store(),
+        labware_catalog=bundled_labware_catalog(),
+        labware_service=memory_labware_service(),
+        unsaved_positions=memory_unsaved_positions(),
     )
     await builder.bind_labwares()
     return builder.get_system(), workflow, event_bus
@@ -199,12 +207,12 @@ async def test_orphan_receiver_closes_on_quiescence_without_second_submission(
     comes. This is the invariant that a BATCHABLE receiver used to violate (it
     sat open until close_execution)."""
     system, workflow, event_bus = await _build_orphan_system(batching)
-    runtime = SystemRuntime(system, event_bus=event_bus)
+    runtime = await memory_runtime(system, event_bus=event_bus)
     await runtime.start()
     try:
         submission = await runtime.submit(
             workflow, groups=[_group()], batch_mode=mode,
-            mode=WorkflowRunMode.PURE_SIM,
+            mode=WorkflowRunMode.CHECK_RUN,
         )
         status = await execution_outcome(runtime, submission, timeout=90.0)
         assert status.status == "completed"
@@ -228,11 +236,11 @@ async def test_feeder_declared_receiver_terminates_via_feeder() -> None:
     feeder-driven close, unchanged by the quiescence guarantee.
     """
     system, workflow, event_bus = await _build_multi_lineage_system()
-    runtime = SystemRuntime(system, event_bus=event_bus)
+    runtime = await memory_runtime(system, event_bus=event_bus)
     await runtime.start()
     try:
         submission = await runtime.submit(
-            workflow, groups=[_sample_group()], mode=WorkflowRunMode.PURE_SIM,
+            workflow, groups=[_sample_group()], mode=WorkflowRunMode.CHECK_RUN,
         )
         execution = runtime._executions[submission.execution_id]
         assert execution.phase is ExecutionPhase.ACCEPTING

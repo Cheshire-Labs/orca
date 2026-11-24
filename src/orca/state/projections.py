@@ -77,7 +77,7 @@ _TIP_DROPS = (DeviceOperation.DROP_TIPS, DeviceOperation.DROP_TIPS96, DeviceOper
 
 # A 96-head op engages the whole head, so a single-pool container (trough) loses
 # head_size x volume while a plate spreads one volume per known well.
-_HEAD96_CHANNEL_COUNT = 96
+HEAD96_CHANNEL_COUNT = 96
 
 
 def _fold_96(totals: dict[str, float], signed_volume: float, single_pool: bool) -> None:
@@ -91,7 +91,7 @@ def _fold_96(totals: dict[str, float], signed_volume: float, single_pool: bool) 
     channels, or a cherry-pick that leaves only some tips for the 96-head) is not
     modeled: the 96-detail carries no engaged-channel count, so a single pool would
     be over-drained here. Tracked as separate work."""
-    multiplier = _HEAD96_CHANNEL_COUNT if single_pool else 1
+    multiplier = HEAD96_CHANNEL_COUNT if single_pool else 1
     for pos in totals:
         totals[pos] = totals[pos] + signed_volume * multiplier
 
@@ -211,7 +211,7 @@ def tips_present(ops: list[OperationRecord], tip_rack_name: str) -> set[str]:
             # TipDrop96Details + to_waste=False returning-to-rack is represented
             # by the same rack name; positions are every channel.
             elif isinstance(details, TipDrop96Details) and details.tip_rack == tip_rack_name and not details.to_waste:
-                present.update(last_baseline)
+                present.update(last_baseline if details.positions is None else details.positions)
     return present
 
 
@@ -320,7 +320,7 @@ def sample_events_at(
 
     Returns every aspirate or dispense op that names well_id in its
     positions list, in ops order. Callers compose a sample identity by
-    walking backwards across group_id or positional channel index.
+    walking backwards across transfer_id or positional channel index.
     """
     result: list[OperationRecord] = []
     for op in ops:
@@ -357,8 +357,8 @@ def unsettled_gaps(
 
     Only an operator's word closes a gap; the system's own fold cannot, because
     the fold is what the gap called into question. A later gap does not replace
-    an earlier one either: an abort leaves the count short by the work it threw
-    away, and a restart afterwards says nothing about that shortfall.
+    an earlier one either: a cut-off command leaves the count wrong by what it
+    did, and a restart afterwards says nothing about that.
     """
     standing: set[ObservationGapCause] = set()
     for op in ops:
@@ -376,7 +376,7 @@ def contents_provenance(
     """How much the record knows about this labware's contents.
 
     A restart, a reconnect or an error pause opens a stretch nobody was
-    watching, and an aborted action throws away work it really did. Anything
+    watching, and a cut-off command did something nobody can state. Anything
     known before either describes then, not now, so the answer needs a look
     until someone gives it one.
     """
@@ -395,6 +395,7 @@ _GAPS_A_HAND_COULD_HAVE_FILLED = frozenset({
     ObservationGapCause.DEVICE_RECONNECT,
     ObservationGapCause.ERROR_PAUSE,
     ObservationGapCause.OPERATOR_CONTRADICTED,
+    ObservationGapCause.MODE_SWITCHED,
 })
 
 
@@ -406,13 +407,13 @@ def went_unobserved(
     Narrower than ``contents_provenance`` answering STALE. Every gap makes a
     read stale, but only some of them leave room for a hand having put
     something back, and that chance is the only reason to let work through at a
-    position the record calls empty. An aborted action is not that chance: it
-    threw away work it really did, so the count is wrong by an amount and in a
+    position the record calls empty. A cut-off command is not that chance: it
+    may have done something real, so the count is wrong by an amount and in a
     direction nothing can state, and neither the lenient nor the strict
     assumption is safe. Refusing and asking a person is what is left.
 
-    One such gap is enough. A restart landing after an abort does not make the
-    missing tips come back, so the rack stays refused until somebody counts it.
+    One such gap is enough. A restart landing after a cut-off command does not
+    say what that command did, so the rack stays refused until somebody counts it.
     """
     if not has_contents_baseline(ops, labware_name):
         return False
@@ -459,18 +460,29 @@ def tip_layout(
 def sparse_volumes(
     ops: list[OperationRecord], labware_name: str,
 ) -> dict[str, float] | None:
-    """Non-zero wells, plus any well an operator named. None without history.
+    """Wells declared with a non-zero starting volume, plus any well an operator set. None when there are none.
 
-    An operator's asserted zero rides the projection, so its tracker is strict
-    about that well; the implicit zero of a well nobody has touched stays off
-    it, so an undeclared labware keeps a lenient one.
+    A projected well gets a strict tracker. A well whose volume is only a tally of
+    pipetting from an undeclared or zero start stays off, so it stays lenient.
     """
-    if not has_volume_history(ops, labware_name):
-        return None
+    declared: set[str] = set()
     operator_wells: set[str] = set()
     for op in ops:
         details = op.details
         if isinstance(details, SetVolumeDetails) and details.labware == labware_name:
             operator_wells.update(details.well_volumes)
+        elif (
+            _is_declaration(op)
+            and isinstance(details, InitialStateDetails)
+            and details.labware == labware_name
+            and details.well_volumes is not None
+        ):
+            declared.update(well for well, volume in details.well_volumes.items() if volume != 0.0)
+    declared |= operator_wells
+    if not declared:
+        return None
     folded = well_volumes(ops, labware_name)
-    return {w: v for w, v in folded.items() if v != 0.0 or w in operator_wells}
+    return {
+        w: v for w, v in folded.items()
+        if w in declared and (v != 0.0 or w in operator_wells)
+    }

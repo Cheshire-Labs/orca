@@ -1,16 +1,19 @@
 import logging
 from abc import ABC, abstractmethod
-from typing import Optional
+from contextlib import asynccontextmanager
+from typing import AsyncIterator, Awaitable, Optional
 
 from cheshire_drivers.move_parameters import MoveParameterPatch
 
+from orca.resource_models.deck_access import device_behind
 from orca.resource_models.device_error import MoverAlreadyHoldingError
 from orca.resource_models.gripper_pad import GripperPad
 from orca.resource_models.labware import LabwareInstance
 from orca.resource_models.location import ILabwareLocationObserver, Location
+from orca.resource_models.reach_in import reaching_in
 from orca.resource_models.tracked_lock import TrackedLock
 from orca.resource_models.transporter_interface import ITransporter
-from orca.runtime.interfaces import IGripProfileStore
+from orca.resource_models.store_interfaces import IGripProfileStore
 
 orca_logger = logging.getLogger("orca")
 
@@ -27,7 +30,7 @@ class TransporterBase(ITransporter, ILabwareLocationObserver, ABC):
     def __init__(self, name: str) -> None:
         self._name = name
         self._lock = TrackedLock(f"{name} transporter lock")
-        self._under_external_control: bool = False
+        self._external_control_scopes = 0
         self._external_control_hold: str | None = None
         self._picked_from: str | None = None
         # Never a map node: not a place labware rests, and staying off the
@@ -100,7 +103,7 @@ class TransporterBase(ITransporter, ILabwareLocationObserver, ABC):
     @property
     def under_external_control(self) -> bool:
         """See ``Device.under_external_control`` for the contract."""
-        return self._under_external_control or self._external_control_hold is not None
+        return self._external_control_scopes > 0 or self._external_control_hold is not None
 
     @property
     def external_control_hold(self) -> str | None:
@@ -108,11 +111,12 @@ class TransporterBase(ITransporter, ILabwareLocationObserver, ABC):
         return self._external_control_hold
 
     def take_external_control(self) -> None:
-        self._under_external_control = True
+        """See ``Device.take_external_control``."""
+        self._external_control_scopes += 1
 
     def release_external_control(self) -> None:
-        """Per-command release; leaves an operator's standing hold alone."""
-        self._under_external_control = False
+        """See ``Device.release_external_control``."""
+        self._external_control_scopes = max(0, self._external_control_scopes - 1)
 
     def hold_external_control(self, reason: str | None = None) -> None:
         self._external_control_hold = reason or ""
@@ -131,12 +135,13 @@ class TransporterBase(ITransporter, ILabwareLocationObserver, ABC):
         if held is not None:
             # Before actuating: a guard against closing on a second plate is
             # worth nothing once the arm has moved.
-            raise MoverAlreadyHoldingError(self._name, held.name, held.template_name)
+            raise MoverAlreadyHoldingError(self._name, held.id, held.name, held.template_name)
         if location.labware is None:
             raise ValueError(f"{location} does not contain labware")
         labware = location.labware
         orca_logger.info(f"{self._name} pick {labware} from {location}: picking...")
-        await self._do_pick(location)
+        async with self.reach_into(location, "pick"):
+            await self._do_pick(location)
         self._picked_from = location.position_id
         orca_logger.info(f"{self._name} pick {labware} from {location}: picked")
 
@@ -147,10 +152,59 @@ class TransporterBase(ITransporter, ILabwareLocationObserver, ABC):
         if location.labware is not None:
             raise ValueError(f"{location} already contains labware")
         orca_logger.info(f"{self._name} place {held} to {location}: placing...")
-        await self._do_place(location)
-        # Only on success, so a failed place keeps what a retry re-issues from.
+        async with self.reach_into(location, "place"):
+            await self._do_place(location)
+        # Only once it ran, so a failed place keeps what a retry re-issues from.
         self._picked_from = None
         orca_logger.info(f"{self._name} place {held} to {location}: placed")
+
+    async def pick_with_nothing_on_record(self, location: Location) -> None:
+        """An operator's pick where the record has no plate: the device's default grip, and the jaws stay empty."""
+        held = self.labware
+        if held is not None:
+            raise MoverAlreadyHoldingError(self._name, held.id, held.name, held.template_name)
+        async with self.reach_into(location, "pick"):
+            await self._do_pick(location)
+        self._picked_from = location.position_id
+
+    async def place_with_nothing_on_record(self, location: Location) -> None:
+        """An operator's place with nothing in the jaws on record: the device's default grip."""
+        if location.labware is not None:
+            raise ValueError(f"{location} already contains labware")
+        async with self.reach_into(location, "place"):
+            await self._do_place(location)
+        self._picked_from = None
+
+    @asynccontextmanager
+    async def reach_into(self, site: Location, purpose: str) -> AsyncIterator[None]:
+        """The reach-in lease: hold the device behind ``site`` while this arm is inside it.
+
+        The only way to a driver's pick and place. Take the mover's own lock
+        first, and run the site's hooks outside, since each takes the
+        device lock.
+        """
+        device = device_behind(site)
+        with reaching_in(self._name):
+            if device is None or device.lock.held_by_this_task:
+                yield
+                return
+            async with device.reach_in_lease(self, purpose):
+                yield
+
+    @asynccontextmanager
+    async def holding_the_site_through_its_records(self, site: Location, purpose: str) -> AsyncIterator[None]:
+        """The reach-in lease, held from before the pick until its records are written.
+
+        Released between them, another command queued on the device could run first, with the plate in the jaws
+        and the record still showing it on the site.
+        """
+        async with self.reach_into(site, purpose):
+            yield
+
+    async def make_room_at(self, site: Location) -> None:
+        """Wait until the device behind ``site`` can take this arm, then let it go."""
+        async with self.reach_into(site, "make room"):
+            return
 
     async def reset_labware_state(self) -> None:
         """Drop this mover's held-labware identity. Satisfies
@@ -169,6 +223,10 @@ class TransporterBase(ITransporter, ILabwareLocationObserver, ABC):
         so this is the same call. A mover with a per-world graph overrides.
         """
         await self.reset_labware_state()
+
+    async def refuse_unless_taught(self, position_id: str) -> None:
+        """Raise TeachpointNotFoundError when this mover reaches sites by teachpoint and has none for `position_id`."""
+        return None
 
     @abstractmethod
     async def _do_pick(self, location: Location) -> None:

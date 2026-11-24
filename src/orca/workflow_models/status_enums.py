@@ -47,6 +47,8 @@ class LabwareThreadStatus(str, Enum):
     ``field_serializer`` to emit ``.name``).
     """
     CREATED = "CREATED"
+    AWAITING_START_LOCATION = "AWAITING_START_LOCATION"
+    """Spawning, and its start location is occupied or reserved by other labware."""
     AWAITING_MANUAL_PLACE = "AWAITING_MANUAL_PLACE"
     RESOLVING_ACTION_LOCATION = "RESOLVING_ACTION_LOCATION"
     AWAITING_ACTION_RESERVATION = "AWAITING_ACTION_RESERVATION"
@@ -66,6 +68,18 @@ class LabwareThreadStatus(str, Enum):
     FAILED = "FAILED"
     """Terminal, crash-only: the thread's task died on an unhandled error.
     Distinct from ABORTED (operator decision) and STOPPED (operator stop)."""
+
+    def is_terminal(self) -> bool:
+        return self in _TERMINAL_THREAD_STATUSES
+
+
+_TERMINAL_THREAD_STATUSES = frozenset({
+    LabwareThreadStatus.COMPLETED,
+    LabwareThreadStatus.ABORTED,
+    LabwareThreadStatus.STOPPED,
+    LabwareThreadStatus.FAILED,
+})
+
 
 class WorkflowStatus(str, Enum):
     """Lifecycle phase of one workflow run.
@@ -114,15 +128,27 @@ class PauseSite(str, Enum):
     DEVICE_OP = "DEVICE_OP"
     """Suspended inside one device call. ``paused_device_command`` names it."""
 
+    COMMAND_SAVE = "COMMAND_SAVE"
+    """A device command ran, and saving its answer to the record failed. ``paused_device_command`` names it."""
+
+    ACTION_WAIT = "ACTION_WAIT"
+    """A ``ctx.wait_for`` or ``ctx.manual_step`` inside an action ran out of time."""
+
     MOVE = "MOVE"
     """A transporter move raised. CONTINUE additionally needs the ledger to put
     the labware at the target; the operator records that themselves."""
 
     THREAD_STEP = "THREAD_STEP"
-    """The thread body itself raised, outside any action."""
+    """The thread failed outside any action: its body raised, or the start dispense failed."""
+
+    CO_LABWARE_WAIT = "CO_LABWARE_WAIT"
+    """An action's other labware did not arrive within ``co_labware_timeout``."""
+
+    CO_LABWARE_LOST = "CO_LABWARE_LOST"
+    """An action's other labware will never arrive: its thread ended first, or the group left that optional thread out."""
 
     WAIT_EVENT_TIMEOUT = "WAIT_EVENT_TIMEOUT"
-    """A ``wait_event`` ran out of time."""
+    """An ``orca.on`` or ``orca.branch`` thread step ran out of time waiting for its event."""
 
     ACTION_RESOLUTION = "ACTION_RESOLUTION"
     """Failed before any action was bound, so there is no action to act on."""
@@ -134,8 +160,12 @@ class PauseSite(str, Enum):
     DEADLOCK = "DEADLOCK"
     """The reservation graph could not be resolved."""
 
+    UNHANDLED_ERROR = "UNHANDLED_ERROR"
+    """An error escaped the thread's own handling, so the step that failed is unknown."""
+
     SPAWN_CAPACITY = "SPAWN_CAPACITY"
-    """An auto-spawn hit a capacity limit before an action existed."""
+    """An auto-spawn could not run before an action existed: a full REJECT slot, labware at the site that cannot
+    serve it, or a spawn that failed."""
 
 
 class RecoveryDecision(str, Enum):
@@ -145,9 +175,11 @@ class RecoveryDecision(str, Enum):
     values (intrinsic wire shape, no reliance on per-site
     ``field_serializer`` to emit ``.name``).
 
-    ``RETRY`` is action-level: re-run the whole action body from the top
-    (re-resolving variables). ``RETRY_OP`` is operation-level: re-run ONLY the
-    failed device call, with the action body still suspended at its await.
+    ``RETRY`` repeats only the step that failed. Inside an action that is the
+    failed device command, with the action body still suspended at its await.
+    ``RETRY_ACTION`` re-runs the whole action body from the top (re-resolving
+    variables). It is for an action whose own Python failed: no command failed
+    there, so the function is the only thing that can be repeated.
 
     ``CONTINUE`` and ``ABORT_ACTION`` both advance to the next action, and they
     mean different things. ``ABORT_ACTION`` discards the action as work that
@@ -162,11 +194,15 @@ class RecoveryDecision(str, Enum):
     from somewhere.
     """
     RETRY = "RETRY"
-    RETRY_OP = "RETRY_OP"
+    RETRY_ACTION = "RETRY_ACTION"
     CONTINUE = "CONTINUE"
     ABORT_ACTION = "ABORT_ACTION"
     ABORT_METHOD = "ABORT_METHOD"
     ABORT_THREAD = "ABORT_THREAD"
+
+    @property
+    def cli_word(self) -> str:
+        return self.value.lower().replace("_", "-")
 
 
 ESCALATION_ORDER: tuple[RecoveryDecision, ...] = tuple(RecoveryDecision)
@@ -185,7 +221,6 @@ class SiteRecovery:
 
 
 _ACTION_LEVEL = frozenset({
-    RecoveryDecision.RETRY,
     RecoveryDecision.CONTINUE,
     RecoveryDecision.ABORT_ACTION,
     RecoveryDecision.ABORT_METHOD,
@@ -214,9 +249,24 @@ _ENDS_THE_RENDEZVOUS = (
 )
 
 HONOURED_DECISIONS: dict[PauseSite, SiteRecovery] = {
-    PauseSite.ACTION_BODY: SiteRecovery(_ACTION_LEVEL, "no device call is suspended"),
+    PauseSite.ACTION_BODY: SiteRecovery(
+        _ACTION_LEVEL | {RecoveryDecision.RETRY_ACTION},
+        "no command failed, so the step cannot be repeated; use RETRY_ACTION",
+    ),
     PauseSite.DEVICE_OP: SiteRecovery(
-        _ACTION_LEVEL | {RecoveryDecision.RETRY_OP}, "every decision applies here",
+        _ACTION_LEVEL | {RecoveryDecision.RETRY},
+        "a device command failed and RETRY repeats it; RETRY_ACTION is only for "
+        "an action whose own Python failed",
+    ),
+    PauseSite.COMMAND_SAVE: SiteRecovery(
+        _ACTION_LEVEL | {RecoveryDecision.RETRY},
+        "the device already ran the command and only saving it failed: RETRY saves it again and sends "
+        "nothing, and RETRY_ACTION would send it a second time",
+    ),
+    PauseSite.ACTION_WAIT: SiteRecovery(
+        _ACTION_LEVEL | {RecoveryDecision.RETRY},
+        "a wait ran out of time and RETRY waits again; RETRY_ACTION is only for "
+        "an action whose own Python failed",
     ),
     PauseSite.MOVE: SiteRecovery(
         frozenset({
@@ -229,6 +279,16 @@ HONOURED_DECISIONS: dict[PauseSite, SiteRecovery] = {
         "not expect it",
     ),
     PauseSite.THREAD_STEP: SiteRecovery(_NOTHING_BOUND, _NOTHING_BOUND_BECAUSE),
+    PauseSite.CO_LABWARE_LOST: SiteRecovery(
+        frozenset({RecoveryDecision.ABORT_ACTION, RecoveryDecision.ABORT_THREAD}),
+        "the action is bound to labware that will not come, so waiting again cannot end: ABORT_ACTION skips the "
+        "action and ABORT_THREAD ends this plate",
+    ),
+    PauseSite.CO_LABWARE_WAIT: SiteRecovery(
+        _NOTHING_BOUND,
+        "the action has not started, so there is nothing to carry past or discard; RETRY waits for the "
+        "other labware again with a fresh timeout",
+    ),
     PauseSite.WAIT_EVENT_TIMEOUT: SiteRecovery(_NOTHING_BOUND, _NOTHING_BOUND_BECAUSE),
     PauseSite.ACTION_RESOLUTION: SiteRecovery(
         _NOTHING_BOUND_BUT_ABORTABLE, _ENDS_THE_RENDEZVOUS,
@@ -241,10 +301,15 @@ HONOURED_DECISIONS: dict[PauseSite, SiteRecovery] = {
     PauseSite.DEADLOCK: SiteRecovery(
         _NOTHING_BOUND_BUT_ABORTABLE, _ENDS_THE_RENDEZVOUS,
     ),
+    PauseSite.UNHANDLED_ERROR: SiteRecovery(
+        frozenset({RecoveryDecision.ABORT_THREAD}),
+        "the step that failed is unknown, so nothing can be repeated or carried past; end the thread and "
+        "take over the labware by hand",
+    ),
     PauseSite.SPAWN_CAPACITY: SiteRecovery(
         _NOTHING_BOUND,
         "the spawn runs before an action is resolved, so there is no action to "
-        "carry past or discard; free capacity and try again",
+        "carry past or discard; fix what the pause names and try again",
     ),
 }
 """What each pause site honours. The one statement of the rule.
@@ -260,3 +325,9 @@ because it is different work in each one. The drift this leaves is a verb
 permitted here that no site code acts on, and
 ``tests/test_a_pause_site_honours_what_it_says.py`` is what catches it.
 """
+
+NARROW_ABORTS_END_THE_THREAD_AT: frozenset[PauseSite] = frozenset(
+    site for site, recovery in HONOURED_DECISIONS.items()
+    if recovery.honours == _NOTHING_BOUND_BUT_ABORTABLE
+)
+"""Sites with no bound action that still take ABORT_ACTION and ABORT_METHOD: there both end the thread."""

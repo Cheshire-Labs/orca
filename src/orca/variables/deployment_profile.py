@@ -12,12 +12,12 @@ class DeploymentProfile(BaseModel):
     layer at load_profile time; bare names target the execution partition.
     `computed` is name -> expression.
 
-    Wire shape (REST/MCP/JSON file): identical to this Pydantic schema.
+    Wire shape (REST/JSON file): identical to this Pydantic schema.
     `extra="forbid"` makes typos fail loud at boundary parse rather than
     silently dropping fields.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: str
     description: str = ""

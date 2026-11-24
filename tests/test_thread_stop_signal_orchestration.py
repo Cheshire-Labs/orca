@@ -57,6 +57,7 @@ def _bare_thread_in_running_state() -> ExecutingLabwareThread:
     et._work_finished_hook = None
     et._completed_methods = []
     et._assigned_method = None
+    et._bound_to_bring_labware_to = None
     et._thread_incident_declarer = None
 
     status_manager = MagicMock()

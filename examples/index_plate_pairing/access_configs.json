@@ -1,0 +1,9 @@
+{
+  "default_vertical": {
+    "access_type": "vertical",
+    "gripper_offset": 20.0,
+    "horizontal_clearance": 100.0,
+    "name": "default_vertical",
+    "vertical_clearance": 20.0
+  }
+}

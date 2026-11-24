@@ -22,8 +22,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from orca.resource_models.capacity import CapacityPolicy, OverflowAction
-from orca.resource_models.labware_state import LabwareSlot
-from orca.runtime.run_modes import WorkflowRunMode
+from orca.workflow_models.labware_state import LabwareSlot
+from orca.modes.run_modes import WorkflowRunMode
 from orca.workflow_models.method import ExecutingMethod
 
 
@@ -61,7 +61,7 @@ class TestDrainPending:
         slot.pending.extend([m1, m2, m3])
 
         calls, callback = _record_callback()
-        routed_count = await slot.drain_for_handoff(callback, WorkflowRunMode.PURE_SIM)
+        routed_count = await slot.drain_for_handoff(callback, WorkflowRunMode.CHECK_RUN)
 
         assert routed_count == 3
         assert len(calls) == 3
@@ -90,7 +90,7 @@ class TestDrainAllQueueLeftovers:
         slot.contributions_to_active = 4  # would have been incremented by callback
 
         calls, callback = _record_callback()
-        routed_count = await slot.drain_for_handoff(callback, WorkflowRunMode.PURE_SIM)
+        routed_count = await slot.drain_for_handoff(callback, WorkflowRunMode.CHECK_RUN)
 
         assert routed_count == 4
         assert len(calls) == 4
@@ -115,7 +115,7 @@ class TestDrainOrdering:
         slot.queue.put_nowait(q2)
 
         calls, callback = _record_callback()
-        await slot.drain_for_handoff(callback, WorkflowRunMode.PURE_SIM)
+        await slot.drain_for_handoff(callback, WorkflowRunMode.CHECK_RUN)
 
         names = [c[1].name for c in calls]
         assert names == ["p1", "p2", "q1", "q2"]
@@ -138,7 +138,7 @@ class TestDrainResetState:
         # No pending or queue items
 
         calls, callback = _record_callback()
-        routed = await slot.drain_for_handoff(callback, WorkflowRunMode.PURE_SIM)
+        routed = await slot.drain_for_handoff(callback, WorkflowRunMode.CHECK_RUN)
 
         assert routed == 0
         assert len(calls) == 0
@@ -154,7 +154,7 @@ class TestDrainNoOpCases:
         slot = LabwareSlot(slot_key="plate_x", labware_template_name="plate_x")
 
         calls, callback = _record_callback()
-        routed = await slot.drain_for_handoff(callback, WorkflowRunMode.PURE_SIM)
+        routed = await slot.drain_for_handoff(callback, WorkflowRunMode.CHECK_RUN)
 
         assert routed == 0
         assert len(calls) == 0
@@ -168,7 +168,7 @@ class TestDrainNoOpCases:
         slot.pending.append(_make_method("p1"))
         slot.queue.put_nowait(_make_method("q1"))
 
-        routed = await slot.drain_for_handoff(None, WorkflowRunMode.PURE_SIM)
+        routed = await slot.drain_for_handoff(None, WorkflowRunMode.CHECK_RUN)
 
         assert routed == 2
         assert len(slot.pending) == 0
